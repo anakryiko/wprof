@@ -76,14 +76,23 @@ struct {
 	});
 } rbs SEC(".maps");
 
-const volatile int pid_filter_cnt;
-int pids[1] SEC(".data.pids");
+/* FILTERING */
+const volatile enum wprof_filt_mode filt_mode;
 
-const volatile int comm_filter_cnt;
-char comms[16][1] SEC(".data.comms");
+int allow_pids[1] SEC(".data.allow_pids");
+const volatile int allow_pid_cnt;
 
-const volatile bool cpu_filter;
-__u64 cpus[512] SEC(".data.cpus"); /* CPU bitmask, up to 4096 CPUs are supported */
+int allow_tids[1] SEC(".data.allow_tids");
+const volatile int allow_tid_cnt;
+
+char allow_pnames[16][1] SEC(".data.allow_pnames");
+const volatile int allow_pname_cnt;
+
+char allow_tnames[16][1] SEC(".data.allow_tnames");
+const volatile int allow_tname_cnt;
+
+__u64 allow_cpus[512] SEC(".data.allow_cpus"); /* CPU bitmask, up to 4096 CPUs are supported */
+/* END FILTERING */
 
 const volatile __u32 perf_ctr_cnt = 1; /* for veristat, reset in user space */
 
@@ -139,11 +148,13 @@ static bool should_trace(struct task_struct *task1, struct task_struct *task2)
 	if (!session_start_ts) /* we are still starting */
 		return false;
 
-	if (cpu_filter) {
-		int cpu = bpf_get_smp_processor_id();
-		__u64 mask = cpus[(cpu >> 6) & (ARRAY_SIZE(cpus) - 1)];
+	enum wprof_filt_mode mode = filt_mode;
 
-		if (!(mask & (1ULL << (cpu & 63))))
+	if (filt_mode & FILT_ALLOW_CPU) {
+		int cpu = bpf_get_smp_processor_id();
+		u64 cpumask = allow_cpus[(cpu >> 6) & (ARRAY_SIZE(allow_cpus) - 1)];
+
+		if (!(cpumask & (1ULL << (cpu & 63))))
 			return false;
 	}
 

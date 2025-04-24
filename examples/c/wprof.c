@@ -24,8 +24,8 @@
 #include <sys/signal.h>
 #include <pthread.h>
 
-#include "wprof.skel.h"
 #include "wprof.h"
+#include "wprof.skel.h"
 #include "blazesym.h"
 #include "hashmap.h"
 
@@ -53,8 +53,6 @@ static struct env {
 	int freq;
 	int stats_period_ms; 
 	int run_dur_ms;
-	int pid;
-	int cpu;
 
 	int ringbuf_sz;
 	int task_state_sz;
@@ -69,10 +67,24 @@ static struct env {
 
 	int counter_cnt;
 	int counter_ids[MAX_PERF_COUNTERS];
+
+	/* FILTERING */
+	char **allow_pnames;
+	int allow_pname_cnt;
+
+	char **allow_tnames;
+	int allow_tname_cnt;
+
+	int *allow_pids;
+	int allow_pid_cnt;
+
+	int *allow_tids;
+	int allow_tid_cnt;
+
+	int *allow_cpus;
+	int allow_cpu_cnt;
 } env = {
 	.freq = 100,
-	.pid = -1,
-	.cpu = -1,
 	.ringbuf_sz = DEFAULT_RINGBUF_SZ,
 	.ringbuf_cnt = 1,
 	.task_state_sz = DEFAULT_TASK_STATE_SZ,
@@ -141,8 +153,76 @@ struct perf_counter_def {
 
 static const struct perf_counter_def perf_counter_defs[];
 
+static int append_str(char ***strs, int *cnt, const char *str)
+{
+	void *tmp;
+	char *s;
+
+	tmp = realloc(*strs, (*cnt + 1) * sizeof(**strs));
+	if (!tmp)
+		return -ENOMEM;
+	*strs = tmp;
+
+	(*strs)[*cnt] = s = strdup(str);
+	if (!s)
+		return -ENOMEM;
+
+	*cnt = *cnt + 1;
+	return 0;
+}
+
+static int append_str_file(char ***strs, int *cnt, const char *file)
+{
+	char buf[256];
+	FILE *f;
+	int err = 0;
+
+	f = fopen(file, "r");
+	if (!f) {
+		err = -errno;
+		fprintf(stderr, "Failed to open '%s': %d\n", file, err);
+		return err;
+	}
+
+	while (fscanf(f, "%s", buf) == 1) {
+		if (append_str(strs, cnt, buf)) {
+			err = -ENOMEM;
+			goto cleanup;
+		}
+	}
+
+cleanup:
+	fclose(f);
+	return err;
+}
+
+static int append_num(int **nums, int *cnt, const char *arg)
+{
+	void *tmp;
+	int pid;
+
+	errno = 0;
+	pid = strtol(arg, NULL, 10);
+	if (errno || pid < 0) {
+		fprintf(stderr, "Invalid PID: %d\n", pid);
+		return -EINVAL;
+	}
+
+	tmp = realloc(*nums, (*cnt + 1) * sizeof(**nums));
+	if (!tmp)
+		return -ENOMEM;
+	*nums = tmp;
+
+	(*nums)[*cnt] = pid;
+	*cnt = *cnt + 1;
+
+	return 0;
+}
+
 static error_t parse_arg(int key, char *arg, struct argp_state *state)
 {
+	int err = 0;
+
 	switch (key) {
 	case 'v':
 		env.verbose = true;
@@ -166,30 +246,41 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	case 'S':
 		env.stack_traces = false;
 		break;
+	/* FILTERING */
 	case 'p':
-		if (env.pid >= 0) {
-			fprintf(stderr, "Only one PID filter is supported!\n");
-			return -EINVAL;
+		err = append_num(&env.allow_pids, &env.allow_pid_cnt, arg);
+		if (err)
+			return err;
+		break;
+	case 'P':
+		err = append_num(&env.allow_tids, &env.allow_tid_cnt, arg);
+		if (err)
+			return err;
+		break;
+	case 'n':
+		if (arg[0] == '@') {
+			err = append_str_file(&env.allow_pnames, &env.allow_pname_cnt, arg + 1);
+			if (err)
+				return err;
+		} else if (append_str(&env.allow_pnames, &env.allow_pname_cnt, arg)) {
+			return -ENOMEM;
 		}
-		errno = 0;
-		env.pid = strtol(arg, NULL, 10);
-		if (errno || env.pid <= 0) {
-			fprintf(stderr, "Invalid PID: %s\n", arg);
-			argp_usage(state);
+		break;
+	case 'N':
+		if (arg[0] == '@') {
+			err = append_str_file(&env.allow_tnames, &env.allow_tname_cnt, arg + 1);
+			if (err)
+				return err;
+		} else if (append_str(&env.allow_tnames, &env.allow_tname_cnt, arg)) {
+			return -ENOMEM;
 		}
 		break;
 	case 'c':
-		if (env.cpu >= 0) {
-			fprintf(stderr, "Only one CPU filter is supported!\n");
-			return -EINVAL;
-		}
-		errno = 0;
-		env.cpu = strtol(arg, NULL, 0);
-		if (errno || env.cpu < 0) {
-			fprintf(stderr, "Invalid CPU: %s\n", arg);
-			argp_usage(state);
-		}
+		err = append_num(&env.allow_cpus, &env.allow_cpu_cnt, arg);
+		if (err)
+			return err;
 		break;
+	/* TUNING */
 	case 'f':
 		errno = 0;
 		env.freq = strtol(arg, NULL, 0);
@@ -3113,9 +3204,17 @@ int main(int argc, char **argv)
 
 	bpf_map__set_max_entries(skel->maps.rbs, env.ringbuf_cnt);
 	bpf_map__set_max_entries(skel->maps.task_states, env.task_state_sz);
-	if (env.cpu >= 0) {
-		skel->rodata->cpu_filter = true;
-		skel->data_cpus->cpus[env.cpu / 64] |= (1ULL << ((env.cpu) % 64));
+
+	for (int i = 0; i < env.allow_cpu_cnt; i++) {
+		int cpu = env.allow_cpus[i];
+
+		if (cpu < 0 || cpu >= num_cpus || cpu >= 4096) {
+			fprintf(stderr, "Invalid CPU specified: %d\n", cpu);
+			err = -1;
+			goto cleanup;
+		}
+		skel->rodata->filt_mode |= FILT_ALLOW_CPU;
+		skel->data_allow_cpus->allow_cpus[cpu / 64] |= 1ULL << (cpu % 64);
 	}
 
 	perf_counter_fd_cnt = num_cpus * env.counter_cnt;

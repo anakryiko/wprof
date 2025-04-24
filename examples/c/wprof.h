@@ -26,6 +26,14 @@
 #define PF_KTHREAD 0x00200000
 #endif
 
+enum wprof_filt_mode {
+	FILT_ALLOW_PID = 0x01,
+	FILT_ALLOW_TID = 0x02,
+	FILT_ALLOW_CPU = 0x04,
+	FILT_ALLOW_PNAME = 0x08,
+	FILT_ALLOW_TNAME = 0x10,
+};
+
 struct wprof_stats {
 	__u64 rb_drops;
 	__u64 task_state_drops;
