@@ -12,6 +12,9 @@
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
+#define likely(x)      (__builtin_expect(!!(x), 1))
+#define unlikely(x)    (__builtin_expect(!!(x), 0))
+
 #define __cleanup(callback) __attribute__((cleanup(callback)))
 
 #define TASK_RUNNING 0
@@ -98,7 +101,6 @@ const volatile __u32 perf_ctr_cnt = 1; /* for veristat, reset in user space */
 
 const volatile __u64 rb_cnt_bits;
 
-
 const volatile bool capture_stack_traces = true;
 
 static int zero = 0;
@@ -143,20 +145,49 @@ static void task_state_delete(int pid)
 	bpf_map_delete_elem(&task_states, &id);
 }
 
+static bool should_trace_task(enum wprof_filt_mode mode, struct task_struct *tsk)
+{
+	if (!tsk)
+		return false;
+
+	if (mode & FILT_ALLOW_PID) {
+		u32 pid = tsk->tgid;
+
+		for (int i = 0; i < allow_pid_cnt; i++) {
+			if (allow_pids[i] == pid)
+				return true;
+		}
+	}
+	if (mode & FILT_ALLOW_TID) {
+		u32 tid = tsk->pid;
+
+		for (int i = 0; i < allow_tid_cnt; i++) {
+			if (allow_tids[i] == tid)
+				return true;
+		}
+	}
+	return false;
+}
+
 static bool should_trace(struct task_struct *task1, struct task_struct *task2)
 {
-	if (!session_start_ts) /* we are still starting */
+	if (unlikely(!session_start_ts)) /* we are still starting */
 		return false;
 
 	enum wprof_filt_mode mode = filt_mode;
+	if (likely(mode == 0))
+		return true;
 
-	if (filt_mode & FILT_ALLOW_CPU) {
+	if (mode & FILT_ALLOW_CPU) {
 		int cpu = bpf_get_smp_processor_id();
 		u64 cpumask = allow_cpus[(cpu >> 6) & (ARRAY_SIZE(allow_cpus) - 1)];
 
 		if (!(cpumask & (1ULL << (cpu & 63))))
 			return false;
 	}
+
+	if (!should_trace_task(mode, task1) && !should_trace_task(mode, task2))
+		return false;
 
 	return true;
 }

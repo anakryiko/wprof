@@ -50,8 +50,9 @@ static struct env {
 	bool print_stats;
 	bool breakout_counters;
 	bool stack_traces;
+	bool replay_dump;
 	int freq;
-	int stats_period_ms; 
+	int stats_period_ms;
 	int run_dur_ms;
 
 	int ringbuf_sz;
@@ -115,6 +116,7 @@ static const struct argp_option opts[] = {
 	{ "libbpf-logs", OPT_LIBBPF_LOGS, NULL, 0, "Emit libbpf verbose logs" },
 
 	{ "trace", 'T', "FILE", 0, "Emit trace to specified file" },
+	{ "replay", 'R', NULL, 0, "Re-process raw dump (no actual BPF data gathering)" },
 
 	{ "stack-traces", 's', NULL, 0, "Capture stack traces" },
 	{ "no-stack-traces", 'S', NULL, 0, "Don't capture stack traces" },
@@ -232,6 +234,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	case OPT_LIBBPF_LOGS:
 		env.libbpf_logs = true;
+		break;
+	case 'R':
+		env.replay_dump = true;
 		break;
 	case 'T':
 		if (env.trace_path) {
@@ -3205,6 +3210,7 @@ int main(int argc, char **argv)
 	bpf_map__set_max_entries(skel->maps.rbs, env.ringbuf_cnt);
 	bpf_map__set_max_entries(skel->maps.task_states, env.task_state_sz);
 
+	/* FILTERING */
 	for (int i = 0; i < env.allow_cpu_cnt; i++) {
 		int cpu = env.allow_cpus[i];
 
@@ -3215,6 +3221,20 @@ int main(int argc, char **argv)
 		}
 		skel->rodata->filt_mode |= FILT_ALLOW_CPU;
 		skel->data_allow_cpus->allow_cpus[cpu / 64] |= 1ULL << (cpu % 64);
+	}
+	if (env.allow_pid_cnt > 0) {
+		size_t _sz;
+
+		skel->rodata->filt_mode |= FILT_ALLOW_PID;
+		skel->rodata->allow_pid_cnt = env.allow_pid_cnt;
+		if ((err = bpf_map__set_value_size(skel->maps.data_allow_pids, env.allow_pid_cnt * 4))) {
+			fprintf(stderr, "Failed to size BPF-side PID allowlist: %d\n", err);
+			goto cleanup;
+		}
+		skel->data_allow_pids = bpf_map__initial_value(skel->maps.data_allow_pids, &_sz);
+		for (int i = 0; i < env.allow_pid_cnt; i++) {
+			skel->data_allow_pids->allow_pids[i] = env.allow_pids[i];
+		}
 	}
 
 	perf_counter_fd_cnt = num_cpus * env.counter_cnt;
@@ -3261,8 +3281,10 @@ int main(int argc, char **argv)
 	}
 
 	struct worker_state *w = calloc(1, sizeof(*w));
+	/*
 	char tmp_path[] = "wprof.dump.XXXXXX";
 	int tmp_fd;
+	*/
 
 	w->name_iids = (struct str_iid_domain) {
 		.str_iids = hashmap__new(str_hash_fn, str_equal_fn, NULL),
@@ -3270,12 +3292,15 @@ int main(int argc, char **argv)
 		.domain_desc = "dynamic",
 	};
 
+	/*
 	tmp_fd = mkstemp(tmp_path);
 	if (tmp_fd < 0) {
 		err = -errno;
 		fprintf(stderr, "Failed to create data dump file '%s': %d\n", tmp_path, err);
 		goto cleanup;
 	}
+	*/
+	const char *tmp_path = "wprof.dump";
 	w->dump_path = strdup(tmp_path);
 	fprintf(stderr, "Using '%s' for raw data dump...\n", w->dump_path);
 	w->dump = fdopen(tmp_fd, "w+");
@@ -3286,6 +3311,9 @@ int main(int argc, char **argv)
 	}
 
 	worker = w;
+
+	if (env.replay_dump)
+		goto replay_dump;
 
 	/* Prepare ring buffer to receive events from the BPF program. */
 	ring_buf = ring_buffer__new(ringbuf_fds[0], handle_event, worker, NULL);
@@ -3483,6 +3511,7 @@ cleanup:
 				close(ringbuf_fds[i]);
 	}
 
+replay_dump:
 	/* process dumped events, if no error happened */
 	if (err == 0) {
 		ssize_t file_sz;
