@@ -99,6 +99,7 @@ struct wprof_event {
 	__u32 flags;
 	enum event_kind kind;
 	__u32 cpu;
+	__u32 numa_node;
 	__u64 ts;
 	struct wprof_task task;
 
@@ -112,6 +113,7 @@ struct wprof_event {
 			struct wprof_task waking;
 			__u64 waking_ts;
 			__u32 waking_cpu;
+			__u32 waking_numa_node;
 			enum waking_flags waking_flags;
 			struct perf_counters ctrs;
 		} swtch_to;

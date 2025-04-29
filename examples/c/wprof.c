@@ -568,6 +568,7 @@ enum pb_static_iid {
 
 	ANNK_START_IID, __ANNK_RESET_IID = ANNK_START_IID - 1,
 		IID_ANNK_CPU,					/* cpu */
+		IID_ANNK_NUMA_NODE,				/* numa_node */
 		IID_ANNK_SWITCH_TO,				/* switch_to */
 		IID_ANNK_SWITCH_TO_TID,				/* switch_to_tid */
 		IID_ANNK_SWITCH_TO_PID,				/* switch_to_pid */
@@ -577,6 +578,7 @@ enum pb_static_iid {
 		IID_ANNK_CPU_MEGA_CYCLES,			/* cpu_mega_cycles */
 		IID_ANNK_RENAMED_TO,				/* renamed_to */
 		IID_ANNK_WAKING_CPU,				/* waking_cpu */
+		IID_ANNK_WAKING_NUMA_NODE,			/* waking_numa_node */
 		IID_ANNK_WAKING_DELAY_US,			/* waking_delay_us */
 		IID_ANNK_WAKING_BY,				/* waking_by */
 		IID_ANNK_WAKING_BY_TID,				/* waking_by_tid */
@@ -646,16 +648,18 @@ static const char *pb_strs[] = {
 	[IID_NAME_SOFTIRQ + HRTIMER_SOFTIRQ] = "SOFTIRQ:hrtimer",
 	[IID_NAME_SOFTIRQ + RCU_SOFTIRQ] = "SOFTIRQ:rcu",
 
+	[IID_ANNK_CPU] = "cpu",
+	[IID_ANNK_NUMA_NODE] = "numa_node",
 	[IID_ANNK_SWITCH_TO] = "switch_to",
 	[IID_ANNK_SWITCH_TO_TID] = "switch_to_tid",
 	[IID_ANNK_SWITCH_TO_PID] = "switch_to_pid",
 	[IID_ANNK_SWITCH_FROM] = "switch_from",
 	[IID_ANNK_SWITCH_FROM_TID] = "switch_from_tid",
 	[IID_ANNK_SWITCH_FROM_PID] = "switch_from_pid",
-	[IID_ANNK_CPU] = "cpu",
 	[IID_ANNK_CPU_MEGA_CYCLES] = "cpu_mega_cycles",
 	[IID_ANNK_RENAMED_TO] = "renamed_to",
 	[IID_ANNK_WAKING_CPU] = "waking_cpu",
+	[IID_ANNK_WAKING_NUMA_NODE] = "waking_numa_node",
 	[IID_ANNK_WAKING_DELAY_US] = "waking_delay_us",
 	[IID_ANNK_WAKING_BY] = "waking_by",
 	[IID_ANNK_WAKING_BY_TID] = "waking_by_tid",
@@ -2655,6 +2659,7 @@ static int process_event(struct worker_state *w, struct wprof_event *e, size_t s
 			/* task keeps running on CPU */
 			emit_instant(e->ts, &e->task, IID_NAME_TIMER, "TIMER") {
 				emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
+				emit_kv_int(IID_ANNK_NUMA_NODE, "numa_node", e->numa_node);
 			}
 
 			TracePacket pb = (TracePacket) {
@@ -2693,6 +2698,7 @@ static int process_event(struct worker_state *w, struct wprof_event *e, size_t s
 						 prev_name_iid, prev_name,
 						 IID_CAT_ONCPU, "ONCPU", true /*start*/) {
 					emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
+					emit_kv_int(IID_ANNK_NUMA_NODE, "numa_node", e->numa_node);
 				}
 			}
 
@@ -2700,6 +2706,7 @@ static int process_event(struct worker_state *w, struct wprof_event *e, size_t s
 					 prev_name_iid, prev_name,
 					 IID_CAT_ONCPU, "ONCPU", false /*!start*/) {
 				emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
+				emit_kv_int(IID_ANNK_NUMA_NODE, "numa_node", e->numa_node);
 
 				emit_kv_str(IID_ANNK_SWITCH_TO, "switch_to", nst->name_iid, e->swtch_from.next.comm);
 				emit_kv_int(IID_ANNK_SWITCH_TO_TID, "switch_to_tid", task_tid(&e->swtch_from.next));
@@ -2764,6 +2771,8 @@ static int process_event(struct worker_state *w, struct wprof_event *e, size_t s
 					     e->swtch_to.waking_flags == WF_WOKEN_NEW ? IID_NAME_WAKEUP_NEW : IID_NAME_WAKING,
 					     e->swtch_to.waking_flags == WF_WOKEN_NEW ? "WAKEUP_NEW" : "WAKING") {
 					emit_kv_int(IID_ANNK_CPU, "cpu", e->swtch_to.waking_cpu);
+					emit_kv_int(IID_ANNK_NUMA_NODE, "numa_node", e->swtch_to.waking_numa_node);
+
 					emit_kv_str(IID_ANNK_WAKING_TARGET, "waking_target", st->name_iid, e->task.comm);
 					emit_kv_int(IID_ANNK_WAKING_TARGET_TID, "waking_target_tid", task_tid(&e->task));
 					emit_kv_int(IID_ANNK_WAKING_TARGET_PID, "waking_target_pid", e->task.pid);
@@ -2775,6 +2784,7 @@ static int process_event(struct worker_state *w, struct wprof_event *e, size_t s
 						     e->swtch_to.waking_flags == WF_WOKEN_NEW ? IID_NAME_WOKEN_NEW : IID_NAME_WOKEN,
 						     e->swtch_to.waking_flags == WF_WOKEN_NEW ? "WOKEN_NEW" : "WOKEN") {
 						emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
+						emit_kv_int(IID_ANNK_NUMA_NODE, "numa_node", e->numa_node);
 					}
 				}
 			}
@@ -2782,6 +2792,7 @@ static int process_event(struct worker_state *w, struct wprof_event *e, size_t s
 			emit_slice_point(e->ts, &e->task, st->name_iid, e->task.comm,
 					 IID_CAT_ONCPU, "ONCPU", true /*start*/) {
 				emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
+				emit_kv_int(IID_ANNK_NUMA_NODE, "numa_node", e->numa_node);
 
 				if (e->swtch_to.waking_ts) {
 					emit_kv_str(IID_ANNK_WAKING_BY, "waking_by", wst->name_iid, e->swtch_to.waking.comm);
@@ -2790,6 +2801,7 @@ static int process_event(struct worker_state *w, struct wprof_event *e, size_t s
 					emit_kv_str(IID_ANNK_WAKING_REASON, "waking_reason",
 						    IID_NONE, waking_reason_str(e->swtch_to.waking_flags));
 					emit_kv_int(IID_ANNK_WAKING_CPU, "waking_cpu", e->swtch_to.waking_cpu);
+					emit_kv_int(IID_ANNK_WAKING_NUMA_NODE, "waking_numa_node", e->swtch_to.waking_numa_node);
 					emit_kv_float(IID_ANNK_WAKING_DELAY_US, "waking_delay_us",
 						      "%.3lf", (e->ts - e->swtch_to.waking_ts) / 1000.0);
 				}
@@ -2814,12 +2826,16 @@ static int process_event(struct worker_state *w, struct wprof_event *e, size_t s
 		case EV_FORK: {
 			emit_instant(e->ts, &e->task, IID_NAME_FORKING, "FORKING") {
 				emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
+				emit_kv_int(IID_ANNK_NUMA_NODE, "numa_node", e->numa_node);
+
 				emit_kv_str(IID_ANNK_FORKED_INTO, "forked_into", fst->name_iid, e->fork.child.comm);
 				emit_kv_int(IID_ANNK_FORKED_INTO_TID, "forked_into_tid", task_tid(&e->fork.child));
 				emit_kv_int(IID_ANNK_FORKED_INTO_PID, "forked_into_pid", e->fork.child.pid);
 			}
 			emit_instant(e->ts, &e->fork.child, IID_NAME_FORKED, "FORKED") {
 				emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
+				emit_kv_int(IID_ANNK_NUMA_NODE, "numa_node", e->numa_node);
+
 				emit_kv_str(IID_ANNK_FORKED_FROM, "forked_from", st->name_iid, e->task.comm);
 				emit_kv_int(IID_ANNK_FORKED_FROM_TID, "forked_from_tid", task_tid(&e->task));
 				emit_kv_int(IID_ANNK_FORKED_FROM_PID, "forked_from_pid", e->task.pid);
@@ -2829,6 +2845,8 @@ static int process_event(struct worker_state *w, struct wprof_event *e, size_t s
 		case EV_EXEC: {
 			emit_instant(e->ts, &e->task, IID_NAME_EXEC, "EXEC") {
 				emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
+				emit_kv_int(IID_ANNK_NUMA_NODE, "numa_node", e->numa_node);
+
 				emit_kv_str(IID_ANNK_FILENAME, "filename", IID_NONE, e->exec.filename);
 				if (e->task.tid != e->exec.old_tid)
 					emit_kv_int(IID_ANNK_TID_CHANGED_FROM, "tid_changed_from", e->exec.old_tid);
@@ -2838,6 +2856,8 @@ static int process_event(struct worker_state *w, struct wprof_event *e, size_t s
 		case EV_TASK_RENAME: {
 			emit_instant(e->ts, &e->task, IID_NAME_RENAME, "RENAME") {
 				emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
+				emit_kv_int(IID_ANNK_NUMA_NODE, "numa_node", e->numa_node);
+
 				emit_kv_str(IID_ANNK_OLD_NAME, "old_name", IID_NONE, e->task.comm);
 				emit_kv_str(IID_ANNK_NEW_NAME, "new_name", IID_NONE, e->rename.new_comm);
 			}
@@ -2849,26 +2869,31 @@ static int process_event(struct worker_state *w, struct wprof_event *e, size_t s
 		case EV_TASK_EXIT:
 			emit_instant(e->ts, &e->task, IID_NAME_EXIT, "EXIT") {
 				emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
+				emit_kv_int(IID_ANNK_NUMA_NODE, "numa_node", e->numa_node);
 			}
 			break;
 		case EV_TASK_FREE:
 			emit_instant(e->ts, &e->task, IID_NAME_FREE, "FREE") {
 				emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
+				emit_kv_int(IID_ANNK_NUMA_NODE, "numa_node", e->numa_node);
 			}
 			break;
 		case EV_WAKEUP:
 			emit_instant(e->ts, &e->task, IID_NAME_WAKEUP, "WAKEUP") {
 				emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
+				emit_kv_int(IID_ANNK_NUMA_NODE, "numa_node", e->numa_node);
 			}
 			break;
 		case EV_WAKEUP_NEW:
 			emit_instant(e->ts, &e->task, IID_NAME_WAKEUP_NEW, "WAKEUP_NEW") {
 				emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
+				emit_kv_int(IID_ANNK_NUMA_NODE, "numa_node", e->numa_node);
 			}
 			break;
 		case EV_WAKING:
 			emit_instant(e->ts, &e->task, IID_NAME_WAKING, "WAKING") {
 				emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
+				emit_kv_int(IID_ANNK_NUMA_NODE, "numa_node", e->numa_node);
 			}
 			break;
 		case EV_HARDIRQ_EXIT:
@@ -2876,6 +2901,7 @@ static int process_event(struct worker_state *w, struct wprof_event *e, size_t s
 					 IID_NAME_HARDIRQ, "HARDIRQ",
 					 IID_CAT_HARDIRQ, "HARDIRQ", true /* start */) {
 				emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
+				emit_kv_int(IID_ANNK_NUMA_NODE, "numa_node", e->numa_node);
 				emit_kv_int(IID_ANNK_IRQ, "irq", e->hardirq.irq);
 				emit_kv_str(IID_ANNK_ACTION, "action", IID_NONE, e->hardirq.name);
 			}
@@ -2905,6 +2931,7 @@ static int process_event(struct worker_state *w, struct wprof_event *e, size_t s
 					 name_iid, sfmt("%s:%s", "SOFTIRQ", softirq_str(e->softirq.vec_nr)),
 					 IID_CAT_SOFTIRQ, "SOFTIRQ", true /* start */) {
 				emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
+				emit_kv_int(IID_ANNK_NUMA_NODE, "numa_node", e->numa_node);
 				emit_kv_str(IID_ANNK_ACTION, "action", act_iid, softirq_str(e->softirq.vec_nr));
 			}
 
@@ -2925,6 +2952,7 @@ static int process_event(struct worker_state *w, struct wprof_event *e, size_t s
 					 IID_NONE, sfmt("%s:%s", "WQ", e->wq.desc),
 					 IID_CAT_WQ, "WQ", true /* start */) {
 				emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
+				emit_kv_int(IID_ANNK_NUMA_NODE, "numa_node", e->numa_node);
 				emit_kv_str(IID_ANNK_ACTION, "action", IID_NONE, e->wq.desc);
 			}
 			emit_slice_point(e->ts, &e->task,
@@ -3281,10 +3309,6 @@ int main(int argc, char **argv)
 	}
 
 	struct worker_state *w = calloc(1, sizeof(*w));
-	/*
-	char tmp_path[] = "wprof.dump.XXXXXX";
-	int tmp_fd;
-	*/
 
 	w->name_iids = (struct str_iid_domain) {
 		.str_iids = hashmap__new(str_hash_fn, str_equal_fn, NULL),
@@ -3292,21 +3316,13 @@ int main(int argc, char **argv)
 		.domain_desc = "dynamic",
 	};
 
-	/*
-	tmp_fd = mkstemp(tmp_path);
-	if (tmp_fd < 0) {
-		err = -errno;
-		fprintf(stderr, "Failed to create data dump file '%s': %d\n", tmp_path, err);
-		goto cleanup;
-	}
-	*/
 	const char *tmp_path = "wprof.dump";
 	w->dump_path = strdup(tmp_path);
 	fprintf(stderr, "Using '%s' for raw data dump...\n", w->dump_path);
-	w->dump = fdopen(tmp_fd, "w+");
+	w->dump = fopen(tmp_path, "w+");
 	if (!w->dump) {
 		err = -errno;
-		fprintf(stderr, "Failed to setup data dump file '%s': %d\n", w->dump_path, err);
+		fprintf(stderr, "Failed to create data dump file '%s': %d\n", w->dump_path, err);
 		goto cleanup;
 	}
 

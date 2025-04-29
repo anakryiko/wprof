@@ -24,6 +24,7 @@ struct task_state {
 	__u64 ts;
 	__u64 waking_ts;
 	__u32 waking_cpu;
+	__u32 waking_numa_node;
 	__u32 waking_flags;
 	struct wprof_task waking_task;
 	enum task_status status;
@@ -341,6 +342,7 @@ static __always_inline bool init_wprof_event(struct wprof_event *e, u32 sz, enum
 	e->kind = kind;
 	e->ts = ts;
 	e->cpu = bpf_get_smp_processor_id();
+	e->numa_node = bpf_get_numa_node_id();
 	fill_task_info(p, &e->task);
 	return true; /* makes emit_task_event() macro a bit easier to write */
 }
@@ -434,6 +436,7 @@ int BPF_PROG(wprof_task_switch,
 	if (prev->__state == TASK_RUNNING && prev->pid) {
 		sprev->waking_ts = now_ts;
 		sprev->waking_cpu = cpu;
+		sprev->waking_numa_node = bpf_get_numa_node_id();
 		sprev->waking_flags = WF_PREEMPTED;
 		fill_task_info(next, &sprev->waking_task);
 	}
@@ -463,6 +466,7 @@ int BPF_PROG(wprof_task_switch,
 		e->swtch_to.waking_ts = waking_ts;
 		if (waking_ts) {
 			e->swtch_to.waking_cpu = snext->waking_cpu;
+			e->swtch_to.waking_numa_node = snext->waking_numa_node;
 			e->swtch_to.waking_flags = snext->waking_flags;
 			bpf_probe_read_kernel(&e->swtch_to.waking, sizeof(snext->waking_task),
 					      &snext->waking_task);
@@ -490,6 +494,7 @@ int BPF_PROG(wprof_task_waking, struct task_struct *p)
 	now_ts = bpf_ktime_get_ns();
 	s->waking_ts = now_ts;
 	s->waking_cpu = bpf_get_smp_processor_id();
+	s->waking_numa_node = bpf_get_numa_node_id();
 	s->waking_flags = WF_WOKEN;
 	task = bpf_get_current_task_btf();
 	fill_task_info(task, &s->waking_task);
@@ -521,6 +526,7 @@ int BPF_PROG(wprof_task_wakeup_new, struct task_struct *p)
 	if (s->waking_ts == 0) {
 		s->waking_ts = now_ts;
 		s->waking_cpu = bpf_get_smp_processor_id();
+		s->waking_numa_node = bpf_get_numa_node_id();
 		s->waking_flags = WF_WOKEN_NEW;
 		task = bpf_get_current_task_btf();
 		fill_task_info(task, &s->waking_task);
