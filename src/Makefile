@@ -60,7 +60,7 @@ $(call allow-override,CC,$(CROSS_COMPILE)cc)
 $(call allow-override,LD,$(CROSS_COMPILE)ld)
 
 .PHONY: all
-all: wprof
+all: wprof sim
 
 .PHONY: clean
 clean:
@@ -118,6 +118,10 @@ wprof: $(OUTPUT)/pb_common.o $(OUTPUT)/pb_encode.o $(OUTPUT)/perfetto_trace.pb.o
 wprof: $(OUTPUT)/wprof.o $(LIBBPF_OBJ) $(LIBBLAZESYM_OBJ) | $(OUTPUT)
 	$(call msg,BINARY,$@)
 	$(Q)$(CC) $(CFLAGS) $(filter %.c %.a %.o,$^) $(ALL_LDFLAGS) -lelf -lz -o $@
+
+sim: $(OUTPUT)/sim.o | $(OUTPUT)
+	$(call msg,BINARY,$@)
+	$(Q)$(CC) $(CFLAGS) $(filter %.c %.a %.o,$^) $(ALL_LDFLAGS) -o $@
 
 # delete failed targets
 .DELETE_ON_ERROR:
