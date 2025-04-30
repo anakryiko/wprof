@@ -7,8 +7,12 @@
 
 #include "wprof.h"
 
+#ifndef E2BIG
 #define E2BIG		7
+#endif
+#ifndef ENODATA
 #define ENODATA		61
+#endif
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
@@ -21,16 +25,16 @@ char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
 struct task_state {
-	__u64 ts;
-	__u64 waking_ts;
-	__u32 waking_cpu;
-	__u32 waking_numa_node;
-	__u32 waking_flags;
+	u64 ts;
+	u64 waking_ts;
+	u32 waking_cpu;
+	u32 waking_numa_node;
+	u32 waking_flags;
 	struct wprof_task waking_task;
 	enum task_status status;
-	__u64 softirq_ts;
-	__u64 hardirq_ts;
-	__u64 wq_ts;
+	u64 softirq_ts;
+	u64 hardirq_ts;
+	u64 wq_ts;
 	char wq_name[WORKER_DESC_LEN];
 	struct perf_counters hardirq_ctrs;
 	struct perf_counters softirq_ctrs;
@@ -58,7 +62,7 @@ struct {
 } stack_trace_scratch SEC(".maps");
 
 #define inc_stat(stat) ({							\
-	__u64 __s = 0;								\
+	u64 __s = 0;								\
 	struct wprof_stats *s = bpf_map_lookup_elem(&stats, (void *)&zero);	\
 	if (s) { s->stat++; __s = s->stat; }					\
 	__s;									\
@@ -72,7 +76,7 @@ struct {
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH_OF_MAPS);
-	__type(key, __u32);
+	__type(key, u32);
 	__array(values, struct {
 		__uint(type, BPF_MAP_TYPE_RINGBUF);
 		 /* max_entries doesn't matter, just to successfully create inner map proto */
@@ -95,19 +99,19 @@ const volatile int allow_pname_cnt;
 char allow_tnames[16][1] SEC(".data.allow_tnames");
 const volatile int allow_tname_cnt;
 
-__u64 allow_cpus[512] SEC(".data.allow_cpus"); /* CPU bitmask, up to 4096 CPUs are supported */
+u64 allow_cpus[512] SEC(".data.allow_cpus"); /* CPU bitmask, up to 4096 CPUs are supported */
 /* END FILTERING */
 
-const volatile __u32 perf_ctr_cnt = 1; /* for veristat, reset in user space */
+const volatile u32 perf_ctr_cnt = 1; /* for veristat, reset in user space */
 
-const volatile __u64 rb_cnt_bits;
+const volatile u64 rb_cnt_bits;
 
 const volatile bool capture_stack_traces = true;
 
 static int zero = 0;
 static struct task_state empty_task_state;
 
-__u64 session_start_ts;
+u64 session_start_ts;
 
 /* XXX: pass CPU explicitly to avoid unnecessary surprises */
 static __always_inline int task_id(int pid)
@@ -219,14 +223,14 @@ static void fill_task_info(struct task_struct *t, struct wprof_task *info)
 	__builtin_memcpy(info->pcomm, t->group_leader->comm, sizeof(info->pcomm));
 }
 
-static inline __u64 hash_bits(__u64 h, int bits)
+static inline u64 hash_bits(u64 h, int bits)
 {
 	if (bits == 0)
 		return 0;
 	return (h * 11400714819323198485llu) >> (64 - bits);
 }
 
-static __always_inline __u32 calc_rb_slot(int pid, int cpu)
+static __always_inline u32 calc_rb_slot(int pid, int cpu)
 {
 	return hash_bits(pid ?: cpu, rb_cnt_bits);
 }
@@ -238,13 +242,13 @@ struct rb_ctx {
 	u64 has_dptr;
 };
 
-static __always_inline struct rb_ctx __rb_event_reserve(struct task_struct *p, __u64 fix_sz, __u64 dyn_sz,
+static __always_inline struct rb_ctx __rb_event_reserve(struct task_struct *p, u64 fix_sz, u64 dyn_sz,
 							void **ev_out, struct bpf_dynptr **dptr)
 {
 	struct rb_ctx rb_ctx = {};
 	void *rb;
-	__u32 cpu = bpf_get_smp_processor_id();
-	__u32 rb_slot = calc_rb_slot(p->pid, cpu);
+	u32 cpu = bpf_get_smp_processor_id();
+	u32 rb_slot = calc_rb_slot(p->pid, cpu);
 
 	rb = bpf_map_lookup_elem(&rbs, &rb_slot);
 	if (!rb) {
@@ -282,7 +286,7 @@ static void capture_perf_counters(struct perf_counters *c, int cpu)
 {
 	struct bpf_perf_event_value perf_val;
 
-	for (__u64 i = 0; i < perf_ctr_cnt; i++) {
+	for (u64 i = 0; i < perf_ctr_cnt; i++) {
 		int idx = cpu * perf_ctr_cnt + i, err;
 
 		err = bpf_perf_event_read_value(&perf_cntrs, idx, &perf_val, sizeof(perf_val));
@@ -297,7 +301,7 @@ static void capture_perf_counters(struct perf_counters *c, int cpu)
 
 static void __capture_stack_trace(void *ctx, struct stack_trace *st)
 {
-	__u64 off = zero;
+	u64 off = zero;
 
 	st->kstack_sz = bpf_get_stack(ctx, st->addrs, sizeof(st->addrs) / 2, 0);
 	if (st->kstack_sz > 0)
@@ -680,7 +684,7 @@ static int handle_hardirq(struct task_struct *task, struct irqaction *action, in
 			struct perf_counters ctrs;
 
 			capture_perf_counters(&ctrs, cpu);
-			for (__u64 i = 0; i < perf_ctr_cnt; i++)
+			for (u64 i = 0; i < perf_ctr_cnt; i++)
 				e->hardirq.ctrs.val[i] = ctrs.val[i] - s->hardirq_ctrs.val[i];
 		}
 	}
@@ -743,7 +747,7 @@ static int handle_softirq(struct task_struct *task, int vec_nr, bool start)
 			struct perf_counters ctrs;
 
 			capture_perf_counters(&ctrs, cpu);
-			for (__u64 i = 0; i < perf_ctr_cnt; i++)
+			for (u64 i = 0; i < perf_ctr_cnt; i++)
 				e->softirq.ctrs.val[i] = ctrs.val[i] - s->softirq_ctrs.val[i];
 		}
 	}
@@ -832,7 +836,7 @@ static int handle_workqueue(struct task_struct *task, struct work_struct *work, 
 			struct perf_counters ctrs;
 
 			capture_perf_counters(&ctrs, cpu);
-			for (__u64 i = 0; i < perf_ctr_cnt; i++)
+			for (u64 i = 0; i < perf_ctr_cnt; i++)
 				e->wq.ctrs.val[i] = ctrs.val[i] - s->wq_ctrs.val[i];
 		}
 	}

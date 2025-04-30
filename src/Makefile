@@ -101,22 +101,26 @@ $(OUTPUT)/%.bpf.o: %.bpf.c $(LIBBPF_OBJ) $(wildcard %.h) $(VMLINUX) | $(OUTPUT) 
 		     -c $(filter %.c,$^) -o $(patsubst %.bpf.o,%.tmp.bpf.o,$@)
 	$(Q)$(BPFTOOL) gen object $@ $(patsubst %.bpf.o,%.tmp.bpf.o,$@)
 
+$(OUTPUT)/wprof.bpf.o: wprof.h
+
 # Generate BPF skeletons
 $(OUTPUT)/%.skel.h: $(OUTPUT)/%.bpf.o | $(OUTPUT) $(BPFTOOL)
 	$(call msg,GEN-SKEL,$@)
 	$(Q)$(BPFTOOL) gen skeleton $< > $@
 
+WPROF_SRCS := wprof.c utils.c env.c protobuf.c emit.c stacktrace.c		\
+	      pb_common.c pb_encode.c perfetto_trace.pb.c
+WPROF_HDRS := wprof.h utils.h env.h protobuf.h emit.h stacktrace.h
+
 # Build user space object files
-$(OUTPUT)/%.o: %.c $(OUTPUT)/wprof.skel.h $(wildcard %.h) | $(OUTPUT)
+$(OUTPUT)/%.o: %.c $(OUTPUT)/wprof.skel.h $(WPROF_HDRS) | $(OUTPUT)
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -c $(filter %.c,$^) -o $@
 
-$(OUTPUT)/wprof.bpf.o: wprof.h
-wprof:  wprof.h 								\
-	$(OUTPUT)/pb_common.o $(OUTPUT)/pb_encode.o $(OUTPUT)/perfetto_trace.pb.o
-
 # Build application binary
-wprof: $(OUTPUT)/wprof.o $(LIBBPF_OBJ) $(LIBBLAZESYM_OBJ) | $(OUTPUT)
+wprof: wprof.h utils.h 								\
+		$(patsubst %.c,$(OUTPUT)/%.o,$(WPROF_SRCS)) 			\
+		$(LIBBPF_OBJ) $(LIBBLAZESYM_OBJ) | $(OUTPUT)
 	$(call msg,BINARY,$@)
 	$(Q)$(CC) $(CFLAGS) $(filter %.c %.a %.o,$^) $(ALL_LDFLAGS) -lelf -lz -o $@
 

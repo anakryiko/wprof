@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause) */
 /* Copyright (c) 2025 Meta Platforms, Inc. */
-#ifndef __WPROF_H_
-#define __WPROF_H_
+#ifndef __WPROF_BPF_H_
+#define __WPROF_BPF_H_
 
 #ifndef TASK_COMM_LEN
 #define TASK_COMM_LEN 16
@@ -35,9 +35,9 @@ enum wprof_filt_mode {
 };
 
 struct wprof_stats {
-	__u64 rb_drops;
-	__u64 task_state_drops;
-	__u64 rb_misses;
+	u64 rb_drops;
+	u64 task_state_drops;
+	u64 rb_misses;
 };
 
 enum task_status {
@@ -67,19 +67,19 @@ enum event_kind {
 struct stack_trace {
 	int kstack_sz;
 	int ustack_sz;;
-	__u64 addrs[MAX_STACK_DEPTH * 2];
+	u64 addrs[MAX_STACK_DEPTH * 2];
 };
 
 struct wprof_task {
-	__u32 tid;
-	__u32 pid;
-	__u32 flags;
+	u32 tid;
+	u32 pid;
+	u32 flags;
 	char comm[TASK_COMM_FULL_LEN];
 	char pcomm[TASK_COMM_LEN];
 };
 
 struct perf_counters {
-	__u64 val[MAX_PERF_COUNTERS];
+	u64 val[MAX_PERF_COUNTERS];
 };
 
 enum waking_flags {
@@ -95,12 +95,12 @@ enum event_flags {
 };
 
 struct wprof_event {
-	__u32 sz; /* fixed part size */
-	__u32 flags;
+	u32 sz; /* fixed part size */
+	u32 flags;
 	enum event_kind kind;
-	__u32 cpu;
-	__u32 numa_node;
-	__u64 ts;
+	u32 cpu;
+	u32 numa_node;
+	u64 ts;
 	struct wprof_task task;
 
 	union {
@@ -111,27 +111,27 @@ struct wprof_event {
 		struct wprof_switch_to {
 			struct wprof_task prev;
 			struct wprof_task waking;
-			__u64 waking_ts;
-			__u32 waking_cpu;
-			__u32 waking_numa_node;
+			u64 waking_ts;
+			u32 waking_cpu;
+			u32 waking_numa_node;
 			enum waking_flags waking_flags;
 			struct perf_counters ctrs;
 		} swtch_to;
 		struct wprof_timer {
 		} timer;
 		struct wprof_hardirq {
-			__u64 hardirq_ts;
+			u64 hardirq_ts;
 			int irq;
 			char name[WORKER_DESC_LEN + TASK_COMM_LEN];
 			struct perf_counters ctrs;
 		} hardirq;
 		struct wprof_softirq {
-			__u64 softirq_ts;
+			u64 softirq_ts;
 			int vec_nr;
 			struct perf_counters ctrs;
 		} softirq;
 		struct wprof_wq_info {
-			__u64 wq_ts;
+			u64 wq_ts;
 			char desc[WORKER_DESC_LEN];
 			struct perf_counters ctrs;
 		} wq;
@@ -154,4 +154,4 @@ struct wprof_event {
 
 #define EV_SZ(kind) offsetofend(struct wprof_event, kind)
 
-#endif /* __WPROF_H_ */
+#endif /* __WPROF_BPF_H_ */
