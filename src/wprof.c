@@ -27,15 +27,21 @@
 #include "wprof.h"
 #include "wprof.skel.h"
 #include "blazesym.h"
-#include "hashmap.h"
+#include "../libbpf/src/hashmap.h" /* internal to libbpf, yep */
 
 #include "pb_common.h"
 #include "pb_encode.h"
 #include "perfetto_trace.pb.h"
 
+#ifndef ARRAY_SIZE
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
+#endif
+#ifndef min
 #define min(x, y) ((x) < (y) ? (x) : (y))
+#endif
+#ifndef max
 #define max(x, y) ((x) > (y) ? (x) : (y))
+#endif
 #define __unused __attribute__((unused))
 #define __cleanup(fn) __attribute__((cleanup(fn)))
 

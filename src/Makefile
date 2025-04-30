@@ -23,7 +23,7 @@ VMLINUX := ../vmlinux.h/include/$(ARCH)/vmlinux.h
 # Use our own libbpf API headers and Linux UAPI headers distributed with
 # libbpf to avoid dependency on system-wide headers, which could be missing or
 # outdated
-INCLUDES := -I$(OUTPUT) -I../libbpf/include/uapi -I$(dir $(VMLINUX)) -I$(LIBBLAZESYM_INC)
+INCLUDES := -I$(OUTPUT) -I../libbpf/include/uapi -I../libbpf/include -I$(dir $(VMLINUX)) -I$(LIBBLAZESYM_INC)
 CFLAGS := -g -Wall -O$(if $(RELEASE),2,0) -fno-omit-frame-pointer
 ALL_LDFLAGS := $(LDFLAGS) $(EXTRA_LDFLAGS) -lrt -ldl -lpthread -lm
 
@@ -112,7 +112,8 @@ $(OUTPUT)/%.o: %.c $(OUTPUT)/wprof.skel.h $(wildcard %.h) | $(OUTPUT)
 	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -c $(filter %.c,$^) -o $@
 
 $(OUTPUT)/wprof.bpf.o: wprof.h
-wprof: $(OUTPUT)/pb_common.o $(OUTPUT)/pb_encode.o $(OUTPUT)/perfetto_trace.pb.o wprof.h
+wprof:  wprof.h 								\
+	$(OUTPUT)/pb_common.o $(OUTPUT)/pb_encode.o $(OUTPUT)/perfetto_trace.pb.o
 
 # Build application binary
 wprof: $(OUTPUT)/wprof.o $(LIBBPF_OBJ) $(LIBBLAZESYM_OBJ) | $(OUTPUT)
