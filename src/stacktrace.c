@@ -271,6 +271,20 @@ int process_stack_traces(struct worker_state *w, const void *dump_mem, size_t du
 	qsort(w->sframe_idx, w->sframe_cnt, sizeof(*w->sframe_idx), stack_frame_cmp_by_pid_addr);
 
 	u64 symb_start_ns = ktime_now_ns();
+	u64 last_progress_ns = symb_start_ns;
+	double last_progress_pct = 0.0;
+	double min_progress_pct = 10.0; /* report no more frequently than every 10.0% */
+	u64 min_progress_ns = 3 * 1000000000ULL; /* ... and no more frequently than every 3 secs */
+
+	int total_uniq_cnt = 0, last_uniq_cnt = 0;
+	for (int i = 0; i < w->sframe_cnt; i++) {
+		if (i > 0 &&
+		    w->sframe_idx[i - 1].pid == w->sframe_idx[i].pid &&
+		    w->sframe_idx[i - 1].addr == w->sframe_idx[i].addr)
+			continue;
+		total_uniq_cnt += 1;
+	}
+
 	u64 *addrs = NULL;
 	size_t addr_cap = 0;
 	for (int start = 0, end = 1; end <= w->sframe_cnt; end++) {
@@ -336,10 +350,10 @@ int process_stack_traces(struct worker_state *w, const void *dump_mem, size_t du
 			enum blaze_err berr = blaze_err_last();
 			const char *berr_str = blaze_err_str(berr);
 
-			unkn_cnt += end - start;
+			unkn_cnt += addr_cnt;
 
-			fprintf(stderr, "Symbolization failed for PID %d: %s (%d)\n",
-				w->sframe_idx[start].pid, berr_str, berr);
+			fprintf(stderr, "Symbolization failed for PID %d, skipping %zu unique addrs: %s (%d)\n",
+				w->sframe_idx[start].pid, addr_cnt, berr_str, berr);
 		} else {
 			for (int i = 0, j = 0; i < end - start; i++) {
 				if (i > 0 && w->sframe_idx[start + i - 1].addr == w->sframe_idx[start + i].addr) {
@@ -350,7 +364,6 @@ int process_stack_traces(struct worker_state *w, const void *dump_mem, size_t du
 				}
 			}
 		}
-
 #if 0
 		int pid_of_interest = 869620;
 		for (int k = start; k < end; k++) {
@@ -381,15 +394,25 @@ int process_stack_traces(struct worker_state *w, const void *dump_mem, size_t du
 			}
 		}
 #endif
+		if (ktime_now_ns() - last_progress_ns >= min_progress_ns ||
+		    (last_uniq_cnt + addr_cnt) * 100.0 / total_uniq_cnt - last_progress_pct >= min_progress_pct) {
+			last_progress_ns = ktime_now_ns();
+			last_progress_pct = (last_uniq_cnt + addr_cnt) * 100.0 / total_uniq_cnt;
+			fprintf(stderr, "Symbolized %zu (%.3lf%%) unique addresses in %.3lf seconds...\n",
+				last_uniq_cnt + addr_cnt, (last_uniq_cnt + addr_cnt) * 100.0 / total_uniq_cnt,
+				(last_progress_ns - symb_start_ns) / 1000000000.0);
+		}
+		last_uniq_cnt += addr_cnt;
+
 		start = end;
 		blaze_symbolizer_free(symbolizer);
 	}
 	free(addrs);
 
 	u64 symb_end_ns = ktime_now_ns();
-	fprintf(stderr, "Symbolized %zu user and %zu kernel unique addresses (%zu total, failed %zu) in %.3lfms.\n",
+	fprintf(stderr, "Symbolized %zu user and %zu kernel UNIQUE addresses (%zu total, failed %zu) in %.3lfs.\n",
 		uaddr_cnt, kaddr_cnt, uaddr_cnt + kaddr_cnt, unkn_cnt,
-		(symb_end_ns - symb_start_ns) / 1000000.0);
+		(symb_end_ns - symb_start_ns) / 1000000000.0);
 
 	/* XXX: mapping singleton */
 	pb_iid mapping_iid = 1;

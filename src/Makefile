@@ -3,6 +3,7 @@ OUTPUT := .output
 CLANG ?= clang
 CARGO ?= $(shell which cargo)
 RELEASE ?=
+BLAZESYM_DEBUG ?=
 
 LIBBPF_SRC := $(abspath ../libbpf/src)
 BPFTOOL_SRC := $(abspath ../bpftool/src)
@@ -86,12 +87,12 @@ $(BPFTOOL): | $(BPFTOOL_OUTPUT)
 	$(Q)$(MAKE) ARCH= CROSS_COMPILE= OUTPUT=$(BPFTOOL_OUTPUT)/ -C $(BPFTOOL_SRC) bootstrap
 
 # Build blazesym
-$(LIBBLAZESYM_SRC)/target/$(if $(RELEASE),release,debug)/libblazesym_c.a::
-	$(Q)cd $(LIBBLAZESYM_SRC) && $(CARGO) build --package=blazesym-c $(if $(RELEASE),--release,)
+$(LIBBLAZESYM_SRC)/target/$(if $(BLAZESYM_DEBUG),debug,release)/libblazesym_c.a::
+	$(Q)cd $(LIBBLAZESYM_SRC) && $(CARGO) build --package=blazesym-c $(if $(BLAZESYM_DEBUG),,--release)
 
-$(LIBBLAZESYM_OBJ): $(LIBBLAZESYM_SRC)/target/$(if $(RELEASE),release,debug)/libblazesym_c.a | $(OUTPUT)
+$(LIBBLAZESYM_OBJ): $(LIBBLAZESYM_SRC)/target/$(if $(BLAZESYM_DEBUG),debug,release)/libblazesym_c.a | $(OUTPUT)
 	$(call msg,LIB, $@)
-	$(Q)cp $(LIBBLAZESYM_SRC)/target/$(if $(RELEASE),release,debug)/libblazesym_c.a $@
+	$(Q)cp $(LIBBLAZESYM_SRC)/target/$(if $(BLAZESYM_DEBUG),debug,release)/libblazesym_c.a $@
 
 # Build BPF code
 $(OUTPUT)/%.bpf.o: %.bpf.c $(LIBBPF_OBJ) $(wildcard %.h) $(VMLINUX) | $(OUTPUT) $(BPFTOOL)
