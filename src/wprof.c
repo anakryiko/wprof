@@ -54,10 +54,7 @@ static volatile bool exiting;
 
 static void sig_timer(int sig)
 {
-	if (env.run_dur_ms) {
-		exiting = true;
-		return;
-	}
+	exiting = true;
 }
 
 static void sig_term(int sig)
@@ -66,8 +63,6 @@ static void sig_term(int sig)
 	signal(SIGINT, SIG_DFL);
 	signal(SIGTERM, SIG_DFL);
 }
-
-static struct worker_state *worker;
 
 /* Receive events from the ring buffer. */
 static int handle_rb_event(void *ctx, void *data, size_t size)
@@ -111,7 +106,7 @@ static int process_raw_dump(struct worker_state *w)
 	dump_mem = mmap(NULL, dump_sz, PROT_READ | PROT_WRITE, MAP_SHARED, fileno(w->dump), 0);
 	if (dump_mem == MAP_FAILED) {
 		err = -errno;
-		fprintf(stderr, "Failed to mmap dump file '%s': %d\n", w->dump_path, err);
+		fprintf(stderr, "Failed to mmap dump file '%s': %d\n", env.data_path, err);
 		return err;
 	}
 
@@ -141,28 +136,25 @@ static int process_raw_dump(struct worker_state *w)
 	err = munmap(dump_mem, dump_sz);
 	if (err < 0) {
 		err = -errno;
-		fprintf(stderr, "Failed to munmap() dump file '%s': %d\n", w->dump_path, err);
+		fprintf(stderr, "Failed to munmap() dump file '%s': %d\n", env.data_path, err);
 		return err;
 	}
 	fclose(w->dump);
 	w->dump = NULL;
-	unlink(w->dump_path);
 	return 0;
 }
 
-static void print_exit_summary(struct wprof_bpf *skel, int num_cpus, int exit_code)
+static void print_exit_summary(struct worker_state *worker, struct wprof_bpf *skel, int num_cpus, int exit_code)
 {
 	int err;
 	u64 total_run_cnt = 0, total_run_ns = 0;
 	u64 rb_handled_cnt = 0, rb_ignored_cnt = 0;
 	u64 rb_handled_sz = 0, rb_ignored_sz = 0;
 
-	if (worker) {
-		rb_handled_cnt += worker->rb_handled_cnt;
-		rb_handled_sz += worker->rb_handled_sz;
-		rb_ignored_cnt += worker->rb_ignored_cnt;
-		rb_ignored_sz += worker->rb_ignored_sz;
-	}
+	rb_handled_cnt += worker->rb_handled_cnt;
+	rb_handled_sz += worker->rb_handled_sz;
+	rb_ignored_cnt += worker->rb_ignored_cnt;
+	rb_ignored_sz += worker->rb_ignored_sz;
 
 	if (!skel)
 		goto skip_prog_stats;
@@ -284,56 +276,43 @@ static int timer_plan_cmp(const void *a, const void *b)
 	return x->cpu - y->cpu;
 }
 
-int main(int argc, char **argv)
+struct bpf_state {
+	bool detached;
+	bool drained;
+	struct wprof_bpf *skel;
+	struct bpf_link **links;
+	struct ring_buffer *ring_buf;
+	int *perf_timer_fds;
+	int *perf_counter_fds;
+	int perf_counter_fd_cnt;
+	int *rb_map_fds;
+	int stats_fd;
+	bool *online_mask;
+	int num_online_cpus;
+};
+
+static int setup_bpf(struct bpf_state *st, struct worker_state *worker, int num_cpus)
 {
 	const char *online_cpus_file = "/sys/devices/system/cpu/online";
-	struct wprof_bpf *skel = NULL;
 	struct perf_event_attr attr;
-	struct bpf_link **links = NULL;
-	struct ring_buffer *ring_buf = NULL;
-	int num_cpus = 0, num_online_cpus;
-	int *perf_timer_fds = NULL, *perf_counter_fds = NULL, perf_counter_fd_cnt = 0, pefd;
-	int *ringbuf_fds = NULL;
-	int i, err = 0;
-	bool *online_mask = NULL;
-	struct itimerval timer_ival;
-	int stats_fd = -1;
-
-	/* Parse command line arguments */
-	err = argp_parse(&argp, argc, argv, 0, NULL, NULL);
-	if (err) {
-		err = -1;
-		goto cleanup;
-	}
-
-	if (env.print_stats && env.run_dur_ms) {
-		fprintf(stderr, "Can't specify --print-stats and --run-dur-ms at the same time!\n");
-		err = -1;
-		goto cleanup;
-	}
+	struct wprof_bpf *skel;
+	int pefd, i, err = 0;
 
 	libbpf_set_print(libbpf_print_fn);
 
-	err = parse_cpu_mask_file(online_cpus_file, &online_mask, &num_online_cpus);
+	err = parse_cpu_mask_file(online_cpus_file, &st->online_mask, &st->num_online_cpus);
 	if (err) {
 		fprintf(stderr, "Failed to get online CPU numbers: %d\n", err);
-		goto cleanup;
-	}
-
-	num_cpus = libbpf_num_possible_cpus();
-	if (num_cpus <= 0) {
-		fprintf(stderr, "Failed to get the number of processors\n");
-		err = -1;
-		goto cleanup;
+		return -EINVAL;
 	}
 
 	calibrate_ktime();
 
-	skel = wprof_bpf__open();
+	st->skel = skel = wprof_bpf__open();
 	if (!skel) {
-		fprintf(stderr, "Failed to open and load BPF skeleton\n");
-		err = -1;
-		goto cleanup;
+		err = -errno;
+		fprintf(stderr, "Failed to open and load BPF skeleton: %d\n", err);
+		return err;
 	}
 
 	bpf_map__set_max_entries(skel->maps.rbs, env.ringbuf_cnt);
@@ -345,8 +324,7 @@ int main(int argc, char **argv)
 
 		if (cpu < 0 || cpu >= num_cpus || cpu >= 4096) {
 			fprintf(stderr, "Invalid CPU specified: %d\n", cpu);
-			err = -1;
-			goto cleanup;
+			return -EINVAL;
 		}
 		skel->rodata->filt_mode |= FILT_ALLOW_CPU;
 		skel->data_allow_cpus->allow_cpus[cpu / 64] |= 1ULL << (cpu % 64);
@@ -358,7 +336,7 @@ int main(int argc, char **argv)
 		skel->rodata->allow_pid_cnt = env.allow_pid_cnt;
 		if ((err = bpf_map__set_value_size(skel->maps.data_allow_pids, env.allow_pid_cnt * 4))) {
 			fprintf(stderr, "Failed to size BPF-side PID allowlist: %d\n", err);
-			goto cleanup;
+			return err;
 		}
 		skel->data_allow_pids = bpf_map__initial_value(skel->maps.data_allow_pids, &_sz);
 		for (int i = 0; i < env.allow_pid_cnt; i++) {
@@ -366,9 +344,9 @@ int main(int argc, char **argv)
 		}
 	}
 
-	perf_counter_fd_cnt = num_cpus * env.counter_cnt;
+	st->perf_counter_fd_cnt = num_cpus * env.counter_cnt;
 	skel->rodata->perf_ctr_cnt = env.counter_cnt;
-	bpf_map__set_max_entries(skel->maps.perf_cntrs, perf_counter_fd_cnt);
+	bpf_map__set_max_entries(skel->maps.perf_cntrs, st->perf_counter_fd_cnt);
 
 	skel->rodata->rb_cnt_bits = 0;
 	while ((1ULL << skel->rodata->rb_cnt_bits) < env.ringbuf_cnt)
@@ -377,81 +355,57 @@ int main(int argc, char **argv)
 	skel->rodata->capture_stack_traces = env.stack_traces;
 
 	if (env.bpf_stats) {
-		stats_fd = bpf_enable_stats(BPF_STATS_RUN_TIME);
-		if (stats_fd < 0)
-			fprintf(stderr, "Failed to enable BPF run stats tracking: %d!\n", stats_fd);
+		st->stats_fd = bpf_enable_stats(BPF_STATS_RUN_TIME);
+		if (st->stats_fd < 0)
+			fprintf(stderr, "Failed to enable BPF run stats tracking: %d!\n", st->stats_fd);
 	}
 
 	err = wprof_bpf__load(skel);
 	if (err) {
 		fprintf(stderr, "Fail to load BPF skeleton: %d\n", err);
-		goto cleanup;
+		return err;
 	}
 
-	ringbuf_fds = calloc(env.ringbuf_cnt, sizeof(*ringbuf_fds));
+	st->rb_map_fds = calloc(env.ringbuf_cnt, sizeof(*st->rb_map_fds));
 	for (int i = 0; i < env.ringbuf_cnt; i++) {
 		int map_fd;
 
 		map_fd = bpf_map_create(BPF_MAP_TYPE_RINGBUF, sfmt("wprof_rb_%d", i), 0, 0, env.ringbuf_sz, NULL);
 		if (map_fd < 0) {
 			fprintf(stderr, "Failed to create BPF ringbuf #%d: %d\n", i, map_fd);
-			err = map_fd;
-			goto cleanup;
+			return map_fd;
 		}
 
 		err = bpf_map_update_elem(bpf_map__fd(skel->maps.rbs), &i, &map_fd, BPF_NOEXIST);
 		if (err < 0) {
 			fprintf(stderr, "Failed to set BPF ringbuf #%d into ringbuf map-of-maps: %d\n", i, err);
 			close(map_fd);
-			goto cleanup;
+			return err;
 		}
 
-		ringbuf_fds[i] = map_fd;
+		st->rb_map_fds[i] = map_fd;
 	}
-
-	struct worker_state *w = calloc(1, sizeof(*w));
-
-	w->name_iids = (struct str_iid_domain) {
-		.str_iids = hashmap__new(str_hash_fn, str_equal_fn, NULL),
-		.next_str_iid = IID_FIXED_LAST_ID,
-		.domain_desc = "dynamic",
-	};
-
-	const char *tmp_path = "wprof.dump";
-	w->dump_path = strdup(tmp_path);
-	fprintf(stderr, "Using '%s' for raw data dump...\n", w->dump_path);
-	w->dump = fopen(tmp_path, "w+");
-	if (!w->dump) {
-		err = -errno;
-		fprintf(stderr, "Failed to create data dump file '%s': %d\n", w->dump_path, err);
-		goto cleanup;
-	}
-
-	worker = w;
-
-	if (env.replay_dump)
-		goto replay_dump;
 
 	/* Prepare ring buffer to receive events from the BPF program. */
-	ring_buf = ring_buffer__new(ringbuf_fds[0], handle_rb_event, worker, NULL);
-	if (!ring_buf) {
-		err = -1;
-		goto cleanup;
+	st->ring_buf = ring_buffer__new(st->rb_map_fds[0], handle_rb_event, worker, NULL);
+	if (!st->ring_buf) {
+		err = -errno;
+		return err;
 	}
 	for (i = 1; i < env.ringbuf_cnt; i++) {
-		err = ring_buffer__add(ring_buf, ringbuf_fds[i], handle_rb_event, worker);
+		err = ring_buffer__add(st->ring_buf, st->rb_map_fds[i], handle_rb_event, worker);
 		if (err) {
 			fprintf(stderr, "Failed to create ring buffer manager for ringbuf #%d: %d\n", i, err);
-			goto cleanup;
+			return err;
 		}
 	}
 
-	perf_timer_fds = malloc(num_cpus * sizeof(int));
-	perf_counter_fds = malloc(perf_counter_fd_cnt * sizeof(int));
+	st->perf_timer_fds = calloc(num_cpus, sizeof(int));
+	st->perf_counter_fds = calloc(st->perf_counter_fd_cnt, sizeof(int));
 	for (i = 0; i < num_cpus; i++) {
-		perf_timer_fds[i] = -1;
+		st->perf_timer_fds[i] = -1;
 		for (int j = 0; j < env.counter_cnt; j++)
-			perf_counter_fds[i * env.counter_cnt + j] = -1;
+			st->perf_counter_fds[i * env.counter_cnt + j] = -1;
 	}
 
 	/* determine randomized spread-out "plan" for attaching to timers to
@@ -470,7 +424,7 @@ int main(int argc, char **argv)
 		int cpu = timer_plan[i].cpu;
 
 		/* skip offline/not present CPUs */
-		if (cpu >= num_online_cpus || !online_mask[cpu])
+		if (cpu >= st->num_online_cpus || !st->online_mask[cpu])
 			continue;
 
 		/* timer perf event */
@@ -487,13 +441,12 @@ int main(int argc, char **argv)
 
 		pefd = perf_event_open(&attr, -1, cpu, -1, PERF_FLAG_FD_CLOEXEC);
 		if (pefd < 0) {
-			fprintf(stderr, "Fail to set up performance monitor on a CPU/Core\n");
-			err = -1;
-			goto cleanup;
+			err = -errno;
+			fprintf(stderr, "Failed to set up performance monitor on CPU %d: %d\n", cpu, err);
+			return err;
 		}
-		perf_timer_fds[cpu] = pefd;
+		st->perf_timer_fds[cpu] = pefd;
 
-		/* CPU cycles perf event, if supported */
 		/* set up requested perf counters */
 		for (int j = 0; j < env.counter_cnt; j++) {
 			const struct perf_counter_def *def = &perf_counter_defs[env.counter_ids[j]];
@@ -508,34 +461,218 @@ int main(int argc, char **argv)
 			if (pefd < 0) {
 				fprintf(stderr, "Failed to create %s PMU for CPU #%d, skipping...\n", def->alias, cpu);
 			} else {
-				perf_counter_fds[pe_idx] = pefd;
+				st->perf_counter_fds[pe_idx] = pefd;
 				err = bpf_map__update_elem(skel->maps.perf_cntrs,
 							   &pe_idx, sizeof(pe_idx),
 							   &pefd, sizeof(pefd), 0);
 				if (err) {
 					fprintf(stderr, "Failed to set up %s PMU on CPU#%d for BPF: %d\n", def->alias, cpu, err);
-					goto cleanup;
+					return err;
 				}
 				err = ioctl(pefd, PERF_EVENT_IOC_ENABLE, 0);
 				if (err) {
+					err = -errno;
 					fprintf(stderr, "Failed to enable %s PMU on CPU#%d: %d\n", def->alias, cpu, err);
-					goto cleanup;
+					return err;
 				}
 			}
 		}
 	}
 
-	links = calloc(num_cpus, sizeof(struct bpf_link *));
+	return 0;
+}
+
+static int attach_bpf(struct bpf_state *st, int num_cpus)
+{
+	int err = 0;
+
+	st->links = calloc(num_cpus, sizeof(struct bpf_link *));
 	for (int cpu = 0; cpu < num_cpus; cpu++) {
-		if (perf_timer_fds[cpu] < 0)
+		if (st->perf_timer_fds[cpu] < 0)
 			continue;
 
-		links[cpu] = bpf_program__attach_perf_event(skel->progs.wprof_timer_tick, perf_timer_fds[cpu]);
-		if (!links[cpu]) {
-			err = -1;
+		st->links[cpu] = bpf_program__attach_perf_event(st->skel->progs.wprof_timer_tick,
+								st->perf_timer_fds[cpu]);
+		if (!st->links[cpu]) {
+			err = -errno;
+			return err;
+		}
+	}
+
+	err = wprof_bpf__attach(st->skel);
+	if (err) {
+		fprintf(stderr, "Failed to attach skeleton: %d\n", err);
+		return err;
+	}
+
+	return 0;
+}
+
+static int run_bpf(struct bpf_state *st)
+{
+	int err = 0;
+
+	env.sess_start_ts = ktime_now_ns();
+	env.sess_end_ts = env.sess_start_ts + env.dur_ms * 1000000ULL;
+
+	st->skel->bss->session_start_ts = env.sess_start_ts;
+
+	/* Wait and receive stack traces */
+	while ((err = ring_buffer__poll(st->ring_buf, -1)) >= 0 || err == -EINTR) {
+		if (exiting) {
+			err = 0;
+			break;
+		}
+	}
+
+	return err;
+}
+
+static void detach_bpf(struct bpf_state *st, int num_cpus)
+{
+	if (st->detached)
+		return;
+
+	if (st->skel)
+		wprof_bpf__detach(st->skel);
+	if (st->stats_fd >= 0)
+		close(st->stats_fd);
+	if (st->links) {
+		for (int cpu = 0; cpu < num_cpus; cpu++)
+			bpf_link__destroy(st->links[cpu]);
+		free(st->links);
+	}
+	if (st->perf_timer_fds || st->perf_counter_fds) {
+		for (int i = 0; i < num_cpus; i++) {
+			if (st->perf_timer_fds[i] >= 0)
+				close(st->perf_timer_fds[i]);
+		}
+		for (int i = 0; i < st->perf_counter_fd_cnt; i++) {
+			if (st->perf_counter_fds[i] >= 0) {
+				(void)ioctl(st->perf_counter_fds[i], PERF_EVENT_IOC_DISABLE, 0);
+				close(st->perf_counter_fds[i]);
+			}
+		}
+		free(st->perf_timer_fds);
+		free(st->perf_counter_fds);
+	}
+
+	st->detached = true;
+}
+
+static void drain_bpf(struct bpf_state *st, int num_cpus)
+{
+	if (st->drained)
+		return;
+
+	if (st->ring_buf) { /* drain ringbuf */
+		exiting = false; /* ringbuf callback will stop early, if exiting is set */
+		(void)ring_buffer__consume(st->ring_buf);
+	}
+
+	ring_buffer__free(st->ring_buf);
+
+	if (st->rb_map_fds) {
+		for (int i = 0; i < env.ringbuf_cnt; i++)
+			if (st->rb_map_fds[i])
+				close(st->rb_map_fds[i]);
+	}
+
+	st->drained = true;
+}
+
+static void cleanup_bpf(struct bpf_state *st)
+{
+	wprof_bpf__destroy(st->skel);
+	st->skel = NULL;
+
+	free(st->online_mask);
+	st->online_mask = NULL;
+}
+
+static void cleanup_worker(struct worker_state *w)
+{
+	if (!w)
+		return;
+	if (w->trace)
+		fclose(w->trace);
+}
+
+int main(int argc, char **argv)
+{
+	struct worker_state *worker = calloc(1, sizeof(*worker));
+	struct bpf_state bpf_state = {};
+	int num_cpus = 0, err = 0;
+	struct itimerval timer_ival = {};
+
+	/* Parse command line arguments */
+	err = argp_parse(&argp, argc, argv, 0, NULL, NULL);
+	if (err) {
+		err = -1;
+		goto cleanup;
+	}
+
+	num_cpus = libbpf_num_possible_cpus();
+	if (num_cpus <= 0) {
+		fprintf(stderr, "Failed to get the number of processors\n");
+		err = -1;
+		goto cleanup;
+	}
+
+	signal(SIGINT, sig_term);
+	signal(SIGTERM, sig_term);
+
+	if (!env.replay) {
+		err = setup_bpf(&bpf_state, worker, num_cpus);
+		if (err) {
+			fprintf(stderr, "Failed to setup BPF parts: %d\n", err);
 			goto cleanup;
 		}
 	}
+
+	worker->name_iids = (struct str_iid_domain) {
+		.str_iids = hashmap__new(str_hash_fn, str_equal_fn, NULL),
+		.next_str_iid = IID_FIXED_LAST_ID,
+		.domain_desc = "dynamic",
+	};
+
+	worker->dump = fopen(env.data_path, env.replay ? "r+" : "w+");
+	if (!worker->dump) {
+		err = -errno;
+		if (env.replay)
+			fprintf(stderr, "Failed to open data dump at '%s': %d\n", env.data_path, err);
+		else
+			fprintf(stderr, "Failed to create data dump at '%s': %d\n", env.data_path, err);
+		goto cleanup;
+	}
+
+	err = attach_bpf(&bpf_state, num_cpus);
+	if (err) {
+		fprintf(stderr, "Failed to attach BPF parts: %d\n", err);
+		goto cleanup;
+	}
+
+	signal(SIGALRM, sig_timer);
+	timer_ival.it_value.tv_sec = env.dur_ms / 1000;
+	timer_ival.it_value.tv_usec = env.dur_ms % 1000;
+	err = setitimer(ITIMER_REAL, &timer_ival, NULL);
+	if (err < 0) {
+		fprintf(stderr, "Failed to setup run duration timeout timer: %d\n", err);
+		goto cleanup;
+	}
+
+	fprintf(stderr, "Running...\n");
+	err = run_bpf(&bpf_state);
+	if (err) {
+		fprintf(stderr, "Failed during collecting BPF-generated data: %d\n", err);
+		goto cleanup;
+	}
+
+	fprintf(stderr, "Stopping...\n");
+	detach_bpf(&bpf_state, num_cpus);
+
+	fprintf(stderr, "Draining...\n");
+	drain_bpf(&bpf_state, num_cpus);
 
 	if (env.trace_path) {
 		struct worker_state *w = worker;
@@ -561,102 +698,23 @@ int main(int argc, char **argv)
 		}
 	}
 
-	err = wprof_bpf__attach(skel);
+	/* process dumped events, if no error happened */
+	err = process_raw_dump(worker);
 	if (err) {
-		fprintf(stderr, "Failed to attach skeleton: %d\n", err);
+		fprintf(stderr, "Failed to process raw data dump: %d\n", err);
 		goto cleanup;
 	}
 
-	signal(SIGALRM, sig_timer);
-	signal(SIGINT, sig_term);
-	signal(SIGTERM, sig_term);
-
-	timer_ival.it_value.tv_sec = (env.print_stats ? env.stats_period_ms : env.run_dur_ms) / 1000;
-	timer_ival.it_value.tv_usec = (env.print_stats ? env.stats_period_ms : env.run_dur_ms) * 1000 % 1000000;
-	timer_ival.it_interval = env.print_stats ? timer_ival.it_value : (struct timeval){};
-	err = setitimer(ITIMER_REAL, &timer_ival, NULL);
-	if (err < 0) {
-		fprintf(stderr, "Failed to setup stats timer: %d\n", err);
-		goto cleanup;
-	}
-
-	fprintf(stderr, "Running...\n");
-	env.sess_start_ts = ktime_now_ns();
-	if (env.run_dur_ms)
-		env.sess_end_ts = env.sess_start_ts + env.run_dur_ms * 1000000ULL;
-	skel->bss->session_start_ts = env.sess_start_ts;
-
-	/* Wait and receive stack traces */
-	while ((err = ring_buffer__poll(ring_buf, -1)) >= 0 || err == -EINTR) {
-		if (exiting) {
-			err = 0;
-			break;
-		}
-	}
-
-	fprintf(stderr, "Stopping...\n");
+	fflush(worker->trace);
+	ssize_t file_sz = file_size(worker->trace);
+	fprintf(stderr, "Produced %.3lfMB trace file at '%s'.\n",
+		file_sz / (1024.0 * 1024.0), env.trace_path);
 
 cleanup:
-	if (skel)
-		wprof_bpf__detach(skel);
-	if (stats_fd >= 0)
-		close(stats_fd);
-	if (links) {
-		for (int cpu = 0; cpu < num_cpus; cpu++)
-			bpf_link__destroy(links[cpu]);
-		free(links);
-	}
-	if (perf_timer_fds || perf_counter_fds) {
-		for (i = 0; i < num_cpus; i++) {
-			if (perf_timer_fds[i] >= 0)
-				close(perf_timer_fds[i]);
-		}
-		for (i = 0; i < perf_counter_fd_cnt; i++) {
-			if (perf_counter_fds[i] >= 0) {
-				(void)ioctl(perf_counter_fds[i], PERF_EVENT_IOC_DISABLE, 0);
-				close(perf_counter_fds[i]);
-			}
-		}
-		free(perf_timer_fds);
-		free(perf_counter_fds);
-	}
-
-	fprintf(stderr, "Draining...\n");
-	if (ring_buf) { /* drain ringbuf */
-		exiting = false; /* ringbuf callback will stop early, if exiting is set */
-		(void)ring_buffer__consume(ring_buf);
-	}
-
-	ring_buffer__free(ring_buf);
-	if (ringbuf_fds) {
-		for (i = 0; i < env.ringbuf_cnt; i++)
-			if (ringbuf_fds[i])
-				close(ringbuf_fds[i]);
-	}
-
-replay_dump:
-	/* process dumped events, if no error happened */
-	if (err == 0) {
-		ssize_t file_sz;
-
-		err = process_raw_dump(worker);
-		if (err) {
-			fprintf(stderr, "Failed to process raw data dump: %d\n", err);
-			goto cleanup2;
-		}
-
-		fflush(worker->trace);
-		file_sz = file_size(worker->trace);
-		fprintf(stderr, "Produced %.3lfMB trace file at '%s'.\n",
-			file_sz / (1024.0 * 1024.0), env.trace_path);
-
-		fclose(worker->trace);
-	}
-
-cleanup2:
-	print_exit_summary(skel, num_cpus, err);
-
-	wprof_bpf__destroy(skel);
-	free(online_mask);
+	cleanup_worker(worker);
+	detach_bpf(&bpf_state, num_cpus);
+	drain_bpf(&bpf_state, num_cpus);
+	print_exit_summary(worker, bpf_state.skel, num_cpus, err);
+	cleanup_bpf(&bpf_state);
 	return -err;
 }

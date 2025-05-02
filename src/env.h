@@ -7,21 +7,18 @@
 #include "protobuf.h"
 #include "wprof.h"
 
-#define DEFAULT_RINGBUF_SZ (8 * 1024 * 1024)
-#define DEFAULT_TASK_STATE_SZ (4 * 4096)
-#define DEFAULT_STATS_PERIOD_MS 5000
+#define DEFAULT_RINGBUF_SZ (32 * 1024 * 1024)
+#define DEFAULT_TASK_STATE_SZ (32 * 1024)
 
 struct env {
 	bool verbose;
 	bool bpf_stats;
 	bool libbpf_logs;
-	bool print_stats;
 	bool breakout_counters;
 	bool stack_traces;
-	bool replay_dump;
+	bool replay;
 	int freq;
-	int stats_period_ms;
-	int run_dur_ms;
+	int dur_ms;
 
 	int ringbuf_sz;
 	int task_state_sz;
@@ -29,7 +26,9 @@ struct env {
 
 	u64 sess_start_ts;
 	u64 sess_end_ts;
-	const char *trace_path;
+
+	char *data_path;
+	char *trace_path;
 
 	bool pb_debug_interns;
 	bool pb_disable_interns;
@@ -74,7 +73,6 @@ struct worker_state {
 	FILE *trace;
 	pb_ostream_t stream;
 
-	char *dump_path;
 	FILE *dump;
 
 	struct stack_frame_index *sframe_idx;

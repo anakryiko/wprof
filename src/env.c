@@ -21,21 +21,20 @@ const char *argp_program_bug_address = "<andrii@kernel.org>";
 const char argp_program_doc[] = "BPF-based wallcklock profiler.\n";
 
 struct env env = {
+	.data_path = "wprof.data",
 	.freq = 100,
 	.ringbuf_sz = DEFAULT_RINGBUF_SZ,
 	.ringbuf_cnt = 1,
 	.task_state_sz = DEFAULT_TASK_STATE_SZ,
-	.stats_period_ms = DEFAULT_STATS_PERIOD_MS,
 	.stack_traces = true,
+	.dur_ms = 1000,
 };
 
 enum {
 	OPT_RINGBUF_SZ = 1000,
 	OPT_TASK_STATE_SZ = 1001,
-	OPT_STATS_PERIOD = 1002,
 	OPT_BPF_STATS = 1003,
 	OPT_LIBBPF_LOGS = 1004,
-	OPT_PRINT_STATS = 1006,
 	OPT_BREAKOUT_COUNTERS = 1008,
 	OPT_PB_DEBUG_INTERNS = 1009,
 	OPT_PB_DISABLE_INTERNS = 1010,
@@ -47,6 +46,10 @@ static const struct argp_option opts[] = {
 	{ "bpf-stats", OPT_BPF_STATS, NULL, 0, "Enable and print BPF runtime stats" },
 	{ "libbpf-logs", OPT_LIBBPF_LOGS, NULL, 0, "Emit libbpf verbose logs" },
 
+	{ "dur-ms", 'd', "DURATION", 0, "Limit running duration to given number of ms (default: 1000ms)" },
+	{ "freq", 'f', "HZ", 0, "On-CPU timer interrupt frequency (default: 100Hz, i.e., every 10ms)" },
+
+	{ "data", 'D', "FILE", 0, "Data dump path (defaults to 'wprof.data' in current directory)" },
 	{ "trace", 'T', "FILE", 0, "Emit trace to specified file" },
 	{ "replay", 'R', NULL, 0, "Re-process raw dump (no actual BPF data gathering)" },
 
@@ -56,8 +59,6 @@ static const struct argp_option opts[] = {
 	{ "pid", 'p', "PID", 0, "PID filter (track only specified PIDs)" },
 	{ "cpu", 'c', "CPU", 0, "CPU filter (track only specified CPUs)" },
 
-	{ "freq", 'f', "HZ", 0, "On-CPU timer interrupt frequency (default: 100Hz, i.e., every 10ms)" },
-
 	{ "ringbuf-size", OPT_RINGBUF_SZ, "SIZE", 0, "BPF ringbuf size (in KBs)" },
 	{ "task-state-size", OPT_TASK_STATE_SZ, "SIZE", 0, "BPF task state map size (in threads)" },
 	{ "ringbuf-cnt", OPT_RINGBUF_CNT, "N", 0, "Number of BPF ringbufs to use" },
@@ -65,11 +66,7 @@ static const struct argp_option opts[] = {
 	{ "cpu-counter", 'C', "NAME", 0, "Capture and emit specified perf/CPU/hardware counter (cpu-cycles, cpu-insns, cache-hits, cache-misses, stalled-cycles-fe, stallec-cycles-be)" },
 	{ "breakout-counters", OPT_BREAKOUT_COUNTERS, NULL, 0, "Emit separate track for counters" },
 
-	{ "print-stats", OPT_PRINT_STATS, NULL, 0, "Print stats periodically" },
-	{ "stats-period", OPT_STATS_PERIOD, "PERIOD", 0, "Stats printing period (in ms)" },
-	{ "run-dur-ms", 'D', "DURATION", 0, "Limit running duration to given number of ms" },
-
-	{ "debug-interns", OPT_PB_DEBUG_INTERNS, NULL, 0, "Emit interned strings" },
+	{ "pb-debug-interns", OPT_PB_DEBUG_INTERNS, NULL, 0, "Emit interned strings" },
 	{ "pb-disable-interns", OPT_PB_DISABLE_INTERNS, NULL, 0, "Disable string interning for Perfetto traces" },
 	{},
 };
@@ -88,8 +85,19 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	case OPT_LIBBPF_LOGS:
 		env.libbpf_logs = true;
 		break;
+	case 'd':
+		errno = 0;
+		env.dur_ms = strtol(arg, NULL, 0);
+		if (errno || env.dur_ms < 0) {
+			fprintf(stderr, "Invalid running duration: %s\n", arg);
+			argp_usage(state);
+		}
+		break;
+	case 'D':
+		env.data_path = strdup(arg);
+		break;
 	case 'R':
-		env.replay_dump = true;
+		env.replay = true;
 		break;
 	case 'T':
 		if (env.trace_path) {
@@ -173,9 +181,6 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		}
 		env.ringbuf_cnt = round_pow_of_2(env.ringbuf_cnt);
 		break;
-	case OPT_PRINT_STATS:
-		env.print_stats = true;
-		break;
 	case 'C': {
 		int counter_idx = -1;
 
@@ -210,22 +215,6 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	}
 	case OPT_BREAKOUT_COUNTERS:
 		env.breakout_counters = true;
-		break;
-	case OPT_STATS_PERIOD:
-		errno = 0;
-		env.stats_period_ms = strtol(arg, NULL, 0);
-		if (errno || env.stats_period_ms < 0) {
-			fprintf(stderr, "Invalid stats period: %s\n", arg);
-			argp_usage(state);
-		}
-		break;
-	case 'D':
-		errno = 0;
-		env.run_dur_ms = strtol(arg, NULL, 0);
-		if (errno || env.run_dur_ms < 0) {
-			fprintf(stderr, "Invalid running duration: %s\n", arg);
-			argp_usage(state);
-		}
 		break;
 	case OPT_PB_DEBUG_INTERNS:
 		env.pb_debug_interns = true;
