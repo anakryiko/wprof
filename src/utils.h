@@ -12,6 +12,7 @@
 
 typedef unsigned long long u64;
 typedef unsigned int u32;
+typedef unsigned short u16;
 
 #ifndef ARRAY_SIZE
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))

@@ -64,6 +64,97 @@ static void sig_term(int sig)
 	signal(SIGTERM, SIG_DFL);
 }
 
+static void init_data_header(struct wprof_data_hdr *hdr)
+{
+	memset(hdr, 0, sizeof(*hdr));
+	memcpy(hdr->magic, "WPROF", 6);
+	hdr->hdr_sz = sizeof(hdr);
+	hdr->flags = 0;
+	hdr->version_major = WPROF_DATA_MAJOR;
+	hdr->version_minor = WPROF_DATA_MINOR;
+}
+
+static int init_data_dump(struct worker_state *w)
+{
+	int err;
+
+	err = fseek(w->dump, 0, SEEK_SET);
+	if (err) {
+		err = -errno;
+		fprintf(stderr, "Failed to fseek(0): %d\n", err);
+		return err;
+	}
+
+	struct wprof_data_hdr hdr;
+	init_data_header(&hdr);
+	hdr.flags = WPROF_DATA_FLAG_INCOMPLETE;
+
+	if (fwrite(&hdr, sizeof(hdr), 1, w->dump) != 1) {
+		err = -errno;
+		fprintf(stderr, "Failed to fwrite() header: %d\n", err);
+		return err;
+	}
+
+	fflush(w->dump);
+	fsync(fileno(w->dump));
+	return 0;
+}
+
+static int finalize_events_dump(struct worker_state *w)
+{
+	int err;
+	long pos;
+
+	pos = ftell(w->dump);
+	if (pos < 0) {
+		err = -errno;
+		fprintf(stderr, "Failed to get file postiion: %d\n", -err);
+		return err;
+	}
+
+	err = fseek(w->dump, 0, SEEK_SET);
+	if (err) {
+		err = -errno;
+		fprintf(stderr, "Failed to fseek(0): %d\n", err);
+		return err;
+	}
+
+	struct wprof_data_hdr hdr;
+	init_data_header(&hdr);
+
+	hdr.events_off = 0;
+	hdr.events_sz = pos - sizeof(hdr);
+
+	if (fwrite(&hdr, sizeof(hdr), 1, w->dump) != 1) {
+		err = -errno;
+		fprintf(stderr, "Failed to fwrite() header: %d\n", err);
+		return err;
+	}
+
+	/* XXX: update header */
+	fflush(w->dump);
+	fsync(fileno(w->dump));
+
+	w->dump_sz = pos;
+	w->dump_mem = mmap(NULL, w->dump_sz, PROT_READ | PROT_WRITE, MAP_SHARED, fileno(w->dump), 0);
+	if (w->dump_mem == MAP_FAILED) {
+		err = -errno;
+		fprintf(stderr, "Failed to mmap data dump: %d\n", err);
+		w->dump_mem = NULL;
+		return err;
+	}
+	w->dump_hdr = w->dump_mem;
+
+	err = fseek(w->dump, pos, SEEK_SET);
+	if (err) {
+		err = -errno;
+		fprintf(stderr, "Failed to fseek() to end: %d\n", err);
+		return err;
+	}
+
+	return 0;
+}
+
 /* Receive events from the ring buffer. */
 static int handle_rb_event(void *ctx, void *data, size_t size)
 {
@@ -93,36 +184,24 @@ static int handle_rb_event(void *ctx, void *data, size_t size)
 	return 0;
 }
 
-static int process_raw_dump(struct worker_state *w)
+static int generate_trace(struct worker_state *w)
 {
-	void *dump_mem;
 	struct wprof_event *rec;
-	size_t dump_sz, rec_sz, off, idx;
+	size_t rec_sz, off, idx;
 	int err;
 
-	fflush(w->dump);
-	dump_sz = file_size(w->dump);
-
-	dump_mem = mmap(NULL, dump_sz, PROT_READ | PROT_WRITE, MAP_SHARED, fileno(w->dump), 0);
-	if (dump_mem == MAP_FAILED) {
-		err = -errno;
-		fprintf(stderr, "Failed to mmap dump file '%s': %d\n", env.data_path, err);
-		return err;
-	}
-
-	err = process_stack_traces(w, dump_mem, dump_sz);
+	fprintf(stderr, "Generating trace...\n");
+	err = generate_stack_traces(w);
 	if (err) {
-		fprintf(stderr, "Failed to process stack traces: %d\n", err);
+		fprintf(stderr, "Failed to append stack traces to trace '%s': %d\n", env.trace_path, err);
 		return err;
 	}
-
-	fprintf(stderr, "Processing...\n");
 
 	off = 0;
 	idx = 0;
-	while (off < dump_sz) {
-		rec_sz = *(size_t *)(dump_mem + off);
-		rec = (struct wprof_event *)(dump_mem + off + sizeof(rec_sz));
+	while (off < w->dump_hdr->events_sz) {
+		rec_sz = *(size_t *)(w->dump_mem + sizeof(*w->dump_hdr) + off);
+		rec = (struct wprof_event *)(w->dump_mem + sizeof(*w->dump_hdr) + off + sizeof(rec_sz));
 		err = process_event(w, rec, rec_sz);
 		if (err) {
 			fprintf(stderr, "Failed to process event #%zu (kind %d, size %zu, offset %zu): %d\n",
@@ -133,14 +212,6 @@ static int process_raw_dump(struct worker_state *w)
 		idx += 1;
 	}
 
-	err = munmap(dump_mem, dump_sz);
-	if (err < 0) {
-		err = -errno;
-		fprintf(stderr, "Failed to munmap() dump file '%s': %d\n", env.data_path, err);
-		return err;
-	}
-	fclose(w->dump);
-	w->dump = NULL;
 	return 0;
 }
 
@@ -596,6 +667,17 @@ static void cleanup_worker(struct worker_state *w)
 		return;
 	if (w->trace)
 		fclose(w->trace);
+	if (w->dump_mem && w->dump_mem != MAP_FAILED) {
+		int err = munmap(w->dump_mem, w->dump_sz);
+		if (err < 0) {
+			err = -errno;
+			fprintf(stderr, "Failed to munmap() dump file '%s': %d\n", env.data_path, err);
+		}
+	}
+	if (w->dump)
+		fclose(w->dump);
+	w->dump_mem = NULL;
+	w->dump = NULL;
 }
 
 int main(int argc, char **argv)
@@ -622,27 +704,37 @@ int main(int argc, char **argv)
 	signal(SIGINT, sig_term);
 	signal(SIGTERM, sig_term);
 
-	if (!env.replay) {
-		err = setup_bpf(&bpf_state, worker, num_cpus);
-		if (err) {
-			fprintf(stderr, "Failed to setup BPF parts: %d\n", err);
-			goto cleanup;
-		}
-	}
-
 	worker->name_iids = (struct str_iid_domain) {
 		.str_iids = hashmap__new(str_hash_fn, str_equal_fn, NULL),
 		.next_str_iid = IID_FIXED_LAST_ID,
 		.domain_desc = "dynamic",
 	};
 
-	worker->dump = fopen(env.data_path, env.replay ? "r+" : "w+");
-	if (!worker->dump) {
-		err = -errno;
-		if (env.replay)
+	if (env.replay) {
+		worker->dump = fopen(env.data_path, "r+");
+		if (!worker->dump) {
+			err = -errno;
 			fprintf(stderr, "Failed to open data dump at '%s': %d\n", env.data_path, err);
-		else
+			goto cleanup;
+		}
+		goto skip_bpf;
+	} else {
+		worker->dump = fopen(env.data_path, "w+");
+		if (!worker->dump) {
+			err = -errno;
 			fprintf(stderr, "Failed to create data dump at '%s': %d\n", env.data_path, err);
+			goto cleanup;
+		}
+		err = init_data_dump(worker);
+		if (err) {
+			fprintf(stderr, "Failed to initialize data dump file: %d\n", err);
+			goto cleanup;
+		}
+	}
+
+	err = setup_bpf(&bpf_state, worker, num_cpus);
+	if (err) {
+		fprintf(stderr, "Failed to setup BPF parts: %d\n", err);
 		goto cleanup;
 	}
 
@@ -674,6 +766,19 @@ int main(int argc, char **argv)
 	fprintf(stderr, "Draining...\n");
 	drain_bpf(&bpf_state, num_cpus);
 
+	err = finalize_events_dump(worker);
+	if (err) {
+		fprintf(stderr, "Failed to finalize data dump: %d\n", err);
+		goto cleanup;
+	}
+
+	err = process_stack_traces(worker);
+	if (err) {
+		fprintf(stderr, "Failed to symbolize and dump stack traces: %d\n", err);
+		goto cleanup;
+	}
+
+skip_bpf:
 	if (env.trace_path) {
 		struct worker_state *w = worker;
 
@@ -696,20 +801,19 @@ int main(int argc, char **argv)
 			fprintf(stderr, "Failed to init protobuf!\n");
 			goto cleanup;
 		}
+
+		/* process dumped events, and generate trace */
+		err = generate_trace(worker);
+		if (err) {
+			fprintf(stderr, "Failed to generate Perfetto trac: %d\n", err);
+			goto cleanup;
+		}
+
+		fflush(worker->trace);
+		ssize_t file_sz = file_size(worker->trace);
+		fprintf(stderr, "Produced %.3lfMB trace file at '%s'.\n",
+			file_sz / (1024.0 * 1024.0), env.trace_path);
 	}
-
-	/* process dumped events, if no error happened */
-	err = process_raw_dump(worker);
-	if (err) {
-		fprintf(stderr, "Failed to process raw data dump: %d\n", err);
-		goto cleanup;
-	}
-
-	fflush(worker->trace);
-	ssize_t file_sz = file_size(worker->trace);
-	fprintf(stderr, "Produced %.3lfMB trace file at '%s'.\n",
-		file_sz / (1024.0 * 1024.0), env.trace_path);
-
 cleanup:
 	cleanup_worker(worker);
 	detach_bpf(&bpf_state, num_cpus);

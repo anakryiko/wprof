@@ -303,6 +303,8 @@ static void __capture_stack_trace(void *ctx, struct stack_trace *st)
 {
 	u64 off = zero;
 
+	st->stack_id = 0;
+
 	st->kstack_sz = bpf_get_stack(ctx, st->addrs, sizeof(st->addrs) / 2, 0);
 	if (st->kstack_sz > 0)
 		off += st->kstack_sz;
@@ -353,13 +355,13 @@ static __always_inline bool init_wprof_event(struct wprof_event *e, u32 sz, enum
 #define emit_task_event(e, fix_sz, dyn_sz, kind, ts, task)					\
 	for (struct rb_ctx __cleanup(__rb_event_submit) __ctx =					\
 			__rb_event_reserve(task, fix_sz, dyn_sz, (void **)&(e), NULL);		\
-	     e && __ctx.ev && init_wprof_event(e, fix_sz, kind, ts, task);			\
+	     e && __ctx.ev && init_wprof_event(e, fix_sz /*+ dyn_sz*/, kind, ts, task);		\
 	     __ctx.ev = NULL)
 
 #define emit_task_event_dyn(e, dptr, fix_sz, dyn_sz, kind, ts, task)				\
 	for (struct rb_ctx __cleanup(__rb_event_submit) __ctx =					\
 			__rb_event_reserve(task, fix_sz, dyn_sz, (void **)&(e), &(dptr));	\
-	     e && __ctx.ev && init_wprof_event(e, fix_sz, kind, ts, task);			\
+	     e && __ctx.ev && init_wprof_event(e, fix_sz /*+ dyn_sz*/, kind, ts, task);		\
 	     __ctx.ev = NULL)
 
 
@@ -395,6 +397,7 @@ int wprof_timer_tick(void *ctx)
 
 	emit_task_event_dyn(e, dptr, fix_sz, dyn_sz, EV_TIMER, now_ts, cur) {
 		emit_stack_trace(strace, dyn_sz, dptr, fix_sz);
+		e->flags |= EF_STACK_TRACE;
 	}
 
 	return 0;
@@ -459,6 +462,7 @@ int BPF_PROG(wprof_task_switch,
 		e->swtch_from.ctrs = counters;
 		fill_task_info(next, &e->swtch_from.next);
 		emit_stack_trace(strace, dyn_sz, dptr, fix_sz);
+		e->flags |= EF_STACK_TRACE;
 	}
 
 	emit_task_event(e, EV_SZ(swtch_to), 0, EV_SWITCH_TO, now_ts, next) {

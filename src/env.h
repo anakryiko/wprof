@@ -74,6 +74,9 @@ struct worker_state {
 	pb_ostream_t stream;
 
 	FILE *dump;
+	void *dump_mem;
+	size_t dump_sz;
+	struct wprof_data_hdr *dump_hdr;
 
 	struct stack_frame_index *sframe_idx;
 	size_t sframe_cap, sframe_cnt;
@@ -89,5 +92,19 @@ struct worker_state {
 	u64 rb_ignored_cnt;
 	u64 rb_ignored_sz;
 } __attribute__((aligned(64)));
+
+#define WPROF_DATA_MAJOR 1
+#define WPROF_DATA_MINOR 0
+#define WPROF_DATA_FLAG_INCOMPLETE 0xffffffffffffffffULL
+
+struct wprof_data_hdr {
+	char magic[6]; /* "WPROF\0" */
+	u16 hdr_sz;
+	u64 flags;
+	int version_major;
+	int version_minor;
+	u64 events_off, events_sz;
+	u64 stacks_off, stacks_sz;
+} __attribute__((aligned(8)));
 
 #endif /* __ENV_H_ */

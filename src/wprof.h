@@ -48,6 +48,8 @@ enum task_status {
 };
 
 enum event_kind {
+	EV_INVALID,
+
 	EV_TIMER,
 	EV_SWITCH_FROM,
 	EV_SWITCH_TO,
@@ -65,6 +67,7 @@ enum event_kind {
 };
 
 struct stack_trace {
+	int stack_id;
 	int kstack_sz;
 	int ustack_sz;;
 	u64 addrs[MAX_STACK_DEPTH * 2];
@@ -91,7 +94,7 @@ enum waking_flags {
 
 enum event_flags {
 	EF_NONE = 0x00,
-	//EF_STACK_TRACE = 0x01,
+	EF_STACK_TRACE = 0x01,
 };
 
 struct wprof_event {

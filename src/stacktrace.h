@@ -11,6 +11,7 @@
 #include "perfetto_trace.pb.h"
 
 struct stack_trace_index {
+	struct wprof_event *event;
 	int orig_idx;
 	int pid;
 	int start_frame_idx;
@@ -33,7 +34,8 @@ struct stack_frame_index {
 	int *frame_iids;
 };
 
-int process_stack_traces(struct worker_state *w, const void *dump_mem, size_t dump_sz);
+int process_stack_traces(struct worker_state *w);
 int event_stack_trace_id(struct worker_state *w, const struct wprof_event *e, size_t size);
+int generate_stack_traces(struct worker_state *w);
 
 #endif /* __STACKTRACE_H_ */
