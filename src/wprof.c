@@ -186,8 +186,6 @@ static int handle_rb_event(void *ctx, void *data, size_t size)
 
 static int generate_trace(struct worker_state *w)
 {
-	struct wprof_event *rec;
-	size_t rec_sz, off, idx;
 	int err;
 
 	fprintf(stderr, "Generating trace...\n");
@@ -197,19 +195,14 @@ static int generate_trace(struct worker_state *w)
 		return err;
 	}
 
-	off = 0;
-	idx = 0;
-	while (off < w->dump_hdr->events_sz) {
-		rec_sz = *(size_t *)(w->dump_mem + sizeof(*w->dump_hdr) + off);
-		rec = (struct wprof_event *)(w->dump_mem + sizeof(*w->dump_hdr) + off + sizeof(rec_sz));
-		err = process_event(w, rec, rec_sz);
+	struct wprof_event_record *rec;
+	wprof_for_each_event(rec, w->dump_hdr) {
+		err = process_event(w, rec->e, rec->sz);
 		if (err) {
-			fprintf(stderr, "Failed to process event #%zu (kind %d, size %zu, offset %zu): %d\n",
-				idx, rec->kind, rec_sz, off, err);
+			fprintf(stderr, "Failed to process event #%d (kind %d, size %zu, offset %zu): %d\n",
+				rec->idx, rec->e->kind, rec->sz, (void *)rec->e - (void *)w->dump_hdr, err);
 			return err; /* YEAH, I know about all the clean up, whatever */
 		}
-		off += sizeof(rec_sz) + rec_sz;
-		idx += 1;
 	}
 
 	return 0;

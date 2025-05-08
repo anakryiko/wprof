@@ -6,6 +6,7 @@
 #include "utils.h"
 #include "protobuf.h"
 #include "wprof.h"
+#include "data.h"
 
 #define DEFAULT_RINGBUF_SZ (32 * 1024 * 1024)
 #define DEFAULT_TASK_STATE_SZ (32 * 1024)
@@ -92,19 +93,5 @@ struct worker_state {
 	u64 rb_ignored_cnt;
 	u64 rb_ignored_sz;
 } __attribute__((aligned(64)));
-
-#define WPROF_DATA_MAJOR 1
-#define WPROF_DATA_MINOR 0
-#define WPROF_DATA_FLAG_INCOMPLETE 0xffffffffffffffffULL
-
-struct wprof_data_hdr {
-	char magic[6]; /* "WPROF\0" */
-	u16 hdr_sz;
-	u64 flags;
-	int version_major;
-	int version_minor;
-	u64 events_off, events_sz;
-	u64 stacks_off, stacks_sz;
-} __attribute__((aligned(8)));
 
 #endif /* __ENV_H_ */

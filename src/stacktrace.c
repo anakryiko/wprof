@@ -250,39 +250,9 @@ static void update_event_stack_id(struct wprof_event *e, int stack_id)
 	tr->stack_id = stack_id;
 }
 
-struct wprof_stacks_hdr {
-	u64 frames_off;
-	u64 stack_frames_off;
-	u64 stacks_off;
-	u32 frame_cnt;
-	u32 stack_frame_cnt;
-	u32 stack_cnt;
-	u32 strs_off;
-	u32 strs_sz;
-} __attribute__((aligned(8)));
-
-enum wprof_stack_frame_flags {
-	WSF_UNSYMBOLIZED = 0x01,
-	WSF_INLINED = 0x02,
-};
-
-struct wprof_stack_frame {
-	u64 func_offset; /* or full address if symbolization failed */
-	enum wprof_stack_frame_flags flags;
-	u32 func_name_stroff;
-	u32 src_path_stroff;
-	u32 line_num;
-} __attribute__((aligned(8)));
-
-struct wprof_stack_trace_hdr {
-	u32 frame_idx;
-	u32 frame_cnt;
-};
-
 int process_stack_traces(struct worker_state *w)
 {
-	struct wprof_event *rec;
-	size_t rec_sz, off, idx, kaddr_cnt = 0, uaddr_cnt = 0, unkn_cnt = 0, comb_cnt = 0;
+	size_t kaddr_cnt = 0, uaddr_cnt = 0, unkn_cnt = 0, comb_cnt = 0;
 	size_t frames_deduped = 0, frames_total = 0, frames_failed = 0, callstacks_deduped = 0;
 	u64 start_ns = ktime_now_ns();
 	int err;
@@ -290,19 +260,14 @@ int process_stack_traces(struct worker_state *w)
 
 	fprintf(stderr, "Symbolizing...\n");
 
-	off = 0;
-	idx = 0;
-	while (off < w->dump_hdr->events_sz) {
-		rec_sz = *(size_t *)(w->dump_mem + sizeof(*w->dump_hdr) + off);
-		rec = (struct wprof_event *)(w->dump_mem + sizeof(*w->dump_hdr) + off + sizeof(rec_sz));
-		err = process_event_stack_trace(w, rec, rec_sz);
+	struct wprof_event_record *rec;
+	wprof_for_each_event(rec, w->dump_hdr) {
+		err = process_event_stack_trace(w, rec->e, rec->sz);
 		if (err) {
-			fprintf(stderr, "Failed to pre-process stack trace for event #%zu (kind %d, size %zu, offset %zu): %d\n",
-				idx, rec->kind, rec_sz, off, err);
+			fprintf(stderr, "Failed to pre-process stack trace for event #%d (kind %d, size %zu, offset %zu): %d\n",
+				rec->idx, rec->e->kind, rec->sz, (void *)rec - (void *)w->dump_hdr, err);
 			return err;
 		}
-		off += sizeof(rec_sz) + rec_sz;
-		idx += 1;
 	}
 
 	struct wprof_stacks_hdr hdr;
