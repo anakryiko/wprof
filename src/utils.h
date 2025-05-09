@@ -128,6 +128,8 @@ static inline u64 ktime_now_ns()
 }
 
 void calibrate_ktime(void);
+void set_ktime_off(u64 ktime_ns, u64 realtime_ns);
+u64 ktime_to_realtime_ns(u64 ts_ns);
 
 /* ARGS PARSING HELPERS */
 int append_str(char ***strs, int *cnt, const char *str);

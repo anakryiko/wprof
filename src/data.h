@@ -18,6 +18,9 @@ struct wprof_data_hdr {
 	int version_minor;
 	u64 events_off, events_sz;
 	u64 stacks_off, stacks_sz;
+	u64 ktime_start_ns;
+	u64 duration_ns;
+	u64 realtime_start_ns;
 } __attribute__((aligned(8)));
 
 struct wprof_stacks_hdr {

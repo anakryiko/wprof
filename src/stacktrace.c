@@ -23,6 +23,13 @@
 
 #define debugf(...) if (DEBUG_SYMBOLIZATION) fprintf(stderr, ##__VA_ARGS__)
 
+struct symb_state {
+	struct stack_frame_index *sframe_idx;
+	size_t sframe_cap, sframe_cnt;
+	struct stack_trace_index *strace_idx;
+	size_t strace_cap, strace_cnt;
+};
+
 /*
  * SYMBOLIZATION
  */
@@ -99,7 +106,7 @@ static void show_stack_trace(struct blaze_symbolizer *symbolizer, u64 *stack, in
 
 static bool stack_trace_eq(const struct stack_trace_index *x,
 			   const struct stack_trace_index *y,
-			   const struct worker_state *w)
+			   const struct symb_state *s)
 {
 	if (x->pid != y->pid)
 		return false;
@@ -108,8 +115,8 @@ static bool stack_trace_eq(const struct stack_trace_index *x,
 		return false;
 
 	for (int i = 0; i < x->frame_cnt; i++) {
-		u64 xa = w->sframe_idx[x->start_frame_idx + i].addr;
-		u64 ya = w->sframe_idx[y->start_frame_idx + i].addr;
+		u64 xa = s->sframe_idx[x->start_frame_idx + i].addr;
+		u64 ya = s->sframe_idx[y->start_frame_idx + i].addr;
 
 		if (xa != ya)
 			return false;
@@ -120,7 +127,7 @@ static bool stack_trace_eq(const struct stack_trace_index *x,
 
 static int stack_trace_cmp_by_content(const void *a, const void *b, void *ctx)
 {
-	const struct worker_state *w = ctx;
+	const struct symb_state *s = ctx;
 	const struct stack_trace_index *x = a, *y = b;
 
 	if (x->pid != y->pid)
@@ -130,8 +137,8 @@ static int stack_trace_cmp_by_content(const void *a, const void *b, void *ctx)
 		return x->frame_cnt < y->frame_cnt ? -1 : 1;
 
 	for (int i = 0; i < x->frame_cnt; i++) {
-		u64 xa = w->sframe_idx[x->start_frame_idx + i].addr;
-		u64 ya = w->sframe_idx[y->start_frame_idx + i].addr;
+		u64 xa = s->sframe_idx[x->start_frame_idx + i].addr;
+		u64 ya = s->sframe_idx[y->start_frame_idx + i].addr;
 
 		if (xa != ya)
 			return xa < ya ? -1 : 1;
@@ -165,46 +172,47 @@ static int stack_frame_cmp_by_orig_idx(const void *a, const void *b)
 	return x->orig_idx < y->orig_idx ? -1 : 1;
 }
 
-static void stack_trace_append(struct worker_state *w, struct wprof_event *e, int pid, int start_frame_idx, int frame_cnt, bool combine)
+static void stack_trace_append(struct symb_state *s, struct wprof_event *e,
+			       int pid, int start_frame_idx, int frame_cnt, bool combine)
 {
-	if (w->strace_cnt == w->strace_cap) {
-		size_t new_cap = w->strace_cnt < 64 ? 64 : w->strace_cnt * 4 / 3;
+	if (s->strace_cnt == s->strace_cap) {
+		size_t new_cap = s->strace_cnt < 64 ? 64 : s->strace_cnt * 4 / 3;
 
-		w->strace_idx = realloc(w->strace_idx, new_cap * sizeof(*w->strace_idx));
-		w->strace_cap = new_cap;
+		s->strace_idx = realloc(s->strace_idx, new_cap * sizeof(*s->strace_idx));
+		s->strace_cap = new_cap;
 	}
-	w->strace_idx[w->strace_cnt] = (struct stack_trace_index){
+	s->strace_idx[s->strace_cnt] = (struct stack_trace_index){
 		.event = e,
-		.orig_idx = w->strace_cnt,
+		.orig_idx = s->strace_cnt,
 		.pid = pid,
 		.start_frame_idx = start_frame_idx,
 		.frame_cnt = frame_cnt,
 		.combine = combine,
 	};
 
-	w->strace_cnt++;
+	s->strace_cnt++;
 }
 
-static void stack_frame_append(struct worker_state *w, int pid, int orig_pid, u64 addr)
+static void stack_frame_append(struct symb_state *s, int pid, int orig_pid, u64 addr)
 {
-	if (w->sframe_cnt == w->sframe_cap) {
-		size_t new_cap = w->sframe_cnt < 256 ? 256 : w->sframe_cnt * 4 / 3;
+	if (s->sframe_cnt == s->sframe_cap) {
+		size_t new_cap = s->sframe_cnt < 256 ? 256 : s->sframe_cnt * 4 / 3;
 
-		w->sframe_idx = realloc(w->sframe_idx, new_cap * sizeof(*w->sframe_idx));
-		w->sframe_cap = new_cap;
+		s->sframe_idx = realloc(s->sframe_idx, new_cap * sizeof(*s->sframe_idx));
+		s->sframe_cap = new_cap;
 	}
-	w->sframe_idx[w->sframe_cnt] = (struct stack_frame_index){
-		.orig_idx = w->sframe_cnt,
+	s->sframe_idx[s->sframe_cnt] = (struct stack_frame_index){
+		.orig_idx = s->sframe_cnt,
 		.pid = pid,
 		.orig_pid = orig_pid,
 		.addr = addr,
 		.sym = NULL,
 	};
 
-	w->sframe_cnt++;
+	s->sframe_cnt++;
 }
 
-static int process_event_stack_trace(struct worker_state *w, struct wprof_event *e, size_t size)
+static int process_event_stack_trace(struct symb_state *state, struct wprof_event *e, size_t size)
 {
 	struct stack_trace *tr;
 	const u64 *kaddrs = NULL, *uaddrs = NULL;
@@ -229,15 +237,15 @@ static int process_event_stack_trace(struct worker_state *w, struct wprof_event 
 	 * Perfetto-related stack merging to work correctly
 	 */
 	if (uaddrs) {
-		stack_trace_append(w, e, e->task.pid, w->sframe_cnt, ucnt, false /*!combine*/);
+		stack_trace_append(state, e, e->task.pid, state->sframe_cnt, ucnt, false /*!combine*/);
 		for (int i = ucnt - 1; i >= 0; i--)
-			stack_frame_append(w, e->task.pid, e->task.pid, uaddrs[i]);
+			stack_frame_append(state, e->task.pid, e->task.pid, uaddrs[i]);
 	}
 
 	if (kaddrs) {
-		stack_trace_append(w, e, 0, w->sframe_cnt, kcnt, !!uaddrs /*combine*/);
+		stack_trace_append(state, e, 0, state->sframe_cnt, kcnt, !!uaddrs /*combine*/);
 		for (int i = kcnt - 1; i >= 0; i--)
-			stack_frame_append(w, 0 /* kernel */, e->task.pid, kaddrs[i]);
+			stack_frame_append(state, 0 /* kernel */, e->task.pid, kaddrs[i]);
 	}
 
 	return 0;
@@ -256,6 +264,7 @@ static void update_event_stack_id(struct wprof_event *e, int stack_id)
 
 int process_stack_traces(struct worker_state *w)
 {
+	struct symb_state _state = {}, *state = &_state;
 	size_t kaddr_cnt = 0, uaddr_cnt = 0, unkn_cnt = 0, comb_cnt = 0;
 	size_t frames_deduped = 0, frames_total = 0, frames_failed = 0, callstacks_deduped = 0;
 	u64 start_ns = ktime_now_ns();
@@ -267,7 +276,7 @@ int process_stack_traces(struct worker_state *w)
 
 	struct wprof_event_record *rec;
 	wprof_for_each_event(rec, w->dump_hdr) {
-		err = process_event_stack_trace(w, rec->e, rec->sz);
+		err = process_event_stack_trace(state, rec->e, rec->sz);
 		if (err) {
 			fprintf(stderr, "Failed to pre-process stack trace for event #%d (kind %d, size %zu, offset %zu): %d\n",
 				rec->idx, rec->e->kind, rec->sz, (void *)rec - (void *)w->dump_hdr, err);
@@ -305,7 +314,7 @@ int process_stack_traces(struct worker_state *w)
 	}
 
 	/* group by pid+addr */
-	qsort(w->sframe_idx, w->sframe_cnt, sizeof(*w->sframe_idx), stack_frame_cmp_by_pid_addr);
+	qsort(state->sframe_idx, state->sframe_cnt, sizeof(*state->sframe_idx), stack_frame_cmp_by_pid_addr);
 
 	u64 last_progress_ns = symb_start_ns;
 	double last_progress_pct = 0.0;
@@ -313,10 +322,10 @@ int process_stack_traces(struct worker_state *w)
 	u64 min_progress_ns = 3 * 1000000000ULL; /* ... and no more frequently than every 3 secs */
 
 	int total_uniq_cnt = 0, last_uniq_cnt = 0;
-	for (int i = 0; i < w->sframe_cnt; i++) {
+	for (int i = 0; i < state->sframe_cnt; i++) {
 		if (i > 0 &&
-		    w->sframe_idx[i - 1].pid == w->sframe_idx[i].pid &&
-		    w->sframe_idx[i - 1].addr == w->sframe_idx[i].addr)
+		    state->sframe_idx[i - 1].pid == state->sframe_idx[i].pid &&
+		    state->sframe_idx[i - 1].addr == state->sframe_idx[i].addr)
 			continue;
 		total_uniq_cnt += 1;
 	}
@@ -326,8 +335,8 @@ int process_stack_traces(struct worker_state *w)
 	int mapped_fr_idx = 1;
 	u64 *addrs = NULL;
 	size_t addr_cap = 0;
-	for (int start = 0, end = 1; end <= w->sframe_cnt; end++) {
-		if (end < w->sframe_cnt && w->sframe_idx[start].pid == w->sframe_idx[end].pid)
+	for (int start = 0, end = 1; end <= state->sframe_cnt; end++) {
+		if (end < state->sframe_cnt && state->sframe_idx[start].pid == state->sframe_idx[end].pid)
 			continue;
 
 		if (end - start > addr_cap) {
@@ -337,7 +346,7 @@ int process_stack_traces(struct worker_state *w)
 
 		size_t addr_cnt = 0;
 		for (int i = 0; i < end - start; i++) {
-			u64 addr = w->sframe_idx[start + i].addr;
+			u64 addr = state->sframe_idx[start + i].addr;
 
 			if (addr_cnt > 0 && addr == addrs[addr_cnt - 1])
 				continue;
@@ -365,7 +374,7 @@ int process_stack_traces(struct worker_state *w)
 		/* symbolize [start .. end - 1] range */
 		const struct blaze_syms *syms;
 		bool is_kernel;
-		if (w->sframe_idx[start].pid == 0) { /* kernel addresses */
+		if (state->sframe_idx[start].pid == 0) { /* kernel addresses */
 			struct blaze_symbolize_src_kernel src = {
 				.type_size = sizeof(src),
 				.debug_syms = true,
@@ -377,14 +386,14 @@ int process_stack_traces(struct worker_state *w)
 			for (int i = 0; i < addr_cnt; i++) {
 				const struct blaze_sym *sym = syms ? &syms->syms[i] : NULL;
 				debugf("ORIGF#%d [KERNEL] PID %d ADDR %llx: %s+%lx\n",
-					w->sframe_idx[start + i].orig_idx,
-					w->sframe_idx[start].pid, addrs[i],
+					state->sframe_idx[start + i].orig_idx,
+					state->sframe_idx[start].pid, addrs[i],
 					(sym && sym->name) ? sym->name : "???", sym->offset);
 			}
 		} else {
 			struct blaze_symbolize_src_process src = {
 				.type_size = sizeof(src),
-				.pid = w->sframe_idx[start].pid,
+				.pid = state->sframe_idx[start].pid,
 				.map_files = true,
 				.debug_syms = true,
 			};
@@ -399,8 +408,8 @@ int process_stack_traces(struct worker_state *w)
 			for (int i = 0; i < addr_cnt; i++) {
 				const struct blaze_sym *sym = syms ? &syms->syms[i] : NULL;
 				debugf("ORIGF#%d [USER] PID %d ADDR %llx: %s+%lx\n",
-					w->sframe_idx[start + i].orig_idx,
-					w->sframe_idx[start].pid, addrs[i],
+					state->sframe_idx[start + i].orig_idx,
+					state->sframe_idx[start].pid, addrs[i],
 					(sym && sym->name) ? sym->name : "???",
 					sym ? sym->offset : 0);
 			}
@@ -412,15 +421,15 @@ int process_stack_traces(struct worker_state *w)
 			unkn_cnt += addr_cnt;
 
 			fprintf(stderr, "Symbolization failed for PID %d, skipping %zu unique addrs: %s (%d)\n",
-				w->sframe_idx[start].pid, addr_cnt, berr_str, berr);
+				state->sframe_idx[start].pid, addr_cnt, berr_str, berr);
 		}
 
 		for (int i = 0, j = 0; i < end - start; i++) {
-			if (i > 0 && w->sframe_idx[start + i - 1].addr == w->sframe_idx[start + i].addr) {
-				w->sframe_idx[start + i].sym = w->sframe_idx[start + i - 1].sym;
+			if (i > 0 && state->sframe_idx[start + i - 1].addr == state->sframe_idx[start + i].addr) {
+				state->sframe_idx[start + i].sym = state->sframe_idx[start + i - 1].sym;
 				debugf("ORIGF#%d DEDUPED INTO ORIGF#%d\n",
-					w->sframe_idx[start + i].orig_idx,
-					w->sframe_idx[start + i - 1].orig_idx);
+					state->sframe_idx[start + i].orig_idx,
+					state->sframe_idx[start + i - 1].orig_idx);
 				continue;
 			}
 
@@ -436,7 +445,7 @@ int process_stack_traces(struct worker_state *w)
 						.func_name_stroff = strset__add_str(strs, func_name ?: ""),
 						.src_path_stroff = strset__add_str(strs, src_path ?: ""),
 						.line_num = k == 0 ? sym->code_info.line : sym->inlined[k - 1].code_info.line,
-						.addr = w->sframe_idx[start + i].addr,
+						.addr = state->sframe_idx[start + i].addr,
 					};
 
 					if (fwrite(&frm, sizeof(frm), 1, w->dump) != 1) {
@@ -446,17 +455,17 @@ int process_stack_traces(struct worker_state *w)
 					}
 
 					debugf("ORIGF#%d MAPPED INTO F#%d\n",
-						w->sframe_idx[start + i].orig_idx, mapped_fr_idx);
+						state->sframe_idx[start + i].orig_idx, mapped_fr_idx);
 					mapped_fr_idx++;
 
 					hdr.frame_cnt += 1;
 				}
 
-				w->sframe_idx[start + i].sym = &syms->syms[j];
+				state->sframe_idx[start + i].sym = &syms->syms[j];
 				j++;
 			} else {
 				struct wprof_stack_frame frm = {
-					.func_offset = w->sframe_idx[start + i].addr,
+					.func_offset = state->sframe_idx[start + i].addr,
 					.flags = WSF_UNSYMBOLIZED | (is_kernel ? WSF_KERNEL : 0),
 				};
 
@@ -467,7 +476,7 @@ int process_stack_traces(struct worker_state *w)
 				}
 
 				debugf("ORIGF#%d MAPPED INTO F#%d\n",
-					w->sframe_idx[start + i].orig_idx, mapped_fr_idx);
+					state->sframe_idx[start + i].orig_idx, mapped_fr_idx);
 				mapped_fr_idx++;
 
 				hdr.frame_cnt += 1;
@@ -476,13 +485,13 @@ int process_stack_traces(struct worker_state *w)
 #if 0
 		int pid_of_interest = 869620;
 		for (int k = start; k < end; k++) {
-			struct stack_frame_index *f = &w->sframe_idx[k];
+			struct stack_frame_index *f = &state->sframe_idx[k];
 
 			if (f->sym && f->sym->name && f->orig_pid != pid_of_interest)
 				continue;
 
-			if (k > start && w->sframe_idx[k - 1].pid == f->pid &&
-			    w->sframe_idx[k - 1].addr == f->addr)
+			if (k > start && state->sframe_idx[k - 1].pid == f->pid &&
+			    state->sframe_idx[k - 1].addr == f->addr)
 				continue;
 
 			if (!f->sym) {
@@ -523,14 +532,14 @@ int process_stack_traces(struct worker_state *w)
 		uaddr_cnt, kaddr_cnt, uaddr_cnt + kaddr_cnt, unkn_cnt,
 		(symb_end_ns - symb_start_ns) / 1000000000.0);
 
-	pb_iid frame_iid = 1;
-	for (int i = 0; i < w->sframe_cnt; i++) {
-		struct stack_frame_index *f = &w->sframe_idx[i];
+	u32 frame_iid = 1;
+	for (int i = 0; i < state->sframe_cnt; i++) {
+		struct stack_frame_index *f = &state->sframe_idx[i];
 
-		if (i > 0 && w->sframe_idx[i - 1].pid == f->pid && w->sframe_idx[i - 1].addr == f->addr) {
-			f->frame_cnt = w->sframe_idx[i - 1].frame_cnt;
-			f->frame_iid = w->sframe_idx[i - 1].frame_iid;
-			f->frame_iids = w->sframe_idx[i - 1].frame_iids;
+		if (i > 0 && state->sframe_idx[i - 1].pid == f->pid && state->sframe_idx[i - 1].addr == f->addr) {
+			f->frame_cnt = state->sframe_idx[i - 1].frame_cnt;
+			f->frame_iid = state->sframe_idx[i - 1].frame_iid;
+			f->frame_iids = state->sframe_idx[i - 1].frame_iids;
 			frames_deduped += f->frame_cnt;
 			frames_total += f->frame_cnt;
 			if (!f->sym || !f->sym->name)
@@ -557,27 +566,27 @@ int process_stack_traces(struct worker_state *w)
 		}
 	}
 
-	qsort(w->sframe_idx, w->sframe_cnt, sizeof(*w->sframe_idx), stack_frame_cmp_by_orig_idx);
+	qsort(state->sframe_idx, state->sframe_cnt, sizeof(*state->sframe_idx), stack_frame_cmp_by_orig_idx);
 
 	/* combine kernel and user stack traces into one callstack */
 	comb_cnt = 0;
-	for (int i = 0; i < w->strace_cnt; i++) {
-		struct stack_trace_index *s = &w->strace_idx[i];
+	for (int i = 0; i < state->strace_cnt; i++) {
+		struct stack_trace_index *s = &state->strace_idx[i];
 
 		if (s->combine) {
-			struct stack_trace_index *c = &w->strace_idx[comb_cnt - 1];
+			struct stack_trace_index *c = &state->strace_idx[comb_cnt - 1];
 
 			c->kframe_cnt = s->frame_cnt;
 			c->frame_cnt += s->frame_cnt;
 		} else {
-			w->strace_idx[comb_cnt] = *s;
+			state->strace_idx[comb_cnt] = *s;
 			comb_cnt += 1;
 		}
 
 		debugf("ORIGSTACK (%d -> %zu) (%s) %s:\n", i, comb_cnt - 1,
 			s->combine ? "COMBINED WITH PREV" : "NON-COMBINED", s->pid ? "USER" : "KERNEL");
 		for (int j = 0; j < s->frame_cnt; j++) {
-			struct stack_frame_index *f = &w->sframe_idx[s->start_frame_idx + j];
+			struct stack_frame_index *f = &state->sframe_idx[s->start_frame_idx + j];
 			debugf("    ORIGFR#%d (FR#%d->%d) ADDR %llx '%s'+%lx\n",
 				f->orig_idx,
 				f->frame_cnt > 1 ? f->frame_iids[0] : f->frame_iid,
@@ -587,26 +596,26 @@ int process_stack_traces(struct worker_state *w)
 				f->sym ? f->sym->offset : 0);
 		}
 	}
-	w->strace_cnt = comb_cnt;
+	state->strace_cnt = comb_cnt;
 
 	/* dedup and assign callstack IIDs */
-	qsort_r(w->strace_idx, w->strace_cnt, sizeof(*w->strace_idx), stack_trace_cmp_by_content, w);
+	qsort_r(state->strace_idx, state->strace_cnt, sizeof(*state->strace_idx), stack_trace_cmp_by_content, state);
 
 	hdr.frame_mappings_off = ftell(w->dump) - base_off;
 
 	int frame_mapping_idx = 0;
 	u32 trace_iid = 1;
-	for (int i = 0; i < w->strace_cnt; i++) {
-		struct stack_trace_index *t = &w->strace_idx[i];
+	for (int i = 0; i < state->strace_cnt; i++) {
+		struct stack_trace_index *t = &state->strace_idx[i];
 		
-		if (i > 0 && stack_trace_eq(&w->strace_idx[i - 1], t, w)) {
-			t->mapped_frame_idx = w->strace_idx[i - 1].mapped_frame_idx;
-			t->mapped_frame_cnt = w->strace_idx[i - 1].mapped_frame_cnt;
-			t->callstack_iid = w->strace_idx[i - 1].callstack_iid;
+		if (i > 0 && stack_trace_eq(&state->strace_idx[i - 1], t, state)) {
+			t->mapped_frame_idx = state->strace_idx[i - 1].mapped_frame_idx;
+			t->mapped_frame_cnt = state->strace_idx[i - 1].mapped_frame_cnt;
+			t->callstack_iid = state->strace_idx[i - 1].callstack_iid;
 			update_event_stack_id(t->event, t->callstack_iid);
 			callstacks_deduped += 1;
 			debugf("ORIGSTACK%d DEDUPED INTO ORIGSTACK%d (STACK#%d) (FR#%d->%d)\n",
-				t->orig_idx, w->strace_idx[i - 1].orig_idx, t->callstack_iid,
+				t->orig_idx, state->strace_idx[i - 1].orig_idx, t->callstack_iid,
 				t->mapped_frame_idx, t->mapped_frame_idx + t->mapped_frame_cnt - 1);
 			continue;
 		}
@@ -617,7 +626,7 @@ int process_stack_traces(struct worker_state *w)
 		debugf("ORIGSTACK#%d IS MAPPED TO STACK#%d\n", t->orig_idx, trace_iid);
 		int fr_pos = 0;
 		for (int j = 0; j < t->frame_cnt; j++) {
-			const struct stack_frame_index *f = &w->sframe_idx[t->start_frame_idx + j];
+			const struct stack_frame_index *f = &state->sframe_idx[t->start_frame_idx + j];
 
 			for (int k = 0; k < f->frame_cnt; k++) {
 				u32 frame_iid = f->frame_cnt > 1 ? f->frame_iids[k] : f->frame_iid;
@@ -655,10 +664,10 @@ int process_stack_traces(struct worker_state *w)
 		}
 		hdr.stack_cnt = 1;
 	}
-	for (int i = 0; i < w->strace_cnt; i++) {
-		struct stack_trace_index *t = &w->strace_idx[i];
+	for (int i = 0; i < state->strace_cnt; i++) {
+		struct stack_trace_index *t = &state->strace_idx[i];
 		
-		if (i > 0 && stack_trace_eq(&w->strace_idx[i - 1], t, w))
+		if (i > 0 && stack_trace_eq(&state->strace_idx[i - 1], t, state))
 			continue;
 
 		struct wprof_stack_trace stack = {
@@ -673,8 +682,8 @@ int process_stack_traces(struct worker_state *w)
 		hdr.stack_cnt += 1;
 	}
 
-	qsort(w->sframe_idx, w->sframe_cnt, sizeof(*w->sframe_idx), stack_frame_cmp_by_orig_idx);
-	qsort(w->strace_idx, w->strace_cnt, sizeof(*w->strace_idx), stack_trace_cmp_by_orig_idx);
+	qsort(state->sframe_idx, state->sframe_cnt, sizeof(*state->sframe_idx), stack_frame_cmp_by_orig_idx);
+	qsort(state->strace_idx, state->strace_cnt, sizeof(*state->strace_idx), stack_trace_cmp_by_orig_idx);
 
 	hdr.strs_off = ftell(w->dump) - base_off;
 	hdr.strs_sz = strset__data_size(strs);
@@ -734,7 +743,7 @@ int process_stack_traces(struct worker_state *w)
 
 	u64 end_ns = ktime_now_ns();
 	fprintf(stderr, "Symbolized %zu stack traces with %zu frames (%zu traces and %zu frames deduped, %zu unknown frames, %.3lfMB) in %.3lfms.\n",
-		w->strace_cnt, frames_total,
+		state->strace_cnt, frames_total,
 		callstacks_deduped, frames_deduped,
 		frames_failed,
 		(orig_pos - base_off) / 1024.0 / 1024.0,
@@ -788,18 +797,19 @@ int process_stack_traces(struct worker_state *w)
 
 int generate_stack_traces(struct worker_state *w)
 {
-	/* XXX: mapping singleton */
-	pb_iid mapping_iid = 1;
-	append_mapping_iid(&w->strace_iids.mappings, mapping_iid, 0, 0x7fffffffffffffff, 0);
-
-	w->fname_iids = (struct str_iid_domain) {
+	struct stack_trace_iids strace_iids = {};
+	struct str_iid_domain fname_iids = (struct str_iid_domain) {
 		.str_iids = hashmap__new(str_hash_fn, str_equal_fn, NULL),
 		.next_str_iid = 1,
 		.domain_desc = "func_name",
 	};
 
-	pb_iid unkn_iid = str_iid_for(&w->fname_iids, "<unknown>", NULL, NULL);
-	append_str_iid(&w->strace_iids.func_names, unkn_iid, "<unknown>");
+	/* XXX: mapping singleton */
+	pb_iid mapping_iid = 1;
+	append_mapping_iid(&strace_iids.mappings, mapping_iid, 0, 0x7fffffffffffffff, 0);
+
+	pb_iid unkn_iid = str_iid_for(&fname_iids, "<unknown>", NULL, NULL);
+	append_str_iid(&strace_iids.func_names, unkn_iid, "<unknown>");
 
 	char sym_buf[1024];
 	struct wprof_stack_frame_record *frec;
@@ -816,16 +826,16 @@ int generate_stack_traces(struct worker_state *w)
 			sym_name = sym_buf;
 		}
 
-		if (sym_name && (fname_iid = str_iid_for(&w->fname_iids, sym_name, &new_iid, &sym_name)) && new_iid)
-			append_str_iid(&w->strace_iids.func_names, fname_iid, sym_name);
+		if (sym_name && (fname_iid = str_iid_for(&fname_iids, sym_name, &new_iid, &sym_name)) && new_iid)
+			append_str_iid(&strace_iids.func_names, fname_iid, sym_name);
 
-		append_frame_iid(&w->strace_iids.frames, frec->idx, mapping_iid, fname_iid, f->func_offset);
+		append_frame_iid(&strace_iids.frames, frec->idx, mapping_iid, fname_iid, f->func_offset);
 	}
 
 	struct wprof_stack_trace_record *trec;
 	wprof_for_each_stack_trace(trec, w->dump_hdr) {
 		for (int i = 0; i < trec->frame_cnt; i++) {
-			append_callstack_frame_iid(&w->strace_iids.callstacks, trec->idx, trec->frame_ids[i]);
+			append_callstack_frame_iid(&strace_iids.callstacks, trec->idx, trec->frame_ids[i]);
 		}
 	}
 
@@ -834,10 +844,10 @@ int generate_stack_traces(struct worker_state *w)
 		PB_INIT(timestamp) = 0,
 		PB_TRUST_SEQ_ID(),
 		PB_INIT(interned_data) = {
-			.function_names = PB_STR_IIDS(&w->strace_iids.func_names),
-			.frames = PB_FRAMES(&w->strace_iids.frames),
-			.callstacks = PB_CALLSTACKS(&w->strace_iids.callstacks),
-			.mappings = PB_MAPPINGS(&w->strace_iids.mappings),
+			.function_names = PB_STR_IIDS(&strace_iids.func_names),
+			.frames = PB_FRAMES(&strace_iids.frames),
+			.callstacks = PB_CALLSTACKS(&strace_iids.callstacks),
+			.mappings = PB_MAPPINGS(&strace_iids.mappings),
 		},
 	};
 	enc_trace_packet(&w->stream, &ev_pb);

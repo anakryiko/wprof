@@ -155,3 +155,13 @@ void calibrate_ktime(void)
 		}
 	}
 }
+
+void set_ktime_off(u64 ktime_ns, u64 realtime_ns)
+{
+	ktime_off = realtime_ns - ktime_ns;
+}
+
+u64 ktime_to_realtime_ns(u64 ts_ns)
+{
+	return ktime_off + ts_ns;
+}

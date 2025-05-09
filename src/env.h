@@ -79,14 +79,6 @@ struct worker_state {
 	size_t dump_sz;
 	struct wprof_data_hdr *dump_hdr;
 
-	struct stack_frame_index *sframe_idx;
-	size_t sframe_cap, sframe_cnt;
-	struct stack_trace_index *strace_idx;
-	size_t strace_cap, strace_cnt;
-	struct stack_trace_iids strace_iids;
-	struct str_iid_domain fname_iids;
-	size_t next_stack_trace_id;
-
 	/* stats */
 	u64 rb_handled_cnt;
 	u64 rb_handled_sz;

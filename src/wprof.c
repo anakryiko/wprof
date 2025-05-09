@@ -123,6 +123,10 @@ static int finalize_events_dump(struct worker_state *w)
 	struct wprof_data_hdr hdr;
 	init_data_header(&hdr);
 
+	hdr.ktime_start_ns = env.sess_start_ts;
+	hdr.duration_ns = env.sess_end_ts - env.sess_start_ts;
+	hdr.realtime_start_ns = ktime_to_realtime_ns(env.sess_start_ts);
+
 	hdr.events_off = 0;
 	hdr.events_sz = pos - sizeof(hdr);
 
@@ -132,7 +136,6 @@ static int finalize_events_dump(struct worker_state *w)
 		return err;
 	}
 
-	/* XXX: update header */
 	fflush(w->dump);
 	fsync(fileno(w->dump));
 
@@ -155,6 +158,57 @@ static int finalize_events_dump(struct worker_state *w)
 
 	return 0;
 }
+
+static int load_data_dump(struct worker_state *w)
+{
+	int err;
+
+	err = fseek(w->dump, 0, SEEK_SET);
+	if (err) {
+		err = -errno;
+		fprintf(stderr, "Failed to fseek(0): %d\n", err);
+		return err;
+	}
+
+	struct wprof_data_hdr hdr;
+	init_data_header(&hdr);
+	hdr.flags = WPROF_DATA_FLAG_INCOMPLETE;
+
+	w->dump_sz = file_size(w->dump);
+	w->dump_mem = mmap(NULL, w->dump_sz, PROT_READ, MAP_SHARED, fileno(w->dump), 0);
+	if (w->dump_mem == MAP_FAILED) {
+		err = -errno;
+		fprintf(stderr, "Failed to mmap data dump: %d\n", err);
+		w->dump_mem = NULL;
+		return err;
+	}
+	w->dump_hdr = w->dump_mem;
+
+	if (w->dump_hdr->flags == WPROF_DATA_FLAG_INCOMPLETE) {
+		fprintf(stderr, "wprof data file is incomplete!\n");
+		return -EINVAL;
+	}
+
+	if (w->dump_hdr->version_major != WPROF_DATA_MAJOR) {
+		fprintf(stderr, "wprof data file MAJOR version mismatch: ACTUAL is v%d.%d vs EXPECTED v%d.%d!\n",
+			w->dump_hdr->version_major, w->dump_hdr->version_minor,
+			WPROF_DATA_MAJOR, WPROF_DATA_MINOR);
+	}
+	/* XXX: backwards compat in the future? */
+	if (w->dump_hdr->version_minor != WPROF_DATA_MINOR) {
+		fprintf(stderr, "wprof data file MINOR version mismatch: ACTUAL is v%d.%d vs EXPECTED v%d.%d!\n",
+			w->dump_hdr->version_major, w->dump_hdr->version_minor,
+			WPROF_DATA_MAJOR, WPROF_DATA_MINOR);
+	}
+
+	/* setup original time markers */
+	env.sess_start_ts = w->dump_hdr->ktime_start_ns;
+	env.sess_end_ts = w->dump_hdr->ktime_start_ns + w->dump_hdr->duration_ns;
+	set_ktime_off(w->dump_hdr->ktime_start_ns, w->dump_hdr->realtime_start_ns);
+
+	return 0;
+}
+
 
 /* Receive events from the ring buffer. */
 static int handle_rb_event(void *ctx, void *data, size_t size)
@@ -711,7 +765,12 @@ int main(int argc, char **argv)
 			fprintf(stderr, "Failed to open data dump at '%s': %d\n", env.data_path, err);
 			goto cleanup;
 		}
-		goto skip_bpf;
+		err = load_data_dump(worker);
+		if (err) {
+			fprintf(stderr, "Failed to load data dump at '%s': %d\n", env.data_path, err);
+			goto cleanup;
+		}
+		goto skip_data_collection;
 	} else {
 		worker->dump = fopen(env.data_path, "w+");
 		if (!worker->dump) {
@@ -721,7 +780,7 @@ int main(int argc, char **argv)
 		}
 		err = init_data_dump(worker);
 		if (err) {
-			fprintf(stderr, "Failed to initialize data dump file: %d\n", err);
+			fprintf(stderr, "Failed to initialize data dump at '%s': %d\n", env.data_path, err);
 			goto cleanup;
 		}
 	}
@@ -772,7 +831,7 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-skip_bpf:
+skip_data_collection:
 	if (env.trace_path) {
 		struct worker_state *w = worker;
 

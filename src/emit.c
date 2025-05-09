@@ -599,9 +599,9 @@ int process_event(struct worker_state *w, struct wprof_event *e, size_t size)
 					PB_INIT(tid) = track_tid(&e->task),
 				}},
 			};
-			if (strace_id >= 0) {
+			if (strace_id > 0) {
 				pb.data.perf_sample.has_callstack_iid = true;
-				pb.data.perf_sample.callstack_iid = w->strace_idx[strace_id].callstack_iid;
+				pb.data.perf_sample.callstack_iid = strace_id;
 			}
 			enc_trace_packet(&w->stream, &pb);
 			break;
@@ -677,9 +677,9 @@ int process_event(struct worker_state *w, struct wprof_event *e, size_t size)
 					PB_INIT(tid) = track_tid(&e->task),
 				}},
 			};
-			if (strace_id >= 0) {
+			if (strace_id > 0) {
 				pb.data.perf_sample.has_callstack_iid = true;
-				pb.data.perf_sample.callstack_iid = w->strace_idx[strace_id].callstack_iid;
+				pb.data.perf_sample.callstack_iid = strace_id;
 			}
 			enc_trace_packet(&w->stream, &pb);
 
