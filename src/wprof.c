@@ -799,7 +799,7 @@ int main(int argc, char **argv)
 
 	signal(SIGALRM, sig_timer);
 	timer_ival.it_value.tv_sec = env.dur_ms / 1000;
-	timer_ival.it_value.tv_usec = env.dur_ms % 1000;
+	timer_ival.it_value.tv_usec = env.dur_ms % 1000 * 1000;
 	err = setitimer(ITIMER_REAL, &timer_ival, NULL);
 	if (err < 0) {
 		fprintf(stderr, "Failed to setup run duration timeout timer: %d\n", err);
