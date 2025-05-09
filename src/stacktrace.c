@@ -19,6 +19,10 @@
 #include "blazesym.h"
 #include "../libbpf/src/strset.h"
 
+#define DEBUG_SYMBOLIZATION 0
+
+#define debugf(...) if (DEBUG_SYMBOLIZATION) fprintf(stderr, ##__VA_ARGS__)
+
 /*
  * SYMBOLIZATION
  */
@@ -259,6 +263,7 @@ int process_stack_traces(struct worker_state *w)
 	u64 base_off = 0;
 
 	fprintf(stderr, "Symbolizing...\n");
+	u64 symb_start_ns = ktime_now_ns();
 
 	struct wprof_event_record *rec;
 	wprof_for_each_event(rec, w->dump_hdr) {
@@ -270,6 +275,8 @@ int process_stack_traces(struct worker_state *w)
 		}
 	}
 
+	w->dump_hdr->stacks_off = ftell(w->dump) - sizeof(struct wprof_data_hdr);
+
 	struct wprof_stacks_hdr hdr;
 	memset(&hdr, 0, sizeof(hdr));
 	if (fwrite(&hdr, sizeof(hdr), 1, w->dump) != 1) {
@@ -279,10 +286,27 @@ int process_stack_traces(struct worker_state *w)
 	}
 	base_off = ftell(w->dump);
 
+	hdr.frames_off = ftell(w->dump) - base_off;
+	/* Add dummy all-zero stack frame record to have all the frame IDs
+	 * positive, which matches well Perfetto expectations and is generally
+	 * nice to have property to be able to use zero ID as "no frame"
+	 * indicator (and not have to remember to adjust everything by +/-1
+	 * all the time
+	 */
+	{
+		struct wprof_stack_frame dummy_frm;
+		memset(&dummy_frm, 0, sizeof(dummy_frm));
+		if (fwrite(&dummy_frm, sizeof(dummy_frm), 1, w->dump) != 1) {
+			err = -errno;
+			fprintf(stderr, "Failed to write dummy stack frame: %d\n", err);
+			return err;
+		}
+		hdr.frame_cnt = 1;
+	}
+
 	/* group by pid+addr */
 	qsort(w->sframe_idx, w->sframe_cnt, sizeof(*w->sframe_idx), stack_frame_cmp_by_pid_addr);
 
-	u64 symb_start_ns = ktime_now_ns();
 	u64 last_progress_ns = symb_start_ns;
 	double last_progress_pct = 0.0;
 	double min_progress_pct = 10.0; /* report no more frequently than every 10.0% */
@@ -299,6 +323,7 @@ int process_stack_traces(struct worker_state *w)
 
 	struct strset *strs = strset__new(UINT_MAX, "", 1);
 
+	int mapped_fr_idx = 1;
 	u64 *addrs = NULL;
 	size_t addr_cap = 0;
 	for (int start = 0, end = 1; end <= w->sframe_cnt; end++) {
@@ -339,6 +364,7 @@ int process_stack_traces(struct worker_state *w)
 
 		/* symbolize [start .. end - 1] range */
 		const struct blaze_syms *syms;
+		bool is_kernel;
 		if (w->sframe_idx[start].pid == 0) { /* kernel addresses */
 			struct blaze_symbolize_src_kernel src = {
 				.type_size = sizeof(src),
@@ -346,6 +372,15 @@ int process_stack_traces(struct worker_state *w)
 			};
 			syms = blaze_symbolize_kernel_abs_addrs(symbolizer, &src, (const void *)addrs, addr_cnt);
 			kaddr_cnt += addr_cnt;
+			is_kernel = true;
+
+			for (int i = 0; i < addr_cnt; i++) {
+				const struct blaze_sym *sym = syms ? &syms->syms[i] : NULL;
+				debugf("ORIGF#%d [KERNEL] PID %d ADDR %llx: %s+%lx\n",
+					w->sframe_idx[start + i].orig_idx,
+					w->sframe_idx[start].pid, addrs[i],
+					(sym && sym->name) ? sym->name : "???", sym->offset);
+			}
 		} else {
 			struct blaze_symbolize_src_process src = {
 				.type_size = sizeof(src),
@@ -359,6 +394,16 @@ int process_stack_traces(struct worker_state *w)
 				syms = blaze_symbolize_process_abs_addrs(symbolizer, &src, (const void *)addrs, addr_cnt);
 			}
 			uaddr_cnt += addr_cnt;
+			is_kernel = false;
+
+			for (int i = 0; i < addr_cnt; i++) {
+				const struct blaze_sym *sym = syms ? &syms->syms[i] : NULL;
+				debugf("ORIGF#%d [USER] PID %d ADDR %llx: %s+%lx\n",
+					w->sframe_idx[start + i].orig_idx,
+					w->sframe_idx[start].pid, addrs[i],
+					(sym && sym->name) ? sym->name : "???",
+					sym ? sym->offset : 0);
+			}
 		}
 		if (!syms) {
 			enum blaze_err berr = blaze_err_last();
@@ -373,6 +418,9 @@ int process_stack_traces(struct worker_state *w)
 		for (int i = 0, j = 0; i < end - start; i++) {
 			if (i > 0 && w->sframe_idx[start + i - 1].addr == w->sframe_idx[start + i].addr) {
 				w->sframe_idx[start + i].sym = w->sframe_idx[start + i - 1].sym;
+				debugf("ORIGF#%d DEDUPED INTO ORIGF#%d\n",
+					w->sframe_idx[start + i].orig_idx,
+					w->sframe_idx[start + i - 1].orig_idx);
 				continue;
 			}
 
@@ -384,10 +432,11 @@ int process_stack_traces(struct worker_state *w)
 					const char *src_path = k == 0 ? sym->code_info.file : sym->inlined[k -1].code_info.file;
 					struct wprof_stack_frame frm = {
 						.func_offset = k == 0 ? sym->offset : 0,
-						.flags = k == 0 ? 0 : WSF_INLINED,
+						.flags = (k == 0 ? 0 : WSF_INLINED) | (is_kernel ? WSF_KERNEL : 0),
 						.func_name_stroff = strset__add_str(strs, func_name ?: ""),
 						.src_path_stroff = strset__add_str(strs, src_path ?: ""),
 						.line_num = k == 0 ? sym->code_info.line : sym->inlined[k - 1].code_info.line,
+						.addr = w->sframe_idx[start + i].addr,
 					};
 
 					if (fwrite(&frm, sizeof(frm), 1, w->dump) != 1) {
@@ -395,6 +444,10 @@ int process_stack_traces(struct worker_state *w)
 						fprintf(stderr, "Failed to write stack frame: %d\n", err);
 						return err;
 					}
+
+					debugf("ORIGF#%d MAPPED INTO F#%d\n",
+						w->sframe_idx[start + i].orig_idx, mapped_fr_idx);
+					mapped_fr_idx++;
 
 					hdr.frame_cnt += 1;
 				}
@@ -404,7 +457,7 @@ int process_stack_traces(struct worker_state *w)
 			} else {
 				struct wprof_stack_frame frm = {
 					.func_offset = w->sframe_idx[start + i].addr,
-					.flags = WSF_UNSYMBOLIZED,
+					.flags = WSF_UNSYMBOLIZED | (is_kernel ? WSF_KERNEL : 0),
 				};
 
 				if (fwrite(&frm, sizeof(frm), 1, w->dump) != 1) {
@@ -412,6 +465,10 @@ int process_stack_traces(struct worker_state *w)
 					fprintf(stderr, "Failed to write stack frame: %d\n", err);
 					return err;
 				}
+
+				debugf("ORIGF#%d MAPPED INTO F#%d\n",
+					w->sframe_idx[start + i].orig_idx, mapped_fr_idx);
+				mapped_fr_idx++;
 
 				hdr.frame_cnt += 1;
 			}
@@ -466,20 +523,6 @@ int process_stack_traces(struct worker_state *w)
 		uaddr_cnt, kaddr_cnt, uaddr_cnt + kaddr_cnt, unkn_cnt,
 		(symb_end_ns - symb_start_ns) / 1000000000.0);
 
-	/* XXX: mapping singleton */
-	pb_iid mapping_iid = 1;
-	append_mapping_iid(&w->strace_iids.mappings, mapping_iid, 0, 0x7fffffffffffffff, 0);
-
-	w->fname_iids = (struct str_iid_domain) {
-		.str_iids = hashmap__new(str_hash_fn, str_equal_fn, NULL),
-		.next_str_iid = 1,
-		.domain_desc = "func_name",
-	};
-
-	pb_iid unkn_iid = str_iid_for(&w->fname_iids, "<unknown>", NULL, NULL);
-	append_str_iid(&w->strace_iids.func_names, unkn_iid, "<unknown>");
-
-	char sym_buf[1024];
 	pb_iid frame_iid = 1;
 	for (int i = 0; i < w->sframe_cnt; i++) {
 		struct stack_frame_index *f = &w->sframe_idx[i];
@@ -499,34 +542,17 @@ int process_stack_traces(struct worker_state *w)
 		frames_total += f->frame_cnt;
 		if (!f->sym || !f->sym->name)
 			frames_failed += 1;
+
 		if (f->frame_cnt > 1)
 			f->frame_iids = calloc(f->frame_cnt, sizeof(*f->frame_iids));
 
 		for (int j = 0; j < f->frame_cnt; j++) {
-			const char *sym_name;
-			size_t offset;
-			pb_iid fname_iid = unkn_iid;
-			bool new_iid = false;
-
-			offset = j == 0 ? (f->sym && f->sym->name ? f->sym->offset : f->addr) : 0;
-			sym_name = j == 0 ? (f->sym ? f->sym->name : NULL) : f->sym->inlined[j - 1].name;
-
-			if (sym_name) {
-				snprintf(sym_buf, sizeof(sym_buf),
-					 "[%c] %s%s", f->pid ? 'U' : 'K', sym_name, j > 0 ? "inlined" : "");
-				sym_name = sym_buf;
-			}
-
-			if (sym_name && (fname_iid = str_iid_for(&w->fname_iids, sym_name, &new_iid, &sym_name)) && new_iid)
-				append_str_iid(&w->strace_iids.func_names, fname_iid, sym_name);
-
-			append_frame_iid(&w->strace_iids.frames, frame_iid, mapping_iid, fname_iid, offset);
-
 			if (f->frame_iids)
 				f->frame_iids[j] = frame_iid;
 			else
 				f->frame_iid = frame_iid;
 
+			debugf("ORIG FRAME #%d MAPS TO UNIQ FRAME #%d\n", f->orig_idx, frame_iid);
 			frame_iid += 1;
 		}
 	}
@@ -547,75 +573,103 @@ int process_stack_traces(struct worker_state *w)
 			w->strace_idx[comb_cnt] = *s;
 			comb_cnt += 1;
 		}
+
+		debugf("ORIGSTACK (%d -> %zu) (%s) %s:\n", i, comb_cnt - 1,
+			s->combine ? "COMBINED WITH PREV" : "NON-COMBINED", s->pid ? "USER" : "KERNEL");
+		for (int j = 0; j < s->frame_cnt; j++) {
+			struct stack_frame_index *f = &w->sframe_idx[s->start_frame_idx + j];
+			debugf("    ORIGFR#%d (FR#%d->%d) ADDR %llx '%s'+%lx\n",
+				f->orig_idx,
+				f->frame_cnt > 1 ? f->frame_iids[0] : f->frame_iid,
+				(f->frame_cnt > 1 ? f->frame_iids[0] : f->frame_iid) + f->frame_cnt - 1,
+				f->addr,
+				f->sym && f->sym->name ? f->sym->name : "???",
+				f->sym ? f->sym->offset : 0);
+		}
 	}
 	w->strace_cnt = comb_cnt;
 
 	/* dedup and assign callstack IIDs */
 	qsort_r(w->strace_idx, w->strace_cnt, sizeof(*w->strace_idx), stack_trace_cmp_by_content, w);
 
-	hdr.stack_frames_off = ftell(w->dump) - base_off;
+	hdr.frame_mappings_off = ftell(w->dump) - base_off;
 
-	pb_iid trace_iid = 1;
+	int frame_mapping_idx = 0;
+	u32 trace_iid = 1;
 	for (int i = 0; i < w->strace_cnt; i++) {
 		struct stack_trace_index *t = &w->strace_idx[i];
 		
 		if (i > 0 && stack_trace_eq(&w->strace_idx[i - 1], t, w)) {
+			t->mapped_frame_idx = w->strace_idx[i - 1].mapped_frame_idx;
+			t->mapped_frame_cnt = w->strace_idx[i - 1].mapped_frame_cnt;
 			t->callstack_iid = w->strace_idx[i - 1].callstack_iid;
-			update_event_stack_id(t->event, w->strace_idx[i - 1].callstack_iid);
+			update_event_stack_id(t->event, t->callstack_iid);
 			callstacks_deduped += 1;
+			debugf("ORIGSTACK%d DEDUPED INTO ORIGSTACK%d (STACK#%d) (FR#%d->%d)\n",
+				t->orig_idx, w->strace_idx[i - 1].orig_idx, t->callstack_iid,
+				t->mapped_frame_idx, t->mapped_frame_idx + t->mapped_frame_cnt - 1);
 			continue;
 		}
 
+		t->mapped_frame_idx = frame_mapping_idx;
+		t->mapped_frame_cnt = 0;
+
+		debugf("ORIGSTACK#%d IS MAPPED TO STACK#%d\n", t->orig_idx, trace_iid);
+		int fr_pos = 0;
 		for (int j = 0; j < t->frame_cnt; j++) {
 			const struct stack_frame_index *f = &w->sframe_idx[t->start_frame_idx + j];
 
 			for (int k = 0; k < f->frame_cnt; k++) {
-				pb_iid frame_iid = f->frame_cnt > 1 ? f->frame_iids[k] : f->frame_iid;
-
-				append_callstack_frame_iid(&w->strace_iids.callstacks, trace_iid, frame_iid);
-
+				u32 frame_iid = f->frame_cnt > 1 ? f->frame_iids[k] : f->frame_iid;
 				if (fwrite(&frame_iid, sizeof(frame_iid), 1, w->dump) != 1) {
 					err = -errno;
 					fprintf(stderr, "Failed to write stack trace frame id: %d\n", err);
 					return err;
 				}
+				hdr.frame_mapping_cnt += 1;
+				t->mapped_frame_cnt += 1;
+				frame_mapping_idx += 1;
+				debugf("POS#%d ORIGF#%d -> F#%d\n", fr_pos++, f->orig_idx,  frame_iid);
 			}
 		}
 
 		t->callstack_iid = trace_iid;
 		update_event_stack_id(t->event, trace_iid);
-
 		trace_iid += 1;
-
-		hdr.stack_frame_cnt += 1;
 	}
 
 	hdr.stacks_off = ftell(w->dump) - base_off;
-	int stack_frame_idx = 0;
+	/* Add dummy all-zero stack trace record to have all the stack IDs
+	 * positive, which matches well Perfetto expectations and is generally
+	 * nice to have property to be able to use zero ID as "no stack"
+	 * indicator (and not have to remember to adjust everything by +/-1
+	 * all the time)
+	 */
+	{
+		struct wprof_stack_trace dummy_stack;
+		memset(&dummy_stack, 0, sizeof(dummy_stack));
+		if (fwrite(&dummy_stack, sizeof(dummy_stack), 1, w->dump) != 1) {
+			err = -errno;
+			fprintf(stderr, "Failed to write dummy stack frame: %d\n", err);
+			return err;
+		}
+		hdr.stack_cnt = 1;
+	}
 	for (int i = 0; i < w->strace_cnt; i++) {
 		struct stack_trace_index *t = &w->strace_idx[i];
 		
 		if (i > 0 && stack_trace_eq(&w->strace_idx[i - 1], t, w))
 			continue;
 
-		int cnt = 0;
-		for (int j = 0; j < t->frame_cnt; j++) {
-			const struct stack_frame_index *f = &w->sframe_idx[t->start_frame_idx + j];
-			cnt += f->frame_cnt;
-		}
-
-		struct wprof_stack_trace_hdr stack_hdr = {
-			.frame_idx = stack_frame_idx,
-			.frame_cnt = cnt,
+		struct wprof_stack_trace stack = {
+			.frame_mapping_idx = t->mapped_frame_idx,
+			.frame_mapping_cnt = t->mapped_frame_cnt,
 		};
-
-		if (fwrite(&stack_hdr, sizeof(stack_hdr), 1, w->dump) != 1) {
+		if (fwrite(&stack, sizeof(stack), 1, w->dump) != 1) {
 			err = -errno;
 			fprintf(stderr, "Failed to write stack trace header: %d\n", err);
 			return err;
 		}
-
-		stack_frame_idx += cnt;
 		hdr.stack_cnt += 1;
 	}
 
@@ -642,6 +696,9 @@ int process_stack_traces(struct worker_state *w)
 
 	/* Finalize stack dump and re-mmap() data */
 	long orig_pos = ftell(w->dump);
+
+	w->dump_hdr->stacks_sz = ftell(w->dump) - w->dump_hdr->stacks_off;
+
 	err = fseek(w->dump, base_off - sizeof(hdr), SEEK_SET);
 	if (err) {
 		err = -errno;
@@ -683,11 +740,95 @@ int process_stack_traces(struct worker_state *w)
 		(orig_pos - base_off) / 1024.0 / 1024.0,
 		(end_ns - start_ns) / 1000000.0);
 
+
+#if DEBUG_SYMBOLIZATION
+	struct wprof_stack_frame_record *frec;
+	wprof_for_each_stack_frame(frec, worker->dump_hdr) {
+		const char *indent = "";
+		const struct wprof_stack_frame *f = frec->f;
+		u32 fr_idx = frec->idx;
+
+		const char *fname = f->func_name_stroff ? wprof_stacks_str(worker->dump_hdr, f->func_name_stroff) : "???";
+		const char *src = f->src_path_stroff ? wprof_stacks_str(worker->dump_hdr, f->src_path_stroff) : "???";
+		fprintf(stderr, "%sFRAME #%d: [%c] '%s'+%llx (%s%s), %s:%d (ADDR %llx)\n",
+			indent, fr_idx,
+			f->flags & WSF_KERNEL ? 'K' : 'U',
+			fname, f->func_offset,
+			f->flags & WSF_INLINED ? " INLINED" : "",
+			f->flags & WSF_UNSYMBOLIZED ? "UNKNOWN" : "",
+			src, f->line_num, f->addr);
+	}
+	struct wprof_stack_trace_record *trec;
+	wprof_for_each_stack_trace(trec, worker->dump_hdr) {
+		const char *indent = "    ";
+
+		fprintf(stderr, "STACK #%d (%u -> %u) HAS %u FRAMES:\n",
+			trec->idx, trec->t->frame_mapping_idx,
+			trec->t->frame_mapping_idx + trec->t->frame_mapping_cnt - 1,
+			trec->t->frame_mapping_cnt);
+
+		for (int i = 0; i < trec->t->frame_mapping_cnt; i++) {
+			u32 fr_idx = trec->frame_ids[i];
+			const struct wprof_stack_frame *f = wprof_stacks_frame(worker->dump_hdr, fr_idx);
+
+			const char *fname = f->func_name_stroff ? wprof_stacks_str(worker->dump_hdr, f->func_name_stroff) : "???";
+			const char *src = f->src_path_stroff ? wprof_stacks_str(worker->dump_hdr, f->src_path_stroff) : "???";
+			fprintf(stderr, "%sFRAME #%d: [%c] '%s'+%llx (%s%s), %s:%d (ADDR %llx)\n",
+				indent, fr_idx,
+				f->flags & WSF_KERNEL ? 'K' : 'U',
+				fname, f->func_offset,
+				f->flags & WSF_INLINED ? " INLINED" : "",
+				f->flags & WSF_UNSYMBOLIZED ? "UNKNOWN" : "",
+				src, f->line_num, f->addr);
+		}
+	}
+#endif
 	return 0;
 }
 
 int generate_stack_traces(struct worker_state *w)
 {
+	/* XXX: mapping singleton */
+	pb_iid mapping_iid = 1;
+	append_mapping_iid(&w->strace_iids.mappings, mapping_iid, 0, 0x7fffffffffffffff, 0);
+
+	w->fname_iids = (struct str_iid_domain) {
+		.str_iids = hashmap__new(str_hash_fn, str_equal_fn, NULL),
+		.next_str_iid = 1,
+		.domain_desc = "func_name",
+	};
+
+	pb_iid unkn_iid = str_iid_for(&w->fname_iids, "<unknown>", NULL, NULL);
+	append_str_iid(&w->strace_iids.func_names, unkn_iid, "<unknown>");
+
+	char sym_buf[1024];
+	struct wprof_stack_frame_record *frec;
+	wprof_for_each_stack_frame(frec, w->dump_hdr) {
+		struct wprof_stack_frame *f = frec->f;
+		pb_iid fname_iid = unkn_iid;
+		bool new_iid = false;
+		const char *sym_name = f->func_name_stroff ? wprof_stacks_str(w->dump_hdr, f->func_name_stroff) : NULL;
+
+		if (sym_name) {
+			snprintf(sym_buf, sizeof(sym_buf),
+				 "[%c] %s%s", (f->flags & WSF_KERNEL) ? 'K' : 'U',
+				 sym_name, (f->flags & WSF_INLINED) ? "inlined" : "");
+			sym_name = sym_buf;
+		}
+
+		if (sym_name && (fname_iid = str_iid_for(&w->fname_iids, sym_name, &new_iid, &sym_name)) && new_iid)
+			append_str_iid(&w->strace_iids.func_names, fname_iid, sym_name);
+
+		append_frame_iid(&w->strace_iids.frames, frec->idx, mapping_iid, fname_iid, f->func_offset);
+	}
+
+	struct wprof_stack_trace_record *trec;
+	wprof_for_each_stack_trace(trec, w->dump_hdr) {
+		for (int i = 0; i < trec->frame_cnt; i++) {
+			append_callstack_frame_iid(&w->strace_iids.callstacks, trec->idx, trec->frame_ids[i]);
+		}
+	}
+
 	ssize_t pb_sz_before = file_size(w->trace);
 	TracePacket ev_pb = {
 		PB_INIT(timestamp) = 0,
@@ -713,10 +854,8 @@ int event_stack_trace_id(struct worker_state *w, const struct wprof_event *e, si
 		return -1;
 
 	tr = (void *)e + e->sz;
-	if (tr->kstack_sz > 0 || tr->ustack_sz > 0) {
-		w->next_stack_trace_id += 1;
-		return w->next_stack_trace_id - 1;
-	}
+	if (tr->stack_id > 0)
+		return tr->stack_id;
 
 	return -1;
 }

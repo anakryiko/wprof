@@ -19,6 +19,8 @@ struct stack_trace_index {
 	int callstack_iid;
 	int kframe_cnt;
 	bool combine;
+	int mapped_frame_idx;
+	int mapped_frame_cnt;
 };
 
 struct stack_frame_index {

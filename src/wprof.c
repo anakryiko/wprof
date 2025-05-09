@@ -26,6 +26,7 @@
 
 #include "utils.h"
 #include "wprof.h"
+#include "data.h"
 #include "wprof.skel.h"
 
 #include "env.h"
@@ -68,7 +69,7 @@ static void init_data_header(struct wprof_data_hdr *hdr)
 {
 	memset(hdr, 0, sizeof(*hdr));
 	memcpy(hdr->magic, "WPROF", 6);
-	hdr->hdr_sz = sizeof(hdr);
+	hdr->hdr_sz = sizeof(*hdr);
 	hdr->flags = 0;
 	hdr->version_major = WPROF_DATA_MAJOR;
 	hdr->version_minor = WPROF_DATA_MINOR;
@@ -164,7 +165,7 @@ static int handle_rb_event(void *ctx, void *data, size_t size)
 	if (exiting)
 		return -EINTR;
 
-	if (env.sess_end_ts && (long long)(env.sess_end_ts - e->ts) <= 0) {
+	if (env.sess_end_ts && (long long)(e->ts - env.sess_end_ts) >= 0) {
 		w->rb_ignored_cnt++;
 		w->rb_ignored_sz += size;
 		return 0;
