@@ -82,6 +82,18 @@ static void emit_kv_float(pb_iid key_iid, const char *key, const char *fmt, doub
 	anns_add_double(&em.anns, key_iid, key, value);
 }
 
+__unused
+static void emit_flow_id(u64 flow_id)
+{
+	em.pb.data.track_event.flow_ids = PB_FLOW_ID(flow_id);
+}
+
+__unused
+static void emit_flow_id_end(u64 flow_id)
+{
+	em.pb.data.track_event.terminating_flow_ids = PB_FLOW_ID(flow_id);
+}
+
 struct emit_rec { bool done; };
 
 static void emit_cleanup(struct emit_rec *r)
@@ -705,6 +717,8 @@ int process_event(struct worker_state *w, struct wprof_event *e, size_t size)
 					emit_kv_str(IID_ANNK_WAKING_TARGET, "waking_target", st->name_iid, e->task.comm);
 					emit_kv_int(IID_ANNK_WAKING_TARGET_TID, "waking_target_tid", task_tid(&e->task));
 					emit_kv_int(IID_ANNK_WAKING_TARGET_PID, "waking_target_pid", e->task.pid);
+
+					emit_flow_id(e->swtch_to.waking_ts);
 				}
 
 				/* event on awoken's timeline */
@@ -714,6 +728,8 @@ int process_event(struct worker_state *w, struct wprof_event *e, size_t size)
 						     e->swtch_to.waking_flags == WF_WOKEN_NEW ? "WOKEN_NEW" : "WOKEN") {
 						emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
 						emit_kv_int(IID_ANNK_NUMA_NODE, "numa_node", e->numa_node);
+
+						emit_flow_id(e->swtch_to.waking_ts);
 					}
 				}
 			}

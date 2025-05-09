@@ -143,6 +143,9 @@ bool enc_string_iid(pb_ostream_t *stream, const pb_field_t *field, void * const 
 			   ? (pb_callback_t){.funcs={(void *)(long)(iid)}}			\
 			   : PB_STRING(name_str) }
 
+bool enc_flow_id(pb_ostream_t *stream, const pb_field_t *field, void * const *arg);
+#define PB_FLOW_ID(id) ((pb_callback_t){{.encode=enc_flow_id}, (void *)(id)})
+
 enum pb_ann_kind {
 	PB_ANN_BOOL,
 	PB_ANN_UINT,
