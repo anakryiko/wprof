@@ -34,6 +34,8 @@
 #include "emit.h"
 #include "stacktrace.h"
 
+#define FILE_BUF_SZ (64 * 1024)
+
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
 {
 	if (level == LIBBPF_DEBUG && !env.libbpf_logs)
@@ -766,7 +768,7 @@ int main(int argc, char **argv)
 	};
 
 	if (env.replay) {
-		worker->dump = fopen(env.data_path, "r+");
+		worker->dump = fopen(env.data_path, "r");
 		if (!worker->dump) {
 			err = -errno;
 			fprintf(stderr, "Failed to open data dump at '%s': %d\n", env.data_path, err);
@@ -790,6 +792,11 @@ int main(int argc, char **argv)
 			fprintf(stderr, "Failed to initialize data dump at '%s': %d\n", env.data_path, err);
 			goto cleanup;
 		}
+	}
+	if (setvbuf(worker->dump, NULL, _IOFBF, FILE_BUF_SZ)) {
+		err = -errno;
+		fprintf(stderr, "Failed to set data file buffer size to %dKB: %d\n", FILE_BUF_SZ / 1024, err);
+		goto cleanup;
 	}
 
 	err = setup_bpf(&bpf_state, worker, num_cpus);
@@ -838,6 +845,18 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
+	{
+		fflush(worker->dump);
+		if (fchmod(fileno(worker->dump), 0644)) {
+			err = -errno;
+			fprintf(stderr, "Failed to chmod() data file '%s': %d\n", env.data_path, err);
+			goto cleanup;
+		}
+		ssize_t file_sz = file_size(worker->dump);
+		fprintf(stderr, "Produced %.3lfMB data file at '%s'.\n",
+			file_sz / (1024.0 * 1024.0), env.data_path);
+	}
+
 skip_data_collection:
 	if (env.trace_path) {
 		struct worker_state *w = worker;
@@ -846,6 +865,11 @@ skip_data_collection:
 		if (!w->trace) {
 			err = -errno;
 			fprintf(stderr, "Failed to create trace file '%s': %d\n", env.trace_path, err);
+			goto cleanup;
+		}
+		if (setvbuf(w->trace, NULL, _IOFBF, FILE_BUF_SZ)) {
+			err = -errno;
+			fprintf(stderr, "Failed to set trace file buffer size to %dKB: %d\n", FILE_BUF_SZ / 1024, err);
 			goto cleanup;
 		}
 		w->stream = (pb_ostream_t){&file_stream_cb, w->trace, SIZE_MAX, 0};
