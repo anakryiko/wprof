@@ -592,19 +592,18 @@ int process_event(struct worker_state *w, struct wprof_event *e, size_t size)
 				emit_kv_int(IID_ANNK_NUMA_NODE, "numa_node", e->numa_node);
 			}
 
-			TracePacket pb = (TracePacket) {
-				PB_INIT(timestamp) = e->ts - env.sess_start_ts,
-				PB_TRUST_SEQ_ID(),
-				PB_ONEOF(data, TracePacket_perf_sample) = { .perf_sample = {
-					PB_INIT(pid) = track_pid(&e->task),
-					PB_INIT(tid) = track_tid(&e->task),
-				}},
-			};
 			if (strace_id > 0) {
-				pb.data.perf_sample.has_callstack_iid = true;
-				pb.data.perf_sample.callstack_iid = strace_id;
+				TracePacket pb = (TracePacket) {
+					PB_INIT(timestamp) = e->ts - env.sess_start_ts,
+					PB_TRUST_SEQ_ID(),
+					PB_ONEOF(data, TracePacket_perf_sample) = { .perf_sample = {
+						PB_INIT(pid) = track_pid(&e->task),
+						PB_INIT(tid) = track_tid(&e->task),
+						PB_INIT(callstack_iid) = strace_id,
+					}},
+				};
+				enc_trace_packet(&w->stream, &pb);
 			}
-			enc_trace_packet(&w->stream, &pb);
 			break;
 		case EV_SWITCH_FROM: {
 			const char *prev_name;
@@ -670,19 +669,18 @@ int process_event(struct worker_state *w, struct wprof_event *e, size_t size)
 			}
 			*/
 
-			TracePacket pb = (TracePacket) {
-				PB_INIT(timestamp) = e->ts - env.sess_start_ts,
-				PB_TRUST_SEQ_ID(),
-				PB_ONEOF(data, TracePacket_perf_sample) = { .perf_sample = {
-					PB_INIT(pid) = track_pid(&e->task),
-					PB_INIT(tid) = track_tid(&e->task),
-				}},
-			};
 			if (strace_id > 0) {
-				pb.data.perf_sample.has_callstack_iid = true;
-				pb.data.perf_sample.callstack_iid = strace_id;
+				TracePacket pb = (TracePacket) {
+					PB_INIT(timestamp) = e->ts - env.sess_start_ts,
+					PB_TRUST_SEQ_ID(),
+					PB_ONEOF(data, TracePacket_perf_sample) = { .perf_sample = {
+						PB_INIT(pid) = track_pid(&e->task),
+						PB_INIT(tid) = track_tid(&e->task),
+						PB_INIT(callstack_iid) = strace_id,
+					}},
+				};
+				enc_trace_packet(&w->stream, &pb);
 			}
-			enc_trace_packet(&w->stream, &pb);
 
 			if (st->rename_ts) {
 				st->rename_ts = 0;
