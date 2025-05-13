@@ -303,17 +303,6 @@ static const char *event_kind_str(enum event_kind kind)
 	return "UNKNOWN";
 }
 
-static const char *waking_reason_str(enum waking_flags flags)
-{
-	switch (flags) {
-		case WF_UNKNOWN: return "unknown";
-		case WF_WOKEN: return "woken";
-		case WF_WOKEN_NEW: return "woken_new";
-		case WF_PREEMPTED: return "preempted";
-		default: return "???";
-	}
-}
-
 enum instant_scope {
 	SCOPE_THREAD,
 	SCOPE_PROCESS,
@@ -744,7 +733,8 @@ int process_event(struct worker_state *w, struct wprof_event *e, size_t size)
 					emit_kv_int(IID_ANNK_WAKING_BY_TID, "waking_by_tid", task_tid(&e->swtch_to.waking));
 					emit_kv_int(IID_ANNK_WAKING_BY_PID, "waking_by_pid", e->swtch_to.waking.pid);
 					emit_kv_str(IID_ANNK_WAKING_REASON, "waking_reason",
-						    IID_NONE, waking_reason_str(e->swtch_to.waking_flags));
+						    IID_ANNV_WAKING_REASON + wreason_enum(e->swtch_to.waking_flags),
+						    wreason_str(e->swtch_to.waking_flags));
 					emit_kv_int(IID_ANNK_WAKING_CPU, "waking_cpu", e->swtch_to.waking_cpu);
 					emit_kv_int(IID_ANNK_WAKING_NUMA_NODE, "waking_numa_node", e->swtch_to.waking_numa_node);
 					emit_kv_float(IID_ANNK_WAKING_DELAY_US, "waking_delay_us",

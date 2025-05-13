@@ -28,8 +28,24 @@ enum irq_vec {
 	SCHED_SOFTIRQ,
 	HRTIMER_SOFTIRQ,
 	RCU_SOFTIRQ,
+
 	NR_SOFTIRQS
 };
+
+const char *softirq_str(int vec_nr);
+
+enum waking_reason {
+	WREASON_UNKNOWN,
+	WREASON_WOKEN,
+	WREASON_WOKEN_NEW,
+	WREASON_PREEMPTED,
+	WREASON_INVALID,
+
+	NR_WREASON,
+};
+
+enum waking_reason wreason_enum(enum waking_flags flags);
+const char *wreason_str(enum waking_flags flags);
 
 enum pb_static_iid {
 	IID_NONE = 0,
@@ -104,6 +120,8 @@ enum pb_static_iid {
 	ANNV_START_IID, __ANNV_RESET_IID = ANNV_START_IID - 1,
 		IID_ANNV_SOFTIRQ_ACTION,			/* sched, net-rx, rcu, ... */
 		IID_ANNV_SOFTIRQ_ACTION_LAST = IID_ANNV_SOFTIRQ_ACTION + NR_SOFTIRQS - 1,
+		IID_ANNV_WAKING_REASON,				/* preempted, waking, etc. */
+		IID_ANNV_WAKING_REASON_LAST = IID_ANNV_WAKING_REASON + NR_WREASON - 1,
 	ANNV_END_IID,
 
 	IID_FIXED_LAST_ID,
@@ -111,7 +129,6 @@ enum pb_static_iid {
 
 
 const char *pb_static_str(enum pb_static_iid);
-const char *softirq_str(int vec_nr);
 
 bool file_stream_cb(pb_ostream_t *stream, const uint8_t *buf, size_t count);
 

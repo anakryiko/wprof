@@ -39,6 +39,32 @@ const char *softirq_str(int vec_nr)
 	return NULL;
 }
 
+
+static const char *wreason_str_map[] = {
+	[WREASON_UNKNOWN] = "unknown",
+	[WREASON_WOKEN] = "woken",
+	[WREASON_WOKEN_NEW] = "woken_new",
+	[WREASON_PREEMPTED] = "preempted",
+	[WREASON_INVALID] = "???",
+};
+
+enum waking_reason wreason_enum(enum waking_flags flags)
+{
+	switch (flags) {
+		case WF_UNKNOWN:   return WREASON_UNKNOWN;
+		case WF_WOKEN:     return WREASON_WOKEN;
+		case WF_WOKEN_NEW: return WREASON_WOKEN_NEW;
+		case WF_PREEMPTED: return WREASON_PREEMPTED;
+		default:           return WREASON_UNKNOWN;
+	}
+}
+
+const char *wreason_str(enum waking_flags flags)
+{
+	return wreason_str_map[wreason_enum(flags)];
+}
+
+
 /*
  * PROTOBUF UTILS
  */
@@ -122,6 +148,12 @@ static const char *pb_static_strs[] = {
 	[IID_ANNV_SOFTIRQ_ACTION + SCHED_SOFTIRQ] = "sched",
 	[IID_ANNV_SOFTIRQ_ACTION + HRTIMER_SOFTIRQ] = "hrtimer",
 	[IID_ANNV_SOFTIRQ_ACTION + RCU_SOFTIRQ] = "rcu",
+
+	[IID_ANNV_WAKING_REASON + WREASON_UNKNOWN] = "unknown",
+	[IID_ANNV_WAKING_REASON + WREASON_WOKEN] = "woken",
+	[IID_ANNV_WAKING_REASON + WREASON_WOKEN_NEW] = "woken_new",
+	[IID_ANNV_WAKING_REASON + WREASON_PREEMPTED] = "preempted",
+	[IID_ANNV_WAKING_REASON + WREASON_INVALID] = "???",
 };
 
 const char *pb_static_str(enum pb_static_iid iid)
