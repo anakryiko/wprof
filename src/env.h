@@ -13,7 +13,7 @@
 
 struct env {
 	bool verbose;
-	bool bpf_stats;
+	bool stats;
 	bool libbpf_logs;
 	bool breakout_counters;
 	bool stack_traces;

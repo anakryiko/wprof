@@ -518,7 +518,7 @@ int process_stack_traces(struct worker_state *w)
 		    (last_uniq_cnt + addr_cnt) * 100.0 / total_uniq_cnt - last_progress_pct >= min_progress_pct) {
 			last_progress_ns = ktime_now_ns();
 			last_progress_pct = (last_uniq_cnt + addr_cnt) * 100.0 / total_uniq_cnt;
-			fprintf(stderr, "Symbolized %zu (%.3lf%%) unique addresses in %.3lf seconds...\n",
+			fprintf(stderr, "Symbolized %zu (%.3lf%%) unique addresses in %.3lfs...\n",
 				last_uniq_cnt + addr_cnt, (last_uniq_cnt + addr_cnt) * 100.0 / total_uniq_cnt,
 				(last_progress_ns - symb_start_ns) / 1000000000.0);
 		}
@@ -744,12 +744,12 @@ int process_stack_traces(struct worker_state *w)
 	w->dump_sz = orig_pos;
 
 	u64 end_ns = ktime_now_ns();
-	fprintf(stderr, "Symbolized %zu stack traces with %zu frames (%zu traces and %zu frames deduped, %zu unknown frames, %.3lfMB) in %.3lfms.\n",
+	fprintf(stderr, "Symbolized %zu stack traces with %zu frames (%zu traces and %zu frames deduped, %zu unknown frames, %.3lfMB) in %.3lfs.\n",
 		state->strace_cnt, frames_total,
 		callstacks_deduped, frames_deduped,
 		frames_failed,
 		(orig_pos - base_off) / 1024.0 / 1024.0,
-		(end_ns - start_ns) / 1000000.0);
+		(end_ns - start_ns) / 1000000000.0);
 
 
 #if DEBUG_SYMBOLIZATION

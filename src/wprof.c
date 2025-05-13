@@ -280,9 +280,10 @@ static void print_exit_summary(struct worker_state *worker, struct wprof_bpf *sk
 	if (!skel)
 		goto skip_prog_stats;
 
-	struct bpf_program *prog;
+	if (env.stats)
+		fprintf(stderr, "BPF program runtime stats:\n");
 
-	fprintf(stderr, "BPF program runtime stats:\n");
+	struct bpf_program *prog;
 	bpf_object__for_each_program(prog, skel->obj) {
 		struct bpf_prog_info info;
 		u32 info_sz = sizeof(info);
@@ -303,7 +304,7 @@ static void print_exit_summary(struct worker_state *worker, struct wprof_bpf *sk
 				bpf_program__name(prog), info.recursion_misses);
 		}
 
-		if (env.bpf_stats) {
+		if (env.stats) {
 			fprintf(stderr, "\t%s%-*s %8llu (%6llu/CPU) runs for total of %.3lfms (%.3lfms/CPU).\n",
 				bpf_program__name(prog),
 				(int)max(1, 24 - strlen(bpf_program__name(prog))), ":",
@@ -314,7 +315,7 @@ static void print_exit_summary(struct worker_state *worker, struct wprof_bpf *sk
 		}
 	}
 
-	if (env.bpf_stats) {
+	if (env.stats) {
 		fprintf(stderr, "\t%-24s %8llu (%6llu/CPU) runs for total of %.3lfms (%.3lfms/CPU).\n",
 			"TOTAL:", total_run_cnt, total_run_cnt / num_cpus,
 			total_run_ns / 1000000.0, total_run_ns / 1000000.0 / num_cpus);
@@ -324,8 +325,10 @@ static void print_exit_summary(struct worker_state *worker, struct wprof_bpf *sk
 	}
 
 skip_prog_stats:
-	struct rusage ru;
+	if (!env.stats)
+		goto skip_rusage;
 
+	struct rusage ru;
 	if (getrusage(RUSAGE_SELF, &ru)) {
 		fprintf(stderr, "Failed to get wprof's resource usage data!..\n");
 		goto skip_rusage;
@@ -475,7 +478,7 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *worker, int num_
 
 	skel->rodata->capture_stack_traces = env.stack_traces;
 
-	if (env.bpf_stats) {
+	if (env.stats) {
 		st->stats_fd = bpf_enable_stats(BPF_STATS_RUN_TIME);
 		if (st->stats_fd < 0)
 			fprintf(stderr, "Failed to enable BPF run stats tracking: %d!\n", st->stats_fd);

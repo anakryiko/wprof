@@ -33,7 +33,7 @@ struct env env = {
 enum {
 	OPT_RINGBUF_SZ = 1000,
 	OPT_TASK_STATE_SZ = 1001,
-	OPT_BPF_STATS = 1003,
+	OPT_STATS = 1003,
 	OPT_LIBBPF_LOGS = 1004,
 	OPT_BREAKOUT_COUNTERS = 1008,
 	OPT_PB_DEBUG_INTERNS = 1009,
@@ -43,7 +43,7 @@ enum {
 
 static const struct argp_option opts[] = {
 	{ "verbose", 'v', NULL, 0, "Verbose debug output" },
-	{ "bpf-stats", OPT_BPF_STATS, NULL, 0, "Enable and print BPF runtime stats" },
+	{ "stats", OPT_STATS, NULL, 0, "Print various wprof stats (BPF, resource usage, etc.)" },
 	{ "libbpf-logs", OPT_LIBBPF_LOGS, NULL, 0, "Emit libbpf verbose logs" },
 
 	{ "dur-ms", 'd', "DURATION", 0, "Limit running duration to given number of ms (default: 1000ms)" },
@@ -79,8 +79,8 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	case 'v':
 		env.verbose = true;
 		break;
-	case OPT_BPF_STATS:
-		env.bpf_stats = true;
+	case OPT_STATS:
+		env.stats = true;
 		break;
 	case OPT_LIBBPF_LOGS:
 		env.libbpf_logs = true;
