@@ -445,16 +445,6 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *worker, int num_
 	bpf_map__set_max_entries(skel->maps.task_states, env.task_state_sz);
 
 	/* FILTERING */
-	for (int i = 0; i < env.allow_cpu_cnt; i++) {
-		int cpu = env.allow_cpus[i];
-
-		if (cpu < 0 || cpu >= num_cpus || cpu >= 4096) {
-			fprintf(stderr, "Invalid CPU specified: %d\n", cpu);
-			return -EINVAL;
-		}
-		skel->rodata->filt_mode |= FILT_ALLOW_CPU;
-		skel->data_allow_cpus->allow_cpus[cpu / 64] |= 1ULL << (cpu % 64);
-	}
 	if (env.allow_pid_cnt > 0) {
 		size_t _sz;
 

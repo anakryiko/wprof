@@ -50,9 +50,6 @@ struct env {
 
 	int *allow_tids;
 	int allow_tid_cnt;
-
-	int *allow_cpus;
-	int allow_cpu_cnt;
 };
 
 extern struct env env;

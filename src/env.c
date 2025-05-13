@@ -57,7 +57,6 @@ static const struct argp_option opts[] = {
 	{ "no-stack-traces", 'S', NULL, 0, "Don't capture stack traces" },
 
 	{ "pid", 'p', "PID", 0, "PID filter (track only specified PIDs)" },
-	{ "cpu", 'c', "CPU", 0, "CPU filter (track only specified CPUs)" },
 
 	{ "ringbuf-size", OPT_RINGBUF_SZ, "SIZE", 0, "BPF ringbuf size (in KBs)" },
 	{ "task-state-size", OPT_TASK_STATE_SZ, "SIZE", 0, "BPF task state map size (in threads)" },
@@ -140,11 +139,6 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		} else if (append_str(&env.allow_tnames, &env.allow_tname_cnt, arg)) {
 			return -ENOMEM;
 		}
-		break;
-	case 'c':
-		err = append_num(&env.allow_cpus, &env.allow_cpu_cnt, arg);
-		if (err)
-			return err;
 		break;
 	/* TUNING */
 	case 'f':

@@ -99,7 +99,6 @@ const volatile int allow_pname_cnt;
 char allow_tnames[16][1] SEC(".data.allow_tnames");
 const volatile int allow_tname_cnt;
 
-u64 allow_cpus[512] SEC(".data.allow_cpus"); /* CPU bitmask, up to 4096 CPUs are supported */
 /* END FILTERING */
 
 const volatile u32 perf_ctr_cnt = 1; /* for veristat, reset in user space */
@@ -174,7 +173,7 @@ static bool should_trace_task(enum wprof_filt_mode mode, struct task_struct *tsk
 	return false;
 }
 
-static bool should_trace(struct task_struct *task1, struct task_struct *task2)
+static __always_inline bool should_trace(struct task_struct *task1, struct task_struct *task2)
 {
 	if (unlikely(!session_start_ts)) /* we are still starting */
 		return false;
@@ -182,14 +181,6 @@ static bool should_trace(struct task_struct *task1, struct task_struct *task2)
 	enum wprof_filt_mode mode = filt_mode;
 	if (likely(mode == 0))
 		return true;
-
-	if (mode & FILT_ALLOW_CPU) {
-		int cpu = bpf_get_smp_processor_id();
-		u64 cpumask = allow_cpus[(cpu >> 6) & (ARRAY_SIZE(allow_cpus) - 1)];
-
-		if (!(cpumask & (1ULL << (cpu & 63))))
-			return false;
-	}
 
 	if (!should_trace_task(mode, task1) && !should_trace_task(mode, task2))
 		return false;
