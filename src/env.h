@@ -25,6 +25,7 @@ struct env {
 	int task_state_sz;
 	int ringbuf_cnt;
 
+	u64 actual_start_ts;
 	u64 sess_start_ts;
 	u64 sess_end_ts;
 

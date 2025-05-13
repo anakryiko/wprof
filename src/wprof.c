@@ -379,7 +379,7 @@ skip_rusage:
 skip_drop_stats:
 	fprintf(stderr, "Exited %s (after %.3lfs).\n",
 		exit_code ? "with errors" : "cleanly",
-		(ktime_now_ns() - env.sess_start_ts) / 1000000000.0);
+		(ktime_now_ns() - env.actual_start_ts) / 1000000000.0);
 }
 
 struct timer_plan {
@@ -736,6 +736,8 @@ int main(int argc, char **argv)
 	struct bpf_state bpf_state = {};
 	int num_cpus = 0, err = 0;
 	struct itimerval timer_ival = {};
+
+	env.actual_start_ts = ktime_now_ns();
 
 	/* Parse command line arguments */
 	err = argp_parse(&argp, argc, argv, 0, NULL, NULL);
