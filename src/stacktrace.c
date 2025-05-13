@@ -358,13 +358,13 @@ int process_stack_traces(struct worker_state *w)
 		struct blaze_symbolizer_opts blaze_opts = {
 			.type_size = sizeof(struct blaze_symbolizer_opts),
 			.auto_reload = false,
-			.code_info = false,
+			.code_info = true,
 			.inlined_fns = true,
 			.demangle = true,
 		};
 		struct blaze_symbolizer *symbolizer = blaze_symbolizer_new_opts(&blaze_opts);
 		if (!symbolizer) {
-			enum blaze_err berr = blaze_err_last();
+			blaze_err berr = blaze_err_last();
 			const char *berr_str = blaze_err_str(berr);
 
 			fprintf(stderr, "Failed to create a symbolizer: %s (%d)\n", berr_str, berr);
@@ -385,16 +385,17 @@ int process_stack_traces(struct worker_state *w)
 
 			for (int i = 0; i < addr_cnt; i++) {
 				const struct blaze_sym *sym = syms ? &syms->syms[i] : NULL;
-				debugf("ORIGF#%d [KERNEL] PID %d ADDR %llx: %s+%lx\n",
+				debugf("ORIGF#%d [KERNEL] PID %d ADDR %llx: %s+%lx (MOD %s)\n",
 					state->sframe_idx[start + i].orig_idx,
 					state->sframe_idx[start].pid, addrs[i],
-					(sym && sym->name) ? sym->name : "???", sym->offset);
+					(sym && sym->name) ? sym->name : "???", sym->offset,
+					(sym && sym->module) ? sym->module : "???");
 			}
 		} else {
 			struct blaze_symbolize_src_process src = {
 				.type_size = sizeof(src),
 				.pid = state->sframe_idx[start].pid,
-				.map_files = true,
+				.no_map_files = false,
 				.debug_syms = true,
 			};
 			syms = blaze_symbolize_process_abs_addrs(symbolizer, &src, (const void *)addrs, addr_cnt);
@@ -407,15 +408,16 @@ int process_stack_traces(struct worker_state *w)
 
 			for (int i = 0; i < addr_cnt; i++) {
 				const struct blaze_sym *sym = syms ? &syms->syms[i] : NULL;
-				debugf("ORIGF#%d [USER] PID %d ADDR %llx: %s+%lx\n",
+				debugf("ORIGF#%d [USER] PID %d ADDR %llx: %s+%lx (MOD %s)\n",
 					state->sframe_idx[start + i].orig_idx,
 					state->sframe_idx[start].pid, addrs[i],
 					(sym && sym->name) ? sym->name : "???",
-					sym ? sym->offset : 0);
+					sym ? sym->offset : 0,
+					(sym && sym->module) ? sym->module : "???");
 			}
 		}
 		if (!syms) {
-			enum blaze_err berr = blaze_err_last();
+			blaze_err berr = blaze_err_last();
 			const char *berr_str = blaze_err_str(berr);
 
 			unkn_cnt += addr_cnt;
@@ -752,13 +754,13 @@ int process_stack_traces(struct worker_state *w)
 
 #if DEBUG_SYMBOLIZATION
 	struct wprof_stack_frame_record *frec;
-	wprof_for_each_stack_frame(frec, worker->dump_hdr) {
+	wprof_for_each_stack_frame(frec, w->dump_hdr) {
 		const char *indent = "";
 		const struct wprof_stack_frame *f = frec->f;
 		u32 fr_idx = frec->idx;
 
-		const char *fname = f->func_name_stroff ? wprof_stacks_str(worker->dump_hdr, f->func_name_stroff) : "???";
-		const char *src = f->src_path_stroff ? wprof_stacks_str(worker->dump_hdr, f->src_path_stroff) : "???";
+		const char *fname = f->func_name_stroff ? wprof_stacks_str(w->dump_hdr, f->func_name_stroff) : "???";
+		const char *src = f->src_path_stroff ? wprof_stacks_str(w->dump_hdr, f->src_path_stroff) : "???";
 		fprintf(stderr, "%sFRAME #%d: [%c] '%s'+%llx (%s%s), %s:%d (ADDR %llx)\n",
 			indent, fr_idx,
 			f->flags & WSF_KERNEL ? 'K' : 'U',
@@ -768,7 +770,7 @@ int process_stack_traces(struct worker_state *w)
 			src, f->line_num, f->addr);
 	}
 	struct wprof_stack_trace_record *trec;
-	wprof_for_each_stack_trace(trec, worker->dump_hdr) {
+	wprof_for_each_stack_trace(trec, w->dump_hdr) {
 		const char *indent = "    ";
 
 		fprintf(stderr, "STACK #%d (%u -> %u) HAS %u FRAMES:\n",
@@ -778,10 +780,10 @@ int process_stack_traces(struct worker_state *w)
 
 		for (int i = 0; i < trec->t->frame_mapping_cnt; i++) {
 			u32 fr_idx = trec->frame_ids[i];
-			const struct wprof_stack_frame *f = wprof_stacks_frame(worker->dump_hdr, fr_idx);
+			const struct wprof_stack_frame *f = wprof_stacks_frame(w->dump_hdr, fr_idx);
 
-			const char *fname = f->func_name_stroff ? wprof_stacks_str(worker->dump_hdr, f->func_name_stroff) : "???";
-			const char *src = f->src_path_stroff ? wprof_stacks_str(worker->dump_hdr, f->src_path_stroff) : "???";
+			const char *fname = f->func_name_stroff ? wprof_stacks_str(w->dump_hdr, f->func_name_stroff) : "???";
+			const char *src = f->src_path_stroff ? wprof_stacks_str(w->dump_hdr, f->src_path_stroff) : "???";
 			fprintf(stderr, "%sFRAME #%d: [%c] '%s'+%llx (%s%s), %s:%d (ADDR %llx)\n",
 				indent, fr_idx,
 				f->flags & WSF_KERNEL ? 'K' : 'U',
@@ -820,9 +822,10 @@ int generate_stack_traces(struct worker_state *w)
 		const char *sym_name = f->func_name_stroff ? wprof_stacks_str(w->dump_hdr, f->func_name_stroff) : NULL;
 
 		if (sym_name) {
-			snprintf(sym_buf, sizeof(sym_buf),
-				 "[%c] %s%s", (f->flags & WSF_KERNEL) ? 'K' : 'U',
-				 sym_name, (f->flags & WSF_INLINED) ? "inlined" : "");
+			snprintf(sym_buf, sizeof(sym_buf), "[%c] %s%s",
+				 (f->flags & WSF_KERNEL) ? 'K' : 'U',
+				 sym_name,
+				 (f->flags & WSF_INLINED) ? " (inlined)" : "");
 			sym_name = sym_buf;
 		}
 
