@@ -244,10 +244,12 @@ static int generate_trace(struct worker_state *w)
 	int err;
 
 	fprintf(stderr, "Generating trace...\n");
-	err = generate_stack_traces(w);
-	if (err) {
-		fprintf(stderr, "Failed to append stack traces to trace '%s': %d\n", env.trace_path, err);
-		return err;
+	if (env.stack_traces) {
+		err = generate_stack_traces(w);
+		if (err) {
+			fprintf(stderr, "Failed to append stack traces to trace '%s': %d\n", env.trace_path, err);
+			return err;
+		}
 	}
 
 	struct wprof_event_record *rec;

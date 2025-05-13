@@ -863,6 +863,10 @@ int event_stack_trace_id(struct worker_state *w, const struct wprof_event *e, si
 {
 	struct stack_trace *tr;
 
+	/* if no stack traces were requested, pretend we never had them in the first place */
+	if (!env.stack_traces)
+		return -1;
+
 	if (!(e->flags & EF_STACK_TRACE)) /* no variable-length part of event */
 		return -1;
 
