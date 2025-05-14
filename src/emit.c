@@ -397,6 +397,20 @@ static struct emit_rec emit_counter_pre(u64 ts, const struct wprof_task *t,
 	     emit_counter_pre(ts, t, name_iid, name);						\
 	     !___r.done; ___r.done = true)
 
+static void emit_stack_trace(u64 ts, const struct wprof_task *t, int stack_id)
+{
+	TracePacket pb = (TracePacket) {
+		PB_INIT(timestamp) = ts - env.sess_start_ts,
+		PB_TRUST_SEQ_ID(),
+		PB_ONEOF(data, TracePacket_perf_sample) = { .perf_sample = {
+			PB_INIT(pid) = track_pid(t),
+			PB_INIT(tid) = track_tid(t),
+			PB_INIT(callstack_iid) = stack_id,
+		}},
+	};
+	enc_trace_packet(cur_stream, &pb);
+}
+
 static bool kind_track_emitted[] = {
 	[TASK_IDLE] = false,
 	[TASK_KWORKER] = false,
@@ -550,18 +564,8 @@ int process_event(struct worker_state *w, struct wprof_event *e, size_t size)
 		}
 
 		int strace_id = event_stack_trace_id(w, e, size);
-		if (strace_id > 0) {
-			TracePacket pb = (TracePacket) {
-				PB_INIT(timestamp) = e->ts - env.sess_start_ts,
-				PB_TRUST_SEQ_ID(),
-				PB_ONEOF(data, TracePacket_perf_sample) = { .perf_sample = {
-					PB_INIT(pid) = track_pid(&e->task),
-					PB_INIT(tid) = track_tid(&e->task),
-					PB_INIT(callstack_iid) = strace_id,
-				}},
-			};
-			enc_trace_packet(&w->stream, &pb);
-		}
+		if (strace_id > 0)
+			emit_stack_trace(e->ts, &e->task, strace_id);
 		break;
 	}
 	case EV_SWITCH_FROM: {
@@ -615,18 +619,8 @@ int process_event(struct worker_state *w, struct wprof_event *e, size_t size)
 		}
 
 		int strace_id = event_stack_trace_id(w, e, size);
-		if (strace_id > 0) {
-			TracePacket pb = (TracePacket) {
-				PB_INIT(timestamp) = e->ts - env.sess_start_ts,
-				PB_TRUST_SEQ_ID(),
-				PB_ONEOF(data, TracePacket_perf_sample) = { .perf_sample = {
-					PB_INIT(pid) = track_pid(&e->task),
-					PB_INIT(tid) = track_tid(&e->task),
-					PB_INIT(callstack_iid) = strace_id,
-				}},
-			};
-			enc_trace_packet(&w->stream, &pb);
-		}
+		if (strace_id > 0)
+			emit_stack_trace(e->ts, &e->task, strace_id);
 
 		/*
 		if (env.cpu_counters && env.breakout_counters &&
