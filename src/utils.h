@@ -91,6 +91,8 @@ static inline void strlcpy(char *dst, const char *src, size_t sz)
 const char *sfmt(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 const char *vsfmt(const char *fmt, va_list ap);
 
+bool glob_matches(const char *glob, const char *s);
+
 /* HASHMAP HELPERS */
 static inline size_t str_hash_fn(long key, void *ctx)
 {

@@ -298,6 +298,7 @@ bool enc_callstacks(pb_ostream_t *stream, const pb_field_t *field, void * const 
 
 #define PB_CALLSTACKS(p) ((pb_callback_t){{.encode=enc_callstacks}, (void *)(p)})
 
+void reset_str_iids(struct pb_str_iids *iids);
 void append_str_iid(struct pb_str_iids *iids, int iid, const char *s);
 void append_mapping_iid(struct pb_mapping_iids *iids, int iid, u64 start, u64 end, u64 offset);
 void append_frame_iid(struct pb_frame_iids *iids, int iid, int mapping_iid, int fname_iid, u64 rel_pc);

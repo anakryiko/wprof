@@ -501,6 +501,11 @@ bool enc_callstacks(pb_ostream_t *stream, const pb_field_t *field, void * const 
 	return true;
 }
 
+void reset_str_iids(struct pb_str_iids *iids)
+{
+	iids->cnt = 0;
+}
+
 void append_str_iid(struct pb_str_iids *iids, int iid, const char *s)
 {
 	if (iids->cnt == iids->cap) {

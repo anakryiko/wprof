@@ -133,6 +133,37 @@ const char *vsfmt(const char *fmt, va_list ap)
 	return fmt_buf;
 }
 
+/* adapted from libbpf sources */
+bool glob_matches(const char *glob, const char *s)
+{
+	while (*s && *glob && *glob != '*') {
+		/* Matches any single character */
+		if (*glob == '?') {
+			s++;
+			glob++;
+			continue;
+		}
+		if (*s != *glob)
+			return false;
+		s++;
+		glob++;
+	}
+	/* Check wild card */
+	if (*glob == '*') {
+		while (*glob == '*') {
+			glob++;
+		}
+		if (!*glob) /* Tail wild card matches all */
+			return true;
+		while (*s) {
+			if (glob_matches(glob, s++))
+				return true;
+		}
+	}
+	return !*s && !*glob;
+}
+
+
 static u64 ktime_off;
 
 void calibrate_ktime(void)
