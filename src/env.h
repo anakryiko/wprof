@@ -39,17 +39,20 @@ struct env {
 	int counter_ids[MAX_PERF_COUNTERS];
 
 	/* FILTERING */
-	char **allow_pnames;
-	int allow_pname_cnt;
+	char **allow_pnames, **deny_pnames;
+	int allow_pname_cnt, deny_pname_cnt;
 
-	char **allow_tnames;
-	int allow_tname_cnt;
+	char **allow_tnames, **deny_tnames;
+	int allow_tname_cnt, deny_tname_cnt;
 
-	int *allow_pids;
-	int allow_pid_cnt;
+	int *allow_pids, *deny_pids;
+	int allow_pid_cnt, deny_pid_cnt;
 
-	int *allow_tids;
-	int allow_tid_cnt;
+	int *allow_tids, *deny_tids;
+	int allow_tid_cnt, deny_tid_cnt;
+
+	bool allow_idle, deny_idle;
+	bool allow_kthread, deny_kthread;
 };
 
 extern struct env env;

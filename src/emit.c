@@ -587,34 +587,61 @@ static void task_state_delete(struct wprof_task *t)
 
 static bool should_trace_task(const struct wprof_task *task)
 {
+	/* Denying takes precedence. Any matching deny filter rejects sample. */
+	for (int i = 0; i < env.deny_pid_cnt; i++)
+		if (task->pid == env.deny_pids[i])
+			return false;
+	for (int i = 0; i < env.deny_tid_cnt; i++)
+		if (task->tid == env.deny_tids[i])
+			return false;
+	for (int i = 0; i < env.deny_pname_cnt; i++)
+		if (glob_matches(env.deny_pnames[i], task->pcomm))
+			return false;
+	for (int i = 0; i < env.deny_tname_cnt; i++)
+		if (glob_matches(env.deny_tnames[i], task->comm))
+			return false;
+	if (env.deny_idle && task->pid == 0)
+		return false;
+	if (env.deny_kthread && (task->flags & PF_KTHREAD))
+		return false;
+
+	/* Any matching allow filter accepts sample. If there are no
+	 * filtering, sample is implicitly allowed. If filters are set, but
+	 * none match - reject.
+	 */
+	bool needs_match = false;
 	for (int i = 0; i < env.allow_pid_cnt; i++) {
 		if (task->pid == env.allow_pids[i])
 			return true;
+		needs_match = true;
 	}
-	if (env.allow_pid_cnt > 0)
-		return false;
-
 	for (int i = 0; i < env.allow_tid_cnt; i++) {
 		if (task->tid == env.allow_tids[i])
 			return true;
+		needs_match = true;
 	}
-	if (env.allow_tid_cnt > 0)
-		return false;
-
 	for (int i = 0; i < env.allow_pname_cnt; i++) {
 		if (glob_matches(env.allow_pnames[i], task->pcomm))
 			return true;
+		needs_match = true;
 	}
-	if (env.allow_pname_cnt > 0)
-		return false;
-
 	for (int i = 0; i < env.allow_tname_cnt; i++) {
 		if (glob_matches(env.allow_tnames[i], task->comm))
 			return true;
+		needs_match = true;
 	}
-	if (env.allow_tname_cnt > 0)
+	if (env.allow_idle) {
+		if (task->pid == 0)
+			return true;
+		needs_match = true;
+	}
+	if (env.allow_kthread) {
+		if (task->flags & PF_KTHREAD)
+			return true;
+		needs_match = true;
+	}
+	if (needs_match)
 		return false;
-
 	return true;
 }
 
