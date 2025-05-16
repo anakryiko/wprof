@@ -459,6 +459,14 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *worker, int num_
 			skel->data_allow_pids->allow_pids[i] = env.allow_pids[i];
 		}
 	}
+	if (env.allow_idle)
+		skel->rodata->filt_mode |= FILT_ALLOW_IDLE;
+	if (env.deny_idle)
+		skel->rodata->filt_mode |= FILT_DENY_IDLE;
+	if (env.allow_kthread)
+		skel->rodata->filt_mode |= FILT_ALLOW_KTHREAD;
+	if (env.deny_kthread)
+		skel->rodata->filt_mode |= FILT_DENY_KTHREAD;
 
 	st->perf_counter_fd_cnt = num_cpus * env.counter_cnt;
 	skel->rodata->perf_ctr_cnt = env.counter_cnt;
