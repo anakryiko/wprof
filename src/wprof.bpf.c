@@ -89,9 +89,13 @@ const volatile enum wprof_filt_mode filt_mode;
 
 int allow_pids[1] SEC(".data.allow_pids");
 const volatile int allow_pid_cnt;
+int deny_pids[1] SEC(".data.deny_pids");
+const volatile int deny_pid_cnt;
 
 int allow_tids[1] SEC(".data.allow_tids");
 const volatile int allow_tid_cnt;
+int deny_tids[1] SEC(".data.deny_tids");
+const volatile int deny_tid_cnt;
 
 char allow_pnames[16][1] SEC(".data.allow_pnames");
 const volatile int allow_pname_cnt;
@@ -158,6 +162,7 @@ static bool should_trace_task(struct task_struct *tsk)
 	if (likely(mode == 0))
 		return true;
 
+	/* DENY filtering */
 	if (mode & FILT_DENY_IDLE) {
 		if (tsk->pid == 0)
 			return false;
@@ -166,7 +171,22 @@ static bool should_trace_task(struct task_struct *tsk)
 		if (tsk->flags & PF_KTHREAD)
 			return false;
 	}
+	if (mode & FILT_DENY_PID) {
+		u32 pid = tsk->tgid;
+		for (int i = 0; i < deny_pid_cnt; i++) {
+			if (deny_pids[i] == pid)
+				return false;
+		}
+	}
+	if (mode & FILT_DENY_TID) {
+		u32 tid = tsk->pid;
+		for (int i = 0; i < deny_tid_cnt; i++) {
+			if (deny_tids[i] == tid)
+				return false;
+		}
+	}
 
+	/* ALLOW filtering */
 	bool needs_match = false;
 	if (mode & FILT_ALLOW_PID) {
 		u32 pid = tsk->tgid;
