@@ -102,12 +102,14 @@ $(OUTPUT)/%.bpf.o: %.bpf.c $(LIBBPF_OBJ) $(wildcard %.h) $(VMLINUX) | $(OUTPUT) 
 		     -c $(filter %.c,$^) -o $(patsubst %.bpf.o,%.tmp.bpf.o,$@)
 	$(Q)$(BPFTOOL) gen object $@ $(patsubst %.bpf.o,%.tmp.bpf.o,$@)
 
-$(OUTPUT)/wprof.bpf.o: wprof.h
+$(OUTPUT)/wprof.bpf.o: wprof.h wprof.bpf.h
+$(OUTPUT)/utils.bpf.o: wprof.h wprof.bpf.h
 
 # Generate BPF skeletons
-$(OUTPUT)/%.skel.h: $(OUTPUT)/%.bpf.o | $(OUTPUT) $(BPFTOOL)
+$(OUTPUT)/wprof.skel.h: $(OUTPUT)/wprof.bpf.o $(OUTPUT)/utils.bpf.o | $(OUTPUT) $(BPFTOOL)
 	$(call msg,GEN-SKEL,$@)
-	$(Q)$(BPFTOOL) gen skeleton $< > $@
+	$(Q)$(BPFTOOL) gen object $(OUTPUT)/wprof-final.bpf.o $^
+	$(Q)$(BPFTOOL) gen skeleton $(OUTPUT)/wprof-final.bpf.o name wprof_bpf > $@
 
 WPROF_SRCS := wprof.c utils.c env.c protobuf.c emit.c stacktrace.c		\
 	      pb_common.c pb_encode.c perfetto_trace.pb.c

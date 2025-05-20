@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause) */
 /* Copyright (c) 2025 Meta Platforms, Inc. */
-#ifndef __WPROF_BPF_H_
-#define __WPROF_BPF_H_
+#ifndef __WPROF_H_
+#define __WPROF_H_
 
 #ifndef TASK_COMM_LEN
 #define TASK_COMM_LEN 16
@@ -189,4 +189,4 @@ struct wprof_event {
 
 #define EV_SZ(kind) offsetofend(struct wprof_event, kind)
 
-#endif /* __WPROF_BPF_H_ */
+#endif /* __WPROF_H_ */

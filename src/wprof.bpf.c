@@ -6,24 +6,10 @@
 #include <bpf/bpf_core_read.h>
 
 #include "wprof.h"
-
-#ifndef E2BIG
-#define E2BIG		7
-#endif
-#ifndef ENODATA
-#define ENODATA		61
-#endif
+#include "wprof.bpf.h"
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
-#define likely(x)      (__builtin_expect(!!(x), 1))
-#define unlikely(x)    (__builtin_expect(!!(x), 0))
-
-#define __cleanup(callback) __attribute__((cleanup(callback)))
-
-#define TASK_RUNNING 0
-
-#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
 struct task_state {
 	u64 ts;
 	u64 waking_ts;
