@@ -893,3 +893,174 @@ int BPF_PROG(wprof_wq_exec_end, struct work_struct *work /* , work_func_t functi
 
 	return handle_workqueue(task, work, false /*!start*/);
 }
+
+long ZERO = 0, ONE = 1, MINUS_ONE = -1;
+static __always_inline unsigned char glob_str_char(size_t idx, const char *s, size_t sz)
+{
+	barrier_var(idx);
+	if (idx >= sz)
+		return '\0';
+	barrier_var(idx);
+	return s[idx] + ZERO;
+}
+
+/* Non-recursive glob matching logic, adapted from:
+ *
+ * https://github.com/torvalds/linux/blob/master/lib/glob.c
+ */
+static int glob_match(const char *pat, size_t pat_sz, const char *str, size_t str_sz)
+{
+	ssize_t backtrack_pi = MINUS_ONE, backtrack_si = MINUS_ONE;
+	size_t pi = ZERO, si = ZERO;
+
+	bpf_repeat(1000000) {
+		unsigned char p = glob_str_char(pi, pat, pat_sz);
+		unsigned char s = glob_str_char(si, str, str_sz);
+
+		pi += ONE;
+		si += ONE;
+
+		switch (p) {
+		case '?':
+			/* single char wildcard matches anything but zero terminator */
+			if (s == '\0')
+				return 0; /* no match */
+			break;
+		case '*':
+			/* any-length widlcard, matched lazily (the least amount
+			 * of characters that is enough to satisfy the
+			 * pattern), which permits never needing to backtrack
+			 * more than one level (though it's not that obvious)
+			 */
+			if (glob_str_char(pi + ONE, pat, pat_sz) == '\0')
+				return 1; /* match: trailing '*' matches anything */
+			backtrack_pi = pi;
+			backtrack_si = si - ONE; /* allow zero-length match */
+			break;
+		default:
+			if (p == '\\') {
+				p = glob_str_char(pi, pat, pat_sz);
+				pi += ONE;
+			}
+			/* literal character match */
+			if (p == s) {
+				if (p == '\0')
+					return 1; /* full match */
+				break;
+			}
+
+			if (s == '\0' || backtrack_pi < 0)
+				return 0; /* no match and no backtracking left */
+
+			/* backtrack to last * wildcard and consume one character */
+			backtrack_si += ONE;
+			pi = backtrack_pi;
+			si = backtrack_si;
+			break;
+		}
+	}
+
+	return -E2BIG;
+}
+
+/* Glob matching tests. Adapted from:
+ *
+ * https://github.com/torvalds/linux/blob/master/lib/globtest.c
+ */
+SEC("tp_btf/sched_process_exit")
+int BPF_PROG(wprof_test_glob, struct task_struct *p) {
+	const bool MATCH = true, MISMATCH = false;
+	static unsigned long cur_test = 0;
+	static const struct glob_test {
+		bool match;
+		char pat[20];
+		char str[24];
+	} tests[] = {
+		/* Some basic tests */
+		{MATCH, "a", "a"},
+		{MISMATCH, "a", "b"},
+		{MISMATCH, "a", "aa"},
+		{MISMATCH, "a", ""},
+		{MATCH, "", ""},
+		{MISMATCH, "", "a"},
+		/* Simple character class tests */
+		//{MATCH, "[a]", "a"},
+		//{MISMATCH, "[a]", "b"},
+		//{MISMATCH, "[!a]", "a"},
+		//{MATCH, "[!a]", "b"},
+		//{MATCH, "[ab]", "a"},
+		//{MATCH, "[ab]", "b"},
+		//{MISMATCH, "[ab]", "c"},
+		//{MATCH, "[!ab]", "c"},
+		//{MATCH, "[a-c]", "b"},
+		//{MISMATCH, "[a-c]", "d"},
+		/* Corner cases in character class parsing */
+		//{MATCH, "[a-c-e-g]", "-"},
+		//{MISMATCH, "[a-c-e-g]", "d"},
+		//{MATCH, "[a-c-e-g]", "f"},
+		//{MATCH, "[]a-ceg-ik[]", "a"},
+		//{MATCH, "[]a-ceg-ik[]", "]"},
+		//{MATCH, "[]a-ceg-ik[]", "["},
+		//{MATCH, "[]a-ceg-ik[]", "h"},
+		//{MISMATCH, "[]a-ceg-ik[]", "f"},
+		//{MISMATCH, "[!]a-ceg-ik[]", "h"},
+		//{MISMATCH, "[!]a-ceg-ik[]", "]"},
+		//{MATCH, "[!]a-ceg-ik[]", "f"},
+		/* Simple wild cards */
+		{MATCH, "?", "a"},
+		{MISMATCH, "?", "aa"},
+		{MISMATCH, "??", "a"},
+		{MATCH, "?x?", "axb"},
+		{MISMATCH, "?x?", "abx"},
+		{MISMATCH, "?x?", "xab"},
+		/* Asterisk wild cards (backtracking) */
+		{MISMATCH, "*??", "a"},
+		{MATCH, "*??", "ab"},
+		{MATCH, "*??", "abc"},
+		{MATCH, "*??", "abcd"},
+		{MISMATCH, "??*", "a"},
+		{MATCH, "??*", "ab"},
+		{MATCH, "??*", "abc"},
+		{MATCH, "??*", "abcd"},
+		{MISMATCH, "?*?", "a"},
+		{MATCH, "?*?", "ab"},
+		{MATCH, "?*?", "abc"},
+		{MATCH, "?*?", "abcd"},
+		{MATCH, "*b", "b"},
+		{MATCH, "*b", "ab"},
+		{MISMATCH, "*b", "ba"},
+		{MATCH, "*b", "bb"},
+		{MATCH, "*b", "abb"},
+		{MATCH, "*b", "bab"},
+		{MATCH, "*bc", "abbc"},
+		{MATCH, "*bc", "bc"},
+		{MATCH, "*bc", "bbc"},
+		{MATCH, "*bc", "bcbc"},
+		/* Multiple asterisks (complex backtracking) */
+		{MATCH, "*ac*", "abacadaeafag"},
+		{MATCH, "*ac*ae*ag*", "abacadaeafag"},
+		//{MATCH, "*a*b*[bc]*[ef]*g*", "abacadaeafag"},
+		//{MISMATCH, "*a*b*[ef]*[cd]*g*", "abacadaeafag"},
+		{MATCH, "*abcd*", "abcabcabcabcdefg"},
+		{MATCH, "*ab*cd*", "abcabcabcabcdefg"},
+		{MATCH, "*abcd*abcdef*", "abcabcdabcdeabcdefg"},
+		{MISMATCH, "*abcd*", "abcabcabcabcefg"},
+		{MISMATCH, "*ab*cd*", "abcabcabcabcefg"},
+	};
+
+	unsigned long idx = __sync_fetch_and_add(&cur_test, 1);
+	if (idx >= ARRAY_SIZE(tests))
+		return 0;
+	barrier_var(idx);
+
+	const struct glob_test *test = &tests[idx];
+	cur_test += 1;
+
+	int res = glob_match(test->pat, sizeof(test->pat), test->str, sizeof(test->str));
+	if (res < 0 || res != test->match) {
+		bpf_printk("TEST #%lu: RESULT %d != %d PAT '%s' STR '%s'",
+			   cur_test - 1, res, test->match, test->pat, test->str);
+	}
+
+	return 0;
+}
