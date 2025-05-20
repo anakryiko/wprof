@@ -352,7 +352,8 @@ static const char *scope_str(enum instant_scope scope)
 
 __unused
 static struct emit_rec emit_instant_pre(u64 ts, const struct wprof_task *t,
-					pb_iid name_iid, const char *name)
+					pb_iid name_iid, const char *name,
+					pb_iid cat_iid, const char *cat)
 {
 	em.pb = (TracePacket) {
 		PB_INIT(timestamp) = ts - env.sess_start_ts,
@@ -360,6 +361,8 @@ static struct emit_rec emit_instant_pre(u64 ts, const struct wprof_task *t,
 		PB_ONEOF(data, TracePacket_track_event) = { .track_event = {
 			PB_INIT(track_uuid) = task_track_uuid(t),
 			PB_INIT(type) = perfetto_protos_TrackEvent_Type_TYPE_INSTANT,
+			.category_iids = cat_iid ? PB_STRING_IID(cat_iid) : PB_NONE,
+			.categories = cat_iid ? PB_NONE : PB_STRING(cat),
 			PB_NAME(TrackEvent, name_field, name_iid, name),
 			.debug_annotations = PB_ANNOTATIONS(&em.anns),
 		}},
@@ -370,15 +373,15 @@ static struct emit_rec emit_instant_pre(u64 ts, const struct wprof_task *t,
 	return (struct emit_rec){};
 }
 
-#define emit_instant(ts, t, name_iid, name)							\
+#define emit_instant(ts, t, name_iid, cat_iid, name)						\
 	for (struct emit_rec ___r __cleanup(emit_cleanup) =					\
-	     emit_instant_pre(ts, t, name_iid, name);						\
+	     emit_instant_pre(ts, t, name_iid, name, cat_iid, name);				\
 	     !___r.done; ___r.done = true)
 
 __unused
 static struct emit_rec emit_slice_point_pre(u64 ts, const struct wprof_task *t,
 					    pb_iid name_iid, const char *name,
-					    pb_iid cat_iid, const char *category,
+					    pb_iid cat_iid, const char *cat,
 					    bool start)
 {
 	em.pb = (TracePacket) {
@@ -389,7 +392,7 @@ static struct emit_rec emit_slice_point_pre(u64 ts, const struct wprof_task *t,
 			PB_INIT(type) = start ? perfetto_protos_TrackEvent_Type_TYPE_SLICE_BEGIN
 					      : perfetto_protos_TrackEvent_Type_TYPE_SLICE_END,
 			.category_iids = cat_iid ? PB_STRING_IID(cat_iid) : PB_NONE,
-			.categories = cat_iid ? PB_NONE : PB_STRING(category),
+			.categories = cat_iid ? PB_NONE : PB_STRING(cat),
 			PB_NAME(TrackEvent, name_field, name_iid, name),
 			.debug_annotations = PB_ANNOTATIONS(&em.anns),
 		}},
@@ -406,9 +409,9 @@ static struct emit_rec emit_slice_point_pre(u64 ts, const struct wprof_task *t,
 	return (struct emit_rec){};
 }
 
-#define emit_slice_point(ts, t, name_iid, name, cat_iid, category, start)			\
+#define emit_slice_point(ts, t, name_iid, name, cat_iid, cat, start)			\
 	for (struct emit_rec ___r __cleanup(emit_cleanup) =					\
-	     emit_slice_point_pre(ts, t, name_iid, name, cat_iid, category, start);		\
+	     emit_slice_point_pre(ts, t, name_iid, name, cat_iid, cat, start);		\
 	     !___r.done; ___r.done = true)
 
 __unused
@@ -655,7 +658,7 @@ int process_event(struct worker_state *w, struct wprof_event *e, size_t size)
 		(void)task_state(w, &e->task);
 
 		/* task keeps running on CPU */
-		emit_instant(e->ts, &e->task, IID_NAME_TIMER, "TIMER") {
+		emit_instant(e->ts, &e->task, IID_NAME_TIMER, IID_CAT_TIMER, "TIMER") {
 			emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
 			emit_kv_int(IID_ANNK_NUMA_NODE, "numa_node", e->numa_node);
 		}
@@ -748,6 +751,7 @@ int process_event(struct worker_state *w, struct wprof_event *e, size_t size)
 			/* event on awaker's timeline */
 			emit_instant(e->swtch_to.waking_ts, &e->swtch_to.waking,
 				     e->swtch_to.waking_flags == WF_WOKEN_NEW ? IID_NAME_WAKEUP_NEW : IID_NAME_WAKING,
+				     e->swtch_to.waking_flags == WF_WOKEN_NEW ? IID_CAT_WAKEUP_NEW : IID_CAT_WAKING,
 				     e->swtch_to.waking_flags == WF_WOKEN_NEW ? "WAKEUP_NEW" : "WAKING") {
 				emit_kv_int(IID_ANNK_CPU, "cpu", e->swtch_to.waking_cpu);
 				emit_kv_int(IID_ANNK_NUMA_NODE, "numa_node", e->swtch_to.waking_numa_node);
@@ -772,6 +776,7 @@ int process_event(struct worker_state *w, struct wprof_event *e, size_t size)
 			/* event on awoken's timeline */
 			emit_instant(e->swtch_to.waking_ts, &e->task,
 				     e->swtch_to.waking_flags == WF_WOKEN_NEW ? IID_NAME_WOKEN_NEW : IID_NAME_WOKEN,
+				     e->swtch_to.waking_flags == WF_WOKEN_NEW ? IID_CAT_WOKEN_NEW : IID_CAT_WOKEN,
 				     e->swtch_to.waking_flags == WF_WOKEN_NEW ? "WOKEN_NEW" : "WOKEN") {
 				emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
 				emit_kv_int(IID_ANNK_NUMA_NODE, "numa_node", e->numa_node);
@@ -817,7 +822,7 @@ int process_event(struct worker_state *w, struct wprof_event *e, size_t size)
 		if (should_trace_task(&e->task)) {
 			(void)task_state(w, &e->task);
 
-			emit_instant(e->ts, &e->task, IID_NAME_FORKING, "FORKING") {
+			emit_instant(e->ts, &e->task, IID_NAME_FORKING, IID_CAT_FORKING, "FORKING") {
 				emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
 				emit_kv_int(IID_ANNK_NUMA_NODE, "numa_node", e->numa_node);
 
@@ -831,7 +836,7 @@ int process_event(struct worker_state *w, struct wprof_event *e, size_t size)
 		if (should_trace_task(&e->fork.child)) {
 			(void)task_state(w, &e->fork.child);
 
-			emit_instant(e->ts, &e->fork.child, IID_NAME_FORKED, "FORKED") {
+			emit_instant(e->ts, &e->fork.child, IID_NAME_FORKED, IID_CAT_FORKED, "FORKED") {
 				emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
 				emit_kv_int(IID_ANNK_NUMA_NODE, "numa_node", e->numa_node);
 
@@ -850,7 +855,7 @@ int process_event(struct worker_state *w, struct wprof_event *e, size_t size)
 
 		(void)task_state(w, &e->task);
 
-		emit_instant(e->ts, &e->task, IID_NAME_EXEC, "EXEC") {
+		emit_instant(e->ts, &e->task, IID_NAME_EXEC, IID_CAT_EXEC, "EXEC") {
 			emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
 			emit_kv_int(IID_ANNK_NUMA_NODE, "numa_node", e->numa_node);
 
@@ -872,7 +877,7 @@ int process_event(struct worker_state *w, struct wprof_event *e, size_t size)
 		}
 		memcpy(st->comm, e->rename.new_comm, sizeof(st->comm));
 
-		emit_instant(e->ts, &e->task, IID_NAME_RENAME, "RENAME") {
+		emit_instant(e->ts, &e->task, IID_NAME_RENAME, IID_CAT_RENAME, "RENAME") {
 			emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
 			emit_kv_int(IID_ANNK_NUMA_NODE, "numa_node", e->numa_node);
 
@@ -890,7 +895,7 @@ int process_event(struct worker_state *w, struct wprof_event *e, size_t size)
 
 		(void)task_state(w, &e->task);
 
-		emit_instant(e->ts, &e->task, IID_NAME_EXIT, "EXIT") {
+		emit_instant(e->ts, &e->task, IID_NAME_EXIT, IID_CAT_EXIT, "EXIT") {
 			emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
 			emit_kv_int(IID_ANNK_NUMA_NODE, "numa_node", e->numa_node);
 		}
@@ -903,7 +908,7 @@ int process_event(struct worker_state *w, struct wprof_event *e, size_t size)
 
 		(void)task_state(w, &e->task);
 
-		emit_instant(e->ts, &e->task, IID_NAME_FREE, "FREE") {
+		emit_instant(e->ts, &e->task, IID_NAME_FREE, IID_CAT_FREE, "FREE") {
 			emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
 			emit_kv_int(IID_ANNK_NUMA_NODE, "numa_node", e->numa_node);
 		}
@@ -919,7 +924,7 @@ skip_emit_free:
 
 		(void)task_state(w, &e->task);
 
-		emit_instant(e->ts, &e->task, IID_NAME_WAKEUP, "WAKEUP") {
+		emit_instant(e->ts, &e->task, IID_NAME_WAKEUP, IID_CAT_WAKEUP, "WAKEUP") {
 			emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
 			emit_kv_int(IID_ANNK_NUMA_NODE, "numa_node", e->numa_node);
 		}
@@ -931,7 +936,7 @@ skip_emit_free:
 
 		(void)task_state(w, &e->task);
 
-		emit_instant(e->ts, &e->task, IID_NAME_WAKEUP_NEW, "WAKEUP_NEW") {
+		emit_instant(e->ts, &e->task, IID_NAME_WAKEUP_NEW, IID_CAT_WAKEUP_NEW, "WAKEUP_NEW") {
 			emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
 			emit_kv_int(IID_ANNK_NUMA_NODE, "numa_node", e->numa_node);
 		}
@@ -943,7 +948,7 @@ skip_emit_free:
 
 		(void)task_state(w, &e->task);
 
-		emit_instant(e->ts, &e->task, IID_NAME_WAKING, "WAKING") {
+		emit_instant(e->ts, &e->task, IID_NAME_WAKING, IID_CAT_WAKING, "WAKING") {
 			emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
 			emit_kv_int(IID_ANNK_NUMA_NODE, "numa_node", e->numa_node);
 		}

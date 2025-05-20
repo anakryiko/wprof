@@ -56,6 +56,18 @@ enum pb_static_iid {
 		IID_CAT_HARDIRQ,				/* HARDIRQ */
 		IID_CAT_SOFTIRQ,				/* SOFTIRQ */
 		IID_CAT_WQ,					/* WQ */
+		IID_CAT_TIMER,					/* TIMER */
+		IID_CAT_EXEC,					/* EXEC */
+		IID_CAT_EXIT,					/* EXIT */
+		IID_CAT_FREE,					/* FREE */
+		IID_CAT_WAKEUP,					/* WAKEUP */
+		IID_CAT_WAKEUP_NEW,				/* WAKEUP_NEW */
+		IID_CAT_WAKING,					/* WAKING */
+		IID_CAT_WOKEN_NEW,				/* WOKEN_NEW */
+		IID_CAT_WOKEN,					/* WOKEN */
+		IID_CAT_FORKING,				/* FORKING */
+		IID_CAT_FORKED,					/* FORKED */
+		IID_CAT_RENAME,					/* RENAME */
 	CAT_END_IID,
 
 	NAME_START_IID, __NAME_RESET_IID = NAME_START_IID - 1,
