@@ -25,6 +25,10 @@ struct env {
 	int task_state_sz;
 	int ringbuf_cnt;
 
+	/* feature selector */
+	bool capture_ipi;
+	bool capture_numa;
+
 	u64 actual_start_ts;
 	u64 sess_start_ts;
 	u64 sess_end_ts;

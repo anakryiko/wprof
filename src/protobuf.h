@@ -33,6 +33,7 @@ enum irq_vec {
 };
 
 const char *softirq_str(int vec_nr);
+const char *ipi_kind_str(enum wprof_ipi_kind kind);
 
 enum waking_reason {
 	WREASON_UNKNOWN,
@@ -68,6 +69,8 @@ enum pb_static_iid {
 		IID_CAT_FORKING,				/* FORKING */
 		IID_CAT_FORKED,					/* FORKED */
 		IID_CAT_RENAME,					/* RENAME */
+		IID_CAT_IPI,					/* IPI */
+		IID_CAT_IPI_SEND,				/* IPI_SEND */
 	CAT_END_IID,
 
 	NAME_START_IID, __NAME_RESET_IID = NAME_START_IID - 1,
@@ -86,6 +89,10 @@ enum pb_static_iid {
 		IID_NAME_HARDIRQ,				/* HARDIRQ */
 		IID_NAME_SOFTIRQ,				/* SOFTIRQ:... */
 		IID_NAME_SOFTIRQ_LAST = IID_NAME_SOFTIRQ + NR_SOFTIRQS - 1,
+		IID_NAME_IPI,					/* IPI:... */
+		IID_NAME_IPI_LAST = IID_NAME_IPI + NR_IPIS - 1,
+		IID_NAME_IPI_SEND,				/* IPI_SEND:... */
+		IID_NAME_IPI_SEND_LAST = IID_NAME_IPI_SEND + NR_IPIS - 1,
 	NAME_END_IID,
 
 	ANNK_START_IID, __ANNK_RESET_IID = ANNK_START_IID - 1,
@@ -121,6 +128,9 @@ enum pb_static_iid {
 		IID_ANNK_NEW_NAME,				/* new_name */
 		IID_ANNK_ACTION,				/* action */
 		IID_ANNK_IRQ,					/* irq */
+		IID_ANNK_SENDER_CPU,				/* sender_cpu */
+		IID_ANNK_TARGET_CPU,				/* target_cpu */
+		IID_ANNK_IPI_DELAY_US,				/* ipi_delay_us */
 		IID_ANNK_PERF_CPU_CYCLES,			/* cpu_cycles_kilo */
 		IID_ANNK_PERF_CPU_INSNS,			/* cpu_insns_kilo */
 		IID_ANNK_PERF_CACHE_HITS,			/* cache_hits_kilo */

@@ -71,6 +71,8 @@ enum event_kind {
 	EV_TASK_RENAME,
 	EV_TASK_EXIT,
 	EV_TASK_FREE,
+	EV_IPI_SEND,
+	EV_IPI_EXIT,
 };
 
 struct stack_trace {
@@ -102,6 +104,16 @@ enum waking_flags {
 enum event_flags {
 	EF_NONE = 0x00,
 	EF_STACK_TRACE = 0x01,
+};
+
+enum wprof_ipi_kind {
+	IPI_INVALID = 0,
+
+	IPI_SINGLE,
+	IPI_MULTI,
+	IPI_RESCHED,
+
+	NR_IPIS,
 };
 
 struct wprof_event {
@@ -155,6 +167,19 @@ struct wprof_event {
 			int old_tid;
 			char filename[WORKER_DESC_LEN - 4];
 		} exec;
+		struct wprof_ipi_send {
+			u64 ipi_id; /* 0, if unknown */
+			enum wprof_ipi_kind kind;
+			int target_cpu; /* -1, if multicast IPI */
+		} ipi_send;
+		struct wprof_ipi_info {
+			u64 ipi_ts;
+			u64 send_ts; /* 0, if unknown origination timestamp */
+			u64 ipi_id; /* 0, if unknown */
+			enum wprof_ipi_kind kind;
+			int send_cpu; /* -1, if multicast IPI or unknown */
+			struct perf_counters ctrs;
+		} ipi;
 	};
 };
 

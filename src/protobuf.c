@@ -39,6 +39,15 @@ const char *softirq_str(int vec_nr)
 	return NULL;
 }
 
+const char *ipi_kind_str(enum wprof_ipi_kind kind)
+{
+	switch (kind) {
+		case IPI_SINGLE: return "single";
+		case IPI_MULTI:  return "multi";
+		case IPI_RESCHED: return "resched";
+		default: return "???";
+	}
+}
 
 static const char *wreason_str_map[] = {
 	[WREASON_UNKNOWN] = "unknown",
@@ -86,6 +95,8 @@ static const char *pb_static_strs[] = {
 	[IID_CAT_FORKING] = "FORKING",
 	[IID_CAT_FORKED] = "FORKED",
 	[IID_CAT_RENAME] = "RENAME",
+	[IID_CAT_IPI] = "IPI",
+	[IID_CAT_IPI_SEND] = "IPI_SEND",
 
 	[IID_NAME_TIMER] = "TIMER",
 	[IID_NAME_EXEC] = "EXEC",
@@ -110,6 +121,14 @@ static const char *pb_static_strs[] = {
 	[IID_NAME_SOFTIRQ + SCHED_SOFTIRQ] = "SOFTIRQ:sched",
 	[IID_NAME_SOFTIRQ + HRTIMER_SOFTIRQ] = "SOFTIRQ:hrtimer",
 	[IID_NAME_SOFTIRQ + RCU_SOFTIRQ] = "SOFTIRQ:rcu",
+	[IID_NAME_IPI + IPI_INVALID] = "IPI:???",
+	[IID_NAME_IPI + IPI_SINGLE] = "IPI:single",
+	[IID_NAME_IPI + IPI_MULTI] = "IPI:multi",
+	[IID_NAME_IPI + IPI_RESCHED] = "IPI:resched",
+	[IID_NAME_IPI_SEND + IPI_INVALID] = "IPI_SEND:???",
+	[IID_NAME_IPI_SEND + IPI_SINGLE] = "IPI_SEND:single",
+	[IID_NAME_IPI_SEND + IPI_MULTI] = "IPI_SEND:multi",
+	[IID_NAME_IPI_SEND + IPI_RESCHED] = "IPI_SEND:resched",
 
 	[IID_ANNK_CPU] = "cpu",
 	[IID_ANNK_NUMA_NODE] = "numa_node",
@@ -143,6 +162,9 @@ static const char *pb_static_strs[] = {
 	[IID_ANNK_NEW_NAME] = "new_name",
 	[IID_ANNK_ACTION] = "action",
 	[IID_ANNK_IRQ] = "irq",
+	[IID_ANNK_SENDER_CPU] = "sender_cpu",
+	[IID_ANNK_TARGET_CPU] = "target_cpu",
+	[IID_ANNK_IPI_DELAY_US] = "ipi_delay_us",
 	[IID_ANNK_PERF_CPU_CYCLES] = "cpu_cycles_kilo",
 	[IID_ANNK_PERF_CPU_INSNS] = "cpu_insns_kilo",
 	[IID_ANNK_PERF_CACHE_HITS] = "cache_hits_kilo",

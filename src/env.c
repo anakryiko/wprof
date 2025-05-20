@@ -79,6 +79,9 @@ static const struct argp_option opts[] = {
 	{ "kthread", OPT_ALLOW_KTHREAD, NULL, 0, "Allow kernel tasks" },
 	{ "no-kthread", OPT_DENY_KTHREAD, NULL, 0, "Deny kernel tasks" },
 
+	/* event subset targeting */
+	{ "feature", 'F', "FEAT", 0, "Features selector. Supported: ipi, numa" },
+
 	{ "ringbuf-size", OPT_RINGBUF_SZ, "SIZE", 0, "BPF ringbuf size (in KBs)" },
 	{ "task-state-size", OPT_TASK_STATE_SZ, "SIZE", 0, "BPF task state map size (in threads)" },
 	{ "ringbuf-cnt", OPT_RINGBUF_CNT, "N", 0, "Number of BPF ringbufs to use" },
@@ -131,6 +134,17 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	case 'S':
 		env.stack_traces = false;
+		break;
+	/* FEATURES SELECTION */
+	case 'F':
+		if (strcasecmp(arg, "numa") == 0) {
+			env.capture_numa = true;
+		} else if (strcasecmp(arg, "ipi") == 0) {
+			env.capture_ipi = true;
+		} else {
+			fprintf(stderr, "Unrecognized requested feature '%s!\n", arg);
+			return -EINVAL;
+		}
 		break;
 	/* FILTERING */
 	case 'p':

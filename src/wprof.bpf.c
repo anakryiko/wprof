@@ -41,6 +41,14 @@ struct task_state {
 	struct perf_counters wq_ctrs;
 };
 
+struct cpu_state {
+	u64 ipi_counter;
+	u64 ipi_ts;
+	u64 ipi_send_ts;
+	int ipi_send_cpu;
+	struct perf_counters ipi_ctrs;
+};
+
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, int); /* task_id, see task_id() */
@@ -84,6 +92,13 @@ struct {
 	});
 } rbs SEC(".maps");
 
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__type(key, u32);
+	__type(value, struct cpu_state);
+	__uint(max_entries, 1);
+} cpu_states SEC(".maps");
+
 /* FILTERING */
 const volatile enum wprof_filt_mode filt_mode;
 
@@ -102,7 +117,6 @@ const volatile int allow_pname_cnt;
 
 char allow_tnames[16][1] SEC(".data.allow_tnames");
 const volatile int allow_tname_cnt;
-
 /* END FILTERING */
 
 const volatile u32 perf_ctr_cnt = 1; /* for veristat, reset in user space */
@@ -893,3 +907,213 @@ int BPF_PROG(wprof_wq_exec_end, struct work_struct *work /* , work_func_t functi
 
 	return handle_workqueue(task, work, false /*!start*/);
 }
+
+static struct cpu_state all_cpus_state;
+
+#ifdef __TARGET_ARCH_x86
+
+static int handle_ipi_send(struct task_struct *task, enum wprof_ipi_kind ipi_kind, int target_cpu)
+{
+	struct cpu_state *s;
+	struct wprof_event *e;
+	u64 now_ts;
+	int cpu;
+
+	if (target_cpu >= 0) {
+		s = bpf_map_lookup_percpu_elem(&cpu_states, &zero, target_cpu);
+		if (!s) /* shouldn't happen */
+			return 0;
+	} else {
+		s = &all_cpus_state;
+	}
+
+	now_ts = bpf_ktime_get_ns();
+	cpu = bpf_get_smp_processor_id();
+
+	s->ipi_send_ts = now_ts;
+	s->ipi_send_cpu = cpu;
+	s->ipi_counter += 1;
+
+	emit_task_event(e, EV_SZ(ipi_send), 0, EV_IPI_SEND, now_ts, task) {
+		e->ipi_send.kind = ipi_kind;
+		e->ipi_send.target_cpu = target_cpu;
+		e->ipi_send.ipi_id = s->ipi_counter | ((u64)target_cpu << 48);
+	}
+
+	return 0;
+}
+
+SEC("?tp_btf/ipi_send_cpu")
+int BPF_PROG(wprof_ipi_send_cpu, int cpu)
+{
+	struct task_struct *task;
+
+	task = bpf_get_current_task_btf();
+	if (!should_trace_task(task))
+		return 0;
+
+	return handle_ipi_send(task, IPI_SINGLE, cpu);
+}
+
+SEC("?tp_btf/ipi_send_cpumask")
+int BPF_PROG(wprof_ipi_send_mask, struct cpumask *mask)
+{
+	struct task_struct *task;
+
+	task = bpf_get_current_task_btf();
+	if (!should_trace_task(task))
+		return 0;
+
+	return handle_ipi_send(task, IPI_MULTI, -1);
+}
+
+#define RESCHEDULE_VECTOR		0xfd
+#define CALL_FUNCTION_VECTOR		0xfc
+#define CALL_FUNCTION_SINGLE_VECTOR	0xfb
+
+static int handle_ipi(struct task_struct *task, enum wprof_ipi_kind ipi_kind, bool start)
+{
+	struct cpu_state *s;
+	struct wprof_event *e;
+	u64 now_ts;
+	int cpu;
+
+	s = bpf_map_lookup_elem(&cpu_states, &zero);
+	if (!s) /* can't happen */
+		return 0;
+
+	now_ts = bpf_ktime_get_ns();
+	cpu = bpf_get_smp_processor_id();
+	if (start) {
+		s->ipi_ts = now_ts;
+		if (perf_ctr_cnt)
+			capture_perf_counters(&s->ipi_ctrs, cpu);
+		return 0;
+	}
+
+	if (s->ipi_ts == 0) /* we never recorded matching start, ignore */
+		return 0;
+
+	emit_task_event(e, EV_SZ(ipi), 0, EV_IPI_EXIT, now_ts, task) {
+		e->ipi.kind = ipi_kind;
+		e->ipi.ipi_ts = s->ipi_ts;
+
+		if (ipi_kind == IPI_SINGLE && s->ipi_send_ts > 0) {
+			e->ipi.send_ts = s->ipi_send_ts;
+			e->ipi.send_cpu = s->ipi_send_cpu;
+			e->ipi.ipi_id = s->ipi_counter | ((u64)cpu << 48);
+		} else if (ipi_kind == IPI_MULTI && all_cpus_state.ipi_send_ts > 0) {
+			e->ipi.send_ts = all_cpus_state.ipi_send_ts;
+			e->ipi.send_cpu = all_cpus_state.ipi_send_cpu;
+			e->ipi.ipi_id = 0;
+		} else {
+			e->ipi.send_ts = 0;
+			e->ipi.send_cpu = -1;
+			e->ipi.ipi_id = 0;
+		}
+
+		if (perf_ctr_cnt) {
+			struct perf_counters ctrs;
+
+			capture_perf_counters(&ctrs, cpu);
+			for (u64 i = 0; i < perf_ctr_cnt; i++)
+				e->ipi.ctrs.val[i] = ctrs.val[i] - s->ipi_ctrs.val[i];
+		}
+	}
+
+	s->ipi_ts = 0;
+
+	return 0;
+}
+
+SEC("?tp_btf/call_function_entry")
+int BPF_PROG(wprof_ipi_multi_entry, int vector)
+{
+	struct task_struct *task;
+
+	if (vector != CALL_FUNCTION_VECTOR)
+		return 0;
+
+	task = bpf_get_current_task_btf();
+	if (!should_trace_task(task))
+		return 0;
+
+	return handle_ipi(task, IPI_MULTI, true /*start*/);
+}
+
+SEC("?tp_btf/call_function_exit")
+int BPF_PROG(wprof_ipi_multi_exit, int vector)
+{
+	struct task_struct *task;
+
+	if (vector != CALL_FUNCTION_VECTOR)
+		return 0;
+
+	task = bpf_get_current_task_btf();
+	if (!should_trace_task(task))
+		return 0;
+
+	return handle_ipi(task, IPI_MULTI, false /*!start*/);
+}
+
+SEC("?tp_btf/call_function_single_entry")
+int BPF_PROG(wprof_ipi_single_entry, int vector)
+{
+	struct task_struct *task;
+
+	if (vector != CALL_FUNCTION_SINGLE_VECTOR)
+		return 0;
+
+	task = bpf_get_current_task_btf();
+	if (!should_trace_task(task))
+		return 0;
+
+	return handle_ipi(task, IPI_SINGLE, true /*start*/);
+}
+
+SEC("?tp_btf/call_function_single_exit")
+int BPF_PROG(wprof_ipi_single_exit, int vector)
+{
+	struct task_struct *task;
+
+	if (vector != CALL_FUNCTION_SINGLE_VECTOR)
+		return 0;
+
+	task = bpf_get_current_task_btf();
+	if (!should_trace_task(task))
+		return 0;
+
+	return handle_ipi(task, IPI_SINGLE, false /*!start*/);
+}
+
+SEC("?tp_btf/reschedule_entry")
+int BPF_PROG(wprof_ipi_resched_entry, int vector)
+{
+	struct task_struct *task;
+
+	if (vector != RESCHEDULE_VECTOR)
+		return 0;
+
+	task = bpf_get_current_task_btf();
+	if (!should_trace_task(task))
+		return 0;
+
+	return handle_ipi(task, IPI_RESCHED, true /*start*/);
+}
+
+SEC("?tp_btf/reschedule_exit")
+int BPF_PROG(wprof_ipi_resched_exit, int vector)
+{
+	struct task_struct *task;
+
+	if (vector != RESCHEDULE_VECTOR)
+		return 0;
+
+	task = bpf_get_current_task_btf();
+	if (!should_trace_task(task))
+		return 0;
+
+	return handle_ipi(task, IPI_RESCHED, false /*!start*/);
+}
+
+#endif /* __TARGET_ARCH_x86 */

@@ -424,6 +424,13 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *worker, int num_
 	struct wprof_bpf *skel;
 	int pefd, i, err = 0;
 
+#ifndef __x86_64__
+	if (env.capture_ipi) {
+		fprintf(stderr, "IPI capture is supported only on x86-64 architecture!\n");
+		return -EOPNOTSUPP;
+	}
+#endif /* __x86_64 */
+
 	libbpf_set_print(libbpf_print_fn);
 
 	err = parse_cpu_mask_file(online_cpus_file, &st->online_mask, &st->num_online_cpus);
@@ -439,6 +446,17 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *worker, int num_
 		err = -errno;
 		fprintf(stderr, "Failed to open and load BPF skeleton: %d\n", err);
 		return err;
+	}
+
+	if (env.capture_ipi) {
+		bpf_program__set_autoload(skel->progs.wprof_ipi_send_cpu, true);
+		bpf_program__set_autoload(skel->progs.wprof_ipi_send_mask, true);
+		bpf_program__set_autoload(skel->progs.wprof_ipi_single_entry, true);
+		bpf_program__set_autoload(skel->progs.wprof_ipi_single_exit, true);
+		bpf_program__set_autoload(skel->progs.wprof_ipi_multi_entry, true);
+		bpf_program__set_autoload(skel->progs.wprof_ipi_multi_exit, true);
+		bpf_program__set_autoload(skel->progs.wprof_ipi_resched_entry, true);
+		bpf_program__set_autoload(skel->progs.wprof_ipi_resched_exit, true);
 	}
 
 	bpf_map__set_max_entries(skel->maps.rbs, env.ringbuf_cnt);
@@ -875,10 +893,12 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	err = process_stack_traces(worker);
-	if (err) {
-		fprintf(stderr, "Failed to symbolize and dump stack traces: %d\n", err);
-		goto cleanup;
+	if (env.stack_traces) {
+		err = process_stack_traces(worker);
+		if (err) {
+			fprintf(stderr, "Failed to symbolize and dump stack traces: %d\n", err);
+			goto cleanup;
+		}
 	}
 
 	{
