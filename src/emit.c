@@ -532,7 +532,7 @@ static struct task_state *task_state(struct worker_state *w, struct wprof_task *
 	st = calloc(1, sizeof(*st));
 	st->tid = t->tid;
 	st->pid = t->pid;
-	strlcpy(st->comm, t->comm, sizeof(st->comm));
+	wprof_strlcpy(st->comm, t->comm, sizeof(st->comm));
 	st->name_iid = emit_intern_str(w, t->comm);
 
 	hashmap__set(tasks, key, st, NULL, NULL);
@@ -551,7 +551,7 @@ static struct task_state *task_state(struct worker_state *w, struct wprof_task *
 			/* no task group leader task yet */
 			pst = calloc(1, sizeof(*st));
 			pst->tid = pst->pid = t->pid;
-			strlcpy(pst->comm, t->pcomm, sizeof(pst->comm));
+			wprof_strlcpy(pst->comm, t->pcomm, sizeof(pst->comm));
 			pst->name_iid = emit_intern_str(w, pst->comm);
 
 			hashmap__set(tasks, pkey, pst, NULL, NULL);
@@ -561,8 +561,8 @@ static struct task_state *task_state(struct worker_state *w, struct wprof_task *
 				.pid = t->pid,
 				.flags = 0,
 			};
-			strlcpy(pt.comm, t->pcomm, sizeof(pt.comm));
-			strlcpy(pt.pcomm, t->pcomm, sizeof(pt.comm));
+			wprof_strlcpy(pt.comm, t->pcomm, sizeof(pt.comm));
+			wprof_strlcpy(pt.pcomm, t->pcomm, sizeof(pt.pcomm));
 
 			emit_process_track_descr(&w->stream, &pt);
 			emit_thread_track_descr(&w->stream, &pt, pst->comm);

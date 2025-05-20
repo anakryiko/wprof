@@ -75,7 +75,7 @@ static inline int round_pow_of_2(int n)
  * in what is returned. Given this is internal helper, it's trivial to extend
  * this, when necessary. Use this instead of strncpy inside libbpf source code.
  */
-static inline void strlcpy(char *dst, const char *src, size_t sz)
+static inline void wprof_strlcpy(char *dst, const char *src, size_t sz)
 {
 	size_t i;
 
