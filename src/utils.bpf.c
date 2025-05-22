@@ -98,7 +98,7 @@ static int glob_match_step(u32 iter, struct glob_state *st)
 	}
 }
 
-static int glob_match(const char *pat, size_t pat_sz, const char *str, size_t str_sz)
+int glob_match(const char *pat, size_t pat_sz, const char *str, size_t str_sz)
 {
 	struct glob_state state = {
 		/* inputs */
@@ -120,9 +120,9 @@ static int glob_match(const char *pat, size_t pat_sz, const char *str, size_t st
 	return state.match;
 }
 
-#define GLOB_BPF_TEST 1
+#define GLOB_BPF_TEST 0
 
-#ifdef GLOB_BPF_TEST
+#if GLOB_BPF_TEST == 1
 /* Glob matching tests. Adapted from:
  *
  * https://github.com/torvalds/linux/blob/master/lib/globtest.c

@@ -16,4 +16,6 @@
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
 
+int glob_match(const char *pat, size_t pat_sz, const char *str, size_t str_sz);
+
 #endif /* __WPROF_BPF_H_ */
