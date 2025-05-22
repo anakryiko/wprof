@@ -33,6 +33,7 @@ struct env env = {
 enum {
 	OPT_RINGBUF_SZ = 1000,
 	OPT_TASK_STATE_SZ = 1001,
+	OPT_TIMER_FREQ = 1002,
 	OPT_STATS = 1003,
 	OPT_LIBBPF_LOGS = 1004,
 	OPT_BREAKOUT_COUNTERS = 1008,
@@ -56,7 +57,7 @@ static const struct argp_option opts[] = {
 	{ "libbpf-logs", OPT_LIBBPF_LOGS, NULL, 0, "Emit libbpf verbose logs" },
 
 	{ "dur-ms", 'd', "DURATION", 0, "Limit running duration to given number of ms (default: 1000ms)" },
-	{ "freq", 'f', "HZ", 0, "On-CPU timer interrupt frequency (default: 100Hz, i.e., every 10ms)" },
+	{ "timer-freq", OPT_TIMER_FREQ, "HZ", 0, "On-CPU timer interrupt frequency (default: 100Hz, i.e., every 10ms)" },
 
 	{ "data", 'D', "FILE", 0, "Data dump path (defaults to 'wprof.data' in current directory)" },
 	{ "trace", 'T', "FILE", 0, "Emit trace to specified file" },
@@ -80,7 +81,7 @@ static const struct argp_option opts[] = {
 	{ "no-kthread", OPT_DENY_KTHREAD, NULL, 0, "Deny kernel tasks" },
 
 	/* event subset targeting */
-	{ "feature", 'F', "FEAT", 0, "Features selector. Supported: ipi, numa" },
+	{ "feature", 'f', "FEAT", 0, "Features selector. Supported: ipi, numa, tidpid" },
 
 	{ "ringbuf-size", OPT_RINGBUF_SZ, "SIZE", 0, "BPF ringbuf size (in KBs)" },
 	{ "task-state-size", OPT_TASK_STATE_SZ, "SIZE", 0, "BPF task state map size (in threads)" },
@@ -136,11 +137,13 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		env.stack_traces = false;
 		break;
 	/* FEATURES SELECTION */
-	case 'F':
-		if (strcasecmp(arg, "numa") == 0) {
-			env.capture_numa = true;
-		} else if (strcasecmp(arg, "ipi") == 0) {
+	case 'f':
+		if (strcasecmp(arg, "ipi") == 0) {
 			env.capture_ipi = true;
+		} else if (strcasecmp(arg, "numa") == 0) {
+			env.emit_numa = true;
+		} else if (strcasecmp(arg, "tidpid") == 0) {
+			env.emit_tidpid = true;
 		} else {
 			fprintf(stderr, "Unrecognized requested feature '%s!\n", arg);
 			return -EINVAL;
@@ -216,7 +219,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		env.deny_kthread = true;
 		break;
 	/* TUNING */
-	case 'f':
+	case OPT_TIMER_FREQ:
 		errno = 0;
 		env.freq = strtol(arg, NULL, 0);
 		if (errno || env.freq <= 0) {

@@ -27,7 +27,8 @@ struct env {
 
 	/* feature selector */
 	bool capture_ipi;
-	bool capture_numa;
+	bool emit_numa;
+	bool emit_tidpid;
 
 	u64 actual_start_ts;
 	u64 sess_start_ts;
