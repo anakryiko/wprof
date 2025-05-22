@@ -598,10 +598,10 @@ static bool should_trace_task(const struct wprof_task *task)
 		if (task->tid == env.deny_tids[i])
 			return false;
 	for (int i = 0; i < env.deny_pname_cnt; i++)
-		if (glob_matches(env.deny_pnames[i], task->pcomm))
+		if (wprof_glob_match(env.deny_pnames[i], task->pcomm))
 			return false;
 	for (int i = 0; i < env.deny_tname_cnt; i++)
-		if (glob_matches(env.deny_tnames[i], task->comm))
+		if (wprof_glob_match(env.deny_tnames[i], task->comm))
 			return false;
 	if (env.deny_idle && task->pid == 0)
 		return false;
@@ -624,12 +624,12 @@ static bool should_trace_task(const struct wprof_task *task)
 		needs_match = true;
 	}
 	for (int i = 0; i < env.allow_pname_cnt; i++) {
-		if (glob_matches(env.allow_pnames[i], task->pcomm))
+		if (wprof_glob_match(env.allow_pnames[i], task->pcomm))
 			return true;
 		needs_match = true;
 	}
 	for (int i = 0; i < env.allow_tname_cnt; i++) {
-		if (glob_matches(env.allow_tnames[i], task->comm))
+		if (wprof_glob_match(env.allow_tnames[i], task->comm))
 			return true;
 		needs_match = true;
 	}

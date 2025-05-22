@@ -133,36 +133,56 @@ const char *vsfmt(const char *fmt, va_list ap)
 	return fmt_buf;
 }
 
-/* adapted from libbpf sources */
-bool glob_matches(const char *glob, const char *s)
+/**
+ * NOTE: adapted from Linux kernel sources (lib/glob.c)
+ */
+bool wprof_glob_match(char const *pat, char const *str)
 {
-	while (*s && *glob && *glob != '*') {
-		/* Matches any single character */
-		if (*glob == '?') {
-			s++;
-			glob++;
-			continue;
-		}
-		if (*s != *glob)
-			return false;
-		s++;
-		glob++;
-	}
-	/* Check wild card */
-	if (*glob == '*') {
-		while (*glob == '*') {
-			glob++;
-		}
-		if (!*glob) /* Tail wild card matches all */
-			return true;
-		while (*s) {
-			if (glob_matches(glob, s++))
-				return true;
-		}
-	}
-	return !*s && !*glob;
-}
+	/*
+	 * Backtrack to previous * on mismatch and retry starting one
+	 * character later in the string.  Because * matches all characters
+	 * (no exception for /), it can be easily proved that there's
+	 * never a need to backtrack multiple levels.
+	 */
+	char const *back_pat = NULL, *back_str;
 
+	/*
+	 * Loop over each token (character or class) in pat, matching
+	 * it against the remaining unmatched tail of str.  Return false
+	 * on mismatch, or true after matching the trailing nul bytes.
+	 */
+	for (;;) {
+		unsigned char c = *str++;
+		unsigned char d = *pat++;
+
+		switch (d) {
+		case '?':	/* Wildcard: anything but nul */
+			if (c == '\0')
+				return false;
+			break;
+		case '*':	/* Any-length wildcard */
+			if (*pat == '\0')	/* Optimize trailing * case */
+				return true;
+			back_pat = pat;
+			back_str = --str;	/* Allow zero-length match */
+			break;
+		default:	/* Literal character */
+			if (d == '\\')
+				d = *pat++;
+			if (c == d) {
+				if (d == '\0')
+					return true;
+				break;
+			}
+			if (c == '\0' || !back_pat)
+				return false;	/* No point continuing */
+			/* Try again from last *, one character later in str. */
+			pat = back_pat;
+			str = ++back_str;
+			break;
+		}
+	}
+}
 
 static u64 ktime_off;
 
