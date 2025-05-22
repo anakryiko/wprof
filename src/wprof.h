@@ -26,6 +26,9 @@
 #define PF_KTHREAD 0x00200000
 #endif
 
+#define WPROF_GLOB_SZ 32
+struct glob_str { char pat[WPROF_GLOB_SZ]; };
+
 enum wprof_filt_mode {
 	FILT_ALLOW_PID = 0x01,
 	FILT_ALLOW_TID = 0x02,
@@ -37,6 +40,8 @@ enum wprof_filt_mode {
 
 	FILT_DENY_PID = FILT_ALLOW_PID << 16,
 	FILT_DENY_TID = FILT_ALLOW_TID << 16,
+	FILT_DENY_PNAME = FILT_ALLOW_PNAME << 16,
+	FILT_DENY_TNAME = FILT_ALLOW_TNAME << 16,
 	FILT_DENY_IDLE = FILT_ALLOW_IDLE << 16,
 	FILT_DENY_KTHREAD = FILT_ALLOW_KTHREAD << 16,
 };

@@ -98,11 +98,15 @@ const volatile int allow_tid_cnt;
 int deny_tids[1] SEC(".data.deny_tids");
 const volatile int deny_tid_cnt;
 
-char allow_pnames[16][1] SEC(".data.allow_pnames");
+struct glob_str allow_pnames[1] SEC(".data.allow_pnames");
 const volatile int allow_pname_cnt;
+struct glob_str deny_pnames[1] SEC(".data.deny_pnames");
+const volatile int deny_pname_cnt;
 
-char allow_tnames[16][1] SEC(".data.allow_tnames");
+struct glob_str allow_tnames[1] SEC(".data.allow_tnames");
 const volatile int allow_tname_cnt;
+struct glob_str deny_tnames[1] SEC(".data.deny_tnames");
+const volatile int deny_tname_cnt;
 /* END FILTERING */
 
 const volatile u32 perf_ctr_cnt = 1; /* for veristat, reset in user space */
@@ -153,6 +157,13 @@ static void task_state_delete(int pid)
 	bpf_map_delete_elem(&task_states, &id);
 }
 
+struct comm_str { char str[TASK_COMM_LEN]; };
+
+bool glob_match_comm(struct glob_str *glob, struct comm_str *comm)
+{
+	return glob_match(glob->pat, sizeof(glob->pat), comm->str, sizeof(comm->str));
+}
+
 static bool should_trace_task(struct task_struct *tsk)
 {
 	if (unlikely(!session_start_ts)) /* we are still starting */
@@ -185,6 +196,24 @@ static bool should_trace_task(struct task_struct *tsk)
 				return false;
 		}
 	}
+	if (mode & FILT_DENY_PNAME) {
+		struct comm_str pcomm;
+		bpf_probe_read_kernel(pcomm.str, sizeof(pcomm.str), tsk->group_leader->comm);
+		for (int i = 0; i < deny_pname_cnt; i++) {
+			if (glob_match(deny_pnames[i].pat, sizeof(deny_pnames[i].pat),
+				       pcomm.str, sizeof(pcomm.str)))
+				return false;
+		}
+	}
+	if (mode & FILT_DENY_TNAME) {
+		struct comm_str comm;
+		bpf_probe_read_kernel(comm.str, sizeof(comm.str), tsk->comm);
+		for (int i = 0; i < deny_tname_cnt; i++) {
+			if (glob_match(deny_tnames[i].pat, sizeof(deny_tnames[i].pat),
+				       comm.str, sizeof(comm.str)))
+				return false;
+		}
+	}
 
 	/* ALLOW filtering */
 	bool needs_match = false;
@@ -200,6 +229,26 @@ static bool should_trace_task(struct task_struct *tsk)
 		u32 tid = tsk->pid;
 		for (int i = 0; i < allow_tid_cnt; i++) {
 			if (allow_tids[i] == tid)
+				return true;
+		}
+		needs_match = true;
+	}
+	if (mode & FILT_ALLOW_PNAME) {
+		struct comm_str pcomm;
+		bpf_probe_read_kernel(pcomm.str, sizeof(pcomm.str), tsk->group_leader->comm);
+		for (int i = 0; i < allow_pname_cnt; i++) {
+			if (glob_match(allow_pnames[i].pat, sizeof(allow_pnames[i].pat),
+				       pcomm.str, sizeof(pcomm.str)))
+				return true;
+		}
+		needs_match = true;
+	}
+	if (mode & FILT_ALLOW_TNAME) {
+		struct comm_str comm;
+		bpf_probe_read_kernel(comm.str, sizeof(comm.str), tsk->comm);
+		for (int i = 0; i < allow_tname_cnt; i++) {
+			if (glob_match(allow_tnames[i].pat, sizeof(allow_tnames[i].pat),
+				       comm.str, sizeof(comm.str)))
 				return true;
 		}
 		needs_match = true;

@@ -463,58 +463,110 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *worker, int num_
 	bpf_map__set_max_entries(skel->maps.task_states, env.task_state_sz);
 
 	/* FILTERING */
-	if (env.allow_pid_cnt > 0) {
+	struct {
+		enum wprof_filt_mode filt_mode;
+		const char *name;
+		int cnt;
+		int *ints;
+		struct bpf_map *map;
+		int **mmap;
+		int *skel_cnt;
+	} int_filters[] = {
+		{
+			FILT_ALLOW_PID, "PID allowlist",
+			env.allow_pid_cnt, env.allow_pids,
+			skel->maps.data_allow_pids, (int **)&skel->data_allow_pids,
+			&skel->rodata->allow_pid_cnt,
+		},
+		{
+			FILT_DENY_PID, "PID denylist",
+			env.deny_pid_cnt, env.deny_pids,
+			skel->maps.data_deny_pids, (int **)&skel->data_deny_pids,
+			&skel->rodata->deny_pid_cnt,
+		},
+		{
+			FILT_ALLOW_TID, "TID allowlist",
+			env.allow_tid_cnt, env.allow_tids,
+			skel->maps.data_allow_tids, (int **)&skel->data_allow_tids,
+			&skel->rodata->allow_tid_cnt,
+		},
+		{
+			FILT_DENY_TID, "TID denylist",
+			env.deny_tid_cnt, env.deny_tids,
+			skel->maps.data_deny_tids, (int **)&skel->data_deny_tids,
+			&skel->rodata->deny_tid_cnt,
+		},
+	};
+	for (int i = 0; i < ARRAY_SIZE(int_filters); i++) {
+		const typeof(int_filters[0]) *f = &int_filters[i];
 		size_t _sz;
 
-		skel->rodata->filt_mode |= FILT_ALLOW_PID;
-		skel->rodata->allow_pid_cnt = env.allow_pid_cnt;
-		if ((err = bpf_map__set_value_size(skel->maps.data_allow_pids, env.allow_pid_cnt * 4))) {
-			fprintf(stderr, "Failed to size BPF-side PID allowlist: %d\n", err);
+		if (f->cnt == 0)
+			continue;
+
+		skel->rodata->filt_mode |= f->filt_mode;
+		*f->skel_cnt = f->cnt;
+		if ((err = bpf_map__set_value_size(f->map, f->cnt * sizeof(int)))) {
+			fprintf(stderr, "Failed to size BPF-side %s: %d\n", f->name, err);
 			return err;
 		}
-		skel->data_allow_pids = bpf_map__initial_value(skel->maps.data_allow_pids, &_sz);
-		for (int i = 0; i < env.allow_pid_cnt; i++)
-			skel->data_allow_pids->allow_pids[i] = env.allow_pids[i];
+		*f->mmap = bpf_map__initial_value(f->map, &_sz);
+		for (int i = 0; i < f->cnt; i++)
+			(*f->mmap)[i] = f->ints[i];
 	}
-	if (env.deny_pid_cnt > 0) {
+
+	struct {
+		enum wprof_filt_mode filt_mode;
+		const char *name;
+		int cnt;
+		char **globs;
+		struct bpf_map *map;
+		struct glob_str **mmap;
+		int *skel_cnt;
+	} glob_filters[] = {
+		{
+			FILT_ALLOW_PNAME, "process name allowlist",
+			env.allow_pname_cnt, env.allow_pnames,
+			skel->maps.data_allow_pnames, (struct glob_str **)&skel->data_allow_pnames,
+			&skel->rodata->allow_pname_cnt,
+		},
+		{
+			FILT_DENY_PNAME, "process name denylist",
+			env.deny_pname_cnt, env.deny_pnames,
+			skel->maps.data_deny_pnames, (struct glob_str **)&skel->data_deny_pnames,
+			&skel->rodata->deny_pname_cnt,
+		},
+		{
+			FILT_ALLOW_TNAME, "thread name allowlist",
+			env.allow_tname_cnt, env.allow_tnames,
+			skel->maps.data_allow_tnames, (struct glob_str **)&skel->data_allow_tnames,
+			&skel->rodata->allow_tname_cnt,
+		},
+		{
+			FILT_DENY_TNAME, "thread name denylist",
+			env.deny_tname_cnt, env.deny_tnames,
+			skel->maps.data_deny_tnames, (struct glob_str **)&skel->data_deny_tnames,
+			&skel->rodata->deny_tname_cnt,
+		},
+	};
+	for (int i = 0; i < ARRAY_SIZE(glob_filters); i++) {
+		const typeof(glob_filters[0]) *f = &glob_filters[i];
 		size_t _sz;
 
-		skel->rodata->filt_mode |= FILT_DENY_PID;
-		skel->rodata->deny_pid_cnt = env.deny_pid_cnt;
-		if ((err = bpf_map__set_value_size(skel->maps.data_deny_pids, env.deny_pid_cnt * 4))) {
-			fprintf(stderr, "Failed to size BPF-side PID denylist: %d\n", err);
-			return err;
-		}
-		skel->data_deny_pids = bpf_map__initial_value(skel->maps.data_deny_pids, &_sz);
-		for (int i = 0; i < env.deny_pid_cnt; i++)
-			skel->data_deny_pids->deny_pids[i] = env.deny_pids[i];
-	}
-	if (env.allow_tid_cnt > 0) {
-		size_t _sz;
+		if (f->cnt == 0)
+			continue;
 
-		skel->rodata->filt_mode |= FILT_ALLOW_TID;
-		skel->rodata->allow_tid_cnt = env.allow_tid_cnt;
-		if ((err = bpf_map__set_value_size(skel->maps.data_allow_tids, env.allow_tid_cnt * 4))) {
-			fprintf(stderr, "Failed to size BPF-side TID allowlist: %d\n", err);
+		skel->rodata->filt_mode |= f->filt_mode;
+		*f->skel_cnt = f->cnt;
+		if ((err = bpf_map__set_value_size(f->map, f->cnt * sizeof(**f->mmap)))) {
+			fprintf(stderr, "Failed to size BPF-side %s: %d\n", f->name, err);
 			return err;
 		}
-		skel->data_allow_tids = bpf_map__initial_value(skel->maps.data_allow_tids, &_sz);
-		for (int i = 0; i < env.allow_tid_cnt; i++)
-			skel->data_allow_tids->allow_tids[i] = env.allow_tids[i];
+		*f->mmap = bpf_map__initial_value(f->map, &_sz);
+		for (int i = 0; i < f->cnt; i++)
+			wprof_strlcpy((*f->mmap)[i].pat, f->globs[i], sizeof(**f->mmap));
 	}
-	if (env.deny_tid_cnt > 0) {
-		size_t _sz;
 
-		skel->rodata->filt_mode |= FILT_DENY_TID;
-		skel->rodata->deny_tid_cnt = env.deny_tid_cnt;
-		if ((err = bpf_map__set_value_size(skel->maps.data_deny_tids, env.deny_tid_cnt * 4))) {
-			fprintf(stderr, "Failed to size BPF-side TID denylist: %d\n", err);
-			return err;
-		}
-		skel->data_deny_tids = bpf_map__initial_value(skel->maps.data_deny_tids, &_sz);
-		for (int i = 0; i < env.deny_tid_cnt; i++)
-			skel->data_deny_tids->deny_tids[i] = env.deny_pids[i];
-	}
 	if (env.allow_idle)
 		skel->rodata->filt_mode |= FILT_ALLOW_IDLE;
 	if (env.deny_idle)
