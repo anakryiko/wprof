@@ -40,9 +40,9 @@ enum {
 	OPT_PB_DISABLE_INTERNS = 1010,
 	OPT_RINGBUF_CNT = 1011,
 
-	OPT_DENY_PID = 2000,
+	OPT_ALLOW_TID = 2000,
 	OPT_DENY_TID = 2001,
-	OPT_DENY_PNAME = 2002,
+	OPT_ALLOW_TNAME = 2002,
 	OPT_DENY_TNAME = 2003,
 	OPT_ALLOW_IDLE = 2004,
 	OPT_DENY_IDLE = 2005,
@@ -67,13 +67,13 @@ static const struct argp_option opts[] = {
 
 	/* allow/deny filters */
 	{ "pid", 'p', "PID", 0, "PID allow filter" },
-	{ "no-pid", OPT_DENY_PID, "PID", 0, "PID allow filter" },
-	{ "tid", 'P', "TID", 0, "TID allow filter" },
-	{ "no-tid", OPT_DENY_TID, "TID", 0, "TID allow filter" },
+	{ "no-pid", 'P', "PID", 0, "PID deny filter" },
+	{ "tid", OPT_ALLOW_TID, "TID", 0, "TID allow filter" },
+	{ "no-tid", OPT_DENY_TID, "TID", 0, "TID deny filter" },
 	{ "process-name", 'n', "NAME_GLOB", 0, "Process name allow filter" },
-	{ "no-process-name", OPT_DENY_PNAME, "NAME_GLOB", 0, "Process name allow filter" },
-	{ "thread-name", 'N', "NAME_GLOB", 0, "Thread name allow filter" },
-	{ "no-thread-name", OPT_DENY_TNAME, "NAME_GLOB", 0, "Thread name allow filter" },
+	{ "no-process-name", 'N', "NAME_GLOB", 0, "Process name deny filter" },
+	{ "thread-name", OPT_ALLOW_TNAME, "NAME_GLOB", 0, "Thread name allow filter" },
+	{ "no-thread-name", OPT_DENY_TNAME, "NAME_GLOB", 0, "Thread name deny filter" },
 	{ "idle", OPT_ALLOW_IDLE, NULL, 0, "Allow idle tasks" },
 	{ "no-idle", OPT_DENY_IDLE, NULL, 0, "Deny idle tasks" },
 	{ "kthread", OPT_ALLOW_KTHREAD, NULL, 0, "Allow kernel tasks" },
@@ -152,12 +152,12 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		if (err)
 			return err;
 		break;
-	case OPT_DENY_PID:
+	case 'P':
 		err = append_num(&env.deny_pids, &env.deny_pid_cnt, arg);
 		if (err)
 			return err;
 		break;
-	case 'P':
+	case OPT_ALLOW_TID:
 		err = append_num(&env.allow_tids, &env.allow_tid_cnt, arg);
 		if (err)
 			return err;
@@ -176,7 +176,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			return -ENOMEM;
 		}
 		break;
-	case OPT_DENY_PNAME:
+	case 'N':
 		if (arg[0] == '@') {
 			err = append_str_file(&env.deny_pnames, &env.deny_pname_cnt, arg + 1);
 			if (err)
@@ -185,7 +185,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			return -ENOMEM;
 		}
 		break;
-	case 'N':
+	case OPT_ALLOW_TNAME:
 		if (arg[0] == '@') {
 			err = append_str_file(&env.allow_tnames, &env.allow_tname_cnt, arg + 1);
 			if (err)
