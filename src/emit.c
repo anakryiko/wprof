@@ -650,6 +650,11 @@ static bool should_trace_task(const struct wprof_task *task)
 
 int process_event(struct worker_state *w, struct wprof_event *e, size_t size)
 {
+	if ((long long)(e->ts - env.sess_start_ts) < 0)
+		return 0;
+	if ((long long)(e->ts - env.sess_end_ts) >= 0)
+		return 0;
+
 	switch (e->kind) {
 	case EV_TIMER: {
 		if (!should_trace_task(&e->task))

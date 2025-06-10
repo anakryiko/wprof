@@ -931,7 +931,7 @@ int main(int argc, char **argv)
 
 		/* setup original (replayed) time markers */
 		env.sess_start_ts = dump_hdr->cfg.ktime_start_ns;
-		env.sess_end_ts = dump_hdr->cfg.ktime_start_ns + dump_hdr->cfg.duration_ns;
+		env.sess_end_ts = dump_hdr->cfg.ktime_start_ns + env.duration_ns;
 		set_ktime_off(dump_hdr->cfg.ktime_start_ns, dump_hdr->cfg.realtime_start_ns);
 
 		goto skip_data_collection;
