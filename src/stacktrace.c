@@ -810,14 +810,16 @@ int generate_stack_traces(struct worker_state *w)
 	pb_iid mapping_iid = 1;
 	append_mapping_iid(&strace_iids.mappings, mapping_iid, 0, 0x7fffffffffffffff, 0);
 
-	pb_iid unkn_iid = str_iid_for(&fname_iids, "<unknown>", NULL, NULL);
-	append_str_iid(&strace_iids.func_names, unkn_iid, "<unknown>");
+	pb_iid kern_unkn_iid = str_iid_for(&fname_iids, "[K] <unknown>", NULL, NULL);
+	append_str_iid(&strace_iids.func_names, kern_unkn_iid, "[K] <unknown>");
+	pb_iid user_unkn_iid = str_iid_for(&fname_iids, "[U] <unknown>", NULL, NULL);
+	append_str_iid(&strace_iids.func_names, user_unkn_iid, "[U] <unknown>");
 
 	char sym_buf[1024];
 	struct wprof_stack_frame_record *frec;
 	wprof_for_each_stack_frame(frec, w->dump_hdr) {
 		struct wprof_stack_frame *f = frec->f;
-		pb_iid fname_iid = unkn_iid;
+		pb_iid fname_iid = f->flags & WSF_KERNEL ? kern_unkn_iid : user_unkn_iid;
 		bool new_iid = false;
 		const char *sym_name = f->func_name_stroff ? wprof_stacks_str(w->dump_hdr, f->func_name_stroff) : NULL;
 
