@@ -851,6 +851,7 @@ int process_event(struct worker_state *w, struct wprof_event *e, size_t size)
 
 				emit_kv_str(IID_ANNK_FORKED_INTO, "forked_into",
 					    emit_intern_str(w, e->fork.child.comm), e->fork.child.comm);
+				emit_flow_id(e->ts);
 				if (env.emit_tidpid) {
 					emit_kv_int(IID_ANNK_FORKED_INTO_TID, "forked_into_tid", task_tid(&e->fork.child));
 					emit_kv_int(IID_ANNK_FORKED_INTO_PID, "forked_into_pid", e->fork.child.pid);
@@ -868,6 +869,7 @@ int process_event(struct worker_state *w, struct wprof_event *e, size_t size)
 
 				emit_kv_str(IID_ANNK_FORKED_FROM, "forked_from",
 					    emit_intern_str(w, e->task.comm), e->task.comm);
+				emit_flow_id(e->ts);
 				if (env.emit_tidpid) {
 					emit_kv_int(IID_ANNK_FORKED_FROM_TID, "forked_from_tid", task_tid(&e->task));
 					emit_kv_int(IID_ANNK_FORKED_FROM_PID, "forked_from_pid", e->task.pid);
