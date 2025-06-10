@@ -514,10 +514,9 @@ static pb_iid emit_intern_str(struct worker_state *w, const char *s)
 	bool new_iid;
 	const char *iid_str;
 
-	(void)str_iid_for(&w->name_iids, s, &new_iid, &iid_str);
+	iid = str_iid_for(&w->name_iids, s, &new_iid, &iid_str);
 	if (new_iid)
 		emit_str_iid(iid, iid_str);
-
 	return iid;
 }
 
