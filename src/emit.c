@@ -711,8 +711,8 @@ int process_event(struct worker_state *w, struct wprof_event *e, size_t size)
 				emit_kv_int(IID_ANNK_SWITCH_TO_PID, "switch_to_pid", e->swtch_from.next.pid);
 			}
 
-			for (int i = 0; i < env.counter_cnt; i++) {
-				const struct perf_counter_def *def = &perf_counter_defs[env.counter_ids[i]];
+			for (int i = 0; i < env.cfg.counter_cnt; i++) {
+				const struct perf_counter_def *def = &perf_counter_defs[env.cfg.counter_ids[i]];
 				const struct perf_counters *st_ctrs = &st->oncpu_ctrs;
 				const struct perf_counters *ev_ctrs = &e->swtch_from.ctrs;
 
@@ -1002,8 +1002,8 @@ skip_emit_free:
 		emit_slice_point(e->ts, &e->task,
 				 IID_NAME_HARDIRQ, "HARDIRQ",
 				 IID_CAT_HARDIRQ, "HARDIRQ", false /* !start */) {
-			for (int i = 0; i < env.counter_cnt; i++) {
-				const struct perf_counter_def *def = &perf_counter_defs[env.counter_ids[i]];
+			for (int i = 0; i < env.cfg.counter_cnt; i++) {
+				const struct perf_counter_def *def = &perf_counter_defs[env.cfg.counter_ids[i]];
 
 				emit_kv_float(def->trace_name_iid, def->trace_name,
 					      "%.6lf", e->hardirq.ctrs.val[i] * def->mul);
@@ -1038,8 +1038,8 @@ skip_emit_free:
 		emit_slice_point(e->ts, &e->task,
 				 name_iid, sfmt("%s:%s", "SOFTIRQ", softirq_str(e->softirq.vec_nr)),
 				 IID_CAT_SOFTIRQ, "SOFTIRQ", false /* !start */) {
-			for (int i = 0; i < env.counter_cnt; i++) {
-				const struct perf_counter_def *def = &perf_counter_defs[env.counter_ids[i]];
+			for (int i = 0; i < env.cfg.counter_cnt; i++) {
+				const struct perf_counter_def *def = &perf_counter_defs[env.cfg.counter_ids[i]];
 
 				emit_kv_float(def->trace_name_iid, def->trace_name,
 					      "%.6lf", e->softirq.ctrs.val[i] * def->mul);
@@ -1064,8 +1064,8 @@ skip_emit_free:
 		emit_slice_point(e->ts, &e->task,
 				 IID_NONE, sfmt("%s:%s", "WQ", e->wq.desc),
 				 IID_CAT_WQ, "WQ", false /* !start */) {
-			for (int i = 0; i < env.counter_cnt; i++) {
-				const struct perf_counter_def *def = &perf_counter_defs[env.counter_ids[i]];
+			for (int i = 0; i < env.cfg.counter_cnt; i++) {
+				const struct perf_counter_def *def = &perf_counter_defs[env.cfg.counter_ids[i]];
 
 				emit_kv_float(def->trace_name_iid, def->trace_name,
 					      "%.6lf", e->wq.ctrs.val[i] * def->mul);
@@ -1127,8 +1127,8 @@ skip_emit_free:
 				emit_kv_float(IID_ANNK_IPI_DELAY_US, "ipi_delay_us",
 					      "%.3lf", (e->ipi.ipi_ts - e->ipi.send_ts) / 1000.0);
 			}
-			for (int i = 0; i < env.counter_cnt; i++) {
-				const struct perf_counter_def *def = &perf_counter_defs[env.counter_ids[i]];
+			for (int i = 0; i < env.cfg.counter_cnt; i++) {
+				const struct perf_counter_def *def = &perf_counter_defs[env.cfg.counter_ids[i]];
 
 				emit_kv_float(def->trace_name_iid, def->trace_name,
 					      "%.6lf", e->ipi.ctrs.val[i] * def->mul);

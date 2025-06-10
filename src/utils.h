@@ -14,6 +14,18 @@ typedef unsigned long long u64;
 typedef unsigned int u32;
 typedef unsigned short u16;
 
+enum tristate { UNSET = -1, TRUE = 1, FALSE = 0 };
+
+static inline bool is_true_or_unset(enum tristate tri)
+{
+	return tri == UNSET || tri == TRUE;
+}
+
+static inline bool is_false_or_unset(enum tristate tri)
+{
+	return tri == UNSET || tri == TRUE;
+}
+
 #ifndef ARRAY_SIZE
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
 #endif
@@ -29,6 +41,8 @@ typedef unsigned short u16;
 #ifndef offsetofend
 #define offsetofend(TYPE, MEMBER) (offsetof(TYPE, MEMBER) + sizeof((((TYPE *)0)->MEMBER)))
 #endif
+
+#define eprintf(fmt, ...) fprintf(stderr, fmt, ##__VA_ARGS__)
 
 /*
  * This function is from libbpf, but it is not a public API and can only be

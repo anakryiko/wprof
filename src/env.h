@@ -11,22 +11,26 @@
 #define DEFAULT_RINGBUF_SZ (32 * 1024 * 1024)
 #define DEFAULT_TASK_STATE_SZ (32 * 1024)
 
+#define DEFAULT_TIMER_FREQ_HZ 100
+#define DEFAULT_DURATION_MS 1000
+#define DEFAULT_CAPTURE_STACK_TRACES TRUE
+#define DEFAULT_CAPTURE_IPIS FALSE
+
 struct env {
 	bool verbose;
 	bool stats;
 	bool libbpf_logs;
 	bool breakout_counters;
-	bool stack_traces;
 	bool replay;
-	int freq;
-	int dur_ms;
+
+	/* data collection configuration */
+	struct wprof_data_cfg cfg;
 
 	int ringbuf_sz;
 	int task_state_sz;
 	int ringbuf_cnt;
 
 	/* feature selector */
-	bool capture_ipi;
 	bool emit_numa;
 	bool emit_tidpid;
 
@@ -39,9 +43,6 @@ struct env {
 
 	bool pb_debug_interns;
 	bool pb_disable_interns;
-
-	int counter_cnt;
-	int counter_ids[MAX_PERF_COUNTERS];
 
 	/* FILTERING */
 	char **allow_pnames, **deny_pnames;

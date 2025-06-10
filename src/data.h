@@ -7,8 +7,22 @@
 #include "wprof.h"
 
 #define WPROF_DATA_MAJOR 1
-#define WPROF_DATA_MINOR 0
+#define WPROF_DATA_MINOR 1
 #define WPROF_DATA_FLAG_INCOMPLETE 0xffffffffffffffffULL
+
+struct wprof_data_cfg {
+	u64 ktime_start_ns;
+	u64 realtime_start_ns;
+	u64 duration_ns;
+
+	int timer_freq_hz;
+
+	enum tristate capture_stack_traces;
+	enum tristate capture_ipis;
+
+	int counter_cnt;
+	int counter_ids[MAX_PERF_COUNTERS];
+};
 
 struct wprof_data_hdr {
 	char magic[6]; /* "WPROF\0" */
@@ -18,9 +32,7 @@ struct wprof_data_hdr {
 	int version_minor;
 	u64 events_off, events_sz;
 	u64 stacks_off, stacks_sz;
-	u64 ktime_start_ns;
-	u64 duration_ns;
-	u64 realtime_start_ns;
+	struct wprof_data_cfg cfg;
 } __attribute__((aligned(8)));
 
 struct wprof_stacks_hdr {

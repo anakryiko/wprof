@@ -18,16 +18,15 @@
 
 const char *argp_program_version = "wprof 0.0";
 const char *argp_program_bug_address = "<andrii@kernel.org>";
-const char argp_program_doc[] = "BPF-based wallcklock profiler.\n";
+const char argp_program_doc[] = "BPF-based wallclock profiler.\n";
 
 struct env env = {
 	.data_path = "wprof.data",
-	.freq = 100,
 	.ringbuf_sz = DEFAULT_RINGBUF_SZ,
 	.ringbuf_cnt = 1,
 	.task_state_sz = DEFAULT_TASK_STATE_SZ,
-	.stack_traces = true,
-	.dur_ms = 1000,
+	.cfg.capture_stack_traces = UNSET,
+	.cfg.capture_ipis = UNSET,
 };
 
 enum {
@@ -111,11 +110,12 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	case 'd':
 		errno = 0;
-		env.dur_ms = strtol(arg, NULL, 0);
-		if (errno || env.dur_ms < 0) {
+		env.cfg.duration_ns = strtol(arg, NULL, 0); /* parse as ms */
+		if (errno || env.cfg.duration_ns <= 0) {
 			fprintf(stderr, "Invalid running duration: %s\n", arg);
 			argp_usage(state);
 		}
+		env.cfg.duration_ns *= 1000000;
 		break;
 	case 'D':
 		env.data_path = strdup(arg);
@@ -131,15 +131,23 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		env.trace_path = strdup(arg);
 		break;
 	case 's':
-		env.stack_traces = true;
+		if (env.cfg.capture_stack_traces != UNSET && env.cfg.capture_stack_traces != TRUE) {
+			eprintf("Conflicting stack trace capture settings specified!\n");
+			return -EINVAL;
+		}
+		env.cfg.capture_stack_traces = TRUE;
 		break;
 	case 'S':
-		env.stack_traces = false;
+		if (env.cfg.capture_stack_traces != UNSET && env.cfg.capture_stack_traces != FALSE) {
+			eprintf("Conflicting stack trace capture settings specified!\n");
+			return -EINVAL;
+		}
+		env.cfg.capture_stack_traces = FALSE;
 		break;
 	/* FEATURES SELECTION */
 	case 'f':
 		if (strcasecmp(arg, "ipi") == 0) {
-			env.capture_ipi = true;
+			env.cfg.capture_ipis = TRUE;
 		} else if (strcasecmp(arg, "numa") == 0) {
 			env.emit_numa = true;
 		} else if (strcasecmp(arg, "tidpid") == 0) {
@@ -221,8 +229,8 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	/* TUNING */
 	case OPT_TIMER_FREQ:
 		errno = 0;
-		env.freq = strtol(arg, NULL, 0);
-		if (errno || env.freq <= 0) {
+		env.cfg.timer_freq_hz = strtol(arg, NULL, 0);
+		if (errno || env.cfg.timer_freq_hz <= 0) {
 			fprintf(stderr, "Invalid frequency: %s\n", arg);
 			argp_usage(state);
 		}
@@ -269,19 +277,19 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			argp_usage(state);
 		}
 
-		for (int i = 0; i < env.counter_cnt; i++) {
-			if (env.counter_ids[i] == counter_idx) {
+		for (int i = 0; i < env.cfg.counter_cnt; i++) {
+			if (env.cfg.counter_ids[i] == counter_idx) {
 				counter_idx = -1;
 				break;
 			}
 		}
 
 		if (counter_idx >= 0) {
-			if (env.counter_cnt >= MAX_PERF_COUNTERS) {
+			if (env.cfg.counter_cnt >= MAX_PERF_COUNTERS) {
 				fprintf(stderr, "Too many perf counters requested, only %d are currently supported!\n", MAX_PERF_COUNTERS);
 				return -E2BIG;
 			}
-			env.counter_ids[env.counter_cnt++] = counter_idx;
+			env.cfg.counter_ids[env.cfg.counter_cnt++] = counter_idx;
 		}
 		break;
 	}
