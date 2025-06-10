@@ -330,6 +330,26 @@ int process_stack_traces(struct worker_state *w)
 		total_uniq_cnt += 1;
 	}
 
+	struct blaze_symbolizer_opts blaze_opts = {
+		.type_size = sizeof(struct blaze_symbolizer_opts),
+		.auto_reload = false,
+		.code_info = true,
+		.inlined_fns = true,
+		.demangle = true,
+	};
+	struct blaze_symbolizer *symbolizer = NULL;
+
+	if (!env.symbolize_frugally) {
+		symbolizer = blaze_symbolizer_new_opts(&blaze_opts);
+		if (!symbolizer) {
+			blaze_err berr = blaze_err_last();
+			const char *berr_str = blaze_err_str(berr);
+
+			fprintf(stderr, "Failed to create a symbolizer: %s (%d)\n", berr_str, berr);
+			return berr;
+		}
+	}
+
 	struct strset *strs = strset__new(UINT_MAX, "", 1);
 
 	int mapped_fr_idx = 1;
@@ -355,20 +375,15 @@ int process_stack_traces(struct worker_state *w)
 			addr_cnt += 1;
 		}
 
-		struct blaze_symbolizer_opts blaze_opts = {
-			.type_size = sizeof(struct blaze_symbolizer_opts),
-			.auto_reload = false,
-			.code_info = true,
-			.inlined_fns = true,
-			.demangle = true,
-		};
-		struct blaze_symbolizer *symbolizer = blaze_symbolizer_new_opts(&blaze_opts);
-		if (!symbolizer) {
-			blaze_err berr = blaze_err_last();
-			const char *berr_str = blaze_err_str(berr);
+		if (env.symbolize_frugally) {
+			symbolizer = blaze_symbolizer_new_opts(&blaze_opts);
+			if (!symbolizer) {
+				blaze_err berr = blaze_err_last();
+				const char *berr_str = blaze_err_str(berr);
 
-			fprintf(stderr, "Failed to create a symbolizer: %s (%d)\n", berr_str, berr);
-			return berr;
+				fprintf(stderr, "Failed to create a symbolizer: %s (%d)\n", berr_str, berr);
+				return berr;
+			}
 		}
 
 		/* symbolize [start .. end - 1] range */
@@ -525,8 +540,13 @@ int process_stack_traces(struct worker_state *w)
 		last_uniq_cnt += addr_cnt;
 
 		start = end;
-		blaze_symbolizer_free(symbolizer);
+
+		if (env.symbolize_frugally) {
+			blaze_symbolizer_free(symbolizer);
+			symbolizer = NULL;
+		}
 	}
+	blaze_symbolizer_free(symbolizer);
 	free(addrs);
 
 	u64 symb_end_ns = ktime_now_ns();

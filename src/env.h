@@ -22,6 +22,7 @@ struct env {
 	bool libbpf_logs;
 	bool breakout_counters;
 	bool replay;
+	bool symbolize_frugally;
 
 	/* data collection configuration */
 	u64 ktime_start_ns;

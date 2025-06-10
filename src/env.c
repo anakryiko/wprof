@@ -39,6 +39,7 @@ enum {
 	OPT_PB_DEBUG_INTERNS = 1009,
 	OPT_PB_DISABLE_INTERNS = 1010,
 	OPT_RINGBUF_CNT = 1011,
+	OPT_SYMBOLIZE_FRUGALLY = 1012,
 
 	OPT_ALLOW_TID = 2000,
 	OPT_DENY_TID = 2001,
@@ -64,6 +65,7 @@ static const struct argp_option opts[] = {
 
 	{ "stack-traces", 's', NULL, 0, "Capture stack traces" },
 	{ "no-stack-traces", 'S', NULL, 0, "Don't capture stack traces" },
+	{ "symbolize-frugal", OPT_SYMBOLIZE_FRUGALLY, NULL, 0, "Symbolize frugally (slower, but less memory hungry)" },
 
 	/* allow/deny filters */
 	{ "pid", 'p', "PID", 0, "PID allow filter" },
@@ -107,6 +109,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	case OPT_LIBBPF_LOGS:
 		env.libbpf_logs = true;
+		break;
+	case OPT_SYMBOLIZE_FRUGALLY:
+		env.symbolize_frugally = true;
 		break;
 	case 'd':
 		errno = 0;
