@@ -830,6 +830,9 @@ int process_event(struct worker_state *w, struct wprof_event *e, size_t size)
 				emit_kv_int(IID_ANNK_SWITCH_FROM_TID, "switch_from_tid", task_tid(&e->swtch_to.prev));
 				emit_kv_int(IID_ANNK_SWITCH_FROM_PID, "switch_from_pid", e->swtch_to.prev.pid);
 			}
+
+			if (e->swtch_to.waking_ts)
+				emit_flow_id(e->swtch_to.waking_ts);
 		}
 
 		if (env.breakout_counters && e->swtch_to.waking_ts) {
