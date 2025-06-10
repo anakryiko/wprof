@@ -24,7 +24,18 @@ struct env {
 	bool replay;
 
 	/* data collection configuration */
-	struct wprof_data_cfg cfg;
+	u64 ktime_start_ns;
+	u64 realtime_start_ns;
+	u64 duration_ns;
+
+	enum tristate capture_stack_traces;
+	enum tristate capture_ipis;
+
+	int timer_freq_hz;
+
+	int counter_cnt;
+	int counter_ids[MAX_PERF_COUNTERS];
+	int counter_pos[MAX_PERF_COUNTERS];
 
 	int ringbuf_sz;
 	int task_state_sz;

@@ -15,10 +15,10 @@ struct wprof_data_cfg {
 	u64 realtime_start_ns;
 	u64 duration_ns;
 
-	int timer_freq_hz;
+	u64 capture_stack_traces : 1;
+	u64 capture_ipis : 1;
 
-	enum tristate capture_stack_traces;
-	enum tristate capture_ipis;
+	int timer_freq_hz;
 
 	int counter_cnt;
 	int counter_ids[MAX_PERF_COUNTERS];

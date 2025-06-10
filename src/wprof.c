@@ -43,6 +43,10 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va
 	return vfprintf(stderr, format, args);
 }
 
+/* The order of these definition matters as the position determines
+ * a persisted ID stored in wprof.data, so when adding/removing definitions,
+ * preserve the order (i.e., we'll need to stub out events that we remove)
+ */
 const struct perf_counter_def perf_counter_defs[] = {
 	{ "cpu-cycles", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES, 1e-3, "cpu_cycles_kilo", IID_ANNK_PERF_CPU_CYCLES },
 	{ "cpu-insns", PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS, 1e-3, "cpu_insns_kilo", IID_ANNK_PERF_CPU_INSNS },
@@ -125,7 +129,16 @@ static int finalize_events_dump(struct worker_state *w)
 	struct wprof_data_hdr hdr;
 	init_data_header(&hdr);
 
-	hdr.cfg = env.cfg;
+	hdr.cfg.ktime_start_ns = env.ktime_start_ns;
+	hdr.cfg.realtime_start_ns = env.realtime_start_ns;
+	hdr.cfg.duration_ns = env.duration_ns;
+
+	hdr.cfg.capture_stack_traces = env.capture_stack_traces == TRUE;
+	hdr.cfg.capture_ipis = env.capture_ipis == TRUE;
+
+	hdr.cfg.timer_freq_hz = env.timer_freq_hz;
+	hdr.cfg.counter_cnt = env.counter_cnt;
+	memcpy(&hdr.cfg.counter_ids, env.counter_ids, sizeof(env.counter_ids));
 
 	hdr.events_off = 0;
 	hdr.events_sz = pos - sizeof(hdr);
@@ -239,7 +252,7 @@ static int generate_trace(struct worker_state *w)
 	int err;
 
 	fprintf(stderr, "Generating trace...\n");
-	if (env.cfg.capture_stack_traces) {
+	if (env.capture_stack_traces) {
 		err = generate_stack_traces(w);
 		if (err) {
 			fprintf(stderr, "Failed to append stack traces to trace '%s': %d\n", env.trace_path, err);
@@ -441,7 +454,7 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *worker, int num_
 		return err;
 	}
 
-	if (env.cfg.capture_ipis) {
+	if (env.capture_ipis) {
 		bpf_program__set_autoload(skel->progs.wprof_ipi_send_cpu, true);
 		bpf_program__set_autoload(skel->progs.wprof_ipi_send_mask, true);
 		bpf_program__set_autoload(skel->progs.wprof_ipi_single_entry, true);
@@ -569,15 +582,15 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *worker, int num_
 	if (env.deny_kthread)
 		skel->rodata->filt_mode |= FILT_DENY_KTHREAD;
 
-	st->perf_counter_fd_cnt = num_cpus * env.cfg.counter_cnt;
-	skel->rodata->perf_ctr_cnt = env.cfg.counter_cnt;
+	st->perf_counter_fd_cnt = num_cpus * env.counter_cnt;
+	skel->rodata->perf_ctr_cnt = env.counter_cnt;
 	bpf_map__set_max_entries(skel->maps.perf_cntrs, st->perf_counter_fd_cnt);
 
 	skel->rodata->rb_cnt_bits = 0;
 	while ((1ULL << skel->rodata->rb_cnt_bits) < env.ringbuf_cnt)
 		skel->rodata->rb_cnt_bits++;
 
-	skel->rodata->capture_stack_traces = env.cfg.capture_stack_traces;
+	skel->rodata->capture_stack_traces = env.capture_stack_traces == TRUE;
 
 	if (env.stats) {
 		st->stats_fd = bpf_enable_stats(BPF_STATS_RUN_TIME);
@@ -629,8 +642,8 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *worker, int num_
 	st->perf_counter_fds = calloc(st->perf_counter_fd_cnt, sizeof(int));
 	for (i = 0; i < num_cpus; i++) {
 		st->perf_timer_fds[i] = -1;
-		for (int j = 0; j < env.cfg.counter_cnt; j++)
-			st->perf_counter_fds[i * env.cfg.counter_cnt + j] = -1;
+		for (int j = 0; j < env.counter_cnt; j++)
+			st->perf_counter_fds[i * env.counter_cnt + j] = -1;
 	}
 
 	/* determine randomized spread-out "plan" for attaching to timers to
@@ -641,7 +654,7 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *worker, int num_
 
 	for (int cpu = 0; cpu < num_cpus; cpu++) {
 		timer_plan[cpu].cpu = cpu;
-		timer_plan[cpu].delay_ns = 1000000000ULL / env.cfg.timer_freq_hz * ((double)rand() / RAND_MAX);
+		timer_plan[cpu].delay_ns = 1000000000ULL / env.timer_freq_hz * ((double)rand() / RAND_MAX);
 	}
 	qsort(timer_plan, num_cpus, sizeof(*timer_plan), timer_plan_cmp);
 
@@ -657,7 +670,7 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *worker, int num_
 		attr.size = sizeof(attr);
 		attr.type = PERF_TYPE_SOFTWARE;
 		attr.config = PERF_COUNT_SW_CPU_CLOCK;
-		attr.sample_freq = env.cfg.timer_freq_hz;
+		attr.sample_freq = env.timer_freq_hz;
 		attr.freq = 1;
 
 		u64 now = ktime_now_ns();
@@ -673,9 +686,9 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *worker, int num_
 		st->perf_timer_fds[cpu] = pefd;
 
 		/* set up requested perf counters */
-		for (int j = 0; j < env.cfg.counter_cnt; j++) {
-			const struct perf_counter_def *def = &perf_counter_defs[env.cfg.counter_ids[j]];
-			int pe_idx = cpu * env.cfg.counter_cnt + j;
+		for (int j = 0; j < env.counter_cnt; j++) {
+			const struct perf_counter_def *def = &perf_counter_defs[env.counter_ids[j]];
+			int pe_idx = cpu * env.counter_cnt + j;
 
 			memset(&attr, 0, sizeof(attr));
 			attr.size = sizeof(attr);
@@ -878,18 +891,42 @@ int main(int argc, char **argv)
 
 		/* validate data capture config compatibility */
 		struct wprof_data_hdr *dump_hdr = worker->dump_hdr;
-		if (env.cfg.duration_ns > dump_hdr->cfg.duration_ns) {
+		if (env.duration_ns > dump_hdr->cfg.duration_ns) {
 			eprintf("replay: requested time range exceeds captured time range\n");
 			err = -EINVAL;
 			goto cleanup;
 		}
-		if (env.cfg.capture_stack_traces == TRUE && dump_hdr->cfg.capture_stack_traces == FALSE) {
+		if (env.capture_stack_traces == TRUE && !dump_hdr->cfg.capture_stack_traces) {
 			eprintf("replay: stack traces requested, but were not captured\n");
 			err = -EINVAL;
+			goto cleanup;
 		}
-		if (env.cfg.capture_ipis == TRUE && dump_hdr->cfg.capture_ipis == FALSE) {
+		if (env.capture_ipis == TRUE && !dump_hdr->cfg.capture_ipis) {
 			eprintf("replay: IPIs requested, but were not captured\n");
 			err = -EINVAL;
+			goto cleanup;
+		}
+
+		/* check if all requested counters were captured and determine
+		 * their actual positions in data dump
+		 */
+		for (int i = 0; i < env.counter_cnt; i++) {
+			int pos = -1;
+			for (int j = 0; j < dump_hdr->cfg.counter_cnt; j++) {
+				if (env.counter_ids[i] != dump_hdr->cfg.counter_ids[j])
+					continue;
+				pos = j;
+				break;
+			}
+
+			if (pos < 0) {
+				eprintf("replay: counter '%s' requested, but wasn't captured\n",
+					perf_counter_defs[env.counter_ids[i]].alias);
+				err = -EINVAL;
+				goto cleanup;
+			}
+
+			env.counter_pos[i] = pos;
 		}
 
 		/* setup original (replayed) time markers */
@@ -900,14 +937,16 @@ int main(int argc, char **argv)
 		goto skip_data_collection;
 	} else {
 		/* Init data capture settings defaults, if they were not set */
-		if (env.cfg.timer_freq_hz == 0)
-			env.cfg.timer_freq_hz = DEFAULT_TIMER_FREQ_HZ;
-		if (env.cfg.duration_ns == 0)
-			env.cfg.duration_ns = DEFAULT_DURATION_MS * 1000000ULL;
-		if (env.cfg.capture_stack_traces == UNSET)
-			env.cfg.capture_stack_traces = DEFAULT_CAPTURE_STACK_TRACES;
-		if (env.cfg.capture_ipis == UNSET)
-			env.cfg.capture_ipis = DEFAULT_CAPTURE_IPIS;
+		if (env.timer_freq_hz == 0)
+			env.timer_freq_hz = DEFAULT_TIMER_FREQ_HZ;
+		if (env.duration_ns == 0)
+			env.duration_ns = DEFAULT_DURATION_MS * 1000000ULL;
+		if (env.capture_stack_traces == UNSET)
+			env.capture_stack_traces = DEFAULT_CAPTURE_STACK_TRACES;
+		if (env.capture_ipis == UNSET)
+			env.capture_ipis = DEFAULT_CAPTURE_IPIS;
+		for (int i = 0; i < env.counter_cnt; i++)
+			env.counter_pos[i] = i;
 
 		worker->dump = fopen(env.data_path, "w+");
 		if (!worker->dump) {
@@ -940,8 +979,8 @@ int main(int argc, char **argv)
 	}
 
 	signal(SIGALRM, sig_timer);
-	timer_ival.it_value.tv_sec = env.cfg.duration_ns / 1000000000;
-	timer_ival.it_value.tv_usec = env.cfg.duration_ns / 1000 % 1000000;
+	timer_ival.it_value.tv_sec = env.duration_ns / 1000000000;
+	timer_ival.it_value.tv_usec = env.duration_ns / 1000 % 1000000;
 	err = setitimer(ITIMER_REAL, &timer_ival, NULL);
 	if (err < 0) {
 		fprintf(stderr, "Failed to setup run duration timeout timer: %d\n", err);
@@ -950,11 +989,11 @@ int main(int argc, char **argv)
 
 	fprintf(stderr, "Running...\n");
 
-	env.cfg.ktime_start_ns = ktime_now_ns();
-	env.cfg.realtime_start_ns = ktime_to_realtime_ns(env.cfg.ktime_start_ns);
-	/* env.cfg.duration_ns is already properly set */
-	env.sess_start_ts = env.cfg.ktime_start_ns;
-	env.sess_end_ts = env.cfg.ktime_start_ns + env.cfg.duration_ns;
+	env.ktime_start_ns = ktime_now_ns();
+	env.realtime_start_ns = ktime_to_realtime_ns(env.ktime_start_ns);
+	/* env.duration_ns is already properly set */
+	env.sess_start_ts = env.ktime_start_ns;
+	env.sess_end_ts = env.ktime_start_ns + env.duration_ns;
 
 	err = run_bpf(&bpf_state);
 	if (err) {
@@ -974,7 +1013,7 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	if (env.cfg.capture_stack_traces) {
+	if (env.capture_stack_traces) {
 		err = process_stack_traces(worker);
 		if (err) {
 			fprintf(stderr, "Failed to symbolize and dump stack traces: %d\n", err);

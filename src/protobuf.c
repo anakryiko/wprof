@@ -138,7 +138,6 @@ static const char *pb_static_strs[] = {
 	[IID_ANNK_SWITCH_FROM] = "switch_from",
 	[IID_ANNK_SWITCH_FROM_TID] = "switch_from_tid",
 	[IID_ANNK_SWITCH_FROM_PID] = "switch_from_pid",
-	[IID_ANNK_CPU_MEGA_CYCLES] = "cpu_mega_cycles",
 	[IID_ANNK_RENAMED_TO] = "renamed_to",
 	[IID_ANNK_WAKING_CPU] = "waking_cpu",
 	[IID_ANNK_WAKING_NUMA_NODE] = "waking_numa_node",
