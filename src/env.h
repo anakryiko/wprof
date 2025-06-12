@@ -29,6 +29,10 @@ struct env {
 	u64 realtime_start_ns;
 	u64 duration_ns;
 
+	/* for replay only, mutually exclusive with duration_ns */
+	s64 replay_start_offset_ns;
+	s64 replay_end_offset_ns;
+
 	enum tristate capture_stack_traces;
 	enum tristate capture_ipis;
 

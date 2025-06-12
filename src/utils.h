@@ -11,8 +11,11 @@
 #include "../libbpf/src/hashmap.h" /* internal to libbpf, yep */
 
 typedef unsigned long long u64;
+typedef signed long long s64;
 typedef unsigned int u32;
+typedef signed int s32;
 typedef unsigned short u16;
+typedef signed short s16;
 
 enum tristate { UNSET = -1, TRUE = 1, FALSE = 0 };
 
@@ -133,6 +136,8 @@ static inline uint64_t timespec_to_ns(struct timespec *ts)
 {
 	return ts->tv_sec * 1000000000ULL + ts->tv_nsec;
 }
+
+s64 parse_time_offset(const char *arg);
 
 static inline u64 ktime_now_ns()
 {

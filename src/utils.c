@@ -184,6 +184,30 @@ bool wprof_glob_match(char const *pat, char const *str)
 	}
 }
 
+s64 parse_time_offset(const char *arg)
+{
+	double s;
+	int n, len = strlen(arg), ret;
+	char unit[5];
+
+	if ((ret = sscanf(arg, "%lf%2s %n", &s, unit, &n)) == 2 && n == len) {
+		if (strcmp(unit, "s") == 0)
+			return (u64)(s * 1000000000ULL);
+		if (strcmp(unit, "ms") == 0)
+			return (u64)(s * 1000000ULL);
+		if (strcmp(unit, "us") == 0)
+			return (u64)(s * 1000ULL);
+		if (strcmp(unit, "ns") == 0)
+			return (u64)s;
+	}
+
+	/* special case no time unit spec as milliseconds for consistency with -duration-ms */
+	if (sscanf(arg, "%lf %n", &s, &n) == 1 && n == len)
+		return (u64)(s * 1000000ULL);
+
+	return -EINVAL;
+}
+
 static u64 ktime_off;
 
 void calibrate_ktime(void)

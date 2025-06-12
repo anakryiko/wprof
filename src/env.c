@@ -40,6 +40,8 @@ enum {
 	OPT_PB_DISABLE_INTERNS = 1010,
 	OPT_RINGBUF_CNT = 1011,
 	OPT_SYMBOLIZE_FRUGALLY = 1012,
+	OPT_REPLAY_OFFSET_START = 1013,
+	OPT_REPLAY_OFFSET_END = 1014,
 
 	OPT_ALLOW_TID = 2000,
 	OPT_DENY_TID = 2001,
@@ -61,7 +63,10 @@ static const struct argp_option opts[] = {
 
 	{ "data", 'D', "FILE", 0, "Data dump path (defaults to 'wprof.data' in current directory)" },
 	{ "trace", 'T', "FILE", 0, "Emit trace to specified file" },
+
 	{ "replay", 'R', NULL, 0, "Re-process raw dump (no actual BPF data gathering)" },
+	{ "replay-start", OPT_REPLAY_OFFSET_START, "TIME_OFFSET", 0, "Session start time offset (replay mode only). Supported syntax: 2s, 1.03s, 10.5ms, 12us, 101213ns" },
+	{ "replay-end", OPT_REPLAY_OFFSET_END, "TIME_OFFSET", 0, "Session end time offset (replay mode only). Supported syntax: 2s, 1.03s, 10.5ms, 12us, 101213ns" },
 
 	{ "stack-traces", 's', NULL, 0, "Capture stack traces" },
 	{ "no-stack-traces", 'S', NULL, 0, "Don't capture stack traces" },
@@ -127,6 +132,20 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	case 'R':
 		env.replay = true;
+		break;
+	case OPT_REPLAY_OFFSET_START:
+		env.replay_start_offset_ns = parse_time_offset(arg);
+		if (env.replay_start_offset_ns < 0) {
+			eprintf("Failed to parse replay start time offset '%s'\n", arg);
+			return -EINVAL;
+		}
+		break;
+	case OPT_REPLAY_OFFSET_END:
+		env.replay_end_offset_ns = parse_time_offset(arg);
+		if (env.replay_end_offset_ns < 0) {
+			eprintf("Failed to parse replay end time offset '%s'\n", arg);
+			return -EINVAL;
+		}
 		break;
 	case 'T':
 		if (env.trace_path) {

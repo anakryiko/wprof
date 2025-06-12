@@ -647,11 +647,18 @@ static bool should_trace_task(const struct wprof_task *task)
 	return true;
 }
 
+static bool is_ts_in_range(u64 ts)
+{
+	if ((long long)(ts - env.sess_start_ts) < 0)
+		return false;
+	if ((long long)(ts - env.sess_end_ts) >= 0)
+		return false;
+	return true;
+}
+
 int process_event(struct worker_state *w, struct wprof_event *e, size_t size)
 {
-	if ((long long)(e->ts - env.sess_start_ts) < 0)
-		return 0;
-	if ((long long)(e->ts - env.sess_end_ts) >= 0)
+	if (!is_ts_in_range(e->ts))
 		return 0;
 
 	switch (e->kind) {
@@ -757,7 +764,9 @@ int process_event(struct worker_state *w, struct wprof_event *e, size_t size)
 		break;
 	}
 	case EV_SWITCH_TO: {
-		if (e->swtch_to.waking_ts && should_trace_task(&e->swtch_to.waking)) {
+		if (e->swtch_to.waking_ts &&
+		    is_ts_in_range(e->swtch_to.waking_ts) &&
+		    should_trace_task(&e->swtch_to.waking)) {
 			/* event on awaker's timeline */
 			emit_instant(e->swtch_to.waking_ts, &e->swtch_to.waking,
 				     e->swtch_to.waking_flags == WF_WOKEN_NEW ? IID_NAME_WAKEUP_NEW : IID_NAME_WAKING,
@@ -786,7 +795,9 @@ int process_event(struct worker_state *w, struct wprof_event *e, size_t size)
 		st->oncpu_ctrs = e->swtch_to.ctrs;
 		st->oncpu_ts = e->ts;
 
-		if (e->swtch_to.waking_ts && e->swtch_to.waking_cpu != e->cpu) {
+		if (e->swtch_to.waking_ts &&
+		    is_ts_in_range(e->swtch_to.waking_ts) &&
+		    e->swtch_to.waking_cpu != e->cpu) {
 			/* event on awoken's timeline */
 			emit_instant(e->swtch_to.waking_ts, &e->task,
 				     e->swtch_to.waking_flags == WF_WOKEN_NEW ? IID_NAME_WOKEN_NEW : IID_NAME_WOKEN,
@@ -831,7 +842,7 @@ int process_event(struct worker_state *w, struct wprof_event *e, size_t size)
 				emit_kv_int(IID_ANNK_SWITCH_FROM_PID, "switch_from_pid", e->swtch_to.prev.pid);
 			}
 
-			if (e->swtch_to.waking_ts)
+			if (e->swtch_to.waking_ts && is_ts_in_range(e->swtch_to.waking_ts))
 				emit_flow_id(e->swtch_to.waking_ts);
 		}
 
@@ -1000,7 +1011,8 @@ skip_emit_free:
 
 		(void)task_state(w, &e->task);
 
-		emit_slice_point(e->hardirq.hardirq_ts, &e->task,
+		u64 start_ts = is_ts_in_range(e->hardirq.hardirq_ts) ? e->hardirq.hardirq_ts : env.sess_start_ts;
+		emit_slice_point(start_ts, &e->task,
 				 IID_NAME_HARDIRQ, "HARDIRQ",
 				 IID_CAT_HARDIRQ, "HARDIRQ", true /* start */) {
 			emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
@@ -1037,7 +1049,8 @@ skip_emit_free:
 			act_iid = IID_NONE;
 		}
 
-		emit_slice_point(e->softirq.softirq_ts, &e->task,
+		u64 start_ts = is_ts_in_range(e->softirq.softirq_ts) ? e->softirq.softirq_ts : env.sess_start_ts;
+		emit_slice_point(start_ts, &e->task,
 				 name_iid, sfmt("%s:%s", "SOFTIRQ", softirq_str(e->softirq.vec_nr)),
 				 IID_CAT_SOFTIRQ, "SOFTIRQ", true /* start */) {
 			emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
@@ -1065,7 +1078,8 @@ skip_emit_free:
 
 		(void)task_state(w, &e->task);
 
-		emit_slice_point(e->wq.wq_ts, &e->task,
+		u64 start_ts = is_ts_in_range(e->wq.wq_ts) ? e->wq.wq_ts : env.sess_start_ts;
+		emit_slice_point(start_ts, &e->task,
 				 IID_NONE, sfmt("%s:%s", "WQ", e->wq.desc),
 				 IID_CAT_WQ, "WQ", true /* start */) {
 			emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
@@ -1123,7 +1137,8 @@ skip_emit_free:
 			name_iid = IID_NAME_IPI + IPI_INVALID;
 		const char *name = sfmt("%s:%s", "IPI", ipi_kind_str(e->ipi.kind));
 
-		emit_slice_point(e->ipi.ipi_ts, &e->task,
+		u64 start_ts = is_ts_in_range(e->ipi.ipi_ts) ? e->ipi.ipi_ts : env.sess_start_ts;
+		emit_slice_point(start_ts, &e->task,
 				 name_iid, name,
 				 IID_CAT_IPI, "IPI", true /* start */) {
 			emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);

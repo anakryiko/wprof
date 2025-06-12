@@ -888,21 +888,55 @@ int main(int argc, char **argv)
 			fprintf(stderr, "Failed to load data dump at '%s': %d\n", env.data_path, err);
 			goto cleanup;
 		}
-
-		/* validate data capture config compatibility */
 		struct wprof_data_hdr *dump_hdr = worker->dump_hdr;
-		if (env.duration_ns > dump_hdr->cfg.duration_ns) {
-			eprintf("replay: requested time range exceeds captured time range\n");
+
+		/* handle all the ways to specify time range */
+		if (env.duration_ns != 0 && (env.replay_start_offset_ns != 0 || env.replay_end_offset_ns != 0)) {
+			eprintf("Time range start/end offsets and duration are mutually exlusive!\n");
 			err = -EINVAL;
 			goto cleanup;
 		}
+		/* if unspecified explicitly, derive time range from duration parameter */
+		if (env.duration_ns != 0) {
+			env.replay_start_offset_ns = 0;
+			env.replay_end_offset_ns = env.duration_ns;
+		}
+		/* if unspecified explicitly, derive replay end from recorded duration */
+		if (env.replay_start_offset_ns != 0 && env.replay_end_offset_ns == 0)
+			env.replay_end_offset_ns = dump_hdr->cfg.duration_ns;
+		/* if neither duration nor time range is provided, use recorded time range */
+		if (env.replay_start_offset_ns == 0 && env.replay_end_offset_ns == 0) {
+			env.replay_start_offset_ns = 0;
+			env.replay_end_offset_ns = dump_hdr->cfg.duration_ns;
+		}
+		/* validate requested time range */
+		if (env.replay_end_offset_ns <= env.replay_start_offset_ns) {
+			eprintf("replay: invalid time range specified: [%.3lfms, %.3lfms)!\n",
+				env.replay_start_offset_ns / 1000000.0, env.replay_end_offset_ns / 1000000.0);
+			err = -EINVAL;
+			goto cleanup;
+		}
+		if (env.replay_end_offset_ns > dump_hdr->cfg.duration_ns) {
+			eprintf("replay: requested time range [%.3lfms, %.3lfms) is larger than recorded time range [0ms, %.3lfms)!\n",
+				env.replay_start_offset_ns / 1000000.0, env.replay_end_offset_ns / 1000000.0,
+				dump_hdr->cfg.duration_ns / 1000000.0);
+			err = -EINVAL;
+			goto cleanup;
+		}
+
+		/* setup original (replayed) time markers */
+		env.sess_start_ts = dump_hdr->cfg.ktime_start_ns + env.replay_start_offset_ns;
+		env.sess_end_ts = dump_hdr->cfg.ktime_start_ns + env.replay_end_offset_ns;
+		set_ktime_off(dump_hdr->cfg.ktime_start_ns, dump_hdr->cfg.realtime_start_ns);
+
+		/* validate data capture config compatibility */
 		if (env.capture_stack_traces == TRUE && !dump_hdr->cfg.capture_stack_traces) {
-			eprintf("replay: stack traces requested, but were not captured\n");
+			eprintf("replay: stack traces requested, but were not captured!\n");
 			err = -EINVAL;
 			goto cleanup;
 		}
 		if (env.capture_ipis == TRUE && !dump_hdr->cfg.capture_ipis) {
-			eprintf("replay: IPIs requested, but were not captured\n");
+			eprintf("replay: IPIs requested, but were not captured!\n");
 			err = -EINVAL;
 			goto cleanup;
 		}
@@ -929,15 +963,14 @@ int main(int argc, char **argv)
 			env.counter_pos[i] = pos;
 		}
 
-		/* setup original (replayed) time markers */
-		if (env.duration_ns == 0)
-			env.duration_ns = dump_hdr->cfg.duration_ns;
-		env.sess_start_ts = dump_hdr->cfg.ktime_start_ns;
-		env.sess_end_ts = dump_hdr->cfg.ktime_start_ns + env.duration_ns;
-		set_ktime_off(dump_hdr->cfg.ktime_start_ns, dump_hdr->cfg.realtime_start_ns);
-
 		goto skip_data_collection;
 	} else {
+		if (env.replay_start_offset_ns || env.replay_end_offset_ns) {
+			eprintf("Time range start/end offsets can only be specified in replay mode!\n");
+			err = -EINVAL;
+			goto cleanup;
+		}
+
 		/* Init data capture settings defaults, if they were not set */
 		if (env.timer_freq_hz == 0)
 			env.timer_freq_hz = DEFAULT_TIMER_FREQ_HZ;
