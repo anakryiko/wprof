@@ -437,8 +437,10 @@ int process_stack_traces(struct worker_state *w)
 
 			unkn_cnt += addr_cnt;
 
-			fprintf(stderr, "Symbolization failed for PID %d, skipping %zu unique addrs: %s (%d)\n",
-				state->sframe_idx[start].pid, addr_cnt, berr_str, berr);
+			if (env.verbose) {
+				eprintf("Symbolization failed for PID %d, skipping %zu unique addrs: %s (%d)\n",
+					state->sframe_idx[start].pid, addr_cnt, berr_str, berr);
+			}
 		}
 
 		for (int i = 0, j = 0; i < end - start; i++) {

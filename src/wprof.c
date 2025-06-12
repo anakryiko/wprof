@@ -142,6 +142,7 @@ static int finalize_events_dump(struct worker_state *w)
 
 	hdr.events_off = 0;
 	hdr.events_sz = pos - sizeof(hdr);
+	hdr.event_cnt = w->rb_handled_cnt;
 
 	if (fwrite(&hdr, sizeof(hdr), 1, w->dump) != 1) {
 		err = -errno;
@@ -206,12 +207,14 @@ static int load_data_dump(struct worker_state *w)
 		fprintf(stderr, "wprof data file MAJOR version mismatch: ACTUAL is v%d.%d vs EXPECTED v%d.%d!\n",
 			w->dump_hdr->version_major, w->dump_hdr->version_minor,
 			WPROF_DATA_MAJOR, WPROF_DATA_MINOR);
+		return -EINVAL;
 	}
 	/* XXX: backwards compat in the future? */
 	if (w->dump_hdr->version_minor != WPROF_DATA_MINOR) {
 		fprintf(stderr, "wprof data file MINOR version mismatch: ACTUAL is v%d.%d vs EXPECTED v%d.%d!\n",
 			w->dump_hdr->version_major, w->dump_hdr->version_minor,
 			WPROF_DATA_MAJOR, WPROF_DATA_MINOR);
+		return -EINVAL;
 	}
 
 	return 0;
@@ -888,7 +891,42 @@ int main(int argc, char **argv)
 			fprintf(stderr, "Failed to load data dump at '%s': %d\n", env.data_path, err);
 			goto cleanup;
 		}
-		struct wprof_data_hdr *dump_hdr = worker->dump_hdr;
+		const struct wprof_data_hdr *dump_hdr = worker->dump_hdr;
+		const struct wprof_data_cfg *cfg = &dump_hdr->cfg;
+
+		if (env.replay_info) {
+			const int w = 20;
+
+			printf("Replay info:\n");
+			printf("============\n");
+			printf("Data version: %u.%u\n", dump_hdr->version_major, dump_hdr->version_minor);
+			printf("%-*s%.3lfs (%.3lfms)\n", w, "Duration:",
+			       cfg->duration_ns / 1000000000.0, cfg->duration_ns / 1000000.0);
+			printf("%-*s%llu (%.3lfMBs)\n", w, "Events:",
+			       dump_hdr->event_cnt, dump_hdr->events_sz / 1024.0 / 1024.0);
+			if (cfg->capture_stack_traces) {
+				const struct wprof_stacks_hdr *shdr = (void *)dump_hdr + dump_hdr->hdr_sz + dump_hdr->stacks_off;
+				printf("%-*s%u (%.3lfMBs data, %.3lfMBs strings)\n", w, "Stack traces:",
+				       shdr->stack_cnt,
+				       (dump_hdr->stacks_sz - shdr->strs_sz) / 1024.0 / 1024.0,
+				       shdr->strs_sz / 1024.0 / 1024.0);
+			} else {
+				printf("%-*s%s\n", w, "Stack traces:", "NOT CAPTURED");
+			}
+			printf("%-*s%s\n", w, "IPIs:", cfg->capture_ipis ? "true" : "false");
+			printf("%-*s%dHz\n", w, "Timer frequency:", cfg->timer_freq_hz);
+			printf("%-*s", w, "Perf counters:");
+			if (cfg->counter_cnt == 0) {
+				printf("NONE");
+			} else {
+				for (int i = 0; i < cfg->counter_cnt; i++) {
+					printf("%s%s", i == 0 ? "" : ", ",
+					       perf_counter_defs[cfg->counter_ids[i]].alias);
+				}
+			}
+			printf("\n");
+			goto cleanup;
+		}
 
 		/* handle all the ways to specify time range */
 		if (env.duration_ns != 0 && (env.replay_start_offset_ns != 0 || env.replay_end_offset_ns != 0)) {
@@ -903,11 +941,11 @@ int main(int argc, char **argv)
 		}
 		/* if unspecified explicitly, derive replay end from recorded duration */
 		if (env.replay_start_offset_ns != 0 && env.replay_end_offset_ns == 0)
-			env.replay_end_offset_ns = dump_hdr->cfg.duration_ns;
+			env.replay_end_offset_ns = cfg->duration_ns;
 		/* if neither duration nor time range is provided, use recorded time range */
 		if (env.replay_start_offset_ns == 0 && env.replay_end_offset_ns == 0) {
 			env.replay_start_offset_ns = 0;
-			env.replay_end_offset_ns = dump_hdr->cfg.duration_ns;
+			env.replay_end_offset_ns = cfg->duration_ns;
 		}
 		/* validate requested time range */
 		if (env.replay_end_offset_ns <= env.replay_start_offset_ns) {
@@ -916,26 +954,26 @@ int main(int argc, char **argv)
 			err = -EINVAL;
 			goto cleanup;
 		}
-		if (env.replay_end_offset_ns > dump_hdr->cfg.duration_ns) {
+		if (env.replay_end_offset_ns > cfg->duration_ns) {
 			eprintf("replay: requested time range [%.3lfms, %.3lfms) is larger than recorded time range [0ms, %.3lfms)!\n",
 				env.replay_start_offset_ns / 1000000.0, env.replay_end_offset_ns / 1000000.0,
-				dump_hdr->cfg.duration_ns / 1000000.0);
+				cfg->duration_ns / 1000000.0);
 			err = -EINVAL;
 			goto cleanup;
 		}
 
 		/* setup original (replayed) time markers */
-		env.sess_start_ts = dump_hdr->cfg.ktime_start_ns + env.replay_start_offset_ns;
-		env.sess_end_ts = dump_hdr->cfg.ktime_start_ns + env.replay_end_offset_ns;
-		set_ktime_off(dump_hdr->cfg.ktime_start_ns, dump_hdr->cfg.realtime_start_ns);
+		env.sess_start_ts = cfg->ktime_start_ns + env.replay_start_offset_ns;
+		env.sess_end_ts = cfg->ktime_start_ns + env.replay_end_offset_ns;
+		set_ktime_off(cfg->ktime_start_ns, cfg->realtime_start_ns);
 
 		/* validate data capture config compatibility */
-		if (env.capture_stack_traces == TRUE && !dump_hdr->cfg.capture_stack_traces) {
+		if (env.capture_stack_traces == TRUE && !cfg->capture_stack_traces) {
 			eprintf("replay: stack traces requested, but were not captured!\n");
 			err = -EINVAL;
 			goto cleanup;
 		}
-		if (env.capture_ipis == TRUE && !dump_hdr->cfg.capture_ipis) {
+		if (env.capture_ipis == TRUE && !cfg->capture_ipis) {
 			eprintf("replay: IPIs requested, but were not captured!\n");
 			err = -EINVAL;
 			goto cleanup;
@@ -946,8 +984,8 @@ int main(int argc, char **argv)
 		 */
 		for (int i = 0; i < env.counter_cnt; i++) {
 			int pos = -1;
-			for (int j = 0; j < dump_hdr->cfg.counter_cnt; j++) {
-				if (env.counter_ids[i] != dump_hdr->cfg.counter_ids[j])
+			for (int j = 0; j < cfg->counter_cnt; j++) {
+				if (env.counter_ids[i] != cfg->counter_ids[j])
 					continue;
 				pos = j;
 				break;
@@ -965,6 +1003,11 @@ int main(int argc, char **argv)
 
 		goto skip_data_collection;
 	} else {
+		if (env.replay_info) {
+			eprintf("Replay information can be printed in replay mode only (specify -R)!\n");
+			err = -EINVAL;
+			goto cleanup;
+		}
 		if (env.replay_start_offset_ns || env.replay_end_offset_ns) {
 			eprintf("Time range start/end offsets can only be specified in replay mode!\n");
 			err = -EINVAL;

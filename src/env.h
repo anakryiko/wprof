@@ -22,6 +22,7 @@ struct env {
 	bool libbpf_logs;
 	bool breakout_counters;
 	bool replay;
+	bool replay_info;
 	bool symbolize_frugally;
 
 	/* data collection configuration */
