@@ -380,6 +380,7 @@ static struct emit_rec emit_instant_pre(u64 ts, const struct wprof_task *t,
 
 __unused
 static struct emit_rec emit_slice_point_pre(u64 ts, const struct wprof_task *t,
+					    __u64 track_uuid,
 					    pb_iid name_iid, const char *name,
 					    pb_iid cat_iid, const char *cat,
 					    bool start)
@@ -388,7 +389,7 @@ static struct emit_rec emit_slice_point_pre(u64 ts, const struct wprof_task *t,
 		PB_INIT(timestamp) = ts - env.sess_start_ts,
 		PB_TRUST_SEQ_ID(),
 		PB_ONEOF(data, TracePacket_track_event) = { .track_event = {
-			PB_INIT(track_uuid) = task_track_uuid(t),
+			PB_INIT(track_uuid) = track_uuid,
 			PB_INIT(type) = start ? perfetto_protos_TrackEvent_Type_TYPE_SLICE_BEGIN
 					      : perfetto_protos_TrackEvent_Type_TYPE_SLICE_END,
 			.category_iids = cat_iid ? PB_STRING_IID(cat_iid) : PB_NONE,
@@ -410,8 +411,14 @@ static struct emit_rec emit_slice_point_pre(u64 ts, const struct wprof_task *t,
 }
 
 #define emit_slice_point(ts, t, name_iid, name, cat_iid, cat, start)			\
-	for (struct emit_rec ___r __cleanup(emit_cleanup) =					\
-	     emit_slice_point_pre(ts, t, name_iid, name, cat_iid, cat, start);		\
+	for (struct emit_rec ___r __cleanup(emit_cleanup) =				\
+	     emit_slice_point_pre(ts, t, task_track_uuid(t),				\
+				  name_iid, name, cat_iid, cat, start);			\
+	     !___r.done; ___r.done = true)
+
+#define emit_track_slice_point(ts, t, track_uuid, name_iid, name, cat_iid, cat, start)	\
+	for (struct emit_rec ___r __cleanup(emit_cleanup) =				\
+	     emit_slice_point_pre(ts, t, track, name_iid, name, cat_iid, cat, start);	\
 	     !___r.done; ___r.done = true)
 
 __unused
@@ -1163,6 +1170,55 @@ skip_emit_free:
 					      "%.6lf", e->ipi.ctrs.val[p] * def->mul);
 			}
 		}
+		break;
+	}
+	case EV_REQ_EVENT: {
+		if (!should_trace_task(&e->task))
+			break;
+
+		(void)task_state(w, &e->task);
+
+		if (e->req.req_event == REQ_BEGIN) {
+			emit_slice_point(e->ts, &e->task,
+					 0, sfmt("REQ:%s", e->req.req_name),
+					 0, "REQUEST", true /* start */) {
+				emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
+				emit_kv_str(0, "req_name", 0, e->req.req_name);
+				emit_kv_int(0, "req_id", e->req.req_id);
+				emit_flow_id(e->req.req_id);
+			}
+			emit_instant(e->ts, &e->task,
+				     0, sfmt("REQ_BEGIN:%s", e->req.req_name),
+				     0, "REQUEST_BEGIN") {
+				emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
+				emit_kv_str(0, "req_name", 0, e->req.req_name);
+				emit_kv_int(0, "req_id", e->req.req_id);
+				emit_kv_str(0, "thread", 0, sfmt("%s (%d/%d)",
+					    e->task.comm, e->task.tid, e->task.pid));
+				emit_flow_id(e->req.req_id);
+			}
+		} else if (e->req.req_event == REQ_END) {
+			emit_slice_point(e->ts, &e->task,
+					 0, sfmt("REQ:%s", e->req.req_name),
+					 0, "REQUEST", false /* !start */) {
+				emit_kv_float(0, "req_latency_us", "%.6lf", e->ts - e->req.req_ts);
+				emit_flow_id(e->req.req_id);
+			}
+			emit_instant(e->ts, &e->task,
+				     0, sfmt("REQ_END:%s", e->req.req_name),
+				     0, "REQUEST_END") {
+				emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
+				emit_kv_str(0, "req_name", 0, e->req.req_name);
+				emit_kv_int(0, "req_id", e->req.req_id);
+				emit_kv_str(0, "thread", 0, sfmt("%s (%d/%d)",
+					    e->task.comm, e->task.tid, e->task.pid));
+				emit_flow_id(e->req.req_id);
+			}
+		} else {
+			fprintf(stderr, "UNHANDLED REQ EVENT %d\n", e->req.req_event);
+			exit(1);
+		}
+
 		break;
 	}
 	default:

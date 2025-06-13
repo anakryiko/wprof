@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause)
 /* Copyright (c) 2025 Meta Platforms, Inc. */
+#include "bpf/libbpf_common.h"
 #define _GNU_SOURCE
 #define _FILE_OFFSET_BITS 64
 #include <argp.h>
@@ -378,6 +379,7 @@ skip_rusage:
 		s.rb_misses += stats[i].rb_misses;
 		s.rb_drops += stats[i].rb_drops;
 		s.task_state_drops += stats[i].task_state_drops;
+		s.req_state_drops += stats[i].req_state_drops;
 	}
 	free(stats);
 
@@ -389,6 +391,8 @@ skip_rusage:
 	}
 	if (s.task_state_drops)
 		fprintf(stderr, "!!! Task state drops: %llu\n", s.task_state_drops);
+	if (s.req_state_drops)
+		fprintf(stderr, "!!! Request state drops: %llu\n", s.req_state_drops);
 
 skip_drop_stats:
 	fprintf(stderr, "Exited %s (after %.3lfs).\n",
@@ -466,6 +470,12 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *worker, int num_
 		bpf_program__set_autoload(skel->progs.wprof_ipi_multi_exit, true);
 		bpf_program__set_autoload(skel->progs.wprof_ipi_resched_entry, true);
 		bpf_program__set_autoload(skel->progs.wprof_ipi_resched_exit, true);
+	}
+	if (env.req_path_cnt > 0) {
+		bpf_program__set_autoload(skel->progs.wprof_req_ctx, true);
+		bpf_map__set_max_entries(skel->maps.req_states, max(16 * 1024, env.task_state_sz));
+	} else {
+		bpf_map__set_autocreate(skel->maps.req_states, false);
 	}
 
 	bpf_map__set_max_entries(skel->maps.rbs, env.ringbuf_cnt);
@@ -727,7 +737,7 @@ static int attach_bpf(struct bpf_state *st, int num_cpus)
 {
 	int err = 0;
 
-	st->links = calloc(num_cpus, sizeof(struct bpf_link *));
+	st->links = calloc(num_cpus + env.req_path_cnt, sizeof(struct bpf_link *));
 	for (int cpu = 0; cpu < num_cpus; cpu++) {
 		if (st->perf_timer_fds[cpu] < 0)
 			continue;
@@ -744,6 +754,20 @@ static int attach_bpf(struct bpf_state *st, int num_cpus)
 	if (err) {
 		fprintf(stderr, "Failed to attach skeleton: %d\n", err);
 		return err;
+	}
+
+	for (int i = 0; i < env.req_path_cnt; i++) {
+		struct bpf_link *link;
+
+		link = bpf_program__attach_usdt(st->skel->progs.wprof_req_ctx,
+						-1, env.req_paths[i],
+						"thrift", "crochet_request_data_context",
+						NULL);
+		if (!link) {
+			err = -errno;
+			return err;
+		}
+		st->links[num_cpus + i] = link;
 	}
 
 	return 0;

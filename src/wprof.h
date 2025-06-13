@@ -50,6 +50,7 @@ struct wprof_stats {
 	u64 rb_drops;
 	u64 task_state_drops;
 	u64 rb_misses;
+	u64 req_state_drops;
 };
 
 enum task_status {
@@ -78,6 +79,7 @@ enum event_kind {
 	EV_TASK_FREE,
 	EV_IPI_SEND,
 	EV_IPI_EXIT,
+	EV_REQ_EVENT,
 };
 
 struct stack_trace {
@@ -119,6 +121,14 @@ enum wprof_ipi_kind {
 	IPI_RESCHED,
 
 	NR_IPIS,
+};
+
+enum wprof_req_event_kind {
+	REQ_BEGIN = 10,
+	REQ_SET = 11,
+	REQ_UNSET = 12,
+	REQ_END = 13,
+	REQ_CLEAR = 14,
 };
 
 struct wprof_event {
@@ -185,6 +195,12 @@ struct wprof_event {
 			int send_cpu; /* -1, if multicast IPI or unknown */
 			struct perf_counters ctrs;
 		} ipi;
+		struct wprof_req_ctx {
+			u64 req_ts; /* request start timestamp */
+			u64 req_id;
+			enum wprof_req_event_kind req_event; /* lifecycle event (START, END, SET, UNSET, CLEAR) */
+			char req_name[WORKER_DESC_LEN - 4];
+		} req;
 	};
 };
 

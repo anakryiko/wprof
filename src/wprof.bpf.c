@@ -4,6 +4,7 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
+#include <bpf/usdt.bpf.h>
 
 #include "wprof.h"
 #include "wprof.bpf.h"
@@ -1149,6 +1150,72 @@ int BPF_PROG(wprof_ipi_resched_exit, int vector)
 		return 0;
 
 	return handle_ipi(task, IPI_RESCHED, false /*!start*/);
+}
+
+struct req_state {
+	u64 start_ts;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, u64); /* req_id */
+	__type(value, struct req_state);
+} req_states SEC(".maps");
+
+static struct req_state empty_req_state;
+
+/* attached to thrift:crochet_request_data_context USDT */
+SEC("usdt")
+int BPF_USDT(wprof_req_ctx, u64 req_id, const char *endpoint, enum wprof_req_event_kind event_kind)
+{
+	struct task_struct *task = bpf_get_current_task_btf();
+	struct req_state *s;
+
+	if (!should_trace_task(task))
+		return 0;
+
+	if (event_kind == REQ_BEGIN) {
+		s = bpf_map_lookup_elem(&req_states, &req_id);
+		if (!s) {
+			bpf_map_update_elem(&req_states, &req_id, &empty_req_state, BPF_NOEXIST);
+			s = bpf_map_lookup_elem(&req_states, &req_id);
+		}
+		if (!s) {
+			(void)inc_stat(req_state_drops);
+			return 0;
+		}
+	} else if (event_kind == REQ_END) {
+		s = bpf_map_lookup_elem(&req_states, &req_id);
+		if (!s) /* caught request in mid-flight or out of req_states space */
+			return 0;
+	} else {
+		return 0;
+	}
+
+	struct wprof_event *e;
+	u64 now_ts = bpf_ktime_get_ns();
+
+	emit_task_event(e, EV_SZ(req), 0, EV_REQ_EVENT, now_ts, task) {
+		e->req.req_id = req_id;
+		e->req.req_ts = s->start_ts;
+		e->req.req_event = event_kind;
+		if (bpf_probe_read_user(&e->req.req_name, sizeof(e->req.req_name), endpoint))
+			e->req.req_name[0] = '\0';
+	}
+
+	if (event_kind == REQ_END)
+		bpf_map_delete_elem(&req_states, &req_id);
+
+	return 0;
+}
+
+/* attached to thrift:strobelight_probe_data_destruct USDT (though we might
+ * not need it, actually)
+ */
+SEC("usdt")
+int BPF_USDT(wprof_req_end, u32 version, u64 req_id, const char *endpoint, u64 lat_ms)
+{
+	return 0;
 }
 
 #endif /* __TARGET_ARCH_x86 */

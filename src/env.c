@@ -89,7 +89,7 @@ static const struct argp_option opts[] = {
 	{ "no-kthread", OPT_DENY_KTHREAD, NULL, 0, "Deny kernel tasks" },
 
 	/* event subset targeting */
-	{ "feature", 'f', "FEAT", 0, "Features selector. Supported: ipi, numa, tidpid" },
+	{ "feature", 'f', "FEAT", 0, "Features selector. Supported: ipi, numa, tidpid, req" },
 
 	{ "ringbuf-size", OPT_RINGBUF_SZ, "SIZE", 0, "BPF ringbuf size (in KBs)" },
 	{ "task-state-size", OPT_TASK_STATE_SZ, "SIZE", 0, "BPF task state map size (in threads)" },
@@ -181,6 +181,12 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			env.emit_numa = true;
 		} else if (strcasecmp(arg, "tidpid") == 0) {
 			env.emit_tidpid = true;
+		} else if (strncasecmp(arg, "req=", 3) == 0) {
+			err = append_str(&env.req_paths, &env.req_path_cnt, arg + 4);
+			if (err) {
+				eprintf("Use -freq=<path-to-binary> to enable request tracking!\n");
+				return err;
+			}
 		} else {
 			fprintf(stderr, "Unrecognized requested feature '%s!\n", arg);
 			return -EINVAL;

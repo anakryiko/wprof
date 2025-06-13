@@ -5,6 +5,7 @@
 /dump.txt
 /wprof.data
 /wprof.data.*
+/wprof.*.data
 /compile_commands.json
 /.cache
 /.gdb_history

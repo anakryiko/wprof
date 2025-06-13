@@ -76,6 +76,10 @@ struct env {
 
 	bool allow_idle, deny_idle;
 	bool allow_kthread, deny_kthread;
+
+	/* EXPERIMENTAL */
+	char **req_paths;
+	int req_path_cnt;
 };
 
 extern struct env env;
