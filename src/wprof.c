@@ -1001,6 +1001,8 @@ int main(int argc, char **argv)
 			env.counter_pos[i] = pos;
 		}
 
+		env.timer_freq_hz = cfg->timer_freq_hz;
+
 		goto skip_data_collection;
 	} else {
 		if (env.replay_info) {
