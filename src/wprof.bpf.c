@@ -1174,7 +1174,8 @@ int BPF_USDT(wprof_req_ctx, u64 req_id, const char *endpoint, enum wprof_req_eve
 	if (!should_trace_task(task))
 		return 0;
 
-	if (event_kind == REQ_BEGIN) {
+	switch (event_kind) {
+	case REQ_BEGIN:
 		s = bpf_map_lookup_elem(&req_states, &req_id);
 		if (!s) {
 			bpf_map_update_elem(&req_states, &req_id, &empty_req_state, BPF_NOEXIST);
@@ -1184,11 +1185,16 @@ int BPF_USDT(wprof_req_ctx, u64 req_id, const char *endpoint, enum wprof_req_eve
 			(void)inc_stat(req_state_drops);
 			return 0;
 		}
-	} else if (event_kind == REQ_END) {
+		break;
+	case REQ_END:
+	case REQ_SET:
+	case REQ_UNSET:
+	case REQ_CLEAR:
 		s = bpf_map_lookup_elem(&req_states, &req_id);
 		if (!s) /* caught request in mid-flight or out of req_states space */
 			return 0;
-	} else {
+		break;
+	default:
 		return 0;
 	}
 

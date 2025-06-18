@@ -1178,43 +1178,65 @@ skip_emit_free:
 
 		(void)task_state(w, &e->task);
 
-		if (e->req.req_event == REQ_BEGIN) {
-			emit_slice_point(e->ts, &e->task,
-					 0, sfmt("REQ:%s", e->req.req_name),
-					 0, "REQUEST", true /* start */) {
-				emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
-				emit_kv_str(0, "req_name", 0, e->req.req_name);
-				emit_kv_int(0, "req_id", e->req.req_id);
-				emit_flow_id(e->req.req_id);
-			}
+		const char *thread_info = sfmt("%s (%d/%d)", e->task.comm, e->task.tid, e->task.pid);
+		switch (e->req.req_event) {
+		case REQ_BEGIN:
 			emit_instant(e->ts, &e->task,
 				     0, sfmt("REQ_BEGIN:%s", e->req.req_name),
 				     0, "REQUEST_BEGIN") {
 				emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
 				emit_kv_str(0, "req_name", 0, e->req.req_name);
 				emit_kv_int(0, "req_id", e->req.req_id);
-				emit_kv_str(0, "thread", 0, sfmt("%s (%d/%d)",
-					    e->task.comm, e->task.tid, e->task.pid));
+				emit_kv_str(0, "thread", 0, thread_info);
 				emit_flow_id(e->req.req_id);
 			}
-		} else if (e->req.req_event == REQ_END) {
-			emit_slice_point(e->ts, &e->task,
-					 0, sfmt("REQ:%s", e->req.req_name),
-					 0, "REQUEST", false /* !start */) {
-				emit_kv_float(0, "req_latency_us", "%.6lf", e->ts - e->req.req_ts);
-				emit_flow_id(e->req.req_id);
-			}
+			break;
+		case REQ_END:
 			emit_instant(e->ts, &e->task,
 				     0, sfmt("REQ_END:%s", e->req.req_name),
 				     0, "REQUEST_END") {
 				emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
 				emit_kv_str(0, "req_name", 0, e->req.req_name);
 				emit_kv_int(0, "req_id", e->req.req_id);
-				emit_kv_str(0, "thread", 0, sfmt("%s (%d/%d)",
-					    e->task.comm, e->task.tid, e->task.pid));
+				emit_kv_str(0, "thread", 0, thread_info);
+				emit_kv_float(0, "req_latency_us", "%.6lf", e->ts - e->req.req_ts);
 				emit_flow_id(e->req.req_id);
 			}
-		} else {
+			break;
+		case REQ_SET:
+			emit_instant(e->ts, &e->task,
+				     0, sfmt("REQ_SET:%s", e->req.req_name),
+				     0, "REQUEST_SET") {
+				emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
+				emit_kv_str(0, "req_name", 0, e->req.req_name);
+				emit_kv_int(0, "req_id", e->req.req_id);
+				emit_kv_str(0, "thread", 0, thread_info);
+				emit_flow_id(e->req.req_id);
+			}
+			break;
+		case REQ_UNSET:
+			emit_instant(e->ts, &e->task,
+				     0, sfmt("REQ_UNSET:%s", e->req.req_name),
+				     0, "REQUEST_UNSET") {
+				emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
+				emit_kv_str(0, "req_name", 0, e->req.req_name);
+				emit_kv_int(0, "req_id", e->req.req_id);
+				emit_kv_str(0, "thread", 0, thread_info);
+				emit_flow_id(e->req.req_id);
+			}
+			break;
+		case REQ_CLEAR:
+			emit_instant(e->ts, &e->task,
+				     0, sfmt("REQ_CLEAR:%s", e->req.req_name),
+				     0, "REQUEST_CLEAR") {
+				emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
+				emit_kv_str(0, "req_name", 0, e->req.req_name);
+				emit_kv_int(0, "req_id", e->req.req_id);
+				emit_kv_str(0, "thread", 0, thread_info);
+				emit_flow_id(e->req.req_id);
+			}
+			break;
+		default:
 			fprintf(stderr, "UNHANDLED REQ EVENT %d\n", e->req.req_event);
 			exit(1);
 		}
