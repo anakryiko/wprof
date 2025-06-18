@@ -24,6 +24,9 @@
 #include <sys/time.h>
 #include <sys/signal.h>
 #include <pthread.h>
+#include <limits.h>
+#include <linux/fs.h>
+#include <dirent.h>
 
 #include "utils.h"
 #include "wprof.h"
@@ -37,9 +40,13 @@
 
 #define FILE_BUF_SZ (64 * 1024)
 
+static bool ignore_libbpf_warns;
+
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
 {
 	if (level == LIBBPF_DEBUG && !env.libbpf_logs)
+		return 0;
+	if (ignore_libbpf_warns)
 		return 0;
 	return vfprintf(stderr, format, args);
 }
@@ -184,10 +191,6 @@ static int load_data_dump(struct worker_state *w)
 		fprintf(stderr, "Failed to fseek(0): %d\n", err);
 		return err;
 	}
-
-	struct wprof_data_hdr hdr;
-	init_data_header(&hdr);
-	hdr.flags = WPROF_DATA_FLAG_INCOMPLETE;
 
 	w->dump_sz = file_size(w->dump);
 	w->dump_mem = mmap(NULL, w->dump_sz, PROT_READ, MAP_SHARED, fileno(w->dump), 0);
@@ -415,6 +418,171 @@ static int timer_plan_cmp(const void *a, const void *b)
 	return x->cpu - y->cpu;
 }
 
+struct req_binary {
+	int pid;
+	char *path;
+};
+
+static unsigned long hash_combine(unsigned long h, unsigned long value)
+{
+	return h * 31 + value;
+}
+
+static size_t req_binary_hash_fn(long key, void *ctx)
+{
+	struct req_binary *binary = (void *)key;
+
+	return hash_combine(str_hash(binary->path), binary->pid);
+}
+
+static bool req_binary_equal_fn(long a, long b, void *ctx)
+{
+	struct req_binary *binary_a = (void *)a;
+	struct req_binary *binary_b = (void *)b;
+
+	return binary_a->pid == binary_b->pid && strcmp(binary_a->path, binary_b->path) == 0;
+}
+
+static int add_req_binary(const char *path, int pid)
+{
+	struct req_binary *binary, key;
+
+	if (!env.req_binaries) {
+		env.req_binaries = hashmap__new(req_binary_hash_fn, req_binary_equal_fn, NULL);
+		if (!env.req_binaries)
+			return -ENOMEM;
+	}
+
+	key.pid = pid;
+	key.path = strdup(path);
+	if (!key.path)
+		return -ENOMEM;
+
+	if (hashmap__find(env.req_binaries, &key, NULL)) {
+		free(key.path);
+		return 0;
+	}
+
+	binary = malloc(sizeof(*binary));
+	if (!binary) {
+		free(key.path);
+		return -ENOMEM;
+	}
+
+	binary->pid = pid;
+	binary->path = key.path;
+
+	hashmap__set(env.req_binaries, binary, binary, NULL, NULL);
+	// printf("Added binary: %s (PID %d)\n", path, pid);
+
+	return 0;
+}
+
+static int discover_pid_req_binaries(int pid, int target_pid)
+{
+	struct procmap_query query;
+	char proc_path[64], path_buf[PATH_MAX];
+	int err = 0, fd;
+	u64 addr = 0;
+
+	snprintf(proc_path, sizeof(proc_path), "/proc/%d/maps", pid);
+	fd = open(proc_path, O_RDONLY);
+	if (fd < 0) {
+		err = -errno;
+		eprintf("Failed to open '%s': %d\n", proc_path, err);
+		return err;
+	}
+
+	memset(&query, 0, sizeof(query));
+
+	while (true) {
+		query.size = sizeof(query);
+		query.query_flags = PROCMAP_QUERY_COVERING_OR_NEXT_VMA |
+				    PROCMAP_QUERY_VMA_EXECUTABLE |
+				    PROCMAP_QUERY_FILE_BACKED_VMA;
+		query.query_addr = addr;
+		query.vma_name_addr = (__u64)path_buf;
+		query.vma_name_size = sizeof(path_buf);
+
+		err = ioctl(fd, PROCMAP_QUERY, &query);
+		if (err && (errno == ENOENT || errno == ESRCH)) {
+			err = 0;
+			break;
+		}
+		if (err) {
+			err = -errno;
+			eprintf("PROCMAP_QUERY failed for PID %d: %d\n", pid, err);
+			break;
+		}
+
+		if (path_buf[0] == '/') {
+			err = add_req_binary(path_buf, target_pid);
+			if (err)
+				break;
+		}
+
+		addr = query.vma_end;
+	}
+
+	close(fd);
+	return err;
+}
+
+static int setup_req_tracking_discovery(void)
+{
+	int err = 0;
+
+	for (int i = 0; i < env.req_pid_cnt; i++) {
+		int pid = env.req_pids[i];
+
+		err = discover_pid_req_binaries(pid, pid);
+		if (err) {
+			eprintf("Failed to discover request tracking binaries for PID %d: %d\n", pid, err);
+			return err;
+		}
+	}
+
+	for (int i = 0; i < env.req_path_cnt; i++) {
+		err = add_req_binary(env.req_paths[i], -1);
+		if (err) {
+			eprintf("Failed to record binary path '%s' for request tracking: %d\n", env.req_paths[i], err);
+			return err;
+		}
+	}
+
+
+	if (env.req_global_discovery) {
+		struct dirent *entry;
+		DIR *proc_dir;
+
+		proc_dir = opendir("/proc");
+		if (!proc_dir) {
+			err = -errno;
+			eprintf("Failed to open /proc directory: %d\n", err);
+			return err;
+		}
+
+		while ((entry = readdir(proc_dir)) != NULL) {
+			int pid, n;
+
+			if (sscanf(entry->d_name, "%d%n", &pid, &n) != 1 || entry->d_name[n] != '\0')
+				continue;
+
+			err = discover_pid_req_binaries(pid, -1);
+			if (err) {
+				eprintf("Failed to discover request tracking binaries for PID %d: %d\n", pid, err);
+				break;
+			}
+		}
+
+		closedir(proc_dir);
+		if (err)
+			return err;
+	}
+
+	return 0;
+}
+
 struct bpf_state {
 	bool detached;
 	bool drained;
@@ -471,7 +639,16 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *worker, int num_
 		bpf_program__set_autoload(skel->progs.wprof_ipi_resched_entry, true);
 		bpf_program__set_autoload(skel->progs.wprof_ipi_resched_exit, true);
 	}
-	if (env.req_path_cnt > 0) {
+
+	if (env.req_pid_cnt > 0 || env.req_path_cnt > 0 || env.req_global_discovery) {
+		err = setup_req_tracking_discovery();
+		if (err) {
+			eprintf("Request tracking discovery step failed: %d\n", err);
+			return err;
+		}
+	}
+
+	if (env.req_binaries) {
 		bpf_program__set_autoload(skel->progs.wprof_req_ctx, true);
 		bpf_map__set_max_entries(skel->maps.req_states, max(16 * 1024, env.task_state_sz));
 	} else {
@@ -737,7 +914,7 @@ static int attach_bpf(struct bpf_state *st, int num_cpus)
 {
 	int err = 0;
 
-	st->links = calloc(num_cpus + env.req_path_cnt, sizeof(struct bpf_link *));
+	st->links = calloc(num_cpus, sizeof(struct bpf_link *));
 	for (int cpu = 0; cpu < num_cpus; cpu++) {
 		if (st->perf_timer_fds[cpu] < 0)
 			continue;
@@ -756,18 +933,42 @@ static int attach_bpf(struct bpf_state *st, int num_cpus)
 		return err;
 	}
 
-	for (int i = 0; i < env.req_path_cnt; i++) {
-		struct bpf_link *link;
+	if (env.req_binaries) {
+		struct hashmap_entry *entry;
+		size_t bkt;
+		int link_idx = num_cpus;
 
-		link = bpf_program__attach_usdt(st->skel->progs.wprof_req_ctx,
-						-1, env.req_paths[i],
-						"thrift", "crochet_request_data_context",
-						NULL);
-		if (!link) {
-			err = -errno;
-			return err;
+		hashmap__for_each_entry(env.req_binaries, entry, bkt) {
+			struct req_binary *binary = (struct req_binary *)entry->value;
+			struct bpf_link *link, **tmp;
+
+			/* given we don't know for sure if requested binary
+			 * does have our USDT, we just silence libbpf's
+			 * warning and move on if there is an error
+			 */
+			ignore_libbpf_warns = true;
+			link = bpf_program__attach_usdt(st->skel->progs.wprof_req_ctx,
+							binary->pid, binary->path,
+							"thrift", "crochet_request_data_context",
+							NULL);
+			ignore_libbpf_warns = false;
+			if (!link) {
+				if (env.verbose) {
+					eprintf("Failed to attach USDT to %s (PID %d), ignoring...\n",
+					       binary->path, binary->pid);
+				}
+				continue;
+			}
+
+			tmp = realloc(st->links, (link_idx + 1) * sizeof(struct bpf_link *));
+			if (!tmp) {
+				err = -ENOMEM;
+				return err;
+			}
+			st->links = tmp;
+			st->links[link_idx] = link;
+			link_idx++;
 		}
-		st->links[num_cpus + i] = link;
 	}
 
 	return 0;

@@ -1152,6 +1152,8 @@ int BPF_PROG(wprof_ipi_resched_exit, int vector)
 	return handle_ipi(task, IPI_RESCHED, false /*!start*/);
 }
 
+#endif /* __TARGET_ARCH_x86 */
+
 struct req_state {
 	u64 start_ts;
 };
@@ -1165,7 +1167,7 @@ struct {
 static struct req_state empty_req_state;
 
 /* attached to thrift:crochet_request_data_context USDT */
-SEC("usdt")
+SEC("?usdt")
 int BPF_USDT(wprof_req_ctx, u64 req_id, const char *endpoint, enum wprof_req_event_kind event_kind)
 {
 	struct task_struct *task = bpf_get_current_task_btf();
@@ -1214,14 +1216,3 @@ int BPF_USDT(wprof_req_ctx, u64 req_id, const char *endpoint, enum wprof_req_eve
 
 	return 0;
 }
-
-/* attached to thrift:strobelight_probe_data_destruct USDT (though we might
- * not need it, actually)
- */
-SEC("usdt")
-int BPF_USDT(wprof_req_end, u32 version, u64 req_id, const char *endpoint, u64 lat_ms)
-{
-	return 0;
-}
-
-#endif /* __TARGET_ARCH_x86 */
