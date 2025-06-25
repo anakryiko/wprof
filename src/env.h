@@ -15,6 +15,7 @@
 #define DEFAULT_DURATION_MS 1000
 #define DEFAULT_CAPTURE_STACK_TRACES TRUE
 #define DEFAULT_CAPTURE_IPIS FALSE
+#define DEFAULT_CAPTURE_REQUESTS FALSE
 
 struct env {
 	bool verbose;
@@ -36,6 +37,7 @@ struct env {
 
 	enum tristate capture_stack_traces;
 	enum tristate capture_ipis;
+	enum tristate capture_requests;
 
 	int timer_freq_hz;
 

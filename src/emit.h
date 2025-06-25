@@ -11,6 +11,6 @@
 #include "perfetto_trace.pb.h"
 
 int init_emit(struct worker_state *w);
-int process_event(struct worker_state *w, struct wprof_event *e, size_t size);
+int emit_trace(struct worker_state *w);
 
 #endif /* __EMIT_H_ */

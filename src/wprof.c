@@ -143,6 +143,7 @@ static int finalize_events_dump(struct worker_state *w)
 
 	hdr.cfg.capture_stack_traces = env.capture_stack_traces == TRUE;
 	hdr.cfg.capture_ipis = env.capture_ipis == TRUE;
+	hdr.cfg.capture_requests = env.capture_requests == TRUE;
 
 	hdr.cfg.timer_freq_hz = env.timer_freq_hz;
 	hdr.cfg.counter_cnt = env.counter_cnt;
@@ -250,32 +251,6 @@ static int handle_rb_event(void *ctx, void *data, size_t size)
 
 	w->rb_handled_cnt++;
 	w->rb_handled_sz += size;
-
-	return 0;
-}
-
-static int generate_trace(struct worker_state *w)
-{
-	int err;
-
-	fprintf(stderr, "Generating trace...\n");
-	if (env.capture_stack_traces) {
-		err = generate_stack_traces(w);
-		if (err) {
-			fprintf(stderr, "Failed to append stack traces to trace '%s': %d\n", env.trace_path, err);
-			return err;
-		}
-	}
-
-	struct wprof_event_record *rec;
-	wprof_for_each_event(rec, w->dump_hdr) {
-		err = process_event(w, rec->e, rec->sz);
-		if (err) {
-			fprintf(stderr, "Failed to process event #%d (kind %d, size %zu, offset %zu): %d\n",
-				rec->idx, rec->e->kind, rec->sz, (void *)rec->e - (void *)w->dump_hdr, err);
-			return err; /* YEAH, I know about all the clean up, whatever */
-		}
-	}
 
 	return 0;
 }
@@ -489,6 +464,8 @@ static int discover_pid_req_binaries(int pid, int target_pid)
 	fd = open(proc_path, O_RDONLY);
 	if (fd < 0) {
 		err = -errno;
+		if (err == -ENOENT)
+			return 0; /* process is gone now */
 		eprintf("Failed to open '%s': %d\n", proc_path, err);
 		return err;
 	}
@@ -1139,6 +1116,7 @@ int main(int argc, char **argv)
 				printf("%-*s%s\n", w, "Stack traces:", "NOT CAPTURED");
 			}
 			printf("%-*s%s\n", w, "IPIs:", cfg->capture_ipis ? "true" : "false");
+			printf("%-*s%s\n", w, "Requests:", cfg->capture_requests ? "true" : "false");
 			printf("%-*s%dHz\n", w, "Timer frequency:", cfg->timer_freq_hz);
 			printf("%-*s", w, "Perf counters:");
 			if (cfg->counter_cnt == 0) {
@@ -1203,6 +1181,11 @@ int main(int argc, char **argv)
 			err = -EINVAL;
 			goto cleanup;
 		}
+		if (env.capture_requests == TRUE && !cfg->capture_requests) {
+			eprintf("replay: request data requested, but were not captured!\n");
+			err = -EINVAL;
+			goto cleanup;
+		}
 
 		/* check if all requested counters were captured and determine
 		 * their actual positions in data dump
@@ -1250,6 +1233,8 @@ int main(int argc, char **argv)
 			env.capture_stack_traces = DEFAULT_CAPTURE_STACK_TRACES;
 		if (env.capture_ipis == UNSET)
 			env.capture_ipis = DEFAULT_CAPTURE_IPIS;
+		if (env.capture_requests == UNSET)
+			env.capture_requests = DEFAULT_CAPTURE_REQUESTS;
 		for (int i = 0; i < env.counter_cnt; i++)
 			env.counter_pos[i] = i;
 
@@ -1368,7 +1353,7 @@ skip_data_collection:
 		}
 
 		/* process dumped events, and generate trace */
-		err = generate_trace(worker);
+		err = emit_trace(worker);
 		if (err) {
 			fprintf(stderr, "Failed to generate Perfetto trac: %d\n", err);
 			goto cleanup;

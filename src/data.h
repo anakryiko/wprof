@@ -17,6 +17,7 @@ struct wprof_data_cfg {
 
 	u64 capture_stack_traces : 1;
 	u64 capture_ipis : 1;
+	u64 capture_requests : 1;
 
 	int timer_freq_hz;
 

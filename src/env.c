@@ -183,6 +183,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			env.emit_tidpid = true;
 		} else if (strcasecmp(arg, "req") == 0) {
 			env.req_global_discovery = true;
+			env.capture_requests = TRUE;
 		} else if (strncasecmp(arg, "req=", 4) == 0) {
 			const char *req_arg = arg + 4;
 			int pid, n;
@@ -200,6 +201,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 					return err;
 				}
 			}
+			env.capture_requests = TRUE;
 		} else {
 			fprintf(stderr, "Unrecognized requested feature '%s!\n", arg);
 			return -EINVAL;

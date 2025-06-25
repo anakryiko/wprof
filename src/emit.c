@@ -138,6 +138,7 @@ enum task_kind {
 #define TRACK_UUID_IDLE		2000000000ULL
 #define TRACK_UUID_KWORKER	2000000001ULL
 #define TRACK_UUID_KTHREAD	2000000002ULL
+#define TRACK_UUID_REQUESTS	2000000003ULL
 
 #define TRACK_RANK_IDLE		-3
 #define TRACK_RANK_KWORKER	-2
@@ -352,6 +353,7 @@ static const char *scope_str(enum instant_scope scope)
 
 __unused
 static struct emit_rec emit_instant_pre(u64 ts, const struct wprof_task *t,
+					__u64 track_uuid,
 					pb_iid name_iid, const char *name,
 					pb_iid cat_iid, const char *cat)
 {
@@ -359,7 +361,7 @@ static struct emit_rec emit_instant_pre(u64 ts, const struct wprof_task *t,
 		PB_INIT(timestamp) = ts - env.sess_start_ts,
 		PB_TRUST_SEQ_ID(),
 		PB_ONEOF(data, TracePacket_track_event) = { .track_event = {
-			PB_INIT(track_uuid) = task_track_uuid(t),
+			PB_INIT(track_uuid) = track_uuid,
 			PB_INIT(type) = perfetto_protos_TrackEvent_Type_TYPE_INSTANT,
 			.category_iids = cat_iid ? PB_STRING_IID(cat_iid) : PB_NONE,
 			.categories = cat_iid ? PB_NONE : PB_STRING(cat),
@@ -375,7 +377,12 @@ static struct emit_rec emit_instant_pre(u64 ts, const struct wprof_task *t,
 
 #define emit_instant(ts, t, name_iid, name, cat_iid, cat)					\
 	for (struct emit_rec ___r __cleanup(emit_cleanup) =					\
-	     emit_instant_pre(ts, t, name_iid, name, cat_iid, cat);				\
+	     emit_instant_pre(ts, t, task_track_uuid(t), name_iid, name, cat_iid, cat);		\
+	     !___r.done; ___r.done = true)
+
+#define emit_track_instant(ts, t, track_uuid, name_iid, name, cat_iid, cat)			\
+	for (struct emit_rec ___r __cleanup(emit_cleanup) =					\
+	     emit_instant_pre(ts, t, track_uuid, name_iid, name, cat_iid, cat);			\
 	     !___r.done; ___r.done = true)
 
 __unused
@@ -416,9 +423,9 @@ static struct emit_rec emit_slice_point_pre(u64 ts, const struct wprof_task *t,
 				  name_iid, name, cat_iid, cat, start);			\
 	     !___r.done; ___r.done = true)
 
-#define emit_track_slice_point(ts, t, track_uuid, name_iid, name, cat_iid, cat, start)	\
-	for (struct emit_rec ___r __cleanup(emit_cleanup) =				\
-	     emit_slice_point_pre(ts, t, track, name_iid, name, cat_iid, cat, start);	\
+#define emit_track_slice_point(ts, t, track_uuid, name_iid, name, cat_iid, cat, start)		\
+	for (struct emit_rec ___r __cleanup(emit_cleanup) =					\
+	     emit_slice_point_pre(ts, t, track_uuid, name_iid, name, cat_iid, cat, start);	\
 	     !___r.done; ___r.done = true)
 
 __unused
@@ -475,6 +482,21 @@ static void emit_kind_track_descr(pb_ostream_t *stream, enum task_kind k)
 		}},
 	};
 	emit_trace_packet(stream, &desc_pb);
+}
+
+static void emit_track_descr(pb_ostream_t *stream, __u64 track_uuid, __u64 parent_track_uuid, const char *name)
+{
+	TracePacket desc = {
+		PB_TRUST_SEQ_ID(),
+		PB_ONEOF(data, TracePacket_track_descriptor) = { .track_descriptor = {
+			PB_INIT(uuid) = track_uuid,
+			PB_INIT(disallow_merging_with_system_tracks) = true,
+			.parent_uuid = parent_track_uuid,
+			.has_parent_uuid = parent_track_uuid != 0,
+			PB_ONEOF(static_or_dynamic_name, TrackDescriptor_name) = { .name = PB_STRING(name) },
+		}},
+	};
+	emit_trace_packet(stream, &desc);
 }
 
 static void emit_process_track_descr(pb_ostream_t *stream, const struct wprof_task *t)
@@ -663,7 +685,7 @@ static bool is_ts_in_range(u64 ts)
 	return true;
 }
 
-int process_event(struct worker_state *w, struct wprof_event *e, size_t size)
+static int process_event(struct worker_state *w, struct wprof_event *e, size_t size)
 {
 	if (!is_ts_in_range(e->ts))
 		return 0;
@@ -1178,62 +1200,92 @@ skip_emit_free:
 
 		(void)task_state(w, &e->task);
 
+		u64 parent_uuid = e->task.pid | TRACK_UUID_REQUESTS;
+		u64 req_track_uuid = e->req.req_id ^ e->task.pid;
+		u64 track_uuid = e->req.req_id ^ e->task.tid;
+
 		const char *thread_info = sfmt("%s (%d/%d)", e->task.comm, e->task.tid, e->task.pid);
 		switch (e->req.req_event) {
 		case REQ_BEGIN:
-			emit_instant(e->ts, &e->task,
+			emit_track_descr(cur_stream, parent_uuid, TRACK_UUID_REQUESTS,
+					 sfmt("%s %u", e->task.pcomm, e->task.pid));
+			emit_track_descr(cur_stream, req_track_uuid, parent_uuid,
+					 sfmt("REQ:%s (%llu)", e->req.req_name, e->req.req_id));
+			emit_track_instant(e->ts, &e->task, req_track_uuid,
 				     0, sfmt("REQ_BEGIN:%s", e->req.req_name),
 				     0, "REQUEST_BEGIN") {
 				emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
 				emit_kv_str(0, "req_name", 0, e->req.req_name);
 				emit_kv_int(0, "req_id", e->req.req_id);
 				emit_kv_str(0, "thread", 0, thread_info);
-				emit_flow_id(e->req.req_id);
+			}
+			emit_track_slice_point(e->ts, &e->task, req_track_uuid,
+					       0, e->req.req_name,
+					       0, "REQUEST", true /* start */) {
+				emit_kv_str(0, "req_name", 0, e->req.req_name);
+				emit_kv_int(0, "req_id", e->req.req_id);
 			}
 			break;
 		case REQ_END:
-			emit_instant(e->ts, &e->task,
+			emit_track_instant(e->ts, &e->task, req_track_uuid,
 				     0, sfmt("REQ_END:%s", e->req.req_name),
 				     0, "REQUEST_END") {
 				emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
 				emit_kv_str(0, "req_name", 0, e->req.req_name);
 				emit_kv_int(0, "req_id", e->req.req_id);
 				emit_kv_str(0, "thread", 0, thread_info);
-				emit_kv_float(0, "req_latency_us", "%.6lf", e->ts - e->req.req_ts);
-				emit_flow_id(e->req.req_id);
+				emit_kv_float(0, "req_latency_us", "%.6lf", (e->ts - e->req.req_ts) / 1000);
+			}
+			emit_track_slice_point(e->ts, &e->task, req_track_uuid,
+					       0, e->req.req_name,
+					       0, "REQUEST", false /* !start */) {
+				emit_kv_str(0, "req_name", 0, e->req.req_name);
+				emit_kv_int(0, "req_id", e->req.req_id);
+				emit_kv_float(0, "req_latency_us", "%.6lf", (e->ts - e->req.req_ts) / 1000);
 			}
 			break;
 		case REQ_SET:
-			emit_instant(e->ts, &e->task,
+			emit_track_instant(e->ts, &e->task, req_track_uuid,
 				     0, sfmt("REQ_SET:%s", e->req.req_name),
 				     0, "REQUEST_SET") {
-				emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
 				emit_kv_str(0, "req_name", 0, e->req.req_name);
 				emit_kv_int(0, "req_id", e->req.req_id);
 				emit_kv_str(0, "thread", 0, thread_info);
-				emit_flow_id(e->req.req_id);
+			}
+
+			emit_track_descr(cur_stream, track_uuid, req_track_uuid,
+					 sfmt("%s %u", e->task.comm, e->task.tid));
+			emit_track_slice_point(e->ts, &e->task, track_uuid,
+					0, e->task.comm,
+					0, "REQ_THREAD", true /* start */) {
+				emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
+				emit_kv_str(0, "req_name", 0, e->req.req_name);
+				emit_kv_int(0, "req_id", e->req.req_id);
 			}
 			break;
 		case REQ_UNSET:
-			emit_instant(e->ts, &e->task,
+			emit_track_instant(e->ts, &e->task, req_track_uuid,
 				     0, sfmt("REQ_UNSET:%s", e->req.req_name),
 				     0, "REQUEST_UNSET") {
-				emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
 				emit_kv_str(0, "req_name", 0, e->req.req_name);
 				emit_kv_int(0, "req_id", e->req.req_id);
 				emit_kv_str(0, "thread", 0, thread_info);
-				emit_flow_id(e->req.req_id);
 			}
+
+			emit_track_descr(cur_stream, track_uuid, req_track_uuid,
+					 sfmt("%s %u", e->task.comm, e->task.tid));
+			emit_track_slice_point(e->ts, &e->task, track_uuid,
+					0, e->task.comm,
+					0, "REQ_THREAD", false /* !start */);
 			break;
 		case REQ_CLEAR:
-			emit_instant(e->ts, &e->task,
+			emit_track_instant(e->ts, &e->task, req_track_uuid,
 				     0, sfmt("REQ_CLEAR:%s", e->req.req_name),
 				     0, "REQUEST_CLEAR") {
 				emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
 				emit_kv_str(0, "req_name", 0, e->req.req_name);
 				emit_kv_int(0, "req_id", e->req.req_id);
 				emit_kv_str(0, "thread", 0, thread_info);
-				emit_flow_id(e->req.req_id);
 			}
 			break;
 		default:
@@ -1252,3 +1304,31 @@ skip_emit_free:
 	return 0;
 }
 
+int emit_trace(struct worker_state *w)
+{
+	int err;
+
+	fprintf(stderr, "Generating trace...\n");
+	if (env.capture_stack_traces) {
+		err = generate_stack_traces(w);
+		if (err) {
+			fprintf(stderr, "Failed to append stack traces to trace '%s': %d\n", env.trace_path, err);
+			return err;
+		}
+	}
+
+	if (env.capture_requests)
+		emit_track_descr(cur_stream, TRACK_UUID_REQUESTS, 0, "REQUESTS");
+
+	struct wprof_event_record *rec;
+	wprof_for_each_event(rec, w->dump_hdr) {
+		err = process_event(w, rec->e, rec->sz);
+		if (err) {
+			fprintf(stderr, "Failed to process event #%d (kind %d, size %zu, offset %zu): %d\n",
+				rec->idx, rec->e->kind, rec->sz, (void *)rec->e - (void *)w->dump_hdr, err);
+			return err; /* YEAH, I know about all the clean up, whatever */
+		}
+	}
+
+	return 0;
+}
