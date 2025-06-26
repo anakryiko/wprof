@@ -29,6 +29,10 @@
 #define PF_KTHREAD 0x00200000
 #endif
 
+#ifndef TASK_RUNNING
+#define TASK_RUNNING 0
+#endif
+
 #define WPROF_GLOB_SZ 32
 struct glob_str { char pat[WPROF_GLOB_SZ]; };
 
@@ -147,6 +151,7 @@ struct wprof_event {
 		struct wprof_switch_from {
 			struct wprof_task next;
 			struct perf_counters ctrs;
+			u32 task_state;
 		} swtch_from;
 		struct wprof_switch_to {
 			struct wprof_task prev;
@@ -156,6 +161,7 @@ struct wprof_event {
 			u32 waking_numa_node;
 			enum waking_flags waking_flags;
 			struct perf_counters ctrs;
+			u32 last_task_state;
 		} swtch_to;
 		struct wprof_timer {
 		} timer;

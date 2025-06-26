@@ -15,6 +15,13 @@
 #include "env.h"
 #include "stacktrace.h"
 
+
+enum task_run_state {
+	TASK_STATE_RUNNING,
+	TASK_STATE_WAITING,
+	TASK_STATE_PREEMPTED,
+};
+
 struct task_state {
 	int tid, pid;
 	pb_iid name_iid;
@@ -23,6 +30,7 @@ struct task_state {
 	u64 rename_ts;
 	char old_comm[TASK_COMM_FULL_LEN];
 	/* on-cpu state */
+	enum task_run_state run_state;
 	u64 oncpu_ts;
 	u64 req_id; /* active ongoing request ID */
 	/* perf counters */
@@ -804,12 +812,14 @@ static int process_switch_from(struct worker_state *w, struct wprof_event *e, si
 	}
 	*/
 
+	bool preempted = e->swtch_from.task_state == TASK_RUNNING;
+
 	if (st->req_id) {
 		emit_track_slice_point(e->ts, &e->task, track_req_thread(st->req_id, &e->task),
 				       0, "RUNNING",
 				       0, "REQUEST_ONCPU", false /* !start */);
 		emit_track_slice_point(e->ts, &e->task, track_req_thread(st->req_id, &e->task),
-				       0, "PREEMPTED",
+				       0, preempted ? "PREEMPTED" : "WAITING",
 				       0, "REQUEST_OFFCPU", true /* start */);
 	}
 
@@ -819,6 +829,7 @@ static int process_switch_from(struct worker_state *w, struct wprof_event *e, si
 	/* reset perf counters */
 	memset(&st->oncpu_ctrs, 0, sizeof(struct perf_counters));
 	st->oncpu_ts = 0;
+	st->run_state = preempted ? TASK_STATE_PREEMPTED : TASK_STATE_WAITING;
 
 	return 0;
 }
@@ -915,13 +926,16 @@ static int process_switch_to(struct worker_state *w, struct wprof_event *e, size
 	}
 
 	if (st->req_id) {
+		bool was_preempted = e->swtch_to.last_task_state == TASK_RUNNING;
 		emit_track_slice_point(e->ts, &e->task, track_req_thread(st->req_id, &e->task),
-				       0, "PREEMPTED",
+				       0, was_preempted ? "PREEMPTED" : "WAITING",
 				       0, "REQUEST_OFFCPU", false /* !start */);
 		emit_track_slice_point(e->ts, &e->task, track_req_thread(st->req_id, &e->task),
 				       0, "RUNNING",
 				       0, "REQUEST_ONCPU", true /* start */);
 	}
+
+	st->run_state = TASK_STATE_RUNNING;
 
 	return 0;
 }
