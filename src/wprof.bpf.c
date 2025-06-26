@@ -950,9 +950,9 @@ int BPF_PROG(wprof_wq_exec_end, struct work_struct *work /* , work_func_t functi
 	return handle_workqueue(task, work, false /*!start*/);
 }
 
-static struct cpu_state all_cpus_state;
-
 #ifdef __TARGET_ARCH_x86
+
+static struct cpu_state all_cpus_state;
 
 static int handle_ipi_send(struct task_struct *task, enum wprof_ipi_kind ipi_kind, int target_cpu)
 {

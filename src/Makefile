@@ -25,7 +25,7 @@ VMLINUX := ../vmlinux.h/include/$(ARCH)/vmlinux.h
 # libbpf to avoid dependency on system-wide headers, which could be missing or
 # outdated
 INCLUDES := -I$(OUTPUT) -I../include -I../libbpf/include/uapi -I../libbpf/include -I$(dir $(VMLINUX)) -I$(LIBBLAZESYM_INC)
-CFLAGS := -g -Wall -O$(if $(RELEASE),2,0) -fno-omit-frame-pointer
+CFLAGS := -g -Wall -O$(if $(RELEASE),2,0) -fno-omit-frame-pointer -Wno-c23-extensions
 ALL_LDFLAGS := $(LDFLAGS) $(EXTRA_LDFLAGS) -lrt -ldl -lpthread -lm
 
 # Get Clang's default includes on this system. We'll explicitly add these dirs

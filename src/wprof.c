@@ -297,7 +297,7 @@ static void print_exit_summary(struct worker_state *worker, struct wprof_bpf *sk
 		if (env.stats) {
 			fprintf(stderr, "\t%s%-*s %8llu (%6llu/CPU) runs for total of %.3lfms (%.3lfms/CPU).\n",
 				bpf_program__name(prog),
-				(int)max(1, 24 - strlen(bpf_program__name(prog))), ":",
+				(int)max(1UL, 24 - strlen(bpf_program__name(prog))), ":",
 				info.run_cnt, info.run_cnt / num_cpus,
 				info.run_time_ns / 1000000.0, info.run_time_ns / 1000000.0 / num_cpus);
 			total_run_cnt += info.run_cnt;
@@ -615,6 +615,7 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *worker, int num_
 		return err;
 	}
 
+#ifdef __x86_64__
 	if (env.capture_ipis) {
 		bpf_program__set_autoload(skel->progs.wprof_ipi_send_cpu, true);
 		bpf_program__set_autoload(skel->progs.wprof_ipi_send_mask, true);
@@ -625,6 +626,7 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *worker, int num_
 		bpf_program__set_autoload(skel->progs.wprof_ipi_resched_entry, true);
 		bpf_program__set_autoload(skel->progs.wprof_ipi_resched_exit, true);
 	}
+#endif
 
 	if (env.req_pid_cnt > 0 || env.req_path_cnt > 0 || env.req_global_discovery) {
 		err = setup_req_tracking_discovery();

@@ -37,7 +37,6 @@ struct task_state {
 };
 
 static struct hashmap *tasks;
-static __thread struct emit_state em;
 static __thread pb_ostream_t *cur_stream;
 
 int init_emit(struct worker_state *w)
@@ -59,6 +58,8 @@ struct emit_state {
 	struct pb_anns anns;
 	struct pb_str_iids str_iids;
 };
+
+static __thread struct emit_state em;
 
 __unused
 static void emit_kv_str(pb_iid key_iid, const char *key, pb_iid value_iid, const char *value)
