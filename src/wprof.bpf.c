@@ -1176,6 +1176,8 @@ int BPF_USDT(wprof_req_ctx, u64 req_id, const char *endpoint, enum wprof_req_eve
 	if (!should_trace_task(task))
 		return 0;
 
+	u64 now_ts = bpf_ktime_get_ns();
+
 	switch (event_kind) {
 	case REQ_BEGIN:
 		s = bpf_map_lookup_elem(&req_states, &req_id);
@@ -1187,6 +1189,7 @@ int BPF_USDT(wprof_req_ctx, u64 req_id, const char *endpoint, enum wprof_req_eve
 			(void)inc_stat(req_state_drops);
 			return 0;
 		}
+		s->start_ts = now_ts;
 		break;
 	case REQ_END:
 	case REQ_SET:
@@ -1201,8 +1204,6 @@ int BPF_USDT(wprof_req_ctx, u64 req_id, const char *endpoint, enum wprof_req_eve
 	}
 
 	struct wprof_event *e;
-	u64 now_ts = bpf_ktime_get_ns();
-
 	emit_task_event(e, EV_SZ(req), 0, EV_REQ_EVENT, now_ts, task) {
 		e->req.req_id = req_id;
 		e->req.req_ts = s->start_ts;

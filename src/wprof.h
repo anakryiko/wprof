@@ -11,6 +11,9 @@
 #define WORKER_DESC_LEN 32
 #endif
 
+#define FILEPATH_LEN 64
+#define REQ_NAME_LEN 64
+
 #define TASK_COMM_FULL_LEN (2 * TASK_COMM_LEN + 4)
 
 #ifndef MAX_STACK_DEPTH
@@ -180,7 +183,7 @@ struct wprof_event {
 		} fork;
 		struct wprof_exec {
 			int old_tid;
-			char filename[WORKER_DESC_LEN - 4];
+			char filename[FILEPATH_LEN];
 		} exec;
 		struct wprof_ipi_send {
 			u64 ipi_id; /* 0, if unknown */
@@ -199,7 +202,7 @@ struct wprof_event {
 			u64 req_ts; /* request start timestamp */
 			u64 req_id;
 			enum wprof_req_event_kind req_event; /* lifecycle event (START, END, SET, UNSET, CLEAR) */
-			char req_name[WORKER_DESC_LEN - 4];
+			char req_name[REQ_NAME_LEN];
 		} req;
 	};
 };

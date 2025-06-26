@@ -22,8 +22,10 @@ struct task_state {
 	/* task renames */
 	u64 rename_ts;
 	char old_comm[TASK_COMM_FULL_LEN];
-	/* perf counters */
+	/* on-cpu state */
 	u64 oncpu_ts;
+	u64 req_id; /* active ongoing request ID */
+	/* perf counters */
 	struct perf_counters oncpu_ctrs;
 };
 
@@ -293,18 +295,33 @@ static const int kind_track_rank(enum task_kind kind)
 	}
 }
 
-static uint64_t task_track_uuid(const struct wprof_task *t)
+static uint64_t track_thread(const struct wprof_task *t)
 {
 	return track_pid(t) * 1000000000ULL + track_tid(t);
 }
 
-static uint64_t process_track_uuid(const struct wprof_task *t)
+static uint64_t track_process(const struct wprof_task *t)
 {
 	enum task_kind k = task_kind(t);
 
 	if (k == TASK_NORMAL)
 		return track_pid(t) * 1000000000ULL;
 	return kind_track_uuid(k);
+}
+
+static inline u64 track_req_thread(u64 req_id, const struct wprof_task *t)
+{
+	return req_id ^ t->tid;
+}
+
+static inline u64 track_req_process(u64 req_id, const struct wprof_task *t)
+{
+	return req_id ^ t->pid;
+}
+
+static inline u64 track_process_reqs(const struct wprof_task *t)
+{
+	return t->pid | TRACK_UUID_REQUESTS;
 }
 
 static const char *event_kind_str_map[] = {
@@ -380,7 +397,7 @@ static struct emit_rec emit_instant_pre(u64 ts, const struct wprof_task *t,
 
 #define emit_instant(ts, t, name_iid, name, cat_iid, cat)					\
 	for (struct emit_rec ___r __cleanup(emit_cleanup) =					\
-	     emit_instant_pre(ts, t, task_track_uuid(t), name_iid, name, cat_iid, cat);		\
+	     emit_instant_pre(ts, t, track_thread(t), name_iid, name, cat_iid, cat);		\
 	     !___r.done; ___r.done = true)
 
 #define emit_track_instant(ts, t, track_uuid, name_iid, name, cat_iid, cat)			\
@@ -422,7 +439,7 @@ static struct emit_rec emit_slice_point_pre(u64 ts, const struct wprof_task *t,
 
 #define emit_slice_point(ts, t, name_iid, name, cat_iid, cat, start)			\
 	for (struct emit_rec ___r __cleanup(emit_cleanup) =				\
-	     emit_slice_point_pre(ts, t, task_track_uuid(t),				\
+	     emit_slice_point_pre(ts, t, track_thread(t),				\
 				  name_iid, name, cat_iid, cat, start);			\
 	     !___r.done; ___r.done = true)
 
@@ -510,7 +527,7 @@ static void emit_process_track_descr(pb_ostream_t *stream, const struct wprof_ta
 	TracePacket proc_desc = {
 		PB_TRUST_SEQ_ID(),
 		PB_ONEOF(data, TracePacket_track_descriptor) = { .track_descriptor = {
-			PB_INIT(uuid) = process_track_uuid(t),
+			PB_INIT(uuid) = track_process(t),
 			PB_INIT(process) = {
 				PB_INIT(pid) = track_pid(t),
 				.process_name = PB_STRING(pcomm),
@@ -527,7 +544,7 @@ static void emit_thread_track_descr(pb_ostream_t *stream, const struct wprof_tas
 	TracePacket thread_desc = {
 		PB_TRUST_SEQ_ID(),
 		PB_ONEOF(data, TracePacket_track_descriptor) = { .track_descriptor = {
-			PB_INIT(uuid) = task_track_uuid(t),
+			PB_INIT(uuid) = track_thread(t),
 			PB_INIT(thread) = {
 				PB_INIT(tid) = track_tid(t),
 				PB_INIT(pid) = track_pid(t),
@@ -552,7 +569,7 @@ static pb_iid emit_intern_str(struct worker_state *w, const char *s)
 	return iid;
 }
 
-static struct task_state *task_state(struct worker_state *w, struct wprof_task *t)
+static struct task_state *task_state(struct worker_state *w, const struct wprof_task *t)
 {
 	unsigned long key = t->tid;
 	struct task_state *st;
@@ -787,6 +804,15 @@ static int process_switch_from(struct worker_state *w, struct wprof_event *e, si
 	}
 	*/
 
+	if (st->req_id) {
+		emit_track_slice_point(e->ts, &e->task, track_req_thread(st->req_id, &e->task),
+				       0, "RUNNING",
+				       0, "REQUEST_ONCPU", false /* !start */);
+		emit_track_slice_point(e->ts, &e->task, track_req_thread(st->req_id, &e->task),
+				       0, "PREEMPTED",
+				       0, "REQUEST_OFFCPU", true /* start */);
+	}
+
 	if (st->rename_ts)
 		st->rename_ts = 0;
 
@@ -886,6 +912,15 @@ static int process_switch_to(struct worker_state *w, struct wprof_event *e, size
 		emit_counter(e->ts, &e->task, IID_NONE, "waking_delay") {
 			emit_kv_float(IID_NONE, "us", "%.3lf", (e->ts - e->swtch_to.waking_ts) / 1000.0);
 		}
+	}
+
+	if (st->req_id) {
+		emit_track_slice_point(e->ts, &e->task, track_req_thread(st->req_id, &e->task),
+				       0, "PREEMPTED",
+				       0, "REQUEST_OFFCPU", false /* !start */);
+		emit_track_slice_point(e->ts, &e->task, track_req_thread(st->req_id, &e->task),
+				       0, "RUNNING",
+				       0, "REQUEST_ONCPU", true /* start */);
 	}
 
 	return 0;
@@ -1259,11 +1294,13 @@ static int process_req_event(struct worker_state *w, struct wprof_event *e, size
 	if (!should_trace_task(&e->task))
 		return 0;
 
-	(void)task_state(w, &e->task);
+	const struct wprof_task *t = &e->task;
+	struct task_state *st = task_state(w, t);
 
-	u64 parent_uuid = e->task.pid | TRACK_UUID_REQUESTS;
-	u64 req_track_uuid = e->req.req_id ^ e->task.pid;
-	u64 track_uuid = e->req.req_id ^ e->task.tid;
+	u64 req_id = e->req.req_id;
+	u64 parent_uuid = track_process_reqs(t);
+	u64 req_track_uuid = track_req_process(req_id, t);
+	u64 track_uuid = track_req_thread(req_id, t);
 
 	const char *thread_info = sfmt("%s (%d/%d)", e->task.comm, e->task.tid, e->task.pid);
 	switch (e->req.req_event) {
@@ -1272,6 +1309,14 @@ static int process_req_event(struct worker_state *w, struct wprof_event *e, size
 				 sfmt("%s %u", e->task.pcomm, e->task.pid));
 		emit_track_descr(cur_stream, req_track_uuid, parent_uuid,
 				 sfmt("REQ:%s (%llu)", e->req.req_name, e->req.req_id));
+
+		emit_track_slice_point(e->ts, &e->task, req_track_uuid,
+				       0, e->req.req_name,
+				       0, "REQUEST", true /* start */) {
+			emit_kv_str(0, "req_name", 0, e->req.req_name);
+			emit_kv_int(0, "req_id", e->req.req_id);
+		}
+
 		emit_track_instant(e->ts, &e->task, req_track_uuid,
 			     0, sfmt("REQ_BEGIN:%s", e->req.req_name),
 			     0, "REQUEST_BEGIN") {
@@ -1280,30 +1325,8 @@ static int process_req_event(struct worker_state *w, struct wprof_event *e, size
 			emit_kv_int(0, "req_id", e->req.req_id);
 			emit_kv_str(0, "thread", 0, thread_info);
 		}
-		emit_track_slice_point(e->ts, &e->task, req_track_uuid,
-				       0, e->req.req_name,
-				       0, "REQUEST", true /* start */) {
-			emit_kv_str(0, "req_name", 0, e->req.req_name);
-			emit_kv_int(0, "req_id", e->req.req_id);
-		}
-		break;
-	case REQ_END:
-		emit_track_instant(e->ts, &e->task, req_track_uuid,
-			     0, sfmt("REQ_END:%s", e->req.req_name),
-			     0, "REQUEST_END") {
-			emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
-			emit_kv_str(0, "req_name", 0, e->req.req_name);
-			emit_kv_int(0, "req_id", e->req.req_id);
-			emit_kv_str(0, "thread", 0, thread_info);
-			emit_kv_float(0, "req_latency_us", "%.6lf", (e->ts - e->req.req_ts) / 1000);
-		}
-		emit_track_slice_point(e->ts, &e->task, req_track_uuid,
-				       0, e->req.req_name,
-				       0, "REQUEST", false /* !start */) {
-			emit_kv_str(0, "req_name", 0, e->req.req_name);
-			emit_kv_int(0, "req_id", e->req.req_id);
-			emit_kv_float(0, "req_latency_us", "%.6lf", (e->ts - e->req.req_ts) / 1000);
-		}
+
+		st->req_id = e->req.req_id;
 		break;
 	case REQ_SET:
 		emit_track_instant(e->ts, &e->task, req_track_uuid,
@@ -1318,11 +1341,17 @@ static int process_req_event(struct worker_state *w, struct wprof_event *e, size
 				 sfmt("%s %u", e->task.comm, e->task.tid));
 		emit_track_slice_point(e->ts, &e->task, track_uuid,
 				0, e->task.comm,
-				0, "REQ_THREAD", true /* start */) {
+				0, "REQUEST_THREAD", true /* start */) {
 			emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
 			emit_kv_str(0, "req_name", 0, e->req.req_name);
 			emit_kv_int(0, "req_id", e->req.req_id);
 		}
+
+		emit_track_slice_point(e->ts, &e->task, track_uuid,
+				       0, "RUNNING",
+				       0, "REQUEST_ONCPU", true /* start */);
+
+		st->req_id = e->req.req_id;
 		break;
 	case REQ_UNSET:
 		emit_track_instant(e->ts, &e->task, req_track_uuid,
@@ -1335,9 +1364,16 @@ static int process_req_event(struct worker_state *w, struct wprof_event *e, size
 
 		emit_track_descr(cur_stream, track_uuid, req_track_uuid,
 				 sfmt("%s %u", e->task.comm, e->task.tid));
+
 		emit_track_slice_point(e->ts, &e->task, track_uuid,
 				0, e->task.comm,
-				0, "REQ_THREAD", false /* !start */);
+				0, "REQUEST_THREAD", false /* !start */);
+
+		emit_track_slice_point(e->ts, &e->task, track_uuid,
+				       0, "RUNNING",
+				       0, "REQUEST_ONCPU", false /* !start */);
+
+		st->req_id = 0;
 		break;
 	case REQ_CLEAR:
 		emit_track_instant(e->ts, &e->task, req_track_uuid,
@@ -1348,6 +1384,31 @@ static int process_req_event(struct worker_state *w, struct wprof_event *e, size
 			emit_kv_int(0, "req_id", e->req.req_id);
 			emit_kv_str(0, "thread", 0, thread_info);
 		}
+		break;
+	case REQ_END:
+		emit_track_slice_point(e->ts, &e->task, req_track_uuid,
+				       0, e->req.req_name,
+				       0, "REQUEST", false /* !start */) {
+			emit_kv_str(0, "req_name", 0, e->req.req_name);
+			emit_kv_int(0, "req_id", e->req.req_id);
+			emit_kv_float(0, "req_latency_us", "%.6lf", (e->ts - e->req.req_ts) / 1000);
+		}
+
+		emit_track_instant(e->ts, &e->task, req_track_uuid,
+			     0, sfmt("REQ_END:%s", e->req.req_name),
+			     0, "REQUEST_END") {
+			emit_kv_int(IID_ANNK_CPU, "cpu", e->cpu);
+			emit_kv_str(0, "req_name", 0, e->req.req_name);
+			emit_kv_int(0, "req_id", e->req.req_id);
+			emit_kv_str(0, "thread", 0, thread_info);
+			emit_kv_float(0, "req_latency_us", "%.6lf", (e->ts - e->req.req_ts) / 1000);
+		}
+
+		emit_track_slice_point(e->ts, &e->task, track_uuid,
+				       0, "RUNNING",
+				       0, "REQUEST_ONCPU", false /* !start */);
+
+		st->req_id = 0;
 		break;
 	default:
 		fprintf(stderr, "UNHANDLED REQ EVENT %d\n", e->req.req_event);

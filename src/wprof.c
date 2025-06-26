@@ -396,6 +396,7 @@ static int timer_plan_cmp(const void *a, const void *b)
 struct req_binary {
 	int pid;
 	char *path;
+	char *attach_path;
 };
 
 static unsigned long hash_combine(unsigned long h, unsigned long value)
@@ -418,7 +419,7 @@ static bool req_binary_equal_fn(long a, long b, void *ctx)
 	return binary_a->pid == binary_b->pid && strcmp(binary_a->path, binary_b->path) == 0;
 }
 
-static int add_req_binary(const char *path, int pid)
+static int add_req_binary(const char *path, int pid, int vma_pid, long vma_start, long vma_end)
 {
 	struct req_binary *binary, key;
 
@@ -446,6 +447,14 @@ static int add_req_binary(const char *path, int pid)
 
 	binary->pid = pid;
 	binary->path = key.path;
+
+	if (vma_pid) {
+		char tmp[1024];
+		snprintf(tmp, sizeof(tmp), "/proc/%d/map_files/%lx-%lx", vma_pid, vma_start, vma_end);
+		binary->attach_path = strdup(tmp);
+	} else {
+		binary->attach_path = strdup(key.path);
+	}
 
 	hashmap__set(env.req_binaries, binary, binary, NULL, NULL);
 	// printf("Added binary: %s (PID %d)\n", path, pid);
@@ -493,7 +502,7 @@ static int discover_pid_req_binaries(int pid, int target_pid)
 		}
 
 		if (path_buf[0] == '/') {
-			err = add_req_binary(path_buf, target_pid);
+			err = add_req_binary(path_buf, target_pid, pid, query.vma_start, query.vma_end);
 			if (err)
 				break;
 		}
@@ -520,7 +529,7 @@ static int setup_req_tracking_discovery(void)
 	}
 
 	for (int i = 0; i < env.req_path_cnt; i++) {
-		err = add_req_binary(env.req_paths[i], -1);
+		err = add_req_binary(env.req_paths[i], -1, 0, 0, 0);
 		if (err) {
 			eprintf("Failed to record binary path '%s' for request tracking: %d\n", env.req_paths[i], err);
 			return err;
@@ -925,14 +934,14 @@ static int attach_bpf(struct bpf_state *st, int num_cpus)
 			 */
 			ignore_libbpf_warns = true;
 			link = bpf_program__attach_usdt(st->skel->progs.wprof_req_ctx,
-							binary->pid, binary->path,
+							binary->pid, binary->attach_path,
 							"thrift", "crochet_request_data_context",
 							NULL);
 			ignore_libbpf_warns = false;
 			if (!link) {
 				if (env.verbose) {
-					eprintf("Failed to attach USDT to %s (PID %d), ignoring...\n",
-					       binary->path, binary->pid);
+					eprintf("Failed to attach USDT to %s (%s) (PID %d), ignoring...\n",
+					       binary->path, binary->attach_path, binary->pid);
 				}
 				continue;
 			}
