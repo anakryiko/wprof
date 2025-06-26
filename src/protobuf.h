@@ -71,6 +71,15 @@ enum pb_static_iid {
 		IID_CAT_RENAME,					/* RENAME */
 		IID_CAT_IPI,					/* IPI */
 		IID_CAT_IPI_SEND,				/* IPI_SEND */
+		IID_CAT_REQUEST,				/* REQUEST */
+		IID_CAT_REQUEST_THREAD,				/* REQUEST_THREAD */
+		IID_CAT_REQUEST_ONCPU,				/* REQUEST_ONCPU */
+		IID_CAT_REQUEST_OFFCPU,				/* REQUEST_OFFCPU */
+		IID_CAT_REQUEST_BEGIN,				/* REQUEST_BEGIN */
+		IID_CAT_REQUEST_SET,				/* REQUEST_SET */
+		IID_CAT_REQUEST_UNSET,				/* REQUEST_UNSET */
+		IID_CAT_REQUEST_CLEAR,				/* REQUEST_CLEAR */
+		IID_CAT_REQUEST_END,				/* REQUEST_END */
 	CAT_END_IID,
 
 	NAME_START_IID, __NAME_RESET_IID = NAME_START_IID - 1,
@@ -93,6 +102,14 @@ enum pb_static_iid {
 		IID_NAME_IPI_LAST = IID_NAME_IPI + NR_IPIS - 1,
 		IID_NAME_IPI_SEND,				/* IPI_SEND:... */
 		IID_NAME_IPI_SEND_LAST = IID_NAME_IPI_SEND + NR_IPIS - 1,
+		IID_NAME_RUNNING,				/* RUNNING */
+		IID_NAME_WAITING,				/* WAITING */
+		IID_NAME_PREEMPTED,				/* PREEMPTED */
+		IID_NAME_REQUEST_BEGIN,				/* REQUEST_BEGIN */
+		IID_NAME_REQUEST_SET,				/* REQUEST_SET */
+		IID_NAME_REQUEST_UNSET,				/* REQUEST_UNSET */
+		IID_NAME_REQUEST_CLEAR,				/* REQUEST_CLEAR */
+		IID_NAME_REQUEST_END,				/* REQUEST_END */
 	NAME_END_IID,
 
 	ANNK_START_IID, __ANNK_RESET_IID = ANNK_START_IID - 1,
@@ -136,6 +153,9 @@ enum pb_static_iid {
 		IID_ANNK_PERF_CACHE_MISSES,			/* cache_misses_kilo */
 		IID_ANNK_PERF_STALL_CYCLES_FE,			/* stalled_cycles_fe_kilo */
 		IID_ANNK_PERF_STALL_CYCLES_BE,			/* stalled_cycles_be_kilo */
+		IID_ANNK_REQ_NAME,				/* req_name */
+		IID_ANNK_REQ_ID,				/* req_id */
+		IID_ANNK_REQ_LATENCY_US,			/* req_latency_us */
 	ANNK_END_IID,
 
 	ANNV_START_IID, __ANNV_RESET_IID = ANNV_START_IID - 1,
@@ -148,7 +168,6 @@ enum pb_static_iid {
 	IID_FIXED_LAST_ID,
 };
 
-
 const char *pb_static_str(enum pb_static_iid);
 
 bool file_stream_cb(pb_ostream_t *stream, const uint8_t *buf, size_t count);
@@ -157,6 +176,8 @@ struct pb_str {
 	int iid;
 	const char *s;
 };
+
+#define iid_str(id, str) ((struct pb_str){.iid=(id),.s=(str)})
 
 #define PB_INIT(field) .has_##field = true, .field
 
