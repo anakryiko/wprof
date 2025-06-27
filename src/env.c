@@ -43,6 +43,7 @@ enum {
 	OPT_REPLAY_OFFSET_START = 1013,
 	OPT_REPLAY_OFFSET_END = 1014,
 	OPT_REPLAY_INFO = 1015,
+	OPT_NO_STACK_TRACES = 1016,
 
 	OPT_ALLOW_TID = 2000,
 	OPT_DENY_TID = 2001,
@@ -70,8 +71,8 @@ static const struct argp_option opts[] = {
 	{ "replay-end", OPT_REPLAY_OFFSET_END, "TIME_OFFSET", 0, "Session end time offset (replay mode only). Supported syntax: 2s, 1.03s, 10.5ms, 12us, 101213ns" },
 	{ "replay-info", OPT_REPLAY_INFO, NULL, 0, "Print recorded data information" },
 
-	{ "stack-traces", 's', NULL, 0, "Capture stack traces" },
-	{ "no-stack-traces", 'S', NULL, 0, "Don't capture stack traces" },
+	{ "stack-traces", 'S', NULL, 0, "Capture stack traces" },
+	{ "no-stack-traces", OPT_NO_STACK_TRACES, NULL, 0, "Don't capture stack traces" },
 	{ "symbolize-frugal", OPT_SYMBOLIZE_FRUGALLY, NULL, 0, "Symbolize frugally (slower, but less memory hungry)" },
 
 	/* allow/deny filters */
@@ -159,14 +160,14 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		}
 		env.trace_path = strdup(arg);
 		break;
-	case 's':
+	case 'S':
 		if (env.capture_stack_traces != UNSET && env.capture_stack_traces != TRUE) {
 			eprintf("Conflicting stack trace capture settings specified!\n");
 			return -EINVAL;
 		}
 		env.capture_stack_traces = TRUE;
 		break;
-	case 'S':
+	case OPT_NO_STACK_TRACES:
 		if (env.capture_stack_traces != UNSET && env.capture_stack_traces != FALSE) {
 			eprintf("Conflicting stack trace capture settings specified!\n");
 			return -EINVAL;
