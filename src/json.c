@@ -248,7 +248,7 @@ static void emit_thread_meta(const struct wprof_task *t, const char *name)
 }
 
 __unused
-static struct emit_rec emit_instant_pre(u64 ts, const struct wprof_task *t,
+static struct emit_rec emit_instant_pre(u64 ts,
 					pb_iid name_iid, const char *name)
 {
 	if (env.jtrace) {
@@ -283,5 +283,5 @@ static struct emit_rec emit_instant_pre(u64 ts, const struct wprof_task *t,
 
 #define emit_instant(ts, t, name_iid, name)							\
 	for (struct emit_rec ___r __cleanup(emit_cleanup) =					\
-	     emit_instant_pre(ts, t, name_iid, name);						\
+	     emit_instant_pre(ts, name_iid, name);						\
 	     !___r.done; ___r.done = true)
