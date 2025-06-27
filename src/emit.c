@@ -1310,6 +1310,8 @@ static int process_ipi_exit(struct worker_state *w, struct wprof_event *e, size_
 /* EV_REQ_EVENT */
 static int process_req_event(struct worker_state *w, struct wprof_event *e, size_t size)
 {
+	if (!env.capture_requests)
+		return 0;
 	if (!should_trace_task(&e->task))
 		return 0;
 
