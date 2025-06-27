@@ -52,6 +52,7 @@ struct env {
 	/* feature selector */
 	bool emit_numa;
 	bool emit_tidpid;
+	bool emit_timer_ticks;
 
 	u64 actual_start_ts;
 	u64 sess_start_ts;

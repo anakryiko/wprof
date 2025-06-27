@@ -744,11 +744,13 @@ static int process_timer(struct worker_state *w, struct wprof_event *e, size_t s
 
 	(void)task_state(w, &e->task);
 
-	/* task keeps running on CPU */
-	emit_instant(e->ts, &e->task, IID_NAME_TIMER, IID_CAT_TIMER) {
-		emit_kv_int(IID_ANNK_CPU, e->cpu);
-		if (env.emit_numa)
-			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
+	if (env.emit_timer_ticks) {
+		/* task keeps running on CPU */
+		emit_instant(e->ts, &e->task, IID_NAME_TIMER, IID_CAT_TIMER) {
+			emit_kv_int(IID_ANNK_CPU, e->cpu);
+			if (env.emit_numa)
+				emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
+		}
 	}
 
 	int strace_id = event_stack_trace_id(w, e, size);
