@@ -71,8 +71,8 @@ static const struct argp_option opts[] = {
 	{ "replay-end", OPT_REPLAY_OFFSET_END, "TIME_OFFSET", 0, "Session end time offset (replay mode only). Supported syntax: 2s, 1.03s, 10.5ms, 12us, 101213ns" },
 	{ "replay-info", OPT_REPLAY_INFO, NULL, 0, "Print recorded data information" },
 
-	{ "stack-traces", 'S', NULL, 0, "Capture stack traces" },
-	{ "no-stack-traces", OPT_NO_STACK_TRACES, NULL, 0, "Don't capture stack traces" },
+	{ "stacks", 'S', NULL, 0, "Capture stack traces" },
+	{ "no-stacks", OPT_NO_STACK_TRACES, NULL, 0, "Don't capture stack traces" },
 	{ "symbolize-frugal", OPT_SYMBOLIZE_FRUGALLY, NULL, 0, "Symbolize frugally (slower, but less memory hungry)" },
 
 	/* allow/deny filters */
