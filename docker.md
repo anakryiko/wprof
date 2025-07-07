@@ -13,7 +13,7 @@ docker build -t wprof-build .
 docker run -it --rm -v $(pwd):/src wprof-build bash
 
 # Build inside container
-make -j$(nproc)
+make -j$(nproc) -C src
 
 # Optional alias for convenience
 alias wprof-build='docker run -it --rm -v $(pwd):/src wprof-build'
