@@ -309,8 +309,9 @@ static void print_exit_summary(struct worker_state *worker, struct wprof_bpf *sk
 		fprintf(stderr, "\t%-24s %8llu (%6llu/CPU) runs for total of %.3lfms (%.3lfms/CPU).\n",
 			"TOTAL:", total_run_cnt, total_run_cnt / num_cpus,
 			total_run_ns / 1000000.0, total_run_ns / 1000000.0 / num_cpus);
-		fprintf(stderr, "\t%-24s %8llu records (%.3lfMBs) processed, %llu records (%.3lfMBs) ignored.\n",
+		fprintf(stderr, "\t%-24s %8llu records (%.3lfMB, %.3lfMB/s) processed, %llu records (%.3lfMB) ignored.\n",
 			"DATA:", rb_handled_cnt, rb_handled_sz / 1024.0 / 1024.0,
+			rb_handled_sz / 1024.0 / 1024.0 / (env.duration_ns / 1000000000.0),
 			rb_ignored_cnt, rb_ignored_sz / 1024.0 / 1024.0);
 	}
 
@@ -1182,6 +1183,12 @@ int main(int argc, char **argv)
 		set_ktime_off(cfg->ktime_start_ns, cfg->realtime_start_ns);
 
 		/* validate data capture config compatibility */
+		if (env.capture_stack_traces == UNSET)
+			env.capture_stack_traces = cfg->capture_stack_traces;
+		if (env.capture_ipis == UNSET)
+			env.capture_ipis = cfg->capture_ipis;
+		if (env.capture_requests == UNSET)
+			env.capture_requests = cfg->capture_requests;
 		if (env.capture_stack_traces == TRUE && !cfg->capture_stack_traces) {
 			eprintf("replay: stack traces requested, but were not captured!\n");
 			err = -EINVAL;
