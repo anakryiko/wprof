@@ -768,6 +768,8 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *worker, int num_
 	skel->rodata->rb_cnt_bits = 0;
 	while ((1ULL << skel->rodata->rb_cnt_bits) < env.ringbuf_cnt)
 		skel->rodata->rb_cnt_bits++;
+	 /* force RB notification when at least 25% of ringbuf is full */
+	skel->rodata->rb_submit_threshold_bytes = env.ringbuf_sz / 4;
 
 	skel->rodata->capture_stack_traces = env.capture_stack_traces == TRUE;
 

@@ -114,6 +114,7 @@ const volatile int deny_tname_cnt;
 const volatile u32 perf_ctr_cnt = 1; /* for veristat, reset in user space */
 
 const volatile u64 rb_cnt_bits;
+const volatile u64 rb_submit_threshold_bytes;
 
 const volatile bool capture_stack_traces = true;
 
@@ -349,7 +350,7 @@ static void __rb_event_submit(void *arg)
 		return;
 
 	long queued_sz = bpf_ringbuf_query(ctx->rb, BPF_RB_AVAIL_DATA);
-	long flags = queued_sz >= 256 * 1024 ? BPF_RB_FORCE_WAKEUP : BPF_RB_NO_WAKEUP;
+	long flags = queued_sz >= rb_submit_threshold_bytes ? BPF_RB_FORCE_WAKEUP : BPF_RB_NO_WAKEUP;
 
 	/* no-op, if ctx->rb is NULL */
 	bpf_ringbuf_submit_dynptr(&ctx->dptr, flags);
