@@ -27,6 +27,7 @@ struct env env = {
 	.task_state_sz = DEFAULT_TASK_STATE_SZ,
 	.capture_stack_traces = UNSET,
 	.capture_ipis = UNSET,
+	.capture_requests = UNSET,
 };
 
 enum {

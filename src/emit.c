@@ -535,16 +535,19 @@ static void emit_kind_track_descr(pb_ostream_t *stream, enum task_kind k)
 	emit_trace_packet(stream, &desc_pb);
 }
 
-static void emit_track_descr(pb_ostream_t *stream, __u64 track_uuid, __u64 parent_track_uuid, const char *name)
+static void emit_track_descr(pb_ostream_t *stream, __u64 track_uuid, __u64 parent_track_uuid, const char *name, int rank)
 {
 	TracePacket desc = {
 		PB_TRUST_SEQ_ID(),
 		PB_ONEOF(data, TracePacket_track_descriptor) = { .track_descriptor = {
 			PB_INIT(uuid) = track_uuid,
-			PB_INIT(disallow_merging_with_system_tracks) = true,
+			PB_INIT(disallow_merging_with_system_tracks) = false,
 			.parent_uuid = parent_track_uuid,
 			.has_parent_uuid = parent_track_uuid != 0,
 			PB_ONEOF(static_or_dynamic_name, TrackDescriptor_name) = { .name = PB_STRING(name) },
+			PB_INIT(child_ordering) = perfetto_protos_TrackDescriptor_ChildTracksOrdering_CHRONOLOGICAL,
+			.sibling_order_rank = rank,
+			.has_sibling_order_rank = rank != 0,
 		}},
 	};
 	emit_trace_packet(stream, &desc);
@@ -1328,9 +1331,9 @@ static int process_req_event(struct worker_state *w, struct wprof_event *e, size
 	switch (e->req.req_event) {
 	case REQ_BEGIN:
 		emit_track_descr(cur_stream, parent_uuid, TRACK_UUID_REQUESTS,
-				 sfmt("%s %u", e->task.pcomm, e->task.pid));
+				 sfmt("%s %u", e->task.pcomm, e->task.pid), 0);
 		emit_track_descr(cur_stream, req_track_uuid, parent_uuid,
-				 sfmt("REQ:%s (%llu)", e->req.req_name, e->req.req_id));
+				 sfmt("REQ:%s (%llu)", e->req.req_name, e->req.req_id), 0);
 
 		emit_track_slice_start(e->ts, req_track_uuid,
 				       iid_str(req_name_iid, e->req.req_name),
@@ -1339,25 +1342,29 @@ static int process_req_event(struct worker_state *w, struct wprof_event *e, size
 			emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
 		}
 
+		/*
 		emit_track_instant(e->ts, req_track_uuid,
 				   IID_NAME_REQUEST_BEGIN, IID_CAT_REQUEST_BEGIN) {
 			emit_kv_int(IID_ANNK_CPU, e->cpu);
 			emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, e->req.req_name));
 			emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
 		}
+		*/
 
 		st->req_id = e->req.req_id;
 		break;
 	case REQ_SET:
+		/*
 		emit_track_instant(e->ts, req_track_uuid,
 				   IID_NAME_REQUEST_SET, IID_CAT_REQUEST_SET) {
 			emit_kv_int(IID_ANNK_CPU, e->cpu);
 			emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, e->req.req_name));
 			emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
 		}
+		*/
 
 		emit_track_descr(cur_stream, track_uuid, req_track_uuid,
-				 sfmt("%s %u", e->task.comm, e->task.tid));
+				 sfmt("%s %u", e->task.comm, e->task.tid), 0);
 
 		emit_track_slice_start(e->ts, track_uuid,
 				       iid_str(st->name_iid, st->comm),
@@ -1372,15 +1379,17 @@ static int process_req_event(struct worker_state *w, struct wprof_event *e, size
 		st->req_id = e->req.req_id;
 		break;
 	case REQ_UNSET:
+		/*
 		emit_track_instant(e->ts, req_track_uuid,
 				   IID_NAME_REQUEST_UNSET, IID_CAT_REQUEST_UNSET) {
 			emit_kv_int(IID_ANNK_CPU, e->cpu);
 			emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, e->req.req_name));
 			emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
 		}
+		*/
 
 		emit_track_descr(cur_stream, track_uuid, req_track_uuid,
-				 sfmt("%s %u", e->task.comm, e->task.tid));
+				 sfmt("%s %u", e->task.comm, e->task.tid), 0);
 
 		emit_track_slice_end(e->ts, track_uuid,
 				     iid_str(st->name_iid, st->comm),
@@ -1392,20 +1401,23 @@ static int process_req_event(struct worker_state *w, struct wprof_event *e, size
 		st->req_id = 0;
 		break;
 	case REQ_CLEAR:
+		/*
 		emit_track_instant(e->ts, req_track_uuid,
 				   IID_NAME_REQUEST_CLEAR, IID_CAT_REQUEST_CLEAR) {
 			emit_kv_int(IID_ANNK_CPU, e->cpu);
 			emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, e->req.req_name));
 			emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
 		}
+		*/
 		break;
 	case REQ_END:
 		emit_track_slice_end(e->ts, req_track_uuid,
 				     iid_str(req_name_iid, e->req.req_name), IID_CAT_REQUEST) {
 			emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, e->req.req_name));
 			emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
+			emit_kv_float(IID_ANNK_REQ_LATENCY_US, "%.6lf", (e->ts - e->req.req_ts) / 1000);
 		}
-
+		/*
 		emit_track_instant(e->ts, req_track_uuid,
 				   IID_NAME_REQUEST_END, IID_CAT_REQUEST_END) {
 			emit_kv_int(IID_ANNK_CPU, e->cpu);
@@ -1413,7 +1425,7 @@ static int process_req_event(struct worker_state *w, struct wprof_event *e, size
 			emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
 			emit_kv_float(IID_ANNK_REQ_LATENCY_US, "%.6lf", (e->ts - e->req.req_ts) / 1000);
 		}
-
+		*/
 		emit_track_slice_end(e->ts, track_uuid,
 				     IID_NAME_RUNNING, IID_CAT_REQUEST_ONCPU);
 
@@ -1479,7 +1491,7 @@ int emit_trace(struct worker_state *w)
 	}
 
 	if (env.capture_requests)
-		emit_track_descr(cur_stream, TRACK_UUID_REQUESTS, 0, "REQUESTS");
+		emit_track_descr(cur_stream, TRACK_UUID_REQUESTS, 0, "REQUESTS", 1000);
 
 	struct wprof_event_record *rec;
 	wprof_for_each_event(rec, w->dump_hdr) {
