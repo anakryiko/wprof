@@ -111,9 +111,11 @@ struct worker_state {
 	pb_ostream_t stream;
 
 	FILE *dump;
+	char *dump_path;
 	void *dump_mem;
 	size_t dump_sz;
 	struct wprof_data_hdr *dump_hdr;
+	struct ring_buffer *rb_manager;
 
 	/* stats */
 	u64 rb_handled_cnt;
