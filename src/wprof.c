@@ -396,7 +396,7 @@ static void print_exit_summary(struct worker_state *workers, int worker_cnt, str
 		}
 
 		if (info.recursion_misses) {
-			fprintf(stderr, "!!! %s: %llu execution misses!\n",
+			fprintf(stderr, "!!! %s: %llu recursion misses!\n",
 				bpf_program__name(prog), info.recursion_misses);
 		}
 
@@ -677,6 +677,14 @@ static int setup_req_tracking_discovery(void)
 	return 0;
 }
 
+static int setup_rb_cpu_mapping(u32 *rb_cpu_mapping, int rb_cnt, int num_cpus)
+{
+	for (int i = 0; i < num_cpus; i++) {
+		rb_cpu_mapping[i] = i % rb_cnt;
+	}
+	return 0;
+}
+
 struct bpf_state {
 	bool detached;
 	bool drained;
@@ -873,9 +881,21 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 	skel->rodata->perf_ctr_cnt = env.counter_cnt;
 	bpf_map__set_max_entries(skel->maps.perf_cntrs, st->perf_counter_fd_cnt);
 
-	skel->rodata->rb_cnt_bits = 0;
-	while ((1ULL << skel->rodata->rb_cnt_bits) < env.ringbuf_cnt)
-		skel->rodata->rb_cnt_bits++;
+	int cpu_cnt_pow2 = round_pow_of_2(num_cpus);
+	skel->rodata->rb_cpu_map_mask = cpu_cnt_pow2 - 1;
+	if ((err = bpf_map__set_value_size(skel->maps.data_rb_cpu_map, cpu_cnt_pow2 * sizeof(*skel->data_rb_cpu_map)))) {
+		fprintf(stderr, "Failed to size RB-to-CPU mapping: %d\n", err);
+		return err;
+	}
+	size_t _sz;
+	u32 *rb_cpu_map = bpf_map__initial_value(skel->maps.data_rb_cpu_map, &_sz);
+
+	err = setup_rb_cpu_mapping(rb_cpu_map, env.ringbuf_cnt, num_cpus);
+	if (err) {
+		eprintf("Failed to setup RB-to-CPU mapping: %d\n", err);
+		return err;
+	}
+
 	 /* force RB notification when at least 25% of ringbuf is full */
 	skel->rodata->rb_submit_threshold_bytes = env.ringbuf_sz / 4;
 

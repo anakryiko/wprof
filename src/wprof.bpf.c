@@ -113,7 +113,9 @@ const volatile int deny_tname_cnt;
 
 const volatile u32 perf_ctr_cnt = 1; /* for veristat, reset in user space */
 
-const volatile u64 rb_cnt_bits;
+u32 rb_cpu_map[1] SEC(".data.rb_cpu_map");
+const volatile u64 rb_cpu_map_mask;
+
 const volatile u64 rb_submit_threshold_bytes;
 
 const volatile bool capture_stack_traces = true;
@@ -297,18 +299,6 @@ static void fill_task_info(struct task_struct *t, struct wprof_task *info)
 	__builtin_memcpy(info->pcomm, t->group_leader->comm, sizeof(info->pcomm));
 }
 
-static inline u64 hash_bits(u64 h, int bits)
-{
-	if (bits == 0)
-		return 0;
-	return (h * 11400714819323198485llu) >> (64 - bits);
-}
-
-static __always_inline u32 calc_rb_slot(int pid, int cpu)
-{
-	return hash_bits(pid ?: cpu, rb_cnt_bits);
-}
-
 struct rb_ctx {
 	void *rb;
 	void *ev;
@@ -322,7 +312,7 @@ static __always_inline struct rb_ctx __rb_event_reserve(struct task_struct *p, u
 	struct rb_ctx rb_ctx = {};
 	void *rb;
 	u32 cpu = bpf_get_smp_processor_id();
-	u32 rb_slot = calc_rb_slot(p->pid, cpu);
+	u32 rb_slot = rb_cpu_map[cpu & rb_cpu_map_mask];
 
 	rb = bpf_map_lookup_elem(&rbs, &rb_slot);
 	if (!rb) {
