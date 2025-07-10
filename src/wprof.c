@@ -155,6 +155,9 @@ static int merge_wprof_data(struct worker_state *workers)
 			return err;
 		}
 
+		fflush(w->dump);
+		fsync(fileno(w->dump));
+
 		w->dump_sz = pos;
 		w->dump_mem = mmap(NULL, w->dump_sz, PROT_READ | PROT_WRITE, MAP_SHARED, fileno(w->dump), 0);
 		if (w->dump_mem == MAP_FAILED) {
