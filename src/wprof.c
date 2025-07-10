@@ -1169,14 +1169,15 @@ static void drain_bpf(struct bpf_state *st, int num_cpus)
 	if (st->drained)
 		return;
 
-	for (int i = 0; i < env.ringbuf_cnt; i++) {
-		if (st->rb_managers[i]) { /* drain ringbuf */
-			exiting = false; /* ringbuf callback will stop early, if exiting is set */
-			(void)ring_buffer__consume(st->rb_managers[i]);
+	if (st->rb_managers) {
+		for (int i = 0; i < env.ringbuf_cnt; i++) {
+			if (st->rb_managers[i]) { /* drain ringbuf */
+				exiting = false; /* ringbuf callback will stop early, if exiting is set */
+				(void)ring_buffer__consume(st->rb_managers[i]);
+			}
+			ring_buffer__free(st->rb_managers[i]);
 		}
-		ring_buffer__free(st->rb_managers[i]);
 	}
-
 
 	if (st->rb_map_fds) {
 		for (int i = 0; i < env.ringbuf_cnt; i++)
