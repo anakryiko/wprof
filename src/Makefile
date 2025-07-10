@@ -112,8 +112,8 @@ $(OUTPUT)/wprof.skel.h: $(OUTPUT)/wprof.bpf.o $(OUTPUT)/utils.bpf.o | $(OUTPUT) 
 	$(Q)$(BPFTOOL) gen skeleton $(OUTPUT)/wprof-final.bpf.o name wprof_bpf > $@
 
 WPROF_SRCS := wprof.c utils.c env.c protobuf.c emit.c stacktrace.c		\
-	      pb_common.c pb_encode.c perfetto_trace.pb.c
-WPROF_HDRS := wprof.h utils.h env.h protobuf.h emit.h stacktrace.h data.h
+	      pb_common.c pb_encode.c perfetto_trace.pb.c topology.c
+WPROF_HDRS := wprof.h utils.h env.h protobuf.h emit.h stacktrace.h data.h topology.h
 
 # Build user space object files
 $(OUTPUT)/%.o: %.c $(OUTPUT)/wprof.skel.h $(WPROF_HDRS) | $(OUTPUT)

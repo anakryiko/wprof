@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause)
 /* Copyright (c) 2025 Meta Platforms, Inc. */
-#include "bpf/libbpf_common.h"
 #define _GNU_SOURCE
 #define _FILE_OFFSET_BITS 64
 #include <argp.h>
@@ -37,6 +36,7 @@
 #include "protobuf.h"
 #include "emit.h"
 #include "stacktrace.h"
+#include "topology.h"
 
 #define FILE_BUF_SZ (64 * 1024)
 
@@ -680,14 +680,6 @@ static int setup_req_tracking_discovery(void)
 	return 0;
 }
 
-static int setup_rb_cpu_mapping(u32 *rb_cpu_mapping, int rb_cnt, int num_cpus)
-{
-	for (int i = 0; i < num_cpus; i++) {
-		rb_cpu_mapping[i] = i % rb_cnt;
-	}
-	return 0;
-}
-
 struct bpf_state {
 	bool detached;
 	bool drained;
@@ -893,7 +885,7 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 	size_t _sz;
 	u32 *rb_cpu_map = bpf_map__initial_value(skel->maps.data_rb_cpu_map, &_sz);
 
-	err = setup_rb_cpu_mapping(rb_cpu_map, env.ringbuf_cnt, num_cpus);
+	err = setup_cpu_to_ringbuf_mapping(rb_cpu_map, env.ringbuf_cnt, num_cpus);
 	if (err) {
 		eprintf("Failed to setup RB-to-CPU mapping: %d\n", err);
 		return err;
@@ -1492,6 +1484,7 @@ int main(int argc, char **argv)
 	fprintf(stderr, "Draining...\n");
 	drain_bpf(&bpf_state, num_cpus);
 
+	fprintf(stderr, "Merging...\n");
 	err = merge_wprof_data(workers);
 	if (err) {
 		fprintf(stderr, "Failed to finalize data dump: %d\n", err);

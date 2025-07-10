@@ -111,6 +111,8 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 
 	switch (key) {
 	case 'v':
+		if (env.verbose)
+			env.debug = true;
 		env.verbose = true;
 		break;
 	case OPT_STATS:
@@ -309,11 +311,11 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	case OPT_RINGBUF_CNT:
 		errno = 0;
 		env.ringbuf_cnt = strtol(arg, NULL, 0);
-		if (errno || env.ringbuf_cnt < 0) {
+		if (errno || env.ringbuf_cnt <= 0) {
 			fprintf(stderr, "Invalid ringbuf count: %s\n", arg);
 			argp_usage(state);
 		}
-		env.ringbuf_cnt = round_pow_of_2(env.ringbuf_cnt);
+		env.ringbuf_cnt = env.ringbuf_cnt;
 		break;
 	case 'C': {
 		int counter_idx = -1;

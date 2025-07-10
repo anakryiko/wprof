@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <limits.h>
 #include <errno.h>
+#include <time.h>
 #include <linux/perf_event.h>
 #include <sys/syscall.h>
 #include "../libbpf/src/hashmap.h" /* internal to libbpf, yep */
@@ -107,6 +108,8 @@ static inline void wprof_strlcpy(char *dst, const char *src, size_t sz)
 
 const char *sfmt(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 const char *vsfmt(const char *fmt, va_list ap);
+int parse_int_from_file(const char *file, const char *fmt, void *val);
+int parse_str_from_file(const char *file, char *buf, size_t buf_sz);
 
 bool wprof_glob_match(const char *glob, const char *s);
 

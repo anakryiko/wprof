@@ -133,6 +133,49 @@ const char *vsfmt(const char *fmt, va_list ap)
 	return fmt_buf;
 }
 
+int parse_int_from_file(const char *file, const char *fmt, void *val)
+{
+	int err;
+	FILE *f;
+
+	f = fopen(file, "re");
+	if (!f)
+		return -errno;
+
+	err = fscanf(f, fmt, val);
+	if (err != 1) {
+		err = err == EOF ? -EIO : -errno;
+		fclose(f);
+		return err;
+	}
+
+	fclose(f);
+	return 0;
+}
+
+int parse_str_from_file(const char *file, char *buf, size_t buf_sz)
+{
+	int err;
+	FILE *f;
+	char fmt[32];
+
+	f = fopen(file, "re");
+	if (!f)
+		return -errno;
+
+	snprintf(fmt, sizeof(fmt), "%%%zus", buf_sz - 1);
+
+	err = fscanf(f, fmt, buf);
+	if (err != 1) {
+		err = err == EOF ? -EIO : -errno;
+		fclose(f);
+		return err;
+	}
+
+	fclose(f);
+	return 0;
+}
+
 /**
  * NOTE: adapted from Linux kernel sources (lib/glob.c)
  */
@@ -240,3 +283,4 @@ u64 ktime_to_realtime_ns(u64 ts_ns)
 {
 	return ktime_off + ts_ns;
 }
+

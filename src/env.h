@@ -19,6 +19,7 @@
 
 struct env {
 	bool verbose;
+	bool debug;
 	bool stats;
 	bool libbpf_logs;
 	bool breakout_counters;
