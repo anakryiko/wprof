@@ -417,7 +417,7 @@ static void print_exit_summary(struct worker_state *workers, int worker_cnt, str
 			"TOTAL:", total_run_cnt,
 			total_run_cnt / num_cpus / dur_s,
 			total_run_ns / 1000000.0,
-			total_run_ns / 1000000.0 / num_cpus);
+			total_run_ns / 1000000.0 / num_cpus / dur_s);
 	}
 
 skip_prog_stats:
