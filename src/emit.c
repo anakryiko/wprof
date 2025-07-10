@@ -24,6 +24,7 @@ enum task_run_state {
 struct task_state {
 	int tid, pid;
 	pb_iid name_iid;
+	pb_iid old_name_iid;
 	char comm[TASK_COMM_FULL_LEN];
 	/* task renames */
 	u64 rename_ts;
@@ -773,8 +774,8 @@ static int process_switch_from(struct worker_state *w, struct wprof_event *e, si
 	 * to maintain consistently named trace slice
 	 */
 	struct task_state *st = task_state(w, &e->task);
-	const char *prev_name = st->rename_ts ? st->old_comm : st->comm;
-	pb_iid prev_name_iid = emit_intern_str(w, prev_name);
+	const char *cur_name = st->rename_ts ? st->old_comm : st->comm;
+	pb_iid cur_name_iid = st->rename_ts ? st->old_name_iid : st->name_iid;
 
 	/* We are about to emit SLICE_END without
 	 * corresponding SLICE_BEGIN ever being emitted;
@@ -785,14 +786,14 @@ static int process_switch_from(struct worker_state *w, struct wprof_event *e, si
 	 */
 	if (st->oncpu_ts == 0) {
 		emit_slice_begin(env.sess_start_ts, &e->task,
-				 iid_str(prev_name_iid, prev_name), IID_CAT_ONCPU) {
+				 iid_str(cur_name_iid, cur_name), IID_CAT_ONCPU) {
 			emit_kv_int(IID_ANNK_CPU, e->cpu);
 			if (env.emit_numa)
 				emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
 		}
 	}
 
-	emit_slice_end(e->ts, &e->task, iid_str(prev_name_iid, prev_name), IID_CAT_ONCPU) {
+	emit_slice_end(e->ts, &e->task, iid_str(cur_name_iid, cur_name), IID_CAT_ONCPU) {
 		emit_kv_int(IID_ANNK_CPU, e->cpu);
 		if (env.emit_numa)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
@@ -1030,8 +1031,10 @@ static int process_task_rename(struct worker_state *w, struct wprof_event *e, si
 	if (st->rename_ts == 0) {
 		memcpy(st->old_comm, e->task.comm, sizeof(st->old_comm));
 		st->rename_ts = e->ts;
+		st->old_name_iid = st->name_iid;
 	}
 	memcpy(st->comm, e->rename.new_comm, sizeof(st->comm));
+	st->name_iid = emit_intern_str(w, e->rename.new_comm);
 
 	emit_instant(e->ts, &e->task, IID_NAME_RENAME, IID_CAT_RENAME) {
 		emit_kv_int(IID_ANNK_CPU, e->cpu);
@@ -1042,7 +1045,6 @@ static int process_task_rename(struct worker_state *w, struct wprof_event *e, si
 		emit_kv_str(IID_ANNK_NEW_NAME, e->rename.new_comm);
 	}
 
-	(void)emit_intern_str(w, e->rename.new_comm);
 	emit_thread_track_descr(&w->stream, &e->task, e->rename.new_comm);
 
 	return 0;
