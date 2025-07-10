@@ -19,7 +19,7 @@
 
 struct env {
 	bool verbose;
-	bool debug;
+	int debug_level;
 	bool stats;
 	bool libbpf_logs;
 	bool breakout_counters;
@@ -106,6 +106,7 @@ struct perf_counter_def {
 extern const struct perf_counter_def perf_counter_defs[];
 
 struct worker_state {
+	int worker_id;
 	struct str_iid_domain name_iids;
 
 	FILE *trace;

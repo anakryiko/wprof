@@ -54,6 +54,7 @@ enum wprof_filt_mode {
 };
 
 struct wprof_stats {
+	u64 rb_handled;
 	u64 rb_drops;
 	u64 task_state_drops;
 	u64 rb_misses;

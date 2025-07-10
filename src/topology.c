@@ -19,7 +19,6 @@
  *
  * /sys/devices/system/node/nodeZ/cpulist - per-NUMA list of CPUs
  */
-
 int determine_cpu_topology(struct cpu_topo *topo, int cpu_cnt)
 {
 	char path[PATH_MAX];
@@ -90,7 +89,6 @@ int determine_cpu_topology(struct cpu_topo *topo, int cpu_cnt)
 
 			if (level < 1 || level > 3)
 				continue;
-
 
 			snprintf(path, sizeof(path),
 				"/sys/devices/system/cpu/cpu%d/cache/index%d/id",
@@ -252,7 +250,7 @@ int setup_cpu_to_ringbuf_mapping(u32 *rb_cpu_mapping, int rb_cnt, int cpu_cnt)
 
 			set_cnt -= 1;
 
-			if (env.debug) {
+			if (env.debug_level >= 2) {
 				printf("COMBINING CPU %d and CPU %d -> %d + %d = %d (%s)\n",
 						topo[i - 1].cpu, topo[i].cpu,
 						cnt1, cnt2, sets_find_count(sets, cpu_cnt, topo[i].cpu),
@@ -265,7 +263,7 @@ int setup_cpu_to_ringbuf_mapping(u32 *rb_cpu_mapping, int rb_cnt, int cpu_cnt)
 
 		topo_regroup(topo, sets, cpu_cnt);
 
-		if (last_set_cnt != set_cnt && env.debug)
+		if (last_set_cnt != set_cnt && env.debug_level >= 2)
 			print_cpu_grouping(topo, sets, cpu_cnt);
 
 		if (set_cnt == rb_cnt)
@@ -311,7 +309,7 @@ balance:
 		int cnt1 = sets_find_count(sets, cpu_cnt, cpu);
 		int cnt2 = sets_find_count(sets, cpu_cnt, best_cpu);
 		if (sets_union(sets, cpu_cnt, cpu, best_cpu)) {
-			if (env.debug) {
+			if (env.debug_level >= 2) {
 				printf("COMBINING CPU %d and CPU %d -> %d + %d = %d (%s)\n",
 						cpu, best_cpu,
 						cnt1, cnt2, sets_find_count(sets, cpu_cnt, cpu),
@@ -325,7 +323,7 @@ balance:
 	}
 
 	topo_regroup(topo, sets, cpu_cnt);
-	if (env.debug)
+	if (env.debug_level >= 2)
 		print_cpu_grouping(topo, sets, cpu_cnt);
 
 assign:
@@ -335,7 +333,7 @@ assign:
 		rb_cpu_mapping[i] = topo[i].group;
 
 done:
-	if (env.verbose) {
+	if (env.debug_level) {
 		printf("CPU topology and CPU-to-ringbuf mapping:\n");
 		printf("========================================\n");
 		for (int i = 0; i < cpu_cnt; i++) {

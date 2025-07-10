@@ -324,6 +324,8 @@ static __always_inline struct rb_ctx __rb_event_reserve(struct task_struct *p, u
 
 	if (bpf_ringbuf_reserve_dynptr(rb, fix_sz + dyn_sz, 0, &rb_ctx.dptr))
 		(void)inc_stat(rb_drops);
+	else
+		(void)inc_stat(rb_handled);
 
 	*ev_out = rb_ctx.ev = bpf_dynptr_data(&rb_ctx.dptr, 0, fix_sz);
 	if (dptr)
