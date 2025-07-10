@@ -1244,6 +1244,18 @@ int main(int argc, char **argv)
 	signal(SIGINT, sig_term);
 	signal(SIGTERM, sig_term);
 
+	if (env.ringbuf_cnt == 0) {
+		if (env.replay) {
+			env.ringbuf_cnt = 1;
+		} else {
+			/* random heuristics: 16 CPUs per ringbuf, but at least 4 ringbuf */
+			env.ringbuf_cnt = max(4, num_cpus / 16);
+		}
+	}
+	env.ringbuf_cnt = min(env.ringbuf_cnt, num_cpus);
+	if (env.verbose)
+		printf("Using %d BPF ring buffers.\n", env.ringbuf_cnt);
+
 	/* during replay or trace generation there is only one worker */
 	int worker_cnt = env.replay ? 1 : env.ringbuf_cnt;
 	struct worker_state *workers = calloc(worker_cnt, sizeof(*workers));
