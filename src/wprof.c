@@ -9,6 +9,7 @@
 #include <stdarg.h>
 #include <unistd.h>
 #include <string.h>
+#include <stdatomic.h>
 #include <fcntl.h>
 #include <sys/syscall.h>
 #include <sys/sysinfo.h>
@@ -26,6 +27,7 @@
 #include <limits.h>
 #include <linux/fs.h>
 #include <dirent.h>
+#include <sched.h>
 
 #include "utils.h"
 #include "wprof.h"
@@ -1064,7 +1066,26 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 	return 0;
 }
 
-static int attach_bpf(struct bpf_state *st, int num_cpus)
+static atomic_int rb_workers_ready = 0;
+
+static void *rb_worker(void *ctx)
+{
+	struct worker_state *worker = ctx;
+	char name[32];
+
+	snprintf(name, sizeof(name), "wprof_rb%03d", worker->worker_id);
+	pthread_setname_np(pthread_self(), name);
+
+	rb_workers_ready += 1;
+
+	while (!exiting) {
+		ring_buffer__poll(worker->rb_manager, 100);
+	}
+
+	return NULL;
+}
+
+static int attach_bpf(struct bpf_state *st, struct worker_state *workers, int num_cpus)
 {
 	int err = 0;
 
@@ -1115,44 +1136,19 @@ static int attach_bpf(struct bpf_state *st, int num_cpus)
 			}
 
 			tmp = realloc(st->links, (st->link_cnt + 1) * sizeof(struct bpf_link *));
-			if (!tmp) {
-				err = -ENOMEM;
-				return err;
-			}
+			if (!tmp)
+				return -ENOMEM;
 			st->links = tmp;
 			st->links[st->link_cnt] = link;
 			st->link_cnt++;
 		}
 	}
 
-	return 0;
-}
-
-static void *rb_worker(void *ctx)
-{
-	struct worker_state *worker = ctx;
-	char name[32];
-
-	snprintf(name, sizeof(name), "wprof_rb%03d", worker->worker_id);
-	pthread_setname_np(pthread_self(), name);
-
-	while (!exiting) {
-		ring_buffer__poll(worker->rb_manager, 100);
-	}
-
-	return NULL;
-}
-
-static int run_bpf(struct bpf_state *st, struct worker_state *workers)
-{
-	int err = 0;
-
-	st->skel->bss->session_start_ts = env.sess_start_ts;
-
+	/* spin up and ready ringbuf consumer threads */
 	st->rb_threads = calloc(env.ringbuf_cnt, sizeof(*st->rb_threads));
 
 	for (int i = 0; i < env.ringbuf_cnt; i++) {
-		err = pthread_create(&st->rb_threads[i], NULL, rb_worker, &workers[i]);
+		int err = pthread_create(&st->rb_threads[i], NULL, rb_worker, &workers[i]);
 		if (err) {
 			err = -errno;
 			eprintf("Failed to spawn ringbuf worker thread #%d: %d\n", i, err);
@@ -1160,16 +1156,25 @@ static int run_bpf(struct bpf_state *st, struct worker_state *workers)
 		}
 	}
 
+	while (rb_workers_ready != env.ringbuf_cnt)
+		sched_yield();
+
+	return 0;
+}
+
+static int run_bpf(struct bpf_state *st)
+{
+	st->skel->bss->session_start_ts = env.sess_start_ts;
+
 	for (int i = 0; i < env.ringbuf_cnt; i++) {
-		err = pthread_join(st->rb_threads[i], NULL);
+		int err = pthread_join(st->rb_threads[i], NULL);
 		if (err) {
 			err = -errno;
 			eprintf("Failed to cleanly join ringbuf worker thread #%d: %d\n", i, err);
 		}
 	}
 
-
-	return err;
+	return 0;
 }
 
 static void detach_bpf(struct bpf_state *st, int num_cpus)
@@ -1517,7 +1522,7 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	err = attach_bpf(&bpf_state, num_cpus);
+	err = attach_bpf(&bpf_state, workers, num_cpus);
 	if (err) {
 		fprintf(stderr, "Failed to attach BPF parts: %d\n", err);
 		goto cleanup;
@@ -1540,7 +1545,7 @@ int main(int argc, char **argv)
 	env.sess_start_ts = env.ktime_start_ns;
 	env.sess_end_ts = env.ktime_start_ns + env.duration_ns;
 
-	err = run_bpf(&bpf_state, workers);
+	err = run_bpf(&bpf_state);
 	if (err) {
 		fprintf(stderr, "Failed during collecting BPF-generated data: %d\n", err);
 		goto cleanup;
