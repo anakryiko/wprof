@@ -91,7 +91,7 @@ static const struct argp_option opts[] = {
 	{ "no-kthread", OPT_DENY_KTHREAD, NULL, 0, "Deny kernel tasks" },
 
 	/* event subset targeting */
-	{ "feature", 'f', "FEAT", 0, "Features selector. Supported: ipi, numa, tidpid, timer-ticks, req, req=<path-to-binary>, req=<PID>" },
+	{ "feature", 'f', "FEAT", 0, "Features selector. Supported: ipi, numa, tidpid, timer-ticks, req (and no-req for replay), req=<path-to-binary>, req=<PID>" },
 
 	{ "ringbuf-size", OPT_RINGBUF_SZ, "SIZE", 0, "BPF ringbuf size (in KBs)" },
 	{ "task-state-size", OPT_TASK_STATE_SZ, "SIZE", 0, "BPF task state map size (in threads)" },
@@ -187,6 +187,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			env.emit_tidpid = true;
 		} else if (strcasecmp(arg, "timer-ticks") == 0) {
 			env.emit_timer_ticks = true;
+		} else if (strcasecmp(arg, "no-req") == 0) {
+			env.req_global_discovery = false;
+			env.capture_requests = FALSE;
 		} else if (strcasecmp(arg, "req") == 0) {
 			env.req_global_discovery = true;
 			env.capture_requests = TRUE;
