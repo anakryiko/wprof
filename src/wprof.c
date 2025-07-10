@@ -38,7 +38,7 @@
 #include "stacktrace.h"
 #include "topology.h"
 
-#define FILE_BUF_SZ (512 * 1024)
+#define FILE_BUF_SZ (64 * 1024)
 
 static bool ignore_libbpf_warns;
 
@@ -932,8 +932,8 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 		return err;
 	}
 
-	 /* force RB notification when at least 0.5MB or 12.5% of ringbuf (whichever is less) is full */
-	skel->rodata->rb_submit_threshold_bytes = min(512 * 1024, env.ringbuf_sz / 8);
+	 /* force RB notification when at least 2.0MB or 25% of ringbuf (whichever is less) is full */
+	skel->rodata->rb_submit_threshold_bytes = min(2 * 1024 * 1024, env.ringbuf_sz / 4);
 
 	skel->rodata->capture_stack_traces = env.capture_stack_traces == TRUE;
 
