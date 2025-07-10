@@ -1224,6 +1224,8 @@ int main(int argc, char **argv)
 	struct bpf_state bpf_state = {};
 	int num_cpus = 0, err = 0;
 	struct itimerval timer_ival = {};
+	int worker_cnt = 0;
+	struct worker_state *workers = NULL;
 
 	env.actual_start_ts = ktime_now_ns();
 
@@ -1257,8 +1259,8 @@ int main(int argc, char **argv)
 		printf("Using %d BPF ring buffers.\n", env.ringbuf_cnt);
 
 	/* during replay or trace generation there is only one worker */
-	int worker_cnt = env.replay ? 1 : env.ringbuf_cnt;
-	struct worker_state *workers = calloc(worker_cnt, sizeof(*workers));
+	worker_cnt = env.replay ? 1 : env.ringbuf_cnt;
+	workers = calloc(worker_cnt, sizeof(*workers));
 	workers[0].name_iids = (struct str_iid_domain) {
 		.str_iids = hashmap__new(str_hash_fn, str_equal_fn, NULL),
 		.next_str_iid = IID_FIXED_LAST_ID,
