@@ -19,7 +19,6 @@ struct task_state {
 	u32 waking_flags;
 	u32 last_task_state;
 	struct wprof_task waking_task;
-	enum task_status status;
 	u64 softirq_ts;
 	u64 hardirq_ts;
 	u64 wq_ts;
@@ -431,7 +430,7 @@ static __always_inline bool init_wprof_event(struct wprof_event *e, u32 sz, enum
 	     __ctx.ev = NULL)
 
 
-SEC("perf_event")
+SEC("?perf_event")
 int wprof_timer_tick(void *ctx)
 {
 	struct task_state *scur;
@@ -446,11 +445,7 @@ int wprof_timer_tick(void *ctx)
 		return 0; /* shouldn't happen, unless we ran out of space */
 
 	now_ts = bpf_ktime_get_ns();
-
 	scur->ts = now_ts;
-	if (scur->status == STATUS_UNKNOWN)
-		/* we don't know if we are in IRQ or not, but presume not */
-		scur->status = STATUS_ON_CPU;
 
 	struct wprof_event *e;
 	struct bpf_dynptr *dptr;
@@ -606,7 +601,6 @@ int BPF_PROG(wprof_task_wakeup_new, struct task_struct *p)
 		task = bpf_get_current_task_btf();
 		fill_task_info(task, &s->waking_task);
 	}
-	s->status = STATUS_OFF_CPU;
 
 	/*
 	struct wprof_event *e;

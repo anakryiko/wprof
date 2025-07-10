@@ -61,13 +61,6 @@ struct wprof_stats {
 	u64 req_state_drops;
 };
 
-enum task_status {
-	STATUS_UNKNOWN,
-	STATUS_ON_CPU,
-	STATUS_OFF_CPU,
-	STATUS_IRQ,
-};
-
 enum event_kind {
 	EV_INVALID,
 

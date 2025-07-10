@@ -739,12 +739,109 @@ struct bpf_state {
 	int num_online_cpus;
 };
 
+static int setup_perf_timer_ticks(struct bpf_state *st, int num_cpus)
+{
+	struct perf_event_attr attr;
+
+	st->perf_timer_fds = calloc(num_cpus, sizeof(int));
+	for (int i = 0; i < num_cpus; i++)
+		st->perf_timer_fds[i] = -1;
+
+	/* determine randomized spread-out "plan" for attaching to timers to
+	 * avoid too aligned (in time) triggerings across all CPUs
+	 */
+	u64 timer_start_ts = ktime_now_ns();
+	struct timer_plan *timer_plan = calloc(num_cpus, sizeof(*timer_plan));
+
+	for (int cpu = 0; cpu < num_cpus; cpu++) {
+		timer_plan[cpu].cpu = cpu;
+		timer_plan[cpu].delay_ns = 1000000000ULL / env.timer_freq_hz * ((double)rand() / RAND_MAX);
+	}
+	qsort(timer_plan, num_cpus, sizeof(*timer_plan), timer_plan_cmp);
+
+	for (int i = 0; i < num_cpus; i++) {
+		int cpu = timer_plan[i].cpu;
+
+		/* skip offline/not present CPUs */
+		if (cpu >= st->num_online_cpus || !st->online_mask[cpu])
+			continue;
+
+		/* timer perf event */
+		memset(&attr, 0, sizeof(attr));
+		attr.size = sizeof(attr);
+		attr.type = PERF_TYPE_SOFTWARE;
+		attr.config = PERF_COUNT_SW_CPU_CLOCK;
+		attr.sample_freq = env.timer_freq_hz;
+		attr.freq = 1;
+
+		u64 now = ktime_now_ns();
+		if (now < timer_start_ts + timer_plan[i].delay_ns)
+			usleep((timer_start_ts + timer_plan[i].delay_ns - now) / 1000);
+
+		int pefd = perf_event_open(&attr, -1, cpu, -1, PERF_FLAG_FD_CLOEXEC);
+		if (pefd < 0) {
+			int err = -errno;
+			fprintf(stderr, "Failed to set up performance monitor on CPU %d: %d\n", cpu, err);
+			return err;
+		}
+		st->perf_timer_fds[cpu] = pefd;
+	}
+
+	return 0;
+}
+
+static int setup_perf_counters(struct bpf_state *st, int num_cpus)
+{
+	struct perf_event_attr attr;
+	int err;
+
+	st->perf_counter_fds = calloc(st->perf_counter_fd_cnt, sizeof(int));
+	for (int i = 0; i < num_cpus; i++) {
+		for (int j = 0; j < env.counter_cnt; j++)
+			st->perf_counter_fds[i * env.counter_cnt + j] = -1;
+	}
+
+	for (int cpu = 0; cpu < num_cpus; cpu++) {
+		/* set up requested perf counters */
+		for (int j = 0; j < env.counter_cnt; j++) {
+			const struct perf_counter_def *def = &perf_counter_defs[env.counter_ids[j]];
+			int pe_idx = cpu * env.counter_cnt + j;
+
+			memset(&attr, 0, sizeof(attr));
+			attr.size = sizeof(attr);
+			attr.type = def->perf_type;
+			attr.config = def->perf_cfg;
+
+			int pefd = perf_event_open(&attr, -1, cpu, -1, PERF_FLAG_FD_CLOEXEC);
+			if (pefd < 0) {
+				fprintf(stderr, "Failed to create %s PMU for CPU #%d, skipping...\n", def->alias, cpu);
+			} else {
+				st->perf_counter_fds[pe_idx] = pefd;
+				err = bpf_map__update_elem(st->skel->maps.perf_cntrs,
+							   &pe_idx, sizeof(pe_idx),
+							   &pefd, sizeof(pefd), 0);
+				if (err) {
+					fprintf(stderr, "Failed to set up %s PMU on CPU#%d for BPF: %d\n", def->alias, cpu, err);
+					return err;
+				}
+				err = ioctl(pefd, PERF_EVENT_IOC_ENABLE, 0);
+				if (err) {
+					err = -errno;
+					fprintf(stderr, "Failed to enable %s PMU on CPU#%d: %d\n", def->alias, cpu, err);
+					return err;
+				}
+			}
+		}
+	}
+
+	return 0;
+}
+
 static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num_cpus)
 {
 	const char *online_cpus_file = "/sys/devices/system/cpu/online";
-	struct perf_event_attr attr;
 	struct wprof_bpf *skel;
-	int pefd, i, err = 0;
+	int i, err = 0;
 
 #ifndef __x86_64__
 	if (env.capture_ipis) {
@@ -919,6 +1016,9 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 	skel->rodata->perf_ctr_cnt = env.counter_cnt;
 	bpf_map__set_max_entries(skel->maps.perf_cntrs, st->perf_counter_fd_cnt);
 
+	if (env.capture_stack_traces)
+		bpf_program__set_autoload(st->skel->progs.wprof_timer_tick, true);
+
 	int cpu_cnt_pow2 = round_pow_of_2(num_cpus);
 	skel->rodata->rb_cpu_map_mask = cpu_cnt_pow2 - 1;
 	if ((err = bpf_map__set_value_size(skel->maps.data_rb_cpu_map, cpu_cnt_pow2 * sizeof(*skel->data_rb_cpu_map)))) {
@@ -984,82 +1084,19 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 		workers[i].rb_manager = st->rb_managers[i];
 	}
 
-	st->perf_timer_fds = calloc(num_cpus, sizeof(int));
-	st->perf_counter_fds = calloc(st->perf_counter_fd_cnt, sizeof(int));
-	for (i = 0; i < num_cpus; i++) {
-		st->perf_timer_fds[i] = -1;
-		for (int j = 0; j < env.counter_cnt; j++)
-			st->perf_counter_fds[i * env.counter_cnt + j] = -1;
-	}
-
-	/* determine randomized spread-out "plan" for attaching to timers to
-	 * avoid too aligned (in time) triggerings across all CPUs
-	 */
-	u64 timer_start_ts = ktime_now_ns();
-	struct timer_plan *timer_plan = calloc(num_cpus, sizeof(*timer_plan));
-
-	for (int cpu = 0; cpu < num_cpus; cpu++) {
-		timer_plan[cpu].cpu = cpu;
-		timer_plan[cpu].delay_ns = 1000000000ULL / env.timer_freq_hz * ((double)rand() / RAND_MAX);
-	}
-	qsort(timer_plan, num_cpus, sizeof(*timer_plan), timer_plan_cmp);
-
-	for (int i = 0; i < num_cpus; i++) {
-		int cpu = timer_plan[i].cpu;
-
-		/* skip offline/not present CPUs */
-		if (cpu >= st->num_online_cpus || !st->online_mask[cpu])
-			continue;
-
-		/* timer perf event */
-		memset(&attr, 0, sizeof(attr));
-		attr.size = sizeof(attr);
-		attr.type = PERF_TYPE_SOFTWARE;
-		attr.config = PERF_COUNT_SW_CPU_CLOCK;
-		attr.sample_freq = env.timer_freq_hz;
-		attr.freq = 1;
-
-		u64 now = ktime_now_ns();
-		if (now < timer_start_ts + timer_plan[i].delay_ns)
-			usleep((timer_start_ts + timer_plan[i].delay_ns - now) / 1000);
-
-		pefd = perf_event_open(&attr, -1, cpu, -1, PERF_FLAG_FD_CLOEXEC);
-		if (pefd < 0) {
-			err = -errno;
-			fprintf(stderr, "Failed to set up performance monitor on CPU %d: %d\n", cpu, err);
+	if (env.capture_stack_traces) {
+		err = setup_perf_timer_ticks(st, num_cpus);
+		if (err) {
+			eprintf("Failed to setup timer tick events: %d\n", err);
 			return err;
 		}
-		st->perf_timer_fds[cpu] = pefd;
+	}
 
-		/* set up requested perf counters */
-		for (int j = 0; j < env.counter_cnt; j++) {
-			const struct perf_counter_def *def = &perf_counter_defs[env.counter_ids[j]];
-			int pe_idx = cpu * env.counter_cnt + j;
-
-			memset(&attr, 0, sizeof(attr));
-			attr.size = sizeof(attr);
-			attr.type = def->perf_type;
-			attr.config = def->perf_cfg;
-
-			pefd = perf_event_open(&attr, -1, cpu, -1, PERF_FLAG_FD_CLOEXEC);
-			if (pefd < 0) {
-				fprintf(stderr, "Failed to create %s PMU for CPU #%d, skipping...\n", def->alias, cpu);
-			} else {
-				st->perf_counter_fds[pe_idx] = pefd;
-				err = bpf_map__update_elem(skel->maps.perf_cntrs,
-							   &pe_idx, sizeof(pe_idx),
-							   &pefd, sizeof(pefd), 0);
-				if (err) {
-					fprintf(stderr, "Failed to set up %s PMU on CPU#%d for BPF: %d\n", def->alias, cpu, err);
-					return err;
-				}
-				err = ioctl(pefd, PERF_EVENT_IOC_ENABLE, 0);
-				if (err) {
-					err = -errno;
-					fprintf(stderr, "Failed to enable %s PMU on CPU#%d: %d\n", def->alias, cpu, err);
-					return err;
-				}
-			}
+	if (env.counter_cnt) {
+		err = setup_perf_counters(st, num_cpus);
+		if (err) {
+			eprintf("Failed to setup perf counters: %d\n", err);
+			return err;
 		}
 	}
 
@@ -1091,7 +1128,7 @@ static int attach_bpf(struct bpf_state *st, struct worker_state *workers, int nu
 
 	st->links = calloc(num_cpus, sizeof(struct bpf_link *));
 	for (int cpu = 0; cpu < num_cpus; cpu++) {
-		if (st->perf_timer_fds[cpu] < 0)
+		if (!st->perf_timer_fds || st->perf_timer_fds[cpu] < 0)
 			continue;
 
 		st->links[cpu] = bpf_program__attach_perf_event(st->skel->progs.wprof_timer_tick,
