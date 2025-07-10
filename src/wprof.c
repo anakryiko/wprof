@@ -725,6 +725,7 @@ struct bpf_state {
 	bool drained;
 	struct wprof_bpf *skel;
 	struct bpf_link **links;
+	int link_cnt;
 	struct ring_buffer **rb_managers;
 	pthread_t *rb_threads;
 	int *perf_timer_fds;
@@ -1078,6 +1079,7 @@ static int attach_bpf(struct bpf_state *st, int num_cpus)
 			err = -errno;
 			return err;
 		}
+		st->link_cnt++;
 	}
 
 	err = wprof_bpf__attach(st->skel);
@@ -1089,7 +1091,6 @@ static int attach_bpf(struct bpf_state *st, int num_cpus)
 	if (env.req_binaries) {
 		struct hashmap_entry *entry;
 		size_t bkt;
-		int link_idx = num_cpus;
 
 		hashmap__for_each_entry(env.req_binaries, entry, bkt) {
 			struct req_binary *binary = (struct req_binary *)entry->value;
@@ -1113,14 +1114,14 @@ static int attach_bpf(struct bpf_state *st, int num_cpus)
 				continue;
 			}
 
-			tmp = realloc(st->links, (link_idx + 1) * sizeof(struct bpf_link *));
+			tmp = realloc(st->links, (st->link_cnt + 1) * sizeof(struct bpf_link *));
 			if (!tmp) {
 				err = -ENOMEM;
 				return err;
 			}
 			st->links = tmp;
-			st->links[link_idx] = link;
-			link_idx++;
+			st->links[st->link_cnt] = link;
+			st->link_cnt++;
 		}
 	}
 
@@ -1183,8 +1184,8 @@ static void detach_bpf(struct bpf_state *st, int num_cpus)
 	if (st->stats_fd >= 0)
 		close(st->stats_fd);
 	if (st->links) {
-		for (int cpu = 0; cpu < num_cpus; cpu++)
-			bpf_link__destroy(st->links[cpu]);
+		for (int i = 0; i < st->link_cnt; i++)
+			bpf_link__destroy(st->links[i]);
 		free(st->links);
 	}
 	if (st->perf_timer_fds || st->perf_counter_fds) {
