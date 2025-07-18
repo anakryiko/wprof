@@ -14,11 +14,11 @@ char LICENSE[] SEC("license") = "Dual BSD/GPL";
 struct task_state {
 	u64 ts;
 	u64 waking_ts;
-	u32 waking_cpu;
-	u32 waking_numa_node;
 	u32 waking_flags;
+	u32 waker_cpu;
+	u32 waker_numa_node;
 	u32 last_task_state;
-	struct wprof_task waking_task;
+	struct wprof_task waker_task;
 	u64 softirq_ts;
 	u64 hardirq_ts;
 	u64 wq_ts;
@@ -457,8 +457,10 @@ int wprof_timer_tick(void *ctx)
 		strace = grab_stack_trace(ctx, &dyn_sz);
 
 	emit_task_event_dyn(e, dptr, fix_sz, dyn_sz, EV_TIMER, now_ts, cur) {
-		emit_stack_trace(strace, dyn_sz, dptr, fix_sz);
-		e->flags |= EF_STACK_TRACE;
+		if (capture_stack_traces) {
+			emit_stack_trace(strace, dyn_sz, dptr, fix_sz);
+			e->flags |= EF_STACK_TRACE;
+		}
 	}
 
 	return 0;
@@ -501,10 +503,10 @@ int BPF_PROG(wprof_task_switch,
 	 */
 	if (prev->__state == TASK_RUNNING && prev->pid) {
 		sprev->waking_ts = now_ts;
-		sprev->waking_cpu = cpu;
-		sprev->waking_numa_node = bpf_get_numa_node_id();
 		sprev->waking_flags = WF_PREEMPTED;
-		fill_task_info(next, &sprev->waking_task);
+		sprev->waker_cpu = cpu;
+		sprev->waker_numa_node = bpf_get_numa_node_id();
+		fill_task_info(next, &sprev->waker_task);
 	}
 	sprev->last_task_state = prev->__state;
 
@@ -515,30 +517,28 @@ int BPF_PROG(wprof_task_switch,
 	struct bpf_dynptr *dptr;
 	struct stack_trace *strace = NULL;
 	size_t dyn_sz = 0;
-	size_t fix_sz = EV_SZ(swtch_from);
+	size_t fix_sz = EV_SZ(swtch);
 
 	if (capture_stack_traces)
 		strace = grab_stack_trace(ctx, &dyn_sz);
 
-	emit_task_event_dyn(e, dptr, fix_sz, dyn_sz, EV_SWITCH_FROM, now_ts, prev) {
-		e->swtch_from.ctrs = counters;
-		e->swtch_from.task_state = prev->__state;
-		fill_task_info(next, &e->swtch_from.next);
-		emit_stack_trace(strace, dyn_sz, dptr, fix_sz);
-		e->flags |= EF_STACK_TRACE;
-	}
+	emit_task_event_dyn(e, dptr, fix_sz, dyn_sz, EV_SWITCH, now_ts, prev) {
+		e->swtch.ctrs = counters;
+		e->swtch.prev_task_state = prev->__state;
+		e->swtch.last_next_task_state = snext->last_task_state;
+		fill_task_info(next, &e->swtch.next);
 
-	emit_task_event(e, EV_SZ(swtch_to), 0, EV_SWITCH_TO, now_ts, next) {
-		e->swtch_to.ctrs = counters;
-		fill_task_info(prev, &e->swtch_to.prev);
-		e->swtch_to.last_task_state = snext->last_task_state;
-		e->swtch_to.waking_ts = waking_ts;
+		e->swtch.waking_ts = waking_ts;
 		if (waking_ts) {
-			e->swtch_to.waking_cpu = snext->waking_cpu;
-			e->swtch_to.waking_numa_node = snext->waking_numa_node;
-			e->swtch_to.waking_flags = snext->waking_flags;
-			bpf_probe_read_kernel(&e->swtch_to.waking, sizeof(snext->waking_task),
-					      &snext->waking_task);
+			e->swtch.waking_flags = snext->waking_flags;
+			e->swtch.waker_cpu = snext->waker_cpu;
+			e->swtch.waker_numa_node = snext->waker_numa_node;
+			bpf_probe_read_kernel(&e->swtch.waker, sizeof(snext->waker_task), &snext->waker_task);
+		}
+
+		if (capture_stack_traces) {
+			emit_stack_trace(strace, dyn_sz, dptr, fix_sz);
+			e->flags |= EF_STACK_TRACE;
 		}
 	}
 
@@ -561,12 +561,12 @@ int BPF_PROG(wprof_task_waking, struct task_struct *p)
 
 	now_ts = bpf_ktime_get_ns();
 	s->waking_ts = now_ts;
-	s->waking_cpu = bpf_get_smp_processor_id();
-	s->waking_numa_node = bpf_get_numa_node_id();
 	s->waking_flags = WF_WOKEN;
+	s->waker_cpu = bpf_get_smp_processor_id();
+	s->waker_numa_node = bpf_get_numa_node_id();
 	s->last_task_state = p->__state;
 	task = bpf_get_current_task_btf();
-	fill_task_info(task, &s->waking_task);
+	fill_task_info(task, &s->waker_task);
 
 	/*
 	struct wprof_event *e;
@@ -594,12 +594,12 @@ int BPF_PROG(wprof_task_wakeup_new, struct task_struct *p)
 	s->ts = now_ts;
 	if (s->waking_ts == 0) {
 		s->waking_ts = now_ts;
-		s->waking_cpu = bpf_get_smp_processor_id();
-		s->waking_numa_node = bpf_get_numa_node_id();
 		s->waking_flags = WF_WOKEN_NEW;
+		s->waker_cpu = bpf_get_smp_processor_id();
+		s->waker_numa_node = bpf_get_numa_node_id();
 		s->last_task_state = p->__state;
 		task = bpf_get_current_task_btf();
-		fill_task_info(task, &s->waking_task);
+		fill_task_info(task, &s->waker_task);
 	}
 
 	/*

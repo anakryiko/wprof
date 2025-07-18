@@ -65,8 +65,7 @@ enum event_kind {
 	EV_INVALID,
 
 	EV_TIMER,
-	EV_SWITCH_FROM,
-	EV_SWITCH_TO,
+	EV_SWITCH,
 	EV_WAKEUP_NEW,
 	EV_WAKEUP,
 	EV_WAKING,
@@ -142,21 +141,17 @@ struct wprof_event {
 	struct wprof_task task;
 
 	union {
-		struct wprof_switch_from {
+		struct wprof_switch {
 			struct wprof_task next;
+			struct wprof_task waker;
 			struct perf_counters ctrs;
-			u32 task_state;
-		} swtch_from;
-		struct wprof_switch_to {
-			struct wprof_task prev;
-			struct wprof_task waking;
 			u64 waking_ts;
-			u32 waking_cpu;
-			u32 waking_numa_node;
+			u32 prev_task_state;
+			u32 last_next_task_state;
+			u32 waker_cpu;
+			u32 waker_numa_node;
 			enum waking_flags waking_flags;
-			struct perf_counters ctrs;
-			u32 last_task_state;
-		} swtch_to;
+		} swtch;
 		struct wprof_timer {
 		} timer;
 		struct wprof_hardirq {

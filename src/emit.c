@@ -341,8 +341,7 @@ static inline u64 track_process_reqs(const struct wprof_task *t)
 
 static const char *event_kind_str_map[] = {
 	[EV_TIMER] = "TIMER",
-	[EV_SWITCH_FROM] = "SWITCH_FROM",
-	[EV_SWITCH_TO] = "SWITCH_TO",
+	[EV_SWITCH] = "SWITCH",
 	[EV_WAKEUP_NEW] = "WAKEUP_NEW",
 	[EV_WAKEUP] = "WAKEUP",
 	[EV_WAKING] = "WAKING",
@@ -764,18 +763,42 @@ static int process_timer(struct worker_state *w, struct wprof_event *e, size_t s
 	return 0;
 }
 
-/* EV_SWITCH_FROM */
-static int process_switch_from(struct worker_state *w, struct wprof_event *e, size_t size)
+/* EV_SWITCH */
+static int process_switch(struct worker_state *w, struct wprof_event *e, size_t size)
 {
+	if (e->swtch.waking_ts == 0 || !is_ts_in_range(e->swtch.waking_ts) ||
+	    !should_trace_task(&e->swtch.waker))
+		goto skip_waker_task;
+
+	(void)task_state(w, &e->swtch.waker);
+	/* event on awaker's timeline */
+	emit_instant(e->swtch.waking_ts, &e->swtch.waker,
+		     e->swtch.waking_flags == WF_WOKEN_NEW ? IID_NAME_WAKEUP_NEW : IID_NAME_WAKING,
+		     e->swtch.waking_flags == WF_WOKEN_NEW ? IID_CAT_WAKEUP_NEW : IID_CAT_WAKING) {
+		emit_kv_int(IID_ANNK_CPU, e->swtch.waker_cpu);
+		if (env.emit_numa)
+			emit_kv_int(IID_ANNK_NUMA_NODE, e->swtch.waker_numa_node);
+
+		emit_kv_str(IID_ANNK_WAKING_TARGET,
+			    iid_str(emit_intern_str(w, e->swtch.next.comm), e->swtch.next.comm));
+		if (env.emit_tidpid) {
+			emit_kv_int(IID_ANNK_WAKING_TARGET_TID, task_tid(&e->swtch.next));
+			emit_kv_int(IID_ANNK_WAKING_TARGET_PID, e->swtch.next.pid);
+		}
+
+		emit_flow_id(e->swtch.waking_ts);
+	}
+
+skip_waker_task:
 	if (!should_trace_task(&e->task))
-		return 0;
+		goto skip_prev_task;
 
 	/* take into account task rename for switched-out task
 	 * to maintain consistently named trace slice
 	 */
-	struct task_state *st = task_state(w, &e->task);
-	const char *cur_name = st->rename_ts ? st->old_comm : st->comm;
-	pb_iid cur_name_iid = st->rename_ts ? st->old_name_iid : st->name_iid;
+	struct task_state *prev_st = task_state(w, &e->task);
+	const char *cur_name = prev_st->rename_ts ? prev_st->old_comm : prev_st->comm;
+	pb_iid cur_name_iid = prev_st->rename_ts ? prev_st->old_name_iid : prev_st->name_iid;
 
 	/* We are about to emit SLICE_END without
 	 * corresponding SLICE_BEGIN ever being emitted;
@@ -784,7 +807,7 @@ static int process_switch_from(struct worker_state *w, struct wprof_event *e, si
 	 * confusing. We want to avoid this, so we'll emit
 	 * a fake SLICE_BEGIN with fake timestamp ZERO.
 	 */
-	if (st->oncpu_ts == 0) {
+	if (prev_st->oncpu_ts == 0) {
 		emit_slice_begin(env.sess_start_ts, &e->task,
 				 iid_str(cur_name_iid, cur_name), IID_CAT_ONCPU) {
 			emit_kv_int(IID_ANNK_CPU, e->cpu);
@@ -799,16 +822,16 @@ static int process_switch_from(struct worker_state *w, struct wprof_event *e, si
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
 
 		emit_kv_str(IID_ANNK_SWITCH_TO,
-			    iid_str(emit_intern_str(w, e->swtch_from.next.comm), e->swtch_from.next.comm));
+			    iid_str(emit_intern_str(w, e->swtch.next.comm), e->swtch.next.comm));
 		if (env.emit_tidpid) {
-			emit_kv_int(IID_ANNK_SWITCH_TO_TID, task_tid(&e->swtch_from.next));
-			emit_kv_int(IID_ANNK_SWITCH_TO_PID, e->swtch_from.next.pid);
+			emit_kv_int(IID_ANNK_SWITCH_TO_TID, task_tid(&e->swtch.next));
+			emit_kv_int(IID_ANNK_SWITCH_TO_PID, e->swtch.next.pid);
 		}
 
 		for (int i = 0; i < env.counter_cnt; i++) {
 			const struct perf_counter_def *def = &perf_counter_defs[env.counter_ids[i]];
-			const struct perf_counters *st_ctrs = &st->oncpu_ctrs;
-			const struct perf_counters *ev_ctrs = &e->swtch_from.ctrs;
+			const struct perf_counters *st_ctrs = &prev_st->oncpu_ctrs;
+			const struct perf_counters *ev_ctrs = &e->swtch.ctrs;
 			int p = env.counter_pos[i];
 
 			if (st_ctrs->val[p] && ev_ctrs->val[p]) {
@@ -817,7 +840,7 @@ static int process_switch_from(struct worker_state *w, struct wprof_event *e, si
 			}
 		}
 
-		if (st->rename_ts)
+		if (prev_st->rename_ts)
 			emit_kv_str(IID_ANNK_RENAMED_TO, e->task.comm);
 	}
 
@@ -825,135 +848,88 @@ static int process_switch_from(struct worker_state *w, struct wprof_event *e, si
 	if (strace_id > 0)
 		emit_stack_trace(e->ts, &e->task, strace_id);
 
-	/*
-	if (env.cpu_counters && env.breakout_counters &&
-	    st->oncpu_ts && st->cpu_cycles && e->swtch_from.cpu_cycles) {
-		emit_counter(st->oncpu_ts, &e->task, IID_NONE, "cpu_cycles") {
-			emit_kv_float("mega_cycles", "%.6lf",
-				      (e->swtch_from.cpu_cycles - st->cpu_cycles) / 1000000.0);
-		}
-		emit_counter(e->ts, &e->task, IID_NONE, "cpu_cycles") {
-			emit_kv_float("mega_cycles", "%.6lf", 0.0);
-		}
-	}
-	*/
+	bool preempted = e->swtch.prev_task_state == TASK_RUNNING;
 
-	bool preempted = e->swtch_from.task_state == TASK_RUNNING;
-
-	if (st->req_id) {
-		emit_track_slice_end(e->ts, track_req_thread(st->req_id, &e->task),
+	if (prev_st->req_id) {
+		emit_track_slice_end(e->ts, track_req_thread(prev_st->req_id, &e->task),
 				     IID_NAME_RUNNING, IID_CAT_REQUEST_ONCPU);
-		emit_track_slice_start(e->ts, track_req_thread(st->req_id, &e->task),
+		emit_track_slice_start(e->ts, track_req_thread(prev_st->req_id, &e->task),
 				       preempted ? IID_NAME_PREEMPTED : IID_NAME_WAITING,
 				       IID_CAT_REQUEST_OFFCPU);
 	}
 
-	if (st->rename_ts)
-		st->rename_ts = 0;
+	if (prev_st->rename_ts)
+		prev_st->rename_ts = 0;
 
 	/* reset perf counters */
-	memset(&st->oncpu_ctrs, 0, sizeof(struct perf_counters));
-	st->oncpu_ts = 0;
-	st->run_state = preempted ? TASK_STATE_PREEMPTED : TASK_STATE_WAITING;
+	memset(&prev_st->oncpu_ctrs, 0, sizeof(struct perf_counters));
+	prev_st->oncpu_ts = 0;
+	prev_st->run_state = preempted ? TASK_STATE_PREEMPTED : TASK_STATE_WAITING;
 
-	return 0;
-}
+skip_prev_task:
+	if (!should_trace_task(&e->swtch.next))
+		goto skip_next_task;
 
-/* EV_SWITCH_TO */
-static int process_switch_to(struct worker_state *w, struct wprof_event *e, size_t size)
-{
-	if (e->swtch_to.waking_ts &&
-	    is_ts_in_range(e->swtch_to.waking_ts) &&
-	    should_trace_task(&e->swtch_to.waking)) {
-		/* event on awaker's timeline */
-		emit_instant(e->swtch_to.waking_ts, &e->swtch_to.waking,
-			     e->swtch_to.waking_flags == WF_WOKEN_NEW ? IID_NAME_WAKEUP_NEW : IID_NAME_WAKING,
-			     e->swtch_to.waking_flags == WF_WOKEN_NEW ? IID_CAT_WAKEUP_NEW : IID_CAT_WAKING) {
-			emit_kv_int(IID_ANNK_CPU, e->swtch_to.waking_cpu);
-			if (env.emit_numa)
-				emit_kv_int(IID_ANNK_NUMA_NODE, e->swtch_to.waking_numa_node);
+	struct task_state *next_st = task_state(w, &e->swtch.next);
+	next_st->oncpu_ctrs = e->swtch.ctrs;
+	next_st->oncpu_ts = e->ts;
 
-			emit_kv_str(IID_ANNK_WAKING_TARGET,
-				    iid_str(emit_intern_str(w, e->task.comm), e->task.comm));
-			if (env.emit_tidpid) {
-				emit_kv_int(IID_ANNK_WAKING_TARGET_TID, task_tid(&e->task));
-				emit_kv_int(IID_ANNK_WAKING_TARGET_PID, e->task.pid);
-			}
-
-			emit_flow_id(e->swtch_to.waking_ts);
-		}
-	}
-
-	if (!should_trace_task(&e->task))
-		return 0;
-
-	struct task_state *st = task_state(w, &e->task);
-	st->oncpu_ctrs = e->swtch_to.ctrs;
-	st->oncpu_ts = e->ts;
-
-	if (e->swtch_to.waking_ts &&
-	    is_ts_in_range(e->swtch_to.waking_ts) &&
-	    e->swtch_to.waking_cpu != e->cpu) {
+	if (e->swtch.waking_ts && is_ts_in_range(e->swtch.waking_ts) && e->swtch.waker_cpu != e->cpu) {
 		/* event on awoken's timeline */
-		emit_instant(e->swtch_to.waking_ts, &e->task,
-			     e->swtch_to.waking_flags == WF_WOKEN_NEW ? IID_NAME_WOKEN_NEW : IID_NAME_WOKEN,
-			     e->swtch_to.waking_flags == WF_WOKEN_NEW ? IID_CAT_WOKEN_NEW : IID_CAT_WOKEN) {
+		emit_instant(e->swtch.waking_ts, &e->swtch.next,
+			     e->swtch.waking_flags == WF_WOKEN_NEW ? IID_NAME_WOKEN_NEW : IID_NAME_WOKEN,
+			     e->swtch.waking_flags == WF_WOKEN_NEW ? IID_CAT_WOKEN_NEW : IID_CAT_WOKEN) {
 			emit_kv_int(IID_ANNK_CPU, e->cpu);
 			if (env.emit_numa)
 				emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
 
-			emit_flow_id(e->swtch_to.waking_ts);
+			emit_flow_id(e->swtch.waking_ts);
 		}
 	}
 
-	emit_slice_begin(e->ts, &e->task, iid_str(st->name_iid, e->task.comm), IID_CAT_ONCPU) {
+	emit_slice_begin(e->ts, &e->swtch.next, iid_str(next_st->name_iid, e->swtch.next.comm), IID_CAT_ONCPU) {
 		emit_kv_int(IID_ANNK_CPU, e->cpu);
 		if (env.emit_numa)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
 
-		if (e->swtch_to.waking_ts) {
+		if (e->swtch.waking_ts) {
 			emit_kv_str(IID_ANNK_WAKING_BY,
-				    iid_str(emit_intern_str(w, e->swtch_to.waking.comm), e->swtch_to.waking.comm));
+				    iid_str(emit_intern_str(w, e->swtch.waker.comm), e->swtch.waker.comm));
 			if (env.emit_tidpid) {
-				emit_kv_int(IID_ANNK_WAKING_BY_TID, task_tid(&e->swtch_to.waking));
-				emit_kv_int(IID_ANNK_WAKING_BY_PID, e->swtch_to.waking.pid);
+				emit_kv_int(IID_ANNK_WAKING_BY_TID, task_tid(&e->swtch.waker));
+				emit_kv_int(IID_ANNK_WAKING_BY_PID, e->swtch.waker.pid);
 			}
 			emit_kv_str(IID_ANNK_WAKING_REASON,
-				    IID_ANNV_WAKING_REASON + wreason_enum(e->swtch_to.waking_flags));
-			emit_kv_int(IID_ANNK_WAKING_CPU, e->swtch_to.waking_cpu);
+				    IID_ANNV_WAKING_REASON + wreason_enum(e->swtch.waking_flags));
+			emit_kv_int(IID_ANNK_WAKING_CPU, e->swtch.waker_cpu);
 			if (env.emit_numa)
-				emit_kv_int(IID_ANNK_WAKING_NUMA_NODE, e->swtch_to.waking_numa_node);
-			emit_kv_float(IID_ANNK_WAKING_DELAY_US, "%.3lf", (e->ts - e->swtch_to.waking_ts) / 1000.0);
+				emit_kv_int(IID_ANNK_WAKING_NUMA_NODE, e->swtch.waker_numa_node);
+			emit_kv_float(IID_ANNK_WAKING_DELAY_US, "%.3lf", (e->ts - e->swtch.waking_ts) / 1000.0);
 		}
 
 		emit_kv_str(IID_ANNK_SWITCH_FROM,
-			    iid_str(emit_intern_str(w, e->swtch_to.prev.comm), e->swtch_to.prev.comm));
+			    iid_str(emit_intern_str(w, e->task.comm), e->task.comm));
 		if (env.emit_tidpid) {
-			emit_kv_int(IID_ANNK_SWITCH_FROM_TID, task_tid(&e->swtch_to.prev));
-			emit_kv_int(IID_ANNK_SWITCH_FROM_PID, e->swtch_to.prev.pid);
+			emit_kv_int(IID_ANNK_SWITCH_FROM_TID, task_tid(&e->task));
+			emit_kv_int(IID_ANNK_SWITCH_FROM_PID, e->task.pid);
 		}
 
-		if (e->swtch_to.waking_ts && is_ts_in_range(e->swtch_to.waking_ts))
-			emit_flow_id(e->swtch_to.waking_ts);
+		if (e->swtch.waking_ts && is_ts_in_range(e->swtch.waking_ts))
+			emit_flow_id(e->swtch.waking_ts);
 	}
 
-	if (env.breakout_counters && e->swtch_to.waking_ts) {
-		emit_counter(e->ts, &e->task, IID_NONE, "waking_delay") {
-			emit_kv_float("us", "%.3lf", (e->ts - e->swtch_to.waking_ts) / 1000.0);
-		}
-	}
-
-	if (st->req_id) {
-		bool was_preempted = e->swtch_to.last_task_state == TASK_RUNNING;
-		emit_track_slice_end(e->ts, track_req_thread(st->req_id, &e->task),
+	if (next_st->req_id) {
+		bool was_preempted = e->swtch.last_next_task_state == TASK_RUNNING;
+		emit_track_slice_end(e->ts, track_req_thread(next_st->req_id, &e->swtch.next),
 				     was_preempted ? IID_NAME_PREEMPTED : IID_NAME_WAITING,
 				     IID_CAT_REQUEST_OFFCPU);
-		emit_track_slice_start(e->ts, track_req_thread(st->req_id, &e->task),
+		emit_track_slice_start(e->ts, track_req_thread(next_st->req_id, &e->swtch.next),
 				       IID_NAME_RUNNING, IID_CAT_REQUEST_ONCPU);
 	}
 
-	st->run_state = TASK_STATE_RUNNING;
+	next_st->run_state = TASK_STATE_RUNNING;
 
+skip_next_task:
 	return 0;
 }
 
@@ -1445,8 +1421,7 @@ typedef int (*event_fn)(struct worker_state *w, struct wprof_event *e, size_t si
 
 static event_fn ev_fns[] = {
 	[EV_TIMER] = process_timer,
-	[EV_SWITCH_FROM] = process_switch_from,
-	[EV_SWITCH_TO] = process_switch_to,
+	[EV_SWITCH] = process_switch,
 	[EV_WAKEUP_NEW] = process_wakeup_new,
 	[EV_WAKEUP] = process_wakeup,
 	[EV_WAKING] = process_waking,
