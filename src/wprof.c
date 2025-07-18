@@ -425,10 +425,12 @@ static void print_exit_summary(struct worker_state *workers, int worker_cnt, str
 	}
 
 skip_prog_stats:
-	if (!skel || !env.stats || bpf_map__fd(skel->maps.stats) < 0)
+	if (!skel || bpf_map__fd(skel->maps.stats) < 0)
 		goto skip_rb_stats;
 
-	fprintf(stderr, "Data procesing stats:\n");
+	if (env.stats)
+		fprintf(stderr, "Data procesing stats:\n");
+
 	for (int i = 0; i < worker_cnt; i++) {
 		struct worker_state *w = &workers[i];
 		rb_handled_cnt += w->rb_handled_cnt;
@@ -457,24 +459,26 @@ skip_prog_stats:
 		stats_by_rb[rb_id].rb_misses += stats_by_cpu[i].rb_misses;
 	}
 
-	for (int i = 0; i < env.ringbuf_cnt; i++) {
-		struct worker_state *w = &workers[i];
+	if (env.stats) {
+		for (int i = 0; i < env.ringbuf_cnt; i++) {
+			struct worker_state *w = &workers[i];
 
-		char rb_name[32];
-		snprintf(rb_name, sizeof(rb_name), "RB #%d:", i);
+			char rb_name[32];
+			snprintf(rb_name, sizeof(rb_name), "RB #%d:", i);
 
-		fprintf(stderr, "\t%-8s %8llu records (%.3lfMB, %.3lfMB/s) processed, %llu dropped (%.3lf%% drop rate), %llu records (%.3lfMB) ignored.\n",
-			rb_name, w->rb_handled_cnt, w->rb_handled_sz / 1024.0 / 1024.0,
-			w->rb_handled_sz / 1024.0 / 1024.0 / dur_s,
-			stats_by_rb[i].rb_drops, stats_by_rb[i].rb_drops * 100.0 / (w->rb_handled_cnt + stats_by_rb[i].rb_drops),
-			w->rb_ignored_cnt, w->rb_ignored_sz / 1024.0 / 1024.0);
+			fprintf(stderr, "\t%-8s %8llu records (%.3lfMB, %.3lfMB/s) processed, %llu dropped (%.3lf%% drop rate), %llu records (%.3lfMB) ignored.\n",
+				rb_name, w->rb_handled_cnt, w->rb_handled_sz / 1024.0 / 1024.0,
+				w->rb_handled_sz / 1024.0 / 1024.0 / dur_s,
+				stats_by_rb[i].rb_drops, stats_by_rb[i].rb_drops * 100.0 / (w->rb_handled_cnt + stats_by_rb[i].rb_drops),
+				w->rb_ignored_cnt, w->rb_ignored_sz / 1024.0 / 1024.0);
+		}
+		fprintf(stderr, "\t%-8s %8llu records (%.3lfMB, %.3lfMB/s, %.3lfMB/RB/s) processed, %llu dropped (%.3lf%% drop rate), %llu records (%.3lfMB) ignored.\n",
+			"TOTAL:", rb_handled_cnt, rb_handled_sz / 1024.0 / 1024.0,
+			rb_handled_sz / 1024.0 / 1024.0 / dur_s,
+			rb_handled_sz / 1024.0 / 1024.0 / dur_s / env.ringbuf_cnt,
+			s.rb_drops, s.rb_drops * 100.0 / (rb_handled_cnt + s.rb_drops),
+			rb_ignored_cnt, rb_ignored_sz / 1024.0 / 1024.0);
 	}
-	fprintf(stderr, "\t%-8s %8llu records (%.3lfMB, %.3lfMB/s, %.3lfMB/RB/s) processed, %llu dropped (%.3lf%% drop rate), %llu records (%.3lfMB) ignored.\n",
-		"TOTAL:", rb_handled_cnt, rb_handled_sz / 1024.0 / 1024.0,
-		rb_handled_sz / 1024.0 / 1024.0 / dur_s,
-		rb_handled_sz / 1024.0 / 1024.0 / dur_s / env.ringbuf_cnt,
-		s.rb_drops, s.rb_drops * 100.0 / (rb_handled_cnt + s.rb_drops),
-		rb_ignored_cnt, rb_ignored_sz / 1024.0 / 1024.0);
 
 skip_rb_stats:
 	if (!env.stats)
