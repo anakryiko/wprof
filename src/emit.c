@@ -152,10 +152,32 @@ enum task_kind {
 	TASK_KTHREAD,
 };
 
-#define TRACK_UUID_IDLE		2000000000ULL
-#define TRACK_UUID_KWORKER	2000000001ULL
-#define TRACK_UUID_KTHREAD	2000000002ULL
-#define TRACK_UUID_REQUESTS	2000000003ULL
+enum track_kind {
+	TK_THREAD = 1,		/* thread track (by TID) */
+	TK_THREAD_IDLE = 2,     /* idle "thread" (by CPU) */
+	TK_PROCESS = 2,		/* process track (by PID) */
+	TK_SPECIAL = 3,		/* special and fake groups (idle, kthread, kworker, requests folder) */
+	TK_PROCESS_REQS = 4,	/* requests of given PID (by PID) */
+	TK_REQ = 5,		/* single request of given PID (by REQ_ID + PID) */
+	TK_REQ_THREAD = 6,	/* request-participating thread (by REQ_ID + TID) */
+
+	TK_MULT = 10,
+};
+
+enum track_special {
+	TKS_IDLE = 1,
+	TKS_KWORKER = 2,
+	TKS_KTHREAD = 3,
+
+	TKS_REQUESTS = 4,
+};
+
+#define TRACK_UUID(kind, id) (((u64)(id) * TK_MULT) + (u64)kind)
+
+#define TRACK_UUID_IDLE		TRACK_UUID(TK_SPECIAL, TKS_IDLE)
+#define TRACK_UUID_KWORKER	TRACK_UUID(TK_SPECIAL, TKS_KWORKER)
+#define TRACK_UUID_KTHREAD	TRACK_UUID(TK_SPECIAL, TKS_KTHREAD)
+#define TRACK_UUID_REQUESTS	TRACK_UUID(TK_SPECIAL, TKS_REQUESTS)
 
 #define TRACK_RANK_IDLE		-3
 #define TRACK_RANK_KWORKER	-2
@@ -183,6 +205,10 @@ static int track_tid(const struct wprof_task *t)
 	return t->pid ? t->tid : (-t->tid - 1);
 }
 
+#define TRACK_PID_IDLE		2000000000ULL
+#define TRACK_PID_KWORKER	2000000001ULL
+#define TRACK_PID_KTHREAD	2000000002ULL
+
 static int track_pid(const struct wprof_task *t)
 {
 	enum task_kind kind = task_kind(t);
@@ -191,11 +217,11 @@ static int track_pid(const struct wprof_task *t)
 	case TASK_NORMAL:
 		return t->pid;
 	case TASK_IDLE:
-		return TRACK_UUID_IDLE;
+		return TRACK_PID_IDLE;
 	case TASK_KWORKER:
-		return TRACK_UUID_KWORKER;
+		return TRACK_PID_KWORKER;
 	case TASK_KTHREAD:
-		return TRACK_UUID_KTHREAD;
+		return TRACK_PID_KTHREAD;
 	default:
 		fprintf(stderr, "BUG: unexpected task kind in track_pid(): %d\n", kind);
 		exit(1);
@@ -224,19 +250,6 @@ static int track_process_rank(const struct wprof_task *t)
 		fprintf(stderr, "BUG: unexpected task kind in track_process_rank(): %d\n", kind);
 		exit(1);
 	}
-}
-
-__unused
-static int trace_sort_idx(const struct wprof_task *t)
-{
-	if (t->pid == 0)
-		return -1; /* IDLE */
-	else if (t->flags & PF_WQ_WORKER)
-		return -2;
-	else if (t->flags & PF_KTHREAD)
-		return -3;
-	else
-		return 0;
 }
 
 #define TRACK_NAME_IDLE "IDLE"
@@ -279,6 +292,22 @@ static const u64 kind_track_uuid(enum task_kind kind)
 }
 
 __unused
+static const u64 kind_track_pid(enum task_kind kind)
+{
+	switch (kind) {
+	case TASK_IDLE:
+		return TRACK_PID_IDLE;
+	case TASK_KWORKER:
+		return TRACK_PID_KWORKER;
+	case TASK_KTHREAD:
+		return TRACK_PID_KTHREAD;
+	default:
+		fprintf(stderr, "BUG: unexpected task kind in kind_track_pid(): %d\n", kind);
+		exit(1);
+	}
+}
+
+__unused
 static const char *kind_track_name(enum task_kind kind)
 {
 	switch (kind) {
@@ -310,33 +339,44 @@ static const int kind_track_rank(enum task_kind kind)
 	}
 }
 
-static uint64_t track_thread(const struct wprof_task *t)
+static unsigned long hash_combine(unsigned long h, unsigned long value)
 {
-	return track_pid(t) * 1000000000ULL + track_tid(t);
+	return h * 31 + value;
 }
 
-static uint64_t track_process(const struct wprof_task *t)
+static uint64_t trackid_thread(const struct wprof_task *t)
+{
+	enum task_kind k = task_kind(t);
+
+	if (k == TASK_IDLE)
+		return TRACK_UUID(TK_THREAD_IDLE, track_tid(t));
+	else
+		return TRACK_UUID(TK_THREAD, track_tid(t));
+}
+
+static uint64_t trackid_process(const struct wprof_task *t)
 {
 	enum task_kind k = task_kind(t);
 
 	if (k == TASK_NORMAL)
-		return track_pid(t) * 1000000000ULL;
-	return kind_track_uuid(k);
+		return TRACK_UUID(TK_PROCESS, t->pid);
+	else
+		return kind_track_uuid(k);
 }
 
-static inline u64 track_req_thread(u64 req_id, const struct wprof_task *t)
+static inline u64 trackid_req_thread(u64 req_id, const struct wprof_task *t)
 {
-	return req_id ^ t->tid;
+	return TRACK_UUID(TK_REQ_THREAD, hash_combine(req_id, t->tid));
 }
 
-static inline u64 track_req_process(u64 req_id, const struct wprof_task *t)
+static inline u64 trackid_req(u64 req_id, const struct wprof_task *t)
 {
-	return req_id ^ t->pid;
+	return TRACK_UUID(TK_REQ, hash_combine(req_id, t->pid));
 }
 
-static inline u64 track_process_reqs(const struct wprof_task *t)
+static inline u64 trackid_process_reqs(const struct wprof_task *t)
 {
-	return t->pid | TRACK_UUID_REQUESTS;
+	return TRACK_UUID(TK_PROCESS_REQS, t->pid);
 }
 
 static const char *event_kind_str_map[] = {
@@ -409,7 +449,7 @@ static struct emit_rec emit_instant_pre(u64 ts, __u64 track_uuid,
 
 #define emit_instant(ts, t, name, cat)					\
 	for (struct emit_rec ___r __cleanup(emit_cleanup) =					\
-	     emit_instant_pre(ts, track_thread(t), __pb_str(name), __pb_str(cat));	\
+	     emit_instant_pre(ts, trackid_thread(t), __pb_str(name), __pb_str(cat));	\
 	     !___r.done; ___r.done = true)
 
 __unused
@@ -456,12 +496,12 @@ static inline struct pb_str __pb_str_iidstr(struct pb_str str) { return str; }
 
 #define emit_slice_begin(ts, t, name, cat)							\
 	for (struct emit_rec ___r __cleanup(emit_cleanup) =					\
-	     emit_slice_point_pre(ts, track_thread(t), __pb_str(name), __pb_str(cat), true /*start*/);	\
+	     emit_slice_point_pre(ts, trackid_thread(t), __pb_str(name), __pb_str(cat), true /*start*/);	\
 	     !___r.done; ___r.done = true)
 
 #define emit_slice_end(ts, t, name, cat)							\
 	for (struct emit_rec ___r __cleanup(emit_cleanup) =					\
-	     emit_slice_point_pre(ts, track_thread(t), __pb_str(name), __pb_str(cat), false /*!start*/);\
+	     emit_slice_point_pre(ts, trackid_thread(t), __pb_str(name), __pb_str(cat), false /*!start*/);\
 	     !___r.done; ___r.done = true)
 
 #define emit_track_slice_start(ts, track, name, cat)						\
@@ -517,13 +557,14 @@ static void emit_kind_track_descr(pb_ostream_t *stream, enum task_kind k)
 	u64 track_uuid = kind_track_uuid(k);
 	const char *track_name = kind_track_name(k);
 	int track_rank = kind_track_rank(k);
+	int track_pid = kind_track_pid(k);
 
 	TracePacket desc_pb = {
 		PB_TRUST_SEQ_ID(),
 		PB_ONEOF(data, TracePacket_track_descriptor) = { .track_descriptor = {
 			PB_INIT(uuid) = track_uuid,
 			PB_INIT(process) = {
-				PB_INIT(pid) = track_uuid,
+				PB_INIT(pid) = track_pid,
 				.process_name = PB_STRING(track_name),
 			},
 			PB_INIT(child_ordering) = k == TASK_KWORKER
@@ -561,7 +602,7 @@ static void emit_process_track_descr(pb_ostream_t *stream, const struct wprof_ta
 	TracePacket proc_desc = {
 		PB_TRUST_SEQ_ID(),
 		PB_ONEOF(data, TracePacket_track_descriptor) = { .track_descriptor = {
-			PB_INIT(uuid) = track_process(t),
+			PB_INIT(uuid) = trackid_process(t),
 			PB_INIT(process) = {
 				PB_INIT(pid) = track_pid(t),
 				.process_name = PB_STRING(pcomm),
@@ -578,7 +619,7 @@ static void emit_thread_track_descr(pb_ostream_t *stream, const struct wprof_tas
 	TracePacket thread_desc = {
 		PB_TRUST_SEQ_ID(),
 		PB_ONEOF(data, TracePacket_track_descriptor) = { .track_descriptor = {
-			PB_INIT(uuid) = track_thread(t),
+			PB_INIT(uuid) = trackid_thread(t),
 			PB_INIT(thread) = {
 				PB_INIT(tid) = track_tid(t),
 				PB_INIT(pid) = track_pid(t),
@@ -851,9 +892,9 @@ skip_waker_task:
 	bool preempted = e->swtch.prev_task_state == TASK_RUNNING;
 
 	if (prev_st->req_id) {
-		emit_track_slice_end(e->ts, track_req_thread(prev_st->req_id, &e->task),
+		emit_track_slice_end(e->ts, trackid_req_thread(prev_st->req_id, &e->task),
 				     IID_NAME_RUNNING, IID_CAT_REQUEST_ONCPU);
-		emit_track_slice_start(e->ts, track_req_thread(prev_st->req_id, &e->task),
+		emit_track_slice_start(e->ts, trackid_req_thread(prev_st->req_id, &e->task),
 				       preempted ? IID_NAME_PREEMPTED : IID_NAME_WAITING,
 				       IID_CAT_REQUEST_OFFCPU);
 	}
@@ -920,10 +961,10 @@ skip_prev_task:
 
 	if (next_st->req_id) {
 		bool was_preempted = e->swtch.last_next_task_state == TASK_RUNNING;
-		emit_track_slice_end(e->ts, track_req_thread(next_st->req_id, &e->swtch.next),
+		emit_track_slice_end(e->ts, trackid_req_thread(next_st->req_id, &e->swtch.next),
 				     was_preempted ? IID_NAME_PREEMPTED : IID_NAME_WAITING,
 				     IID_CAT_REQUEST_OFFCPU);
-		emit_track_slice_start(e->ts, track_req_thread(next_st->req_id, &e->swtch.next),
+		emit_track_slice_start(e->ts, trackid_req_thread(next_st->req_id, &e->swtch.next),
 				       IID_NAME_RUNNING, IID_CAT_REQUEST_ONCPU);
 	}
 
@@ -1300,9 +1341,9 @@ static int process_req_event(struct worker_state *w, struct wprof_event *e, size
 	struct task_state *st = task_state(w, t);
 
 	u64 req_id = e->req.req_id;
-	u64 parent_uuid = track_process_reqs(t);
-	u64 req_track_uuid = track_req_process(req_id, t);
-	u64 track_uuid = track_req_thread(req_id, t);
+	u64 parent_uuid = trackid_process_reqs(t);
+	u64 req_track_uuid = trackid_req(req_id, t);
+	u64 track_uuid = trackid_req_thread(req_id, t);
 
 	pb_iid req_name_iid = emit_intern_str(w, e->req.req_name);
 
