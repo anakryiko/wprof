@@ -14,6 +14,7 @@
 #include <sys/syscall.h>
 #include <sys/sysinfo.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <sys/ioctl.h>
 #include <sys/resource.h>
 #include <sys/mman.h>
@@ -553,7 +554,11 @@ static int timer_plan_cmp(const void *a, const void *b)
 }
 
 struct req_binary {
-	int pid;
+	/* unique binary identifier */
+	u64 dev;
+	u64 inode;
+
+	/* informational info */
 	char *path;
 	char *attach_path;
 };
@@ -565,22 +570,22 @@ static unsigned long hash_combine(unsigned long h, unsigned long value)
 
 static size_t req_binary_hash_fn(long key, void *ctx)
 {
-	struct req_binary *binary = (void *)key;
+	struct req_binary *b = (void *)key;
 
-	return hash_combine(str_hash(binary->path), binary->pid);
+	return hash_combine(b->dev, b->inode);
 }
 
 static bool req_binary_equal_fn(long a, long b, void *ctx)
 {
-	struct req_binary *binary_a = (void *)a;
-	struct req_binary *binary_b = (void *)b;
+	struct req_binary *x = (void *)a;
+	struct req_binary *y = (void *)b;
 
-	return binary_a->pid == binary_b->pid && strcmp(binary_a->path, binary_b->path) == 0;
+	return x->dev == y->dev && x->inode == y->inode;
 }
 
-static int add_req_binary(const char *path, int pid, int vma_pid, long vma_start, long vma_end)
+static int add_req_binary(u64 dev, u64 inode, const char *path, const char *attach_path)
 {
-	struct req_binary *binary, key;
+	struct req_binary *binary, key = {};
 
 	if (!env.req_binaries) {
 		env.req_binaries = hashmap__new(req_binary_hash_fn, req_binary_equal_fn, NULL);
@@ -588,7 +593,8 @@ static int add_req_binary(const char *path, int pid, int vma_pid, long vma_start
 			return -ENOMEM;
 	}
 
-	key.pid = pid;
+	key.dev = dev;
+	key.inode = inode;
 	key.path = strdup(path);
 	if (!key.path)
 		return -ENOMEM;
@@ -598,30 +604,27 @@ static int add_req_binary(const char *path, int pid, int vma_pid, long vma_start
 		return 0;
 	}
 
-	binary = malloc(sizeof(*binary));
+	binary = calloc(1, sizeof(*binary));
 	if (!binary) {
 		free(key.path);
 		return -ENOMEM;
 	}
 
-	binary->pid = pid;
-	binary->path = key.path;
-
-	if (vma_pid) {
-		char tmp[1024];
-		snprintf(tmp, sizeof(tmp), "/proc/%d/map_files/%lx-%lx", vma_pid, vma_start, vma_end);
-		binary->attach_path = strdup(tmp);
-	} else {
-		binary->attach_path = strdup(key.path);
-	}
+	*binary = key;
+	if (attach_path)
+		binary->attach_path = strdup(attach_path);
 
 	hashmap__set(env.req_binaries, binary, binary, NULL, NULL);
-	// printf("Added binary: %s (PID %d)\n", path, pid);
+
+	/*
+	printf("Added binary: DEV %llu INODE %llu PATH %s ATTACH %s\n",
+	       dev, inode, path, attach_path ?: path);
+	*/
 
 	return 0;
 }
 
-static int discover_pid_req_binaries(int pid, int target_pid)
+static int discover_pid_req_binaries(int pid)
 {
 	struct procmap_query query;
 	char proc_path[64], path_buf[PATH_MAX];
@@ -661,7 +664,20 @@ static int discover_pid_req_binaries(int pid, int target_pid)
 		}
 
 		if (path_buf[0] == '/') {
-			err = add_req_binary(path_buf, target_pid, pid, query.vma_start, query.vma_end);
+			char tmp[1024];
+
+			/*
+			 * Using map_files symlink ensures we bypass
+			 * mount namespacing issues and don't care if the file
+			 * was deleted from the file system or not.
+			 * The only downside is that we now rely on that
+			 * specific process to be alive at the time of attachment.
+			 */
+			snprintf(tmp, sizeof(tmp), "/proc/%d/map_files/%llx-%llx",
+				 pid, query.vma_start, query.vma_end);
+
+			u64 dev = makedev(query.dev_major, query.dev_minor);
+			err = add_req_binary(dev, query.inode, path_buf, tmp);
 			if (err)
 				break;
 		}
@@ -676,25 +692,6 @@ static int discover_pid_req_binaries(int pid, int target_pid)
 static int setup_req_tracking_discovery(void)
 {
 	int err = 0;
-
-	for (int i = 0; i < env.req_pid_cnt; i++) {
-		int pid = env.req_pids[i];
-
-		err = discover_pid_req_binaries(pid, pid);
-		if (err) {
-			eprintf("Failed to discover request tracking binaries for PID %d: %d\n", pid, err);
-			return err;
-		}
-	}
-
-	for (int i = 0; i < env.req_path_cnt; i++) {
-		err = add_req_binary(env.req_paths[i], -1, 0, 0, 0);
-		if (err) {
-			eprintf("Failed to record binary path '%s' for request tracking: %d\n", env.req_paths[i], err);
-			return err;
-		}
-	}
-
 
 	if (env.req_global_discovery) {
 		struct dirent *entry;
@@ -713,7 +710,7 @@ static int setup_req_tracking_discovery(void)
 			if (sscanf(entry->d_name, "%d%n", &pid, &n) != 1 || entry->d_name[n] != '\0')
 				continue;
 
-			err = discover_pid_req_binaries(pid, -1);
+			err = discover_pid_req_binaries(pid);
 			if (err) {
 				eprintf("Failed to discover request tracking binaries for PID %d: %d\n", pid, err);
 				break;
@@ -723,6 +720,33 @@ static int setup_req_tracking_discovery(void)
 		closedir(proc_dir);
 		if (err)
 			return err;
+	}
+
+	for (int i = 0; i < env.req_path_cnt; i++) {
+		struct stat st;
+
+		err = stat(env.req_paths[i], &st);
+		if (err) {
+			err = -errno;
+			eprintf("Failed to stat() binary '%s' for request tracking: %d\n", env.req_paths[i], err);
+			return err;
+		}
+
+		err = add_req_binary(st.st_dev, st.st_ino, env.req_paths[i], NULL);
+		if (err) {
+			eprintf("Failed to record binary path '%s' for request tracking: %d\n", env.req_paths[i], err);
+			return err;
+		}
+	}
+
+	for (int i = 0; i < env.req_pid_cnt; i++) {
+		int pid = env.req_pids[i];
+
+		err = discover_pid_req_binaries(pid);
+		if (err) {
+			eprintf("Failed to discover request tracking binaries for PID %d: %d\n", pid, err);
+			return err;
+		}
 	}
 
 	return 0;
@@ -1166,14 +1190,14 @@ static int attach_bpf(struct bpf_state *st, struct worker_state *workers, int nu
 			 */
 			ignore_libbpf_warns = true;
 			link = bpf_program__attach_usdt(st->skel->progs.wprof_req_ctx,
-							binary->pid, binary->attach_path,
+							-1, binary->attach_path,
 							"thrift", "crochet_request_data_context",
 							NULL);
 			ignore_libbpf_warns = false;
 			if (!link) {
 				if (env.debug_level >= 2) {
-					eprintf("Failed to attach USDT to %s (%s) (PID %d), ignoring...\n",
-					       binary->path, binary->attach_path, binary->pid);
+					eprintf("Failed to attach USDT to %s (%s), ignoring...\n",
+					       binary->path, binary->attach_path);
 				}
 				continue;
 			}
