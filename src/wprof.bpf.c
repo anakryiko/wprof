@@ -118,11 +118,27 @@ const volatile u64 rb_cpu_map_mask;
 const volatile u64 rb_submit_threshold_bytes;
 
 const volatile bool capture_stack_traces = true;
+const volatile bool capture_scx_layer_id = true;
 
 static int zero = 0;
 static struct task_state empty_task_state;
 
 u64 session_start_ts;
+
+/* sched-ext specific extensions */
+struct scx_task_ctx {
+	int pid;
+	int last_cpu;
+	u32 layer_id;
+	/* ... more stuff we don't need */
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_TASK_STORAGE);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, int);
+	__type(value, struct scx_task_ctx);
+} scx_task_ctxs SEC(".maps");
 
 /* XXX: pass CPU explicitly to avoid unnecessary surprises */
 static __always_inline int task_id(int pid)
@@ -522,6 +538,15 @@ int BPF_PROG(wprof_task_switch,
 	if (capture_stack_traces)
 		strace = grab_stack_trace(ctx, &dyn_sz);
 
+	int scx_layer_id = -1;
+	if (capture_scx_layer_id) {
+		struct scx_task_ctx *scx_ctx;
+
+		scx_ctx = bpf_task_storage_get(&scx_task_ctxs, next, NULL, 0);
+		if (scx_ctx)
+			scx_layer_id = scx_ctx->layer_id;
+	}
+
 	emit_task_event_dyn(e, dptr, fix_sz, dyn_sz, EV_SWITCH, now_ts, prev) {
 		e->swtch.ctrs = counters;
 		e->swtch.prev_task_state = prev->__state;
@@ -540,6 +565,8 @@ int BPF_PROG(wprof_task_switch,
 			emit_stack_trace(strace, dyn_sz, dptr, fix_sz);
 			e->flags |= EF_STACK_TRACE;
 		}
+
+		e->swtch.next_task_scx_layer_id = scx_layer_id;
 	}
 
 	return 0;

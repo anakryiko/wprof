@@ -151,6 +151,7 @@ struct wprof_event {
 			u32 waker_cpu;
 			u32 waker_numa_node;
 			enum waking_flags waking_flags;
+			int next_task_scx_layer_id; /* sched-ext specific */
 		} swtch;
 		struct wprof_timer {
 		} timer;

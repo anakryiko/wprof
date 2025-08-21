@@ -955,6 +955,9 @@ skip_prev_task:
 			emit_kv_int(IID_ANNK_SWITCH_FROM_PID, e->task.pid);
 		}
 
+		if (env.capture_scx_layer_info && e->swtch.next_task_scx_layer_id >= 0)
+			emit_kv_int(IID_ANNK_SCX_LAYER_ID, e->swtch.next_task_scx_layer_id);
+
 		if (e->swtch.waking_ts && is_ts_in_range(e->swtch.waking_ts))
 			emit_flow_id(e->swtch.waking_ts);
 	}

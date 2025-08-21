@@ -28,6 +28,7 @@ struct env env = {
 	.capture_stack_traces = UNSET,
 	.capture_ipis = UNSET,
 	.capture_requests = UNSET,
+	.capture_scx_layer_info = UNSET,
 };
 
 enum {
@@ -91,7 +92,10 @@ static const struct argp_option opts[] = {
 	{ "no-kthread", OPT_DENY_KTHREAD, NULL, 0, "Deny kernel tasks" },
 
 	/* event subset targeting */
-	{ "feature", 'f', "FEAT", 0, "Features selector. Supported: ipi, numa, tidpid, timer-ticks, req (and no-req for replay), req=<path-to-binary>, req=<PID>" },
+	{ "feature", 'f', "FEAT", 0,
+	  "Features selector. Supported: ipi, numa, tidpid, timer-ticks, "
+	  "req (and no-req for replay), req=<path-to-binary>, req=<PID>, "
+	  "scx-layer"},
 
 	{ "ringbuf-size", OPT_RINGBUF_SZ, "SIZE", 0, "BPF ringbuf size (in KBs)" },
 	{ "task-state-size", OPT_TASK_STATE_SZ, "SIZE", 0, "BPF task state map size (in threads)" },
@@ -211,6 +215,8 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 				}
 			}
 			env.capture_requests = TRUE;
+		} else if (strcasecmp(arg, "scx-layer") == 0) {
+			env.capture_scx_layer_info = TRUE;
 		} else {
 			fprintf(stderr, "Unrecognized requested feature '%s!\n", arg);
 			return -EINVAL;
