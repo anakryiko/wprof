@@ -242,6 +242,7 @@ static int merge_wprof_data(struct worker_state *workers)
 	hdr.cfg.capture_stack_traces = env.capture_stack_traces == TRUE;
 	hdr.cfg.capture_ipis = env.capture_ipis == TRUE;
 	hdr.cfg.capture_requests = env.capture_requests == TRUE;
+	hdr.cfg.capture_scx_layer_info = env.capture_scx_layer_info == TRUE;
 
 	hdr.cfg.timer_freq_hz = env.timer_freq_hz;
 	hdr.cfg.counter_cnt = env.counter_cnt;
@@ -925,6 +926,69 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 		bpf_map__set_autocreate(skel->maps.req_states, false);
 	}
 
+	skel->rodata->capture_scx_layer_id = env.capture_scx_layer_info == TRUE;
+	if (env.capture_scx_layer_info) {
+		u32 next_id = 0;
+		bool found = false;
+
+		while (true) {
+			err = bpf_map_get_next_id(next_id, &next_id);
+			if (err == -ENOENT)
+				break;
+			if (err < 0) {
+				eprintf("Failed to iterate BPF maps: %d\n", err);
+				return err;
+			}
+
+			int map_fd = bpf_map_get_fd_by_id(next_id);
+			if (map_fd == -ENOENT)
+				continue;
+			if (map_fd < 0) {
+				eprintf("Failed to fetch map FD for map #%d: %d\n", next_id, map_fd);
+				continue;
+			}
+
+			struct bpf_map_info info;
+			u32 info_len = sizeof(info);
+
+			memset(&info, 0, sizeof(info));
+			err = bpf_map_get_info_by_fd(map_fd, &info, &info_len);
+			if (err) {
+				eprintf("Failed to fetch map info for map #%d: %d\n", next_id, err);
+				close(map_fd);
+				continue;
+			}
+
+			if (strcmp(info.name, "task_ctxs") != 0) {
+				close(map_fd);
+				continue;
+			}
+
+			if (found) {
+				close(map_fd);
+				eprintf("Found multiple 'task_ctxs' BPF maps, unsure which one to use!\n");
+				return -EINVAL;
+			}
+
+			err = bpf_map__reuse_fd(skel->maps.scx_task_ctxs, map_fd);
+			close(map_fd);
+			if (err) {
+				eprintf("Failed to reuse map #%d ('%s'): %d\n",
+					next_id, info.name, err);
+				continue;
+			}
+
+			found = true;
+		}
+
+		if (!found) {
+			eprintf("Failed to find sched-ext's 'task_ctxs' BPF map for fetching layer info! Drop '-f scx-layer' or make sure that scx-layered is running. \n");
+			return -EINVAL;
+		}
+	} else {
+		bpf_map__set_autocreate(skel->maps.scx_task_ctxs, false);
+	}
+
 	bpf_map__set_max_entries(skel->maps.rbs, env.ringbuf_cnt);
 	bpf_map__set_max_entries(skel->maps.task_states, env.task_state_sz);
 
@@ -1100,7 +1164,6 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 
 		st->rb_map_fds[i] = map_fd;
 	}
-
 
 	/* Prepare ring buffers to receive events from the BPF program. */
 	st->rb_managers = calloc(env.ringbuf_cnt, sizeof(*st->rb_managers));
@@ -1441,6 +1504,7 @@ int main(int argc, char **argv)
 				}
 			}
 			printf("\n");
+			printf("%-*s%s\n", w, "SCX layer info:", cfg->capture_scx_layer_info ? "true" : "false");
 			goto cleanup;
 		}
 
@@ -1490,6 +1554,8 @@ int main(int argc, char **argv)
 			env.capture_ipis = cfg->capture_ipis;
 		if (env.capture_requests == UNSET)
 			env.capture_requests = cfg->capture_requests;
+		if (env.capture_scx_layer_info == UNSET)
+			env.capture_scx_layer_info = cfg->capture_scx_layer_info;
 		if (env.capture_stack_traces == TRUE && !cfg->capture_stack_traces) {
 			eprintf("replay: stack traces requested, but were not captured!\n");
 			err = -EINVAL;
@@ -1502,6 +1568,11 @@ int main(int argc, char **argv)
 		}
 		if (env.capture_requests == TRUE && !cfg->capture_requests) {
 			eprintf("replay: request data requested, but were not captured!\n");
+			err = -EINVAL;
+			goto cleanup;
+		}
+		if (env.capture_scx_layer_info == TRUE && !cfg->capture_scx_layer_info) {
+			eprintf("replay: sched-ext layer info requested, but were not captured!\n");
 			err = -EINVAL;
 			goto cleanup;
 		}
@@ -1555,6 +1626,8 @@ int main(int argc, char **argv)
 		env.capture_ipis = DEFAULT_CAPTURE_IPIS;
 	if (env.capture_requests == UNSET)
 		env.capture_requests = DEFAULT_CAPTURE_REQUESTS;
+	if (env.capture_scx_layer_info == UNSET)
+		env.capture_scx_layer_info = DEFAULT_CAPTURE_SCX_LAYER_INFO;
 	for (int i = 0; i < env.counter_cnt; i++)
 		env.counter_pos[i] = i;
 

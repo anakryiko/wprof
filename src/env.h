@@ -16,6 +16,7 @@
 #define DEFAULT_CAPTURE_STACK_TRACES FALSE
 #define DEFAULT_CAPTURE_IPIS FALSE
 #define DEFAULT_CAPTURE_REQUESTS FALSE
+#define DEFAULT_CAPTURE_SCX_LAYER_INFO FALSE
 
 struct env {
 	bool verbose;
@@ -39,6 +40,7 @@ struct env {
 	enum tristate capture_stack_traces;
 	enum tristate capture_ipis;
 	enum tristate capture_requests;
+	enum tristate capture_scx_layer_info;
 
 	int timer_freq_hz;
 

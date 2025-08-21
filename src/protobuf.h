@@ -156,6 +156,7 @@ enum pb_static_iid {
 		IID_ANNK_REQ_NAME,				/* req_name */
 		IID_ANNK_REQ_ID,				/* req_id */
 		IID_ANNK_REQ_LATENCY_US,			/* req_latency_us */
+		IID_ANNK_SCX_LAYER_ID,				/* scx_layer_id */
 	ANNK_END_IID,
 
 	ANNV_START_IID, __ANNV_RESET_IID = ANNV_START_IID - 1,
