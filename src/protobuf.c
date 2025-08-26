@@ -191,6 +191,7 @@ static const char *pb_static_strs[] = {
 	[IID_ANNK_REQ_ID] = "req_id",
 	[IID_ANNK_REQ_LATENCY_US] = "req_latency_us",
 	[IID_ANNK_SCX_LAYER_ID] = "scx_layer_id",
+	[IID_ANNK_SCX_DSQ_ID] = "scx_dsq_id",
 
 	[IID_ANNV_SOFTIRQ_ACTION + HI_SOFTIRQ] = "hi",
 	[IID_ANNV_SOFTIRQ_ACTION + TIMER_SOFTIRQ] = "timer",
