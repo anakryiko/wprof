@@ -130,7 +130,9 @@ struct scx_task_ctx {
 	int pid;
 	int last_cpu;
 	u32 layer_id;
-	/* ... more stuff we don't need */
+	/* TODO: fetch sched_ext's program BTF and compute the field offset */
+	char skip[136];
+	u64 dsq_id;
 };
 
 struct {
@@ -539,12 +541,15 @@ int BPF_PROG(wprof_task_switch,
 		strace = grab_stack_trace(ctx, &dyn_sz);
 
 	int scx_layer_id = -1;
+	u64 scx_dsq_id = 0;
 	if (capture_scx_layer_id) {
 		struct scx_task_ctx *scx_ctx;
 
 		scx_ctx = bpf_task_storage_get(&scx_task_ctxs, next, NULL, 0);
-		if (scx_ctx)
+		if (scx_ctx) {
 			scx_layer_id = scx_ctx->layer_id;
+			scx_dsq_id = scx_ctx->dsq_id;
+		}
 	}
 
 	emit_task_event_dyn(e, dptr, fix_sz, dyn_sz, EV_SWITCH, now_ts, prev) {
@@ -567,6 +572,7 @@ int BPF_PROG(wprof_task_switch,
 		}
 
 		e->swtch.next_task_scx_layer_id = scx_layer_id;
+		e->swtch.next_task_scx_dsq_id = scx_dsq_id;
 	}
 
 	return 0;
