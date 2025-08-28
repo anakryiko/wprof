@@ -1215,6 +1215,44 @@ static void *rb_worker(void *ctx)
 	return NULL;
 }
 
+static int attach_usdt_probe(struct bpf_state *st, struct bpf_program *prog,
+			     struct req_binary *binary,
+			     const char *usdt_provider, const char *usdt_name)
+{
+	struct bpf_link *link, **tmp;
+
+	/* given we don't know for sure if requested binary
+	 * does have our USDT, we just silence libbpf's
+	 * warning and move on if there is an error
+	 */
+	ignore_libbpf_warns = true;
+	link = bpf_program__attach_usdt(prog, -1, binary->attach_path,
+					usdt_provider, usdt_name,
+					NULL);
+	ignore_libbpf_warns = false;
+	if (!link) {
+		if (env.debug_level >= 2) {
+			eprintf("Failed to attach USDT %s:%s to %s (%s), ignoring...\n",
+			       usdt_provider, usdt_name, binary->path, binary->attach_path);
+		}
+		return -ENOENT;
+	} else {
+		if (env.debug_level >= 1) {
+			printf("Attached USDT %s:%s to %s (%s).\n",
+			       usdt_provider, usdt_name, binary->path, binary->attach_path);
+		}
+	}
+
+	tmp = realloc(st->links, (st->link_cnt + 1) * sizeof(struct bpf_link *));
+	if (!tmp)
+		return -ENOMEM;
+	st->links = tmp;
+	st->links[st->link_cnt] = link;
+	st->link_cnt++;
+
+	return 0;
+}
+
 static int attach_bpf(struct bpf_state *st, struct worker_state *workers, int num_cpus)
 {
 	int err = 0;
@@ -1245,32 +1283,13 @@ static int attach_bpf(struct bpf_state *st, struct worker_state *workers, int nu
 
 		hashmap__for_each_entry(env.req_binaries, entry, bkt) {
 			struct req_binary *binary = (struct req_binary *)entry->value;
-			struct bpf_link *link, **tmp;
 
-			/* given we don't know for sure if requested binary
-			 * does have our USDT, we just silence libbpf's
-			 * warning and move on if there is an error
-			 */
-			ignore_libbpf_warns = true;
-			link = bpf_program__attach_usdt(st->skel->progs.wprof_req_ctx,
-							-1, binary->attach_path,
-							"thrift", "crochet_request_data_context",
-							NULL);
-			ignore_libbpf_warns = false;
-			if (!link) {
-				if (env.debug_level >= 2) {
-					eprintf("Failed to attach USDT to %s (%s), ignoring...\n",
-					       binary->path, binary->attach_path);
-				}
+			err = attach_usdt_probe(st, st->skel->progs.wprof_req_ctx,
+						binary, "thrift", "crochet_request_data_context");
+			if (err == -ENOENT)
 				continue;
-			}
-
-			tmp = realloc(st->links, (st->link_cnt + 1) * sizeof(struct bpf_link *));
-			if (!tmp)
-				return -ENOMEM;
-			st->links = tmp;
-			st->links[st->link_cnt] = link;
-			st->link_cnt++;
+			if (err)
+				return err;
 		}
 	}
 
