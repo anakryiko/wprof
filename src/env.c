@@ -93,8 +93,12 @@ static const struct argp_option opts[] = {
 
 	/* event subset targeting */
 	{ "feature", 'f', "FEAT", 0,
-	  "Features selector. Supported: ipi, numa, tidpid, timer-ticks, "
-	  "[no-]req, req=<path-to-binary>, req=<PID>, [no-]scx-layer"},
+	  "Data capture feature selector. Supported: ipi, req[=PATH|PID], scx-layer.\n"
+	  "All features can be prefixed with 'no-' to disable them explicitly."},
+
+	/* trace emitting options */
+	{ "emit-feature", 'e', "FEAT", 0,
+	  "Trace visualization feature. Supported: numa, tidpid, timer-ticks, req-events"},
 
 	{ "ringbuf-size", OPT_RINGBUF_SZ, "SIZE", 0, "BPF ringbuf size (in KBs)" },
 	{ "task-state-size", OPT_TASK_STATE_SZ, "SIZE", 0, "BPF task state map size (in threads)" },
@@ -181,24 +185,30 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		env.capture_stack_traces = FALSE;
 		break;
 	/* FEATURES SELECTION */
-	case 'f':
+	case 'f': {
+		enum tristate val = TRUE;
+		/*
+		 * 'no-' prefix explicitly disables feature (e.g., if it is
+		 * inherited and enbaled due to replayed data dump)
+		 */
+		if (strncasecmp(arg, "no-", 3) == 0) {
+			val = FALSE;
+			arg += 3;
+		}
+
 		if (strcasecmp(arg, "ipi") == 0) {
-			env.capture_ipis = TRUE;
-		} else if (strcasecmp(arg, "numa") == 0) {
-			env.emit_numa = true;
-		} else if (strcasecmp(arg, "tidpid") == 0) {
-			env.emit_tidpid = true;
-		} else if (strcasecmp(arg, "timer-ticks") == 0) {
-			env.emit_timer_ticks = true;
-		} else if (strcasecmp(arg, "no-req") == 0) {
-			env.req_global_discovery = false;
-			env.capture_requests = FALSE;
+			env.capture_ipis = val;
 		} else if (strcasecmp(arg, "req") == 0) {
-			env.req_global_discovery = true;
-			env.capture_requests = TRUE;
+			env.req_global_discovery = val == TRUE;
+			env.capture_requests = val;
 		} else if (strncasecmp(arg, "req=", 4) == 0) {
 			const char *req_arg = arg + 4;
 			int pid, n;
+
+			if (val == FALSE) {
+				eprintf("-f no-req=... feature form doesn't make much sense!\n");
+				return -EINVAL;
+			}
 
 			if (sscanf(req_arg, "%d %n", &pid, &n) == 1 && req_arg[n] == '\0') {
 				err = append_num(&env.req_pids, &env.req_pid_cnt, req_arg);
@@ -213,13 +223,24 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 					return err;
 				}
 			}
-			env.capture_requests = TRUE;
+			env.capture_requests = val;
 		} else if (strcasecmp(arg, "scx-layer") == 0) {
-			env.capture_scx_layer_info = TRUE;
-		} else if (strcasecmp(arg, "no-scx-layer") == 0) {
-			env.capture_scx_layer_info = FALSE;
+			env.capture_scx_layer_info = val;
 		} else {
-			fprintf(stderr, "Unrecognized requested feature '%s!\n", arg);
+			fprintf(stderr, "Unrecognized data feature '%s!\n", arg);
+			return -EINVAL;
+		}
+		break;
+	}
+	case 'e':
+		if (strcasecmp(arg, "numa") == 0) {
+			env.emit_numa = true;
+		} else if (strcasecmp(arg, "tidpid") == 0) {
+			env.emit_tidpid = true;
+		} else if (strcasecmp(arg, "timer-ticks") == 0) {
+			env.emit_timer_ticks = true;
+		} else {
+			fprintf(stderr, "Unrecognized emit feature '%s!\n", arg);
 			return -EINVAL;
 		}
 		break;
