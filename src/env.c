@@ -28,6 +28,7 @@ struct env env = {
 	.capture_stack_traces = UNSET,
 	.capture_ipis = UNSET,
 	.capture_requests = UNSET,
+	.capture_req_experimental = UNSET,
 	.capture_scx_layer_info = UNSET,
 };
 
@@ -93,7 +94,7 @@ static const struct argp_option opts[] = {
 
 	/* event subset targeting */
 	{ "feature", 'f', "FEAT", 0,
-	  "Data capture feature selector. Supported: ipi, req[=PATH|PID], scx-layer.\n"
+	  "Data capture feature selector. Supported: ipi, req[=PATH|PID], scx-layer, req-experimental.\n"
 	  "All features can be prefixed with 'no-' to disable them explicitly." },
 
 	/* trace emitting options */
@@ -226,6 +227,8 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 				}
 			}
 			env.capture_requests = val;
+		} else if (strcasecmp(arg, "req-experimental") == 0) {
+			env.capture_req_experimental = val;
 		} else if (strcasecmp(arg, "scx-layer") == 0) {
 			env.capture_scx_layer_info = val;
 		} else {

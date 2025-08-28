@@ -80,6 +80,7 @@ enum event_kind {
 	EV_IPI_SEND,
 	EV_IPI_EXIT,
 	EV_REQ_EVENT,
+	EV_REQ_TASK_EVENT,
 };
 
 struct stack_trace {
@@ -129,6 +130,10 @@ enum wprof_req_event_kind {
 	REQ_UNSET = 12,
 	REQ_END = 13,
 	REQ_CLEAR = 14,
+
+	REQ_TASK_ENQUEUE = 15,
+	REQ_TASK_DEQUEUE = 16,
+	REQ_TASK_STATS = 17,
 };
 
 struct wprof_event {
@@ -201,6 +206,14 @@ struct wprof_event {
 			enum wprof_req_event_kind req_event; /* lifecycle event (START, END, SET, UNSET, CLEAR) */
 			char req_name[REQ_NAME_LEN];
 		} req;
+		struct wprof_req_task_ctx {
+			enum wprof_req_event_kind req_task_event; /* ENQUEUE/DEQUEUE/STATS */
+			u64 req_id;
+			u64 task_id;
+			u64 enqueue_ts;
+			u64 wait_time_ns;
+			u64 run_time_ns;
+		} req_task;
 	};
 };
 

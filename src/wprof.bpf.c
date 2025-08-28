@@ -1243,3 +1243,81 @@ int BPF_USDT(wprof_req_ctx, u64 req_id, const char *endpoint, enum wprof_req_eve
 
 	return 0;
 }
+
+/* folly:thread_pool_executor_task_enqueued USDT handler */
+SEC("?usdt")
+int BPF_USDT(wprof_req_task_enqueue,
+	     const char *thread_factory_pfx, u64 req_id, u64 enqueue_ts,
+	     u64 task_id)
+{
+	struct task_struct *task = bpf_get_current_task_btf();
+
+	if (!should_trace_task(task))
+		return 0;
+
+	u64 now_ts = bpf_ktime_get_ns();
+
+	struct wprof_event *e;
+	emit_task_event(e, EV_SZ(req_task), 0, EV_REQ_TASK_EVENT, now_ts, task) {
+		e->req_task.req_task_event = REQ_TASK_ENQUEUE;
+		e->req_task.req_id = req_id;
+		e->req_task.task_id = task_id;
+		e->req_task.enqueue_ts = enqueue_ts;
+		e->req_task.wait_time_ns = 0;
+		e->req_task.run_time_ns = 0;
+	}
+
+	return 0;
+}
+
+/* folly:thread_pool_executor_task_dequeued USDT handler */
+SEC("?usdt")
+int BPF_USDT(wprof_req_task_dequeue,
+	     const char *thread_factory_pfx, u64 req_id, u64 enqueue_ts,
+	     u64 wait_time_ns, u64 task_id)
+{
+	struct task_struct *task = bpf_get_current_task_btf();
+
+	if (!should_trace_task(task))
+		return 0;
+
+	u64 now_ts = bpf_ktime_get_ns();
+
+	struct wprof_event *e;
+	emit_task_event(e, EV_SZ(req_task), 0, EV_REQ_TASK_EVENT, now_ts, task) {
+		e->req_task.req_task_event = REQ_TASK_DEQUEUE;
+		e->req_task.req_id = req_id;
+		e->req_task.task_id = task_id;
+		e->req_task.enqueue_ts = enqueue_ts;
+		e->req_task.wait_time_ns = wait_time_ns;
+		e->req_task.run_time_ns = 0;
+	}
+
+	return 0;
+}
+
+/* folly:thread_pool_executor_task_stats USDT handler */
+SEC("?usdt")
+int BPF_USDT(wprof_req_task_stats,
+	     const char *thread_factory_pfx, u64 req_id, u64 enqueue_ts,
+	     u64 wait_time_ns, u64 run_time_ns, u64 task_id)
+{
+	struct task_struct *task = bpf_get_current_task_btf();
+
+	if (!should_trace_task(task))
+		return 0;
+
+	u64 now_ts = bpf_ktime_get_ns();
+
+	struct wprof_event *e;
+	emit_task_event(e, EV_SZ(req_task), 0, EV_REQ_TASK_EVENT, now_ts, task) {
+		e->req_task.req_task_event = REQ_TASK_STATS;
+		e->req_task.req_id = req_id;
+		e->req_task.task_id = task_id;
+		e->req_task.enqueue_ts = enqueue_ts;
+		e->req_task.wait_time_ns = wait_time_ns;
+		e->req_task.run_time_ns = run_time_ns;
+	}
+
+	return 0;
+}

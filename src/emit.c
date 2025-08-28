@@ -1454,6 +1454,73 @@ static int process_req_event(struct worker_state *w, struct wprof_event *e, size
 	return 0;
 }
 
+/* EV_REQ_TASK_EVENT */
+static int process_req_task_event(struct worker_state *w, struct wprof_event *e, size_t size)
+{
+	if (!env.capture_req_experimental)
+		return 0;
+	if (!should_trace_task(&e->task))
+		return 0;
+
+	const struct wprof_task *t = &e->task;
+
+	u64 req_id = e->req_task.req_id;
+	u64 parent_uuid = trackid_process_reqs(t);
+	u64 req_track_uuid = trackid_req(req_id, t);
+	u64 track_uuid = trackid_req_thread(req_id, t);
+
+	emit_track_descr(cur_stream, parent_uuid, TRACK_UUID_REQUESTS,
+			 sfmt("%s %u", e->task.pcomm, e->task.pid), 0);
+	emit_track_descr(cur_stream, req_track_uuid, parent_uuid,
+			 sfmt("REQ (%llu)", e->req_task.req_id), 0);
+	emit_track_descr(cur_stream, track_uuid, req_track_uuid,
+			 sfmt("%s %u", e->task.comm, e->task.tid), 0);
+
+	switch (e->req_task.req_task_event) {
+	case REQ_TASK_ENQUEUE:
+		emit_track_instant(e->ts, track_uuid,
+				   IID_NAME_REQUEST_TASK_ENQUEUE, IID_CAT_REQUEST_TASK_ENQUEUE) {
+			emit_kv_int(IID_ANNK_REQ_ID, e->req_task.req_id);
+			emit_kv_int(IID_ANNK_REQ_TASK_ID, e->req_task.task_id);
+			//emit_kv_int("enqueue_ts", e->req_task.enqueue_ts);
+
+			u64 flow_id = hash_combine(e->req_task.req_id, hash_combine(e->req_task.task_id, e->req_task.enqueue_ts));
+			emit_flow_id(flow_id);
+		}
+		break;
+	case REQ_TASK_DEQUEUE:
+		emit_track_instant(e->ts, track_uuid,
+				   IID_NAME_REQUEST_TASK_DEQUEUE, IID_CAT_REQUEST_TASK_DEQUEUE) {
+			emit_kv_int(IID_ANNK_REQ_ID, e->req_task.req_id);
+			emit_kv_int(IID_ANNK_REQ_TASK_ID, e->req_task.task_id);
+			emit_kv_int(IID_ANNK_REQ_WAIT_TIME_NS, e->req_task.wait_time_ns);
+			//emit_kv_int("enqueue_ts", e->req_task.enqueue_ts);
+
+			u64 flow_id = hash_combine(e->req_task.req_id, hash_combine(e->req_task.task_id, e->req_task.enqueue_ts));
+			emit_flow_id(flow_id);
+		}
+		break;
+	case REQ_TASK_STATS:
+		emit_track_instant(e->ts, track_uuid,
+				   IID_NAME_REQUEST_TASK_COMPLETE, IID_CAT_REQUEST_TASK_COMPLETE) {
+			emit_kv_int(IID_ANNK_REQ_ID, e->req_task.req_id);
+			emit_kv_int(IID_ANNK_REQ_TASK_ID, e->req_task.task_id);
+			emit_kv_int(IID_ANNK_REQ_WAIT_TIME_NS, e->req_task.wait_time_ns);
+			//emit_kv_int("enqueue_ts", e->req_task.enqueue_ts);
+			//emit_kv_int("run_time_ns", e->req_task.run_time_ns);
+
+			u64 flow_id = hash_combine(e->req_task.req_id, hash_combine(e->req_task.task_id, e->req_task.enqueue_ts));
+			emit_flow_id(flow_id);
+		}
+		break;
+	default:
+		fprintf(stderr, "UNHANDLED REQ TASK EVENT %d\n", e->req_task.req_task_event);
+		exit(1);
+	}
+
+	return 0;
+}
+
 typedef int (*event_fn)(struct worker_state *w, struct wprof_event *e, size_t size);
 
 static event_fn ev_fns[] = {
@@ -1473,6 +1540,7 @@ static event_fn ev_fns[] = {
 	[EV_IPI_SEND] = process_ipi_send,
 	[EV_IPI_EXIT] = process_ipi_exit,
 	[EV_REQ_EVENT] = process_req_event,
+	[EV_REQ_TASK_EVENT] = process_req_task_event,
 };
 
 static int process_event(struct worker_state *w, struct wprof_event *e, size_t size)

@@ -92,6 +92,8 @@ static struct capture_feature {
 	 offsetof(struct env, capture_ipis), cfg_get_capture_ipis, cfg_set_capture_ipis},
 	{"requests", "Requests:", DEFAULT_CAPTURE_REQUESTS,
 	 offsetof(struct env, capture_requests), cfg_get_capture_reqs, cfg_set_capture_reqs},
+	{"request experimental extras", "Requests (experimental):", FALSE,
+	 offsetof(struct env, capture_req_experimental), cfg_get_capture_req_experimental, cfg_set_capture_req_experimental},
 	{"sched-ext layer info", "SCX layer info:", DEFAULT_CAPTURE_SCX_LAYER_INFO,
 	  offsetof(struct env, capture_scx_layer_info),
 	  cfg_get_capture_scx_layer_info, cfg_set_capture_scx_layer_info},
@@ -954,6 +956,11 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 
 	if (env.req_binaries) {
 		bpf_program__set_autoload(skel->progs.wprof_req_ctx, true);
+		if (env.capture_req_experimental) {
+			bpf_program__set_autoload(skel->progs.wprof_req_task_enqueue, true);
+			bpf_program__set_autoload(skel->progs.wprof_req_task_dequeue, true);
+			bpf_program__set_autoload(skel->progs.wprof_req_task_stats, true);
+		}
 		bpf_map__set_max_entries(skel->maps.req_states, max(16 * 1024, env.task_state_sz));
 	} else {
 		bpf_map__set_autocreate(skel->maps.req_states, false);
@@ -1323,6 +1330,29 @@ static int attach_bpf(struct bpf_state *st, struct worker_state *workers, int nu
 				continue;
 			if (err)
 				return err;
+
+			if (env.capture_req_experimental) {
+				err = attach_usdt_probe(st, st->skel->progs.wprof_req_task_enqueue,
+							binary, "folly", "thread_pool_executor_task_enqueued");
+				if (err == -ENOENT)
+					continue;
+				if (err)
+					return err;
+
+				err = attach_usdt_probe(st, st->skel->progs.wprof_req_task_dequeue,
+							binary, "folly", "thread_pool_executor_task_dequeued");
+				if (err == -ENOENT)
+					continue;
+				if (err)
+					return err;
+
+				err = attach_usdt_probe(st, st->skel->progs.wprof_req_task_stats,
+							binary, "folly", "thread_pool_executor_task_stats");
+				if (err == -ENOENT)
+					continue;
+				if (err)
+					return err;
+			}
 		}
 	}
 
@@ -1526,7 +1556,7 @@ int main(int argc, char **argv)
 		const struct wprof_data_cfg *cfg = &dump_hdr->cfg;
 
 		if (env.replay_info) {
-			const int w = 20;
+			const int w = 26;
 
 			printf("Replay info:\n");
 			printf("============\n");

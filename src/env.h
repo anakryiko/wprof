@@ -42,6 +42,7 @@ struct env {
 	/* data capture features */
 	enum tristate capture_ipis;
 	enum tristate capture_requests;
+	enum tristate capture_req_experimental; /* experimental extra request-related events */
 	enum tristate capture_scx_layer_info;
 
 	/* trace visualization features */

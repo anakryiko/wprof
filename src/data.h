@@ -7,7 +7,7 @@
 #include "wprof.h"
 
 #define WPROF_DATA_MAJOR 1
-#define WPROF_DATA_MINOR 6
+#define WPROF_DATA_MINOR 7
 #define WPROF_DATA_FLAG_INCOMPLETE 0xffffffffffffffffULL
 
 struct wprof_data_cfg {
@@ -19,6 +19,7 @@ struct wprof_data_cfg {
 	u64 capture_ipis : 1;
 	u64 capture_requests : 1;
 	u64 capture_scx_layer_info : 1;
+	u64 capture_req_experimental : 1;
 
 	int timer_freq_hz;
 
