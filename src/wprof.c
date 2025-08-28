@@ -68,6 +68,35 @@ const struct perf_counter_def perf_counter_defs[] = {
 	{},
 };
 
+static bool cfg_get_capture_ipis(const struct wprof_data_cfg *cfg) { return cfg->capture_ipis; }
+static void cfg_set_capture_ipis(struct wprof_data_cfg *cfg, bool val) { cfg->capture_ipis = val; }
+
+static bool cfg_get_capture_reqs(const struct wprof_data_cfg *cfg) { return cfg->capture_requests; }
+static void cfg_set_capture_reqs(struct wprof_data_cfg *cfg, bool val) { cfg->capture_requests = val; }
+
+static bool cfg_get_capture_req_experimental(const struct wprof_data_cfg *cfg) { return cfg->capture_req_experimental; }
+static void cfg_set_capture_req_experimental(struct wprof_data_cfg *cfg, bool val) { cfg->capture_req_experimental = val; }
+
+static bool cfg_get_capture_scx_layer_info(const struct wprof_data_cfg *cfg) { return cfg->capture_scx_layer_info; }
+static void cfg_set_capture_scx_layer_info(struct wprof_data_cfg *cfg, bool val) { cfg->capture_scx_layer_info = val; }
+
+static struct capture_feature {
+	const char *name;
+	const char *header;
+	enum tristate default_val;
+	size_t env_flag_off;
+	bool (*cfg_get_flag)(const struct wprof_data_cfg *cfg);
+	void (*cfg_set_flag)(struct wprof_data_cfg *cfg, bool val);
+} capture_features[] = {
+	{"IPIs", "IPIs:", DEFAULT_CAPTURE_IPIS,
+	 offsetof(struct env, capture_ipis), cfg_get_capture_ipis, cfg_set_capture_ipis},
+	{"requests", "Requests:", DEFAULT_CAPTURE_REQUESTS,
+	 offsetof(struct env, capture_requests), cfg_get_capture_reqs, cfg_set_capture_reqs},
+	{"sched-ext layer info", "SCX layer info:", DEFAULT_CAPTURE_SCX_LAYER_INFO,
+	  offsetof(struct env, capture_scx_layer_info),
+	  cfg_get_capture_scx_layer_info, cfg_set_capture_scx_layer_info},
+};
+
 static volatile bool exiting;
 
 static void sig_timer(int sig)
@@ -240,9 +269,13 @@ static int merge_wprof_data(struct worker_state *workers)
 	hdr.cfg.duration_ns = env.duration_ns;
 
 	hdr.cfg.capture_stack_traces = env.capture_stack_traces == TRUE;
-	hdr.cfg.capture_ipis = env.capture_ipis == TRUE;
-	hdr.cfg.capture_requests = env.capture_requests == TRUE;
-	hdr.cfg.capture_scx_layer_info = env.capture_scx_layer_info == TRUE;
+
+	for (int i = 0; i < ARRAY_SIZE(capture_features); i++) {
+		const struct capture_feature *f = &capture_features[i];
+		enum tristate *flag = (void *)&env + f->env_flag_off;
+
+		f->cfg_set_flag(&hdr.cfg, *flag == TRUE);
+	}
 
 	hdr.cfg.timer_freq_hz = env.timer_freq_hz;
 	hdr.cfg.counter_cnt = env.counter_cnt;
@@ -1511,8 +1544,6 @@ int main(int argc, char **argv)
 			} else {
 				printf("%-*s%s\n", w, "Stack traces:", "NOT CAPTURED");
 			}
-			printf("%-*s%s\n", w, "IPIs:", cfg->capture_ipis ? "true" : "false");
-			printf("%-*s%s\n", w, "Requests:", cfg->capture_requests ? "true" : "false");
 			printf("%-*s%dHz\n", w, "Timer frequency:", cfg->timer_freq_hz);
 			printf("%-*s", w, "Perf counters:");
 			if (cfg->counter_cnt == 0) {
@@ -1524,7 +1555,10 @@ int main(int argc, char **argv)
 				}
 			}
 			printf("\n");
-			printf("%-*s%s\n", w, "SCX layer info:", cfg->capture_scx_layer_info ? "true" : "false");
+			for (int i = 0; i < ARRAY_SIZE(capture_features); i++) {
+				const struct capture_feature *f = &capture_features[i];
+				printf("%-*s%s\n", w, f->header, f->cfg_get_flag(cfg) ? "true" : "false");
+			}
 			goto cleanup;
 		}
 
@@ -1568,31 +1602,25 @@ int main(int argc, char **argv)
 		set_ktime_off(cfg->ktime_start_ns, cfg->realtime_start_ns);
 
 		/* validate data capture config compatibility */
+		for (int i = 0; i < ARRAY_SIZE(capture_features); i++) {
+			const struct capture_feature *f = &capture_features[i];
+			enum tristate *flag = (void *)&env + f->env_flag_off;
+			bool cfg_flag = f->cfg_get_flag(cfg);
+
+			if (*flag == UNSET)
+				*flag = cfg_flag;
+
+			if (*flag == TRUE && !cfg_flag) {
+				eprintf("replay: %s requested, but not recorded in data dump!\n", f->name);
+				err = -EINVAL;
+				goto cleanup;
+			}
+		}
+
 		if (env.capture_stack_traces == UNSET)
 			env.capture_stack_traces = cfg->capture_stack_traces;
-		if (env.capture_ipis == UNSET)
-			env.capture_ipis = cfg->capture_ipis;
-		if (env.capture_requests == UNSET)
-			env.capture_requests = cfg->capture_requests;
-		if (env.capture_scx_layer_info == UNSET)
-			env.capture_scx_layer_info = cfg->capture_scx_layer_info;
 		if (env.capture_stack_traces == TRUE && !cfg->capture_stack_traces) {
 			eprintf("replay: stack traces requested, but were not captured!\n");
-			err = -EINVAL;
-			goto cleanup;
-		}
-		if (env.capture_ipis == TRUE && !cfg->capture_ipis) {
-			eprintf("replay: IPIs requested, but were not captured!\n");
-			err = -EINVAL;
-			goto cleanup;
-		}
-		if (env.capture_requests == TRUE && !cfg->capture_requests) {
-			eprintf("replay: request data requested, but were not captured!\n");
-			err = -EINVAL;
-			goto cleanup;
-		}
-		if (env.capture_scx_layer_info == TRUE && !cfg->capture_scx_layer_info) {
-			eprintf("replay: sched-ext layer info requested, but were not captured!\n");
 			err = -EINVAL;
 			goto cleanup;
 		}
@@ -1642,14 +1670,15 @@ int main(int argc, char **argv)
 		env.duration_ns = DEFAULT_DURATION_MS * 1000000ULL;
 	if (env.capture_stack_traces == UNSET)
 		env.capture_stack_traces = DEFAULT_CAPTURE_STACK_TRACES;
-	if (env.capture_ipis == UNSET)
-		env.capture_ipis = DEFAULT_CAPTURE_IPIS;
-	if (env.capture_requests == UNSET)
-		env.capture_requests = DEFAULT_CAPTURE_REQUESTS;
-	if (env.capture_scx_layer_info == UNSET)
-		env.capture_scx_layer_info = DEFAULT_CAPTURE_SCX_LAYER_INFO;
 	for (int i = 0; i < env.counter_cnt; i++)
 		env.counter_pos[i] = i;
+	for (int i = 0; i < ARRAY_SIZE(capture_features); i++) {
+		const struct capture_feature *f = &capture_features[i];
+		enum tristate *flag = (void *)&env + f->env_flag_off;
+
+		if (*flag == UNSET)
+			*flag = f->default_val;
+	}
 
 	for (int i = 0; i < env.ringbuf_cnt; i++) {
 		struct worker_state *worker = &workers[i];
