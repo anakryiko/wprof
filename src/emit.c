@@ -1366,27 +1366,18 @@ static int process_req_event(struct worker_state *w, struct wprof_event *e, size
 			emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
 		}
 
-		/*
-		emit_track_instant(e->ts, req_track_uuid,
-				   IID_NAME_REQUEST_BEGIN, IID_CAT_REQUEST_BEGIN) {
-			emit_kv_int(IID_ANNK_CPU, e->cpu);
-			emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, e->req.req_name));
-			emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
+		if (env.emit_req_extras) {
+			emit_track_instant(e->ts, track_uuid,
+					   IID_NAME_REQUEST_BEGIN, IID_CAT_REQUEST_BEGIN) {
+				emit_kv_int(IID_ANNK_CPU, e->cpu);
+				emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, e->req.req_name));
+				emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
+			}
 		}
-		*/
 
 		st->req_id = e->req.req_id;
 		break;
 	case REQ_SET:
-		/*
-		emit_track_instant(e->ts, req_track_uuid,
-				   IID_NAME_REQUEST_SET, IID_CAT_REQUEST_SET) {
-			emit_kv_int(IID_ANNK_CPU, e->cpu);
-			emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, e->req.req_name));
-			emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
-		}
-		*/
-
 		emit_track_descr(cur_stream, track_uuid, req_track_uuid,
 				 sfmt("%s %u", e->task.comm, e->task.tid), 0);
 
@@ -1400,20 +1391,26 @@ static int process_req_event(struct worker_state *w, struct wprof_event *e, size
 		emit_track_slice_start(e->ts, track_uuid,
 				       IID_NAME_RUNNING, IID_CAT_REQUEST_ONCPU);
 
+		if (env.emit_req_extras) {
+			emit_track_instant(e->ts, track_uuid,
+					   IID_NAME_REQUEST_SET, IID_CAT_REQUEST_SET) {
+				emit_kv_int(IID_ANNK_CPU, e->cpu);
+				emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, e->req.req_name));
+				emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
+			}
+		}
+
 		st->req_id = e->req.req_id;
 		break;
 	case REQ_UNSET:
-		/*
-		emit_track_instant(e->ts, req_track_uuid,
-				   IID_NAME_REQUEST_UNSET, IID_CAT_REQUEST_UNSET) {
-			emit_kv_int(IID_ANNK_CPU, e->cpu);
-			emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, e->req.req_name));
-			emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
+		if (env.emit_req_extras) {
+			emit_track_instant(e->ts, track_uuid,
+					   IID_NAME_REQUEST_UNSET, IID_CAT_REQUEST_UNSET) {
+				emit_kv_int(IID_ANNK_CPU, e->cpu);
+				emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, e->req.req_name));
+				emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
+			}
 		}
-		*/
-
-		emit_track_descr(cur_stream, track_uuid, req_track_uuid,
-				 sfmt("%s %u", e->task.comm, e->task.tid), 0);
 
 		emit_track_slice_end(e->ts, track_uuid,
 				     iid_str(st->name_iid, st->comm),
@@ -1434,17 +1431,18 @@ static int process_req_event(struct worker_state *w, struct wprof_event *e, size
 			emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
 			emit_kv_float(IID_ANNK_REQ_LATENCY_US, "%.6lf", (e->ts - e->req.req_ts) / 1000);
 		}
-		/*
-		emit_track_instant(e->ts, req_track_uuid,
-				   IID_NAME_REQUEST_END, IID_CAT_REQUEST_END) {
-			emit_kv_int(IID_ANNK_CPU, e->cpu);
-			emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, e->req.req_name));
-			emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
-			emit_kv_float(IID_ANNK_REQ_LATENCY_US, "%.6lf", (e->ts - e->req.req_ts) / 1000);
-		}
-		*/
 		emit_track_slice_end(e->ts, track_uuid,
 				     IID_NAME_RUNNING, IID_CAT_REQUEST_ONCPU);
+
+		if (env.emit_req_extras) {
+			emit_track_instant(e->ts, track_uuid,
+					   IID_NAME_REQUEST_END, IID_CAT_REQUEST_END) {
+				emit_kv_int(IID_ANNK_CPU, e->cpu);
+				emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, e->req.req_name));
+				emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
+				emit_kv_float(IID_ANNK_REQ_LATENCY_US, "%.6lf", (e->ts - e->req.req_ts) / 1000);
+			}
+		}
 
 		st->req_id = 0;
 		break;

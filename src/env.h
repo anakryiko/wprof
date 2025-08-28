@@ -38,9 +38,17 @@ struct env {
 	s64 replay_end_offset_ns;
 
 	enum tristate capture_stack_traces;
+
+	/* data capture features */
 	enum tristate capture_ipis;
 	enum tristate capture_requests;
 	enum tristate capture_scx_layer_info;
+
+	/* trace visualization features */
+	bool emit_numa;
+	bool emit_tidpid;
+	bool emit_timer_ticks;
+	bool emit_req_extras;
 
 	int timer_freq_hz;
 
@@ -51,11 +59,6 @@ struct env {
 	int ringbuf_sz;
 	int task_state_sz;
 	int ringbuf_cnt;
-
-	/* feature selector */
-	bool emit_numa;
-	bool emit_tidpid;
-	bool emit_timer_ticks;
 
 	u64 actual_start_ts;
 	u64 sess_start_ts;
