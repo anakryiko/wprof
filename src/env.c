@@ -94,17 +94,19 @@ static const struct argp_option opts[] = {
 	/* event subset targeting */
 	{ "feature", 'f', "FEAT", 0,
 	  "Data capture feature selector. Supported: ipi, req[=PATH|PID], scx-layer.\n"
-	  "All features can be prefixed with 'no-' to disable them explicitly."},
+	  "All features can be prefixed with 'no-' to disable them explicitly." },
 
 	/* trace emitting options */
 	{ "emit-feature", 'e', "FEAT", 0,
-	  "Trace visualization feature. Supported: numa, tidpid, timer-ticks, req-events"},
+	  "Trace visualization feature. Supported: numa, tidpid, timer-ticks, req-extras" },
 
 	{ "ringbuf-size", OPT_RINGBUF_SZ, "SIZE", 0, "BPF ringbuf size (in KBs)" },
 	{ "task-state-size", OPT_TASK_STATE_SZ, "SIZE", 0, "BPF task state map size (in threads)" },
 	{ "ringbuf-cnt", OPT_RINGBUF_CNT, "N", 0, "Number of BPF ringbufs to use" },
 
-	{ "cpu-counter", 'C', "NAME", 0, "Capture and emit specified perf/CPU/hardware counter (cpu-cycles, cpu-insns, cache-hits, cache-misses, stalled-cycles-fe, stallec-cycles-be)" },
+	{ "cpu-counter", 'C', "NAME", 0,
+	  "Capture and emit specified perf/CPU/hardware counter (cpu-cycles, cpu-insns, cache-hits, "
+	  "cache-misses, stalled-cycles-fe, stallec-cycles-be)" },
 	{ "breakout-counters", OPT_BREAKOUT_COUNTERS, NULL, 0, "Emit separate track for counters" },
 
 	{ "pb-debug-interns", OPT_PB_DEBUG_INTERNS, NULL, 0, "Emit interned strings" },
@@ -239,6 +241,8 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			env.emit_tidpid = true;
 		} else if (strcasecmp(arg, "timer-ticks") == 0) {
 			env.emit_timer_ticks = true;
+		} else if (strcasecmp(arg, "req-extras") == 0) {
+			env.emit_req_extras = true;
 		} else {
 			fprintf(stderr, "Unrecognized emit feature '%s!\n", arg);
 			return -EINVAL;
