@@ -1220,11 +1220,11 @@ int BPF_USDT(wprof_req_ctx, u64 req_id, const char *endpoint, enum wprof_req_eve
 	case REQ_END:
 	case REQ_SET:
 	case REQ_UNSET:
-	case REQ_CLEAR:
 		s = bpf_map_lookup_elem(&req_states, &req_id);
 		if (!s) /* caught request in mid-flight or out of req_states space */
 			return 0;
 		break;
+	case REQ_CLEAR: /* don't care */
 	default:
 		return 0;
 	}

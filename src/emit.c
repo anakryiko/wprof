@@ -1425,14 +1425,7 @@ static int process_req_event(struct worker_state *w, struct wprof_event *e, size
 		st->req_id = 0;
 		break;
 	case REQ_CLEAR:
-		/*
-		emit_track_instant(e->ts, req_track_uuid,
-				   IID_NAME_REQUEST_CLEAR, IID_CAT_REQUEST_CLEAR) {
-			emit_kv_int(IID_ANNK_CPU, e->cpu);
-			emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, e->req.req_name));
-			emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
-		}
-		*/
+		/* don't care */
 		break;
 	case REQ_END:
 		emit_track_slice_end(e->ts, req_track_uuid,
