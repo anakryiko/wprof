@@ -270,7 +270,7 @@ static int merge_wprof_data(struct worker_state *workers)
 	hdr.cfg.realtime_start_ns = env.realtime_start_ns;
 	hdr.cfg.duration_ns = env.duration_ns;
 
-	hdr.cfg.capture_stack_traces = env.capture_stack_traces == TRUE;
+	hdr.cfg.captured_stack_traces = env.requested_stack_traces;
 
 	for (int i = 0; i < ARRAY_SIZE(capture_features); i++) {
 		const struct capture_feature *f = &capture_features[i];
@@ -1150,8 +1150,9 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 	skel->rodata->perf_ctr_cnt = env.counter_cnt;
 	bpf_map__set_max_entries(skel->maps.perf_cntrs, st->perf_counter_fd_cnt);
 
-	if (env.capture_stack_traces)
+	if (env.requested_stack_traces & ST_TIMER)
 		bpf_program__set_autoload(st->skel->progs.wprof_timer_tick, true);
+	skel->rodata->requested_stack_traces = env.requested_stack_traces;
 
 	int cpu_cnt_pow2 = round_pow_of_2(num_cpus);
 	skel->rodata->rb_cpu_map_mask = cpu_cnt_pow2 - 1;
@@ -1170,8 +1171,6 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 
 	 /* force RB notification when at least 2.0MB or 25% of ringbuf (whichever is less) is full */
 	skel->rodata->rb_submit_threshold_bytes = min(2 * 1024 * 1024, env.ringbuf_sz / 4);
-
-	skel->rodata->capture_stack_traces = env.capture_stack_traces == TRUE;
 
 	if (env.stats) {
 		st->stats_fd = bpf_enable_stats(BPF_STATS_RUN_TIME);
@@ -1217,7 +1216,7 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 		workers[i].rb_manager = st->rb_managers[i];
 	}
 
-	if (env.capture_stack_traces) {
+	if (env.requested_stack_traces & ST_TIMER) {
 		err = setup_perf_timer_ticks(st, num_cpus);
 		if (err) {
 			eprintf("Failed to setup timer tick events: %d\n", err);
@@ -1567,14 +1566,25 @@ int main(int argc, char **argv)
 			       cfg->duration_ns / 1000000000.0, cfg->duration_ns / 1000000.0);
 			printf("%-*s%llu (%.3lfMBs)\n", w, "Events:",
 			       dump_hdr->event_cnt, dump_hdr->events_sz / 1024.0 / 1024.0);
-			if (cfg->capture_stack_traces) {
+			if (cfg->captured_stack_traces) {
 				const struct wprof_stacks_hdr *shdr = (void *)dump_hdr + dump_hdr->hdr_sz + dump_hdr->stacks_off;
-				printf("%-*s%u (%.3lfMBs data, %.3lfMBs strings)\n", w, "Stack traces:",
+				printf("%-*s%u (%.3lfMBs data, %.3lfMBs strings): ", w, "Stack traces:",
 				       shdr->stack_cnt,
 				       (dump_hdr->stacks_sz - shdr->strs_sz) / 1024.0 / 1024.0,
 				       shdr->strs_sz / 1024.0 / 1024.0);
+				if (cfg->captured_stack_traces & ST_TIMER)
+					printf("timer, ");
+				if (cfg->captured_stack_traces & ST_SWITCH_OUT)
+					printf("switch_out, ");
+				if (cfg->captured_stack_traces & ST_SWITCH_IN)
+					printf("switch_in, ");
+				if (cfg->captured_stack_traces & ST_WAKER)
+					printf("waker, ");
+				if (cfg->captured_stack_traces & ST_WAKEE)
+					printf("wakee, ");
+				printf("\n");
 			} else {
-				printf("%-*s%s\n", w, "Stack traces:", "NOT CAPTURED");
+				printf("%-*s%s\n", w, "Stack traces:", "NONE");
 			}
 			printf("%-*s%dHz\n", w, "Timer frequency:", cfg->timer_freq_hz);
 			printf("%-*s", w, "Perf counters:");
@@ -1649,10 +1659,10 @@ int main(int argc, char **argv)
 			}
 		}
 
-		if (env.capture_stack_traces == UNSET)
-			env.capture_stack_traces = cfg->capture_stack_traces;
-		if (env.capture_stack_traces == TRUE && !cfg->capture_stack_traces) {
-			eprintf("replay: stack traces requested, but were not captured!\n");
+		if (env.requested_stack_traces == ST_UNSET)
+			env.requested_stack_traces = cfg->captured_stack_traces;
+		if ((env.requested_stack_traces & cfg->captured_stack_traces) != env.requested_stack_traces) {
+			eprintf("replay: some of requested kinds of stack traces were not captured (check --replay-info)!\n");
 			err = -EINVAL;
 			goto cleanup;
 		}
@@ -1700,8 +1710,8 @@ int main(int argc, char **argv)
 		env.timer_freq_hz = DEFAULT_TIMER_FREQ_HZ;
 	if (env.duration_ns == 0)
 		env.duration_ns = DEFAULT_DURATION_MS * 1000000ULL;
-	if (env.capture_stack_traces == UNSET)
-		env.capture_stack_traces = DEFAULT_CAPTURE_STACK_TRACES;
+	if (env.requested_stack_traces == ST_UNSET)
+		env.requested_stack_traces = DEFAULT_REQUESTED_STACK_TRACES;
 	for (int i = 0; i < env.counter_cnt; i++)
 		env.counter_pos[i] = i;
 	for (int i = 0; i < ARRAY_SIZE(capture_features); i++) {
@@ -1785,7 +1795,7 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	if (env.capture_stack_traces) {
+	if (env.requested_stack_traces) {
 		err = process_stack_traces(&workers[0]);
 		if (err) {
 			fprintf(stderr, "Failed to symbolize and dump stack traces: %d\n", err);

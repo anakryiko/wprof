@@ -15,6 +15,7 @@
 #include "utils.h"
 #include "wprof.h"
 #include "env.h"
+#include "data.h"
 
 const char *argp_program_version = "wprof 0.0";
 const char *argp_program_bug_address = "<andrii@kernel.org>";
@@ -25,7 +26,7 @@ struct env env = {
 	.ringbuf_sz = DEFAULT_RINGBUF_SZ,
 	.ringbuf_cnt = 0,
 	.task_state_sz = DEFAULT_TASK_STATE_SZ,
-	.capture_stack_traces = UNSET,
+	.requested_stack_traces = ST_UNSET,
 	.capture_ipis = UNSET,
 	.capture_requests = UNSET,
 	.capture_req_experimental = UNSET,
@@ -74,8 +75,8 @@ static const struct argp_option opts[] = {
 	{ "replay-end", OPT_REPLAY_OFFSET_END, "TIME_OFFSET", 0, "Session end time offset (replay mode only). Supported syntax: 2s, 1.03s, 10.5ms, 12us, 101213ns" },
 	{ "replay-info", OPT_REPLAY_INFO, NULL, 0, "Print recorded data information" },
 
-	{ "stacks", 'S', NULL, 0, "Capture stack traces" },
-	{ "no-stacks", OPT_NO_STACK_TRACES, NULL, 0, "Don't capture stack traces" },
+	{ "stacks", 'S', "KIND", OPTION_ARG_OPTIONAL, "Capture stack traces (supported kinds: timer, switch_in, switch_out, waker, wakee, all; default = timer + switch_out)" },
+	{ "no-stacks", OPT_NO_STACK_TRACES, "KIND", OPTION_ARG_OPTIONAL, "Don't capture stack traces" },
 	{ "symbolize-frugal", OPT_SYMBOLIZE_FRUGALLY, NULL, 0, "Symbolize frugally (slower, but less memory hungry)" },
 
 	/* allow/deny filters */
@@ -114,6 +115,29 @@ static const struct argp_option opts[] = {
 	{ "pb-disable-interns", OPT_PB_DISABLE_INTERNS, NULL, 0, "Disable string interning for Perfetto traces" },
 	{},
 };
+
+static enum stack_trace_kind parse_stack_kinds(const char *arg)
+{
+	if (!arg)
+		return ST_DEFAULT;
+
+	if (strcasecmp(arg, "timer") == 0)
+		return ST_TIMER;
+	if (strcasecmp(arg, "switch_out") == 0)
+		return ST_SWITCH_OUT;
+	if (strcasecmp(arg, "switch_in") == 0)
+		return ST_SWITCH_IN;
+	if (strcasecmp(arg, "waker") == 0)
+		return ST_WAKER;
+	if (strcasecmp(arg, "wakee") == 0)
+		return ST_WAKEE;
+
+	if (strcasecmp(arg, "all") == 0)
+		return ST_ALL;
+
+	eprintf("unrecognized stack trace kind: '%s'\n", arg);
+	return ST_ERR;
+}
 
 static error_t parse_arg(int key, char *arg, struct argp_state *state)
 {
@@ -173,20 +197,26 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		}
 		env.trace_path = strdup(arg);
 		break;
-	case 'S':
-		if (env.capture_stack_traces != UNSET && env.capture_stack_traces != TRUE) {
-			eprintf("Conflicting stack trace capture settings specified!\n");
+	case 'S': {
+		enum stack_trace_kind kinds;
+
+		kinds = parse_stack_kinds(arg);
+		if (kinds < 0)
 			return -EINVAL;
-		}
-		env.capture_stack_traces = TRUE;
+
+		env.requested_stack_traces |= kinds;
 		break;
-	case OPT_NO_STACK_TRACES:
-		if (env.capture_stack_traces != UNSET && env.capture_stack_traces != FALSE) {
-			eprintf("Conflicting stack trace capture settings specified!\n");
+	}
+	case OPT_NO_STACK_TRACES: {
+		enum stack_trace_kind kinds;
+
+		kinds = parse_stack_kinds(arg);
+		if (kinds < 0)
 			return -EINVAL;
-		}
-		env.capture_stack_traces = FALSE;
+
+		env.requested_stack_traces &= ~kinds;
 		break;
+	}
 	/* FEATURES SELECTION */
 	case 'f': {
 		enum tristate val = TRUE;

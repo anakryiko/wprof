@@ -13,7 +13,7 @@
 
 #define DEFAULT_TIMER_FREQ_HZ 1000
 #define DEFAULT_DURATION_MS 1000
-#define DEFAULT_CAPTURE_STACK_TRACES FALSE
+#define DEFAULT_REQUESTED_STACK_TRACES ST_DEFAULT
 #define DEFAULT_CAPTURE_IPIS FALSE
 #define DEFAULT_CAPTURE_REQUESTS FALSE
 #define DEFAULT_CAPTURE_SCX_LAYER_INFO FALSE
@@ -37,7 +37,7 @@ struct env {
 	s64 replay_start_offset_ns;
 	s64 replay_end_offset_ns;
 
-	enum tristate capture_stack_traces;
+	enum stack_trace_kind requested_stack_traces;
 
 	/* data capture features */
 	enum tristate capture_ipis;

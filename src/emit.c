@@ -1628,7 +1628,7 @@ int emit_trace(struct worker_state *w)
 	int err;
 
 	fprintf(stderr, "Generating trace...\n");
-	if (env.capture_stack_traces) {
+	if (env.requested_stack_traces) {
 		err = generate_stack_traces(w);
 		if (err) {
 			fprintf(stderr, "Failed to append stack traces to trace '%s': %d\n", env.trace_path, err);
