@@ -102,6 +102,26 @@ struct perf_counters {
 	u64 val[MAX_PERF_COUNTERS];
 };
 
+enum stack_trace_kind {
+	ST_NONE = 0,
+
+	ST_TIMER		= 1 << 0, /* regular interval timer event */
+	ST_SWITCH_OUT		= 1 << 1, /* context switch out (thread going off-CPU) */
+	ST_SWITCH_IN		= 1 << 2, /* context switch in (thread about to run on-CPU) */
+	ST_WAKER		= 1 << 3, /* thread being marked runnable, waker-side stack trace */
+	ST_WAKEE		= 1 << 4, /* thread being marked runnable, wakee-side stack trace */
+
+	__ST_LAST,
+	ST_ALL = (__ST_LAST - 1) * 2 - 1,
+
+	ST_DEFAULT = ST_TIMER | ST_SWITCH_OUT,
+
+	ST_ERR = -1LL,
+	ST_UNSET = -1LL,
+
+	__ST_MAKE_S64 = 1LL << 63, /* ensure that enum is 64-bit signed */
+};
+
 enum waking_flags {
 	WF_UNKNOWN,
 	WF_WOKEN,

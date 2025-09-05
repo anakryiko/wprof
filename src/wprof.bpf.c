@@ -117,7 +117,7 @@ const volatile u64 rb_cpu_map_mask;
 
 const volatile u64 rb_submit_threshold_bytes;
 
-const volatile bool capture_stack_traces = true;
+const volatile bool requested_stack_traces = ST_ALL;
 const volatile bool capture_scx_layer_id = true;
 
 static int zero = 0;
@@ -471,11 +471,11 @@ int wprof_timer_tick(void *ctx)
 	size_t dyn_sz = 0;
 	size_t fix_sz = EV_SZ(timer);
 
-	if (capture_stack_traces)
+	if (requested_stack_traces & ST_TIMER)
 		strace = grab_stack_trace(ctx, &dyn_sz);
 
 	emit_task_event_dyn(e, dptr, fix_sz, dyn_sz, EV_TIMER, now_ts, cur) {
-		if (capture_stack_traces) {
+		if (strace) {
 			emit_stack_trace(strace, dyn_sz, dptr, fix_sz);
 			e->flags |= EF_STACK_TRACE;
 		}
@@ -537,7 +537,7 @@ int BPF_PROG(wprof_task_switch,
 	size_t dyn_sz = 0;
 	size_t fix_sz = EV_SZ(swtch);
 
-	if (capture_stack_traces)
+	if (requested_stack_traces & ST_SWITCH_OUT)
 		strace = grab_stack_trace(ctx, &dyn_sz);
 
 	int scx_layer_id = -1;
@@ -566,7 +566,7 @@ int BPF_PROG(wprof_task_switch,
 			bpf_probe_read_kernel(&e->swtch.waker, sizeof(snext->waker_task), &snext->waker_task);
 		}
 
-		if (capture_stack_traces) {
+		if (strace) {
 			emit_stack_trace(strace, dyn_sz, dptr, fix_sz);
 			e->flags |= EF_STACK_TRACE;
 		}

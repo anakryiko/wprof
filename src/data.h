@@ -7,7 +7,7 @@
 #include "wprof.h"
 
 #define WPROF_DATA_MAJOR 1
-#define WPROF_DATA_MINOR 7
+#define WPROF_DATA_MINOR 8
 #define WPROF_DATA_FLAG_INCOMPLETE 0xffffffffffffffffULL
 
 struct wprof_data_cfg {
@@ -15,11 +15,12 @@ struct wprof_data_cfg {
 	u64 realtime_start_ns;
 	u64 duration_ns;
 
-	u64 capture_stack_traces : 1;
 	u64 capture_ipis : 1;
 	u64 capture_requests : 1;
 	u64 capture_scx_layer_info : 1;
 	u64 capture_req_experimental : 1;
+
+	enum stack_trace_kind captured_stack_traces;
 
 	int timer_freq_hz;
 
