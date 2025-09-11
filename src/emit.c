@@ -820,11 +820,11 @@ static int process_switch(struct worker_state *w, struct wprof_event *e, size_t 
 		if (env.emit_numa)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->swtch.waker_numa_node);
 
-		emit_kv_str(IID_ANNK_WAKING_TARGET,
+		emit_kv_str(IID_ANNK_WAKEE,
 			    iid_str(emit_intern_str(w, e->swtch.next.comm), e->swtch.next.comm));
 		if (env.emit_tidpid) {
-			emit_kv_int(IID_ANNK_WAKING_TARGET_TID, task_tid(&e->swtch.next));
-			emit_kv_int(IID_ANNK_WAKING_TARGET_PID, e->swtch.next.pid);
+			emit_kv_int(IID_ANNK_WAKEE_TID, task_tid(&e->swtch.next));
+			emit_kv_int(IID_ANNK_WAKEE_PID, e->swtch.next.pid);
 		}
 
 		emit_flow_id(e->swtch.waking_ts);
@@ -934,17 +934,17 @@ skip_prev_task:
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
 
 		if (e->swtch.waking_ts) {
-			emit_kv_str(IID_ANNK_WAKING_BY,
+			emit_kv_str(IID_ANNK_WAKER,
 				    iid_str(emit_intern_str(w, e->swtch.waker.comm), e->swtch.waker.comm));
 			if (env.emit_tidpid) {
-				emit_kv_int(IID_ANNK_WAKING_BY_TID, task_tid(&e->swtch.waker));
-				emit_kv_int(IID_ANNK_WAKING_BY_PID, e->swtch.waker.pid);
+				emit_kv_int(IID_ANNK_WAKER_TID, task_tid(&e->swtch.waker));
+				emit_kv_int(IID_ANNK_WAKER_PID, e->swtch.waker.pid);
 			}
 			emit_kv_str(IID_ANNK_WAKING_REASON,
 				    IID_ANNV_WAKING_REASON + wreason_enum(e->swtch.waking_flags));
-			emit_kv_int(IID_ANNK_WAKING_CPU, e->swtch.waker_cpu);
+			emit_kv_int(IID_ANNK_WAKER_CPU, e->swtch.waker_cpu);
 			if (env.emit_numa)
-				emit_kv_int(IID_ANNK_WAKING_NUMA_NODE, e->swtch.waker_numa_node);
+				emit_kv_int(IID_ANNK_WAKER_NUMA_NODE, e->swtch.waker_numa_node);
 			emit_kv_float(IID_ANNK_WAKING_DELAY_US, "%.3lf", (e->ts - e->swtch.waking_ts) / 1000.0);
 		}
 
