@@ -1405,18 +1405,20 @@ static void detach_bpf(struct bpf_state *st, int num_cpus)
 			bpf_link__destroy(st->links[i]);
 		free(st->links);
 	}
-	if (st->perf_timer_fds || st->perf_counter_fds) {
+	if (st->perf_timer_fds) {
 		for (int i = 0; i < num_cpus; i++) {
 			if (st->perf_timer_fds[i] >= 0)
 				close(st->perf_timer_fds[i]);
 		}
+		free(st->perf_timer_fds);
+	}
+	if (st->perf_counter_fds) {
 		for (int i = 0; i < st->perf_counter_fd_cnt; i++) {
 			if (st->perf_counter_fds[i] >= 0) {
 				(void)ioctl(st->perf_counter_fds[i], PERF_EVENT_IOC_DISABLE, 0);
 				close(st->perf_counter_fds[i]);
 			}
 		}
-		free(st->perf_timer_fds);
 		free(st->perf_counter_fds);
 	}
 
