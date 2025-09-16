@@ -134,6 +134,7 @@ enum pb_static_iid {
 		IID_ANNK_WAKER_TID,				/* waker_tid */
 		IID_ANNK_WAKER_PID,				/* waker_pid */
 		IID_ANNK_WAKING_REASON,				/* waking_reason */
+		IID_ANNK_STANDBY_REASON,			/* standby_reason */
 		IID_ANNK_WAKEE,					/* wakee */
 		IID_ANNK_WAKEE_TID,				/* wakee_tid */
 		IID_ANNK_WAKEE_PID,				/* wakee_pid */
@@ -172,6 +173,8 @@ enum pb_static_iid {
 		IID_ANNV_SOFTIRQ_ACTION_LAST = IID_ANNV_SOFTIRQ_ACTION + NR_SOFTIRQS - 1,
 		IID_ANNV_WAKING_REASON,				/* preempted, waking, etc. */
 		IID_ANNV_WAKING_REASON_LAST = IID_ANNV_WAKING_REASON + NR_WREASON - 1,
+		IID_ANNV_STANDBY_BLOCKED,			/* blocked */
+		IID_ANNV_STANDBY_PREEMPTED,			/* preempted */
 	ANNV_END_IID,
 
 	IID_FIXED_LAST_ID,

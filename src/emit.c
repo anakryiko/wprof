@@ -841,6 +841,7 @@ skip_waker_task:
 	struct task_state *prev_st = task_state(w, &e->task);
 	const char *cur_name = prev_st->rename_ts ? prev_st->old_comm : prev_st->comm;
 	pb_iid cur_name_iid = prev_st->rename_ts ? prev_st->old_name_iid : prev_st->name_iid;
+	bool preempted = e->swtch.prev_task_state == TASK_RUNNING;
 
 	/* We are about to emit SLICE_END without
 	 * corresponding SLICE_BEGIN ever being emitted;
@@ -862,6 +863,10 @@ skip_waker_task:
 		emit_kv_int(IID_ANNK_CPU, e->cpu);
 		if (env.emit_numa)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
+
+		/* IDLE threads always go off-cpu to run something else */
+		if (prev_st->pid != 0)
+			emit_kv_str(IID_ANNK_STANDBY_REASON, preempted ? IID_ANNV_STANDBY_PREEMPTED : IID_ANNV_STANDBY_BLOCKED);
 
 		emit_kv_str(IID_ANNK_SWITCH_TO,
 			    iid_str(emit_intern_str(w, e->swtch.next.comm), e->swtch.next.comm));
@@ -889,8 +894,6 @@ skip_waker_task:
 	int strace_id = event_stack_trace_id(w, e, size);
 	if (strace_id > 0)
 		emit_stack_trace(e->ts, &e->task, strace_id);
-
-	bool preempted = e->swtch.prev_task_state == TASK_RUNNING;
 
 	if (prev_st->req_id) {
 		emit_track_slice_end(e->ts, trackid_req_thread(prev_st->req_id, &e->task),
