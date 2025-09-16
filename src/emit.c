@@ -35,6 +35,7 @@ struct task_state {
 	u64 req_id; /* active ongoing request ID */
 	/* perf counters */
 	struct perf_counters oncpu_ctrs;
+	u64 compound_delay_ns; /* scheduling/running delay, including dependency tasks' ones */
 };
 
 static struct hashmap *tasks;
@@ -911,12 +912,19 @@ skip_prev_task:
 	if (!should_trace_task(&e->swtch.next))
 		goto skip_next_task;
 
+	struct task_state *waker_st = e->swtch.waking_ts ? task_state(w, &e->swtch.waker) : NULL;
 	struct task_state *next_st = task_state(w, &e->swtch.next);
 	next_st->oncpu_ctrs = e->swtch.ctrs;
 	next_st->oncpu_ts = e->ts;
 
+	prev_st->compound_delay_ns = 0;
+	if (e->swtch.waking_ts /*&& e->swtch.waking_flags != WF_PREEMPTED*/)
+		next_st->compound_delay_ns += e->ts - e->swtch.waking_ts;
+	if (e->swtch.waking_ts && waker_st)
+		next_st->compound_delay_ns += waker_st->compound_delay_ns;
+
 	if (e->swtch.waking_ts && is_ts_in_range(e->swtch.waking_ts) && e->swtch.waker_cpu != e->cpu) {
-		/* event on awoken's timeline */
+		/* event on wakee's timeline */
 		emit_instant(e->swtch.waking_ts, &e->swtch.next,
 			     e->swtch.waking_flags == WF_WOKEN_NEW ? IID_NAME_WOKEN_NEW : IID_NAME_WOKEN,
 			     e->swtch.waking_flags == WF_WOKEN_NEW ? IID_CAT_WOKEN_NEW : IID_CAT_WOKEN) {
@@ -947,6 +955,9 @@ skip_prev_task:
 				emit_kv_int(IID_ANNK_WAKER_NUMA_NODE, e->swtch.waker_numa_node);
 			emit_kv_float(IID_ANNK_WAKING_DELAY_US, "%.3lf", (e->ts - e->swtch.waking_ts) / 1000.0);
 		}
+
+		if (env.emit_sched_extras && next_st->compound_delay_ns)
+			emit_kv_float(IID_ANNK_COMPOUND_DELAY_US, "%.3lf", next_st->compound_delay_ns / 1000.0);
 
 		emit_kv_str(IID_ANNK_SWITCH_FROM,
 			    iid_str(emit_intern_str(w, e->task.comm), e->task.comm));

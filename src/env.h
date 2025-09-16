@@ -50,6 +50,7 @@ struct env {
 	bool emit_tidpid;
 	bool emit_timer_ticks;
 	bool emit_req_extras;
+	bool emit_sched_extras;
 
 	int timer_freq_hz;
 

@@ -163,6 +163,7 @@ static const char *pb_static_strs[] = {
 	[IID_ANNK_WAKER_CPU] = "waker_cpu",
 	[IID_ANNK_WAKER_NUMA_NODE] = "waker_numa_node",
 	[IID_ANNK_WAKING_DELAY_US] = "waking_delay_us",
+	[IID_ANNK_COMPOUND_DELAY_US] = "compound_delay_us",
 	[IID_ANNK_WAKER] = "waker",
 	[IID_ANNK_WAKER_TID] = "waker_tid",
 	[IID_ANNK_WAKER_PID] = "waker_pid",
