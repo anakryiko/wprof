@@ -920,7 +920,7 @@ skip_prev_task:
 	next_st->oncpu_ctrs = e->swtch.ctrs;
 	next_st->oncpu_ts = e->ts;
 
-	prev_st->compound_delay_ns = 0;
+	next_st->compound_delay_ns = 0;
 	if (e->swtch.waking_ts /*&& e->swtch.waking_flags != WF_PREEMPTED*/)
 		next_st->compound_delay_ns += e->ts - e->swtch.waking_ts;
 	if (e->swtch.waking_ts && waker_st)
