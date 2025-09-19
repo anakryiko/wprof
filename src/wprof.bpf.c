@@ -606,6 +606,22 @@ int BPF_PROG(wprof_task_waking, struct task_struct *p)
 	emit_task_event(e, EV_SZ(task), 0, EV_WAKING, now_ts, p);
 	*/
 
+	struct bpf_dynptr *dptr;
+	struct stack_trace *strace = NULL;
+	size_t dyn_sz = 0;
+	size_t fix_sz = EV_SZ(timer);
+
+	if (capture_stack_traces)
+		strace = grab_stack_trace(ctx, &dyn_sz);
+
+	struct wprof_event *e;
+	emit_task_event_dyn(e, dptr, fix_sz, dyn_sz, EV_WAKING, now_ts, task) {
+		if (capture_stack_traces) {
+			emit_stack_trace(strace, dyn_sz, dptr, fix_sz);
+			e->flags |= EF_STACK_TRACE;
+		}
+	}
+
 	return 0;
 }
 

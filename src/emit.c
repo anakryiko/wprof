@@ -1167,11 +1167,17 @@ static int process_waking(struct worker_state *w, struct wprof_event *e, size_t 
 
 	(void)task_state(w, &e->task);
 
+	/*
 	emit_instant(e->ts, &e->task, IID_NAME_WAKING, IID_CAT_WAKING) {
 		emit_kv_int(IID_ANNK_CPU, e->cpu);
 		if (env.emit_numa)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
 	}
+	*/
+
+	int strace_id = event_stack_trace_id(w, e, size);
+	if (strace_id > 0)
+		emit_stack_trace(e->ts, &e->task, strace_id);
 
 	return 0;
 }
