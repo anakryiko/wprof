@@ -63,9 +63,9 @@ enum pb_static_iid {
 		IID_CAT_FREE,					/* FREE */
 		IID_CAT_WAKEUP,					/* WAKEUP */
 		IID_CAT_WAKEUP_NEW,				/* WAKEUP_NEW */
-		IID_CAT_WAKING,					/* WAKING */
+		IID_CAT_WAKER,					/* WAKER */
 		IID_CAT_WOKEN_NEW,				/* WOKEN_NEW */
-		IID_CAT_WOKEN,					/* WOKEN */
+		IID_CAT_WAKEE,					/* WAKEE */
 		IID_CAT_FORKING,				/* FORKING */
 		IID_CAT_FORKED,					/* FORKED */
 		IID_CAT_RENAME,					/* RENAME */
@@ -91,9 +91,9 @@ enum pb_static_iid {
 		IID_NAME_FREE,					/* FREE */
 		IID_NAME_WAKEUP,				/* WAKEUP */
 		IID_NAME_WAKEUP_NEW,				/* WAKEUP_NEW */
-		IID_NAME_WAKING,				/* WAKING */
+		IID_NAME_WAKER,					/* WAKER */
 		IID_NAME_WOKEN_NEW,				/* WOKEN_NEW */
-		IID_NAME_WOKEN,					/* WOKEN */
+		IID_NAME_WAKEE,					/* WAKEE */
 		IID_NAME_FORKING,				/* FORKING */
 		IID_NAME_FORKED,				/* FORKED */
 		IID_NAME_RENAME,				/* RENAME */

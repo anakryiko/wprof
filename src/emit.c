@@ -809,15 +809,18 @@ static int process_timer(struct worker_state *w, struct wprof_event *e, size_t s
 /* EV_SWITCH */
 static int process_switch(struct worker_state *w, struct wprof_event *e, size_t size)
 {
+	struct task_state *waker_st = NULL;
+
 	if (e->swtch.waking_ts == 0 || !is_ts_in_range(e->swtch.waking_ts) ||
 	    !should_trace_task(&e->swtch.waker))
 		goto skip_waker_task;
 
-	(void)task_state(w, &e->swtch.waker);
+	waker_st = task_state(w, &e->swtch.waker);
+
 	/* event on awaker's timeline */
 	emit_instant(e->swtch.waking_ts, &e->swtch.waker,
-		     e->swtch.waking_flags == WF_WOKEN_NEW ? IID_NAME_WAKEUP_NEW : IID_NAME_WAKING,
-		     e->swtch.waking_flags == WF_WOKEN_NEW ? IID_CAT_WAKEUP_NEW : IID_CAT_WAKING) {
+		     e->swtch.waking_flags == WF_WOKEN_NEW ? IID_NAME_WAKEUP_NEW : IID_NAME_WAKER,
+		     e->swtch.waking_flags == WF_WOKEN_NEW ? IID_CAT_WAKEUP_NEW : IID_CAT_WAKER) {
 		emit_kv_int(IID_ANNK_CPU, e->swtch.waker_cpu);
 		if (env.emit_numa)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->swtch.waker_numa_node);
@@ -916,7 +919,6 @@ skip_prev_task:
 	if (!should_trace_task(&e->swtch.next))
 		goto skip_next_task;
 
-	struct task_state *waker_st = e->swtch.waking_ts ? task_state(w, &e->swtch.waker) : NULL;
 	struct task_state *next_st = task_state(w, &e->swtch.next);
 	next_st->oncpu_ctrs = e->swtch.ctrs;
 	next_st->oncpu_ts = e->ts;
@@ -935,8 +937,8 @@ skip_prev_task:
 	if (e->swtch.waking_ts && is_ts_in_range(e->swtch.waking_ts) && e->swtch.waker_cpu != e->cpu) {
 		/* event on wakee's timeline */
 		emit_instant(e->swtch.waking_ts, &e->swtch.next,
-			     e->swtch.waking_flags == WF_WOKEN_NEW ? IID_NAME_WOKEN_NEW : IID_NAME_WOKEN,
-			     e->swtch.waking_flags == WF_WOKEN_NEW ? IID_CAT_WOKEN_NEW : IID_CAT_WOKEN) {
+			     e->swtch.waking_flags == WF_WOKEN_NEW ? IID_NAME_WOKEN_NEW : IID_NAME_WAKEE,
+			     e->swtch.waking_flags == WF_WOKEN_NEW ? IID_CAT_WOKEN_NEW : IID_CAT_WAKEE) {
 			emit_kv_int(IID_ANNK_CPU, e->cpu);
 			if (env.emit_numa)
 				emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
@@ -1175,7 +1177,7 @@ static int process_waking(struct worker_state *w, struct wprof_event *e, size_t 
 
 	(void)task_state(w, &e->task);
 
-	emit_instant(e->ts, &e->task, IID_NAME_WAKING, IID_CAT_WAKING) {
+	emit_instant(e->ts, &e->task, IID_NAME_WAKER, IID_CAT_WAKER) {
 		emit_kv_int(IID_ANNK_CPU, e->cpu);
 		if (env.emit_numa)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
