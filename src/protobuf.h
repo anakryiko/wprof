@@ -130,6 +130,7 @@ enum pb_static_iid {
 		IID_ANNK_WAKER_NUMA_NODE,			/* waker_numa_node */
 		IID_ANNK_WAKING_DELAY_US,			/* waking_delay_us */
 		IID_ANNK_COMPOUND_DELAY_US,			/* compound_delay_us */
+		IID_ANNK_COMPOUND_CHAIN_LEN,			/* compound_chain_len */
 		IID_ANNK_WAKER,					/* waker */
 		IID_ANNK_WAKER_TID,				/* waker_tid */
 		IID_ANNK_WAKER_PID,				/* waker_pid */

@@ -36,6 +36,7 @@ struct task_state {
 	/* perf counters */
 	struct perf_counters oncpu_ctrs;
 	u64 compound_delay_ns; /* scheduling/running delay, including dependency tasks' ones */
+	u64 compound_chain_len; /* length of continuous waker-wakee chain */
 };
 
 static struct hashmap *tasks;
@@ -921,10 +922,15 @@ skip_prev_task:
 	next_st->oncpu_ts = e->ts;
 
 	next_st->compound_delay_ns = 0;
-	if (e->swtch.waking_ts /*&& e->swtch.waking_flags != WF_PREEMPTED*/)
+	next_st->compound_chain_len = 0;
+	if (e->swtch.waking_ts /*&& e->swtch.waking_flags != WF_PREEMPTED*/) {
 		next_st->compound_delay_ns += e->ts - e->swtch.waking_ts;
-	if (e->swtch.waking_ts && waker_st)
+		next_st->compound_chain_len += 1;
+	}
+	if (e->swtch.waking_ts && waker_st) {
 		next_st->compound_delay_ns += waker_st->compound_delay_ns;
+		next_st->compound_chain_len += waker_st->compound_chain_len;
+	}
 
 	if (e->swtch.waking_ts && is_ts_in_range(e->swtch.waking_ts) && e->swtch.waker_cpu != e->cpu) {
 		/* event on wakee's timeline */
@@ -959,8 +965,10 @@ skip_prev_task:
 			emit_kv_float(IID_ANNK_WAKING_DELAY_US, "%.3lf", (e->ts - e->swtch.waking_ts) / 1000.0);
 		}
 
-		if (env.emit_sched_extras && next_st->compound_delay_ns)
+		if (env.emit_sched_extras && next_st->compound_delay_ns) {
 			emit_kv_float(IID_ANNK_COMPOUND_DELAY_US, "%.3lf", next_st->compound_delay_ns / 1000.0);
+			emit_kv_int(IID_ANNK_COMPOUND_CHAIN_LEN, next_st->compound_chain_len);
+		}
 
 		emit_kv_str(IID_ANNK_SWITCH_FROM,
 			    iid_str(emit_intern_str(w, e->task.comm), e->task.comm));
