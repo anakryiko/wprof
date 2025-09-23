@@ -934,18 +934,30 @@ skip_prev_task:
 	next_st->oncpu_ctrs = e->swtch.ctrs;
 	next_st->oncpu_ts = e->ts;
 
-	next_st->compound_delay_ns = 0;
-	next_st->compound_chain_len = 0;
-	if (e->swtch.waking_ts /*&& e->swtch.waking_flags != WF_PREEMPTED*/) {
+	if (!e->swtch.waking_ts)
+		goto skip_waking;
+
+	if (e->swtch.waking_flags == WF_PREEMPTED) {
+		/*
+		 * for preemption case, we just accummulate preempted time,
+		 * without paying attention to compound delay of our preemptor
+		 */
 		next_st->compound_delay_ns += e->ts - e->swtch.waking_ts;
 		next_st->compound_chain_len += 1;
-	}
-	if (e->swtch.waking_ts && waker_st) {
+	} else  {
+		/*
+		 * for non-preemption, we "inherit" our waker's compound chain
+		 * and delay, and add our own wakeup delay to it to keep the
+		 * chain going
+		 */
+		next_st->compound_delay_ns = e->ts - e->swtch.waking_ts;
+		next_st->compound_chain_len = 1;
+
 		next_st->compound_delay_ns += waker_st->compound_delay_ns;
 		next_st->compound_chain_len += waker_st->compound_chain_len;
 	}
 
-	if (e->swtch.waking_ts && is_ts_in_range(e->swtch.waking_ts) && e->swtch.waker_cpu != e->cpu) {
+	if (is_ts_in_range(e->swtch.waking_ts)/* && e->swtch.waker_cpu != e->cpu*/) {
 		/* event on wakee's timeline */
 		pb_iid wakee_ev_name, wakee_ev_cat;
 		if (e->swtch.waking_flags == WF_PREEMPTED) {
@@ -970,6 +982,7 @@ skip_prev_task:
 		}
 	}
 
+skip_waking:
 	emit_slice_begin(e->ts, &e->swtch.next, iid_str(next_st->name_iid, e->swtch.next.comm), IID_CAT_ONCPU) {
 		emit_kv_int(IID_ANNK_CPU, e->cpu);
 		if (env.emit_numa)
