@@ -60,6 +60,7 @@ struct emit_state {
 	TracePacket pb;
 	struct pb_anns anns;
 	struct pb_str_iids str_iids;
+	struct pb_id_set flow_ids;
 };
 
 static __thread struct emit_state em;
@@ -104,13 +105,7 @@ static void __emit_kv_float(struct pb_str key, const char *fmt, double value)
 __unused
 static void emit_flow_id(u64 flow_id)
 {
-	em.pb.data.track_event.flow_ids = PB_FLOW_ID(flow_id);
-}
-
-__unused
-static void emit_flow_id_end(u64 flow_id)
-{
-	em.pb.data.track_event.terminating_flow_ids = PB_FLOW_ID(flow_id);
+	ids_append_id(&em.flow_ids, flow_id);
 }
 
 __unused
@@ -137,9 +132,13 @@ static void emit_trace_packet(pb_ostream_t *stream, TracePacket *pb)
 		pb->interned_data.debug_annotation_string_values = PB_STR_IIDS(&em.str_iids);
 	}
 
+	if (em.flow_ids.cnt > 0)
+		em.pb.data.track_event.flow_ids = PB_FLOW_IDS(&em.flow_ids);
+
 	enc_trace_packet(stream, pb);
 
 	reset_str_iids(&em.str_iids);
+	ids_reset(&em.flow_ids);
 }
 
 static void emit_cleanup(struct emit_rec *r)

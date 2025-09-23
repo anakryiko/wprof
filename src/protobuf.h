@@ -215,8 +215,20 @@ bool enc_string_iid(pb_ostream_t *stream, const pb_field_t *field, void * const 
 			   ? (pb_callback_t){.funcs={(void *)(long)(iid)}}			\
 			   : PB_STRING(name_str) }
 
+struct pb_id_set {
+	u64 *ids;
+	int cnt;
+	int cap;
+};
+
+void ids_reset(struct pb_id_set *ids);
+void ids_append_id(struct pb_id_set *ids, u64 id);
+
 bool enc_flow_id(pb_ostream_t *stream, const pb_field_t *field, void * const *arg);
 #define PB_FLOW_ID(id) ((pb_callback_t){{.encode=enc_flow_id}, (void *)(id)})
+
+bool enc_flow_ids(pb_ostream_t *stream, const pb_field_t *field, void * const *arg);
+#define PB_FLOW_IDS(ids) ((pb_callback_t){{.encode=enc_flow_ids}, (void *)(ids)})
 
 enum pb_ann_kind {
 	PB_ANN_BOOL,

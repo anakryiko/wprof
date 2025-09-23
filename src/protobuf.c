@@ -249,12 +249,41 @@ bool enc_string_iid(pb_ostream_t *stream, const pb_field_t *field, void * const 
 	       pb_encode_varint(stream, iid);
 }
 
+void ids_reset(struct pb_id_set *ids)
+{
+	ids->cnt = 0;
+}
+
+void ids_append_id(struct pb_id_set *ids, u64 id)
+{
+	if (ids->cnt == ids->cap) {
+		int new_cap = ids->cnt < 8 ? 8 : ids->cnt * 4 / 3;
+		ids->ids = realloc(ids->ids, new_cap * sizeof(*ids->ids));
+		ids->cap = new_cap;
+	}
+	ids->ids[ids->cnt] = id;
+	ids->cnt += 1;
+}
+
 bool enc_flow_id(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
 {
 	u64 flow_id = (u64)*arg;
 
 	return pb_encode_tag_for_field(stream, field) &&
 	       pb_encode_fixed64(stream, &flow_id);
+}
+
+bool enc_flow_ids(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
+{
+	const struct pb_id_set *ids = *(const struct pb_id_set **)arg;
+
+	for (int i = 0; i < ids->cnt; i++) {
+		if (!pb_encode_tag_for_field(stream, field))
+			return false;
+		if (!pb_encode_fixed64(stream, &ids->ids[i]))
+			return false;
+	}
+	return true;
 }
 
 void anns_reset(struct pb_anns *anns)
