@@ -172,7 +172,7 @@ static int stack_frame_cmp_by_orig_idx(const void *a, const void *b)
 	return x->orig_idx < y->orig_idx ? -1 : 1;
 }
 
-static void stack_trace_append(struct symb_state *s, struct wprof_event *e,
+static void stack_trace_append(struct symb_state *s, struct stack_trace *st,
 			       int pid, int start_frame_idx, int frame_cnt, bool combine)
 {
 	if (s->strace_cnt == s->strace_cap) {
@@ -182,7 +182,7 @@ static void stack_trace_append(struct symb_state *s, struct wprof_event *e,
 		s->strace_cap = new_cap;
 	}
 	s->strace_idx[s->strace_cnt] = (struct stack_trace_index){
-		.event = e,
+		.strace = st,
 		.orig_idx = s->strace_cnt,
 		.pid = pid,
 		.start_frame_idx = start_frame_idx,
@@ -217,49 +217,40 @@ static int process_event_stack_trace(struct symb_state *state, struct wprof_even
 	struct stack_trace *tr;
 	const u64 *kaddrs = NULL, *uaddrs = NULL;
 	int ucnt = 0, kcnt = 0;
-
-	if (!(e->flags & EF_STACK_TRACE)) /* no variable-length part of event */
-		return 0;
+	enum stack_trace_kind st_mask = e->flags & EF_STACK_TRACE_MSK;
 
 	tr = (void *)e + e->sz;
+	while (st_mask) {
+		if (tr->kstack_sz > 0) {
+			kcnt = tr->kstack_sz / 8;
+			kaddrs = tr->addrs;
+		}
 
-	if (tr->kstack_sz > 0) {
-		kcnt = tr->kstack_sz / 8;
-		kaddrs = tr->addrs;
-	}
+		if (tr->ustack_sz > 0) {
+			ucnt = tr->ustack_sz / 8;
+			uaddrs = tr->addrs + kcnt;
+		}
 
-	if (tr->ustack_sz > 0) {
-		ucnt = tr->ustack_sz / 8;
-		uaddrs = tr->addrs + kcnt;
-	}
+		/* we need user stack to come in front of kernel stack for further
+		 * Perfetto-related stack merging to work correctly
+		 */
+		if (uaddrs) {
+			stack_trace_append(state, tr, e->task.pid, state->sframe_cnt, ucnt, false /*!combine*/);
+			for (int i = ucnt - 1; i >= 0; i--)
+				stack_frame_append(state, e->task.pid, e->task.pid, uaddrs[i]);
+		}
 
-	/* we need user stack to come in front of kernel stack for further
-	 * Perfetto-related stack merging to work correctly
-	 */
-	if (uaddrs) {
-		stack_trace_append(state, e, e->task.pid, state->sframe_cnt, ucnt, false /*!combine*/);
-		for (int i = ucnt - 1; i >= 0; i--)
-			stack_frame_append(state, e->task.pid, e->task.pid, uaddrs[i]);
-	}
+		if (kaddrs) {
+			stack_trace_append(state, tr, 0, state->sframe_cnt, kcnt, !!uaddrs /*combine*/);
+			for (int i = kcnt - 1; i >= 0; i--)
+				stack_frame_append(state, 0 /* kernel */, e->task.pid, kaddrs[i]);
+		}
 
-	if (kaddrs) {
-		stack_trace_append(state, e, 0, state->sframe_cnt, kcnt, !!uaddrs /*combine*/);
-		for (int i = kcnt - 1; i >= 0; i--)
-			stack_frame_append(state, 0 /* kernel */, e->task.pid, kaddrs[i]);
+		st_mask &= ~tr->kind;
+		tr = (void *)tr + stack_trace_sz(tr);
 	}
 
 	return 0;
-}
-
-static void update_event_stack_id(struct wprof_event *e, int stack_id)
-{
-	if (!(e->flags & EF_STACK_TRACE)) {
-		fprintf(stderr, "BUG: event without associated stack trace is getting stack ID!\n");
-		exit(1);
-	}
-
-	struct stack_trace *tr = (void *)e + e->sz;
-	tr->stack_id = stack_id;
 }
 
 int process_stack_traces(struct worker_state *w)
@@ -636,7 +627,7 @@ int process_stack_traces(struct worker_state *w)
 			t->mapped_frame_idx = state->strace_idx[i - 1].mapped_frame_idx;
 			t->mapped_frame_cnt = state->strace_idx[i - 1].mapped_frame_cnt;
 			t->callstack_iid = state->strace_idx[i - 1].callstack_iid;
-			update_event_stack_id(t->event, t->callstack_iid);
+			t->strace->stack_id = t->callstack_iid;
 			callstacks_deduped += 1;
 			debugf("ORIGSTACK%d DEDUPED INTO ORIGSTACK%d (STACK#%d) (FR#%d->%d)\n",
 				t->orig_idx, state->strace_idx[i - 1].orig_idx, t->callstack_iid,
@@ -667,7 +658,7 @@ int process_stack_traces(struct worker_state *w)
 		}
 
 		t->callstack_iid = trace_iid;
-		update_event_stack_id(t->event, trace_iid);
+		t->strace->stack_id = trace_iid;
 		trace_iid += 1;
 	}
 
@@ -828,7 +819,6 @@ int generate_stack_traces(struct worker_state *w)
 		.domain_desc = "func_name",
 	};
 
-	/* XXX: mapping singleton */
 	pb_iid mapping_iid = 1;
 	append_mapping_iid(&strace_iids.mappings, mapping_iid, 0, 0x7fffffffffffffff, 0);
 
@@ -883,20 +873,24 @@ int generate_stack_traces(struct worker_state *w)
 	return 0;
 }
 
-int event_stack_trace_id(struct worker_state *w, const struct wprof_event *e, size_t size)
+int event_stack_trace_id(struct worker_state *w, const struct wprof_event *e,
+			 enum stack_trace_kind kind)
 {
 	struct stack_trace *tr;
+	enum stack_trace_kind st_mask = e->flags & EF_STACK_TRACE_MSK;
 
-	/* if no stack traces were requested, pretend we never had them in the first place */
-	if (!env.requested_stack_traces)
-		return -1;
-
-	if (!(e->flags & EF_STACK_TRACE)) /* no variable-length part of event */
+	/* if event doesn't contain stack trace kind that was requested, bial */
+	if ((st_mask & env.requested_stack_traces) == 0)
 		return -1;
 
 	tr = (void *)e + e->sz;
-	if (tr->stack_id > 0)
-		return tr->stack_id;
+	while (st_mask) {
+		if (tr->kind == kind && tr->stack_id > 0)
+			return tr->stack_id;
+
+		st_mask &= ~tr->kind;
+		tr = (void *)tr + stack_trace_sz(tr);
+	}
 
 	return -1;
 }

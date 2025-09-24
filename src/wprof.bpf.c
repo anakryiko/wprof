@@ -382,11 +382,12 @@ static void capture_perf_counters(struct perf_counters *c, int cpu)
 	}
 }
 
-static void __capture_stack_trace(void *ctx, struct stack_trace *st)
+static void __capture_stack_trace(void *ctx, struct stack_trace *st, enum stack_trace_kind kind)
 {
 	u64 off = zero;
 
 	st->stack_id = 0;
+	st->kind = kind;
 
 	st->kstack_sz = bpf_get_stack(ctx, st->addrs, sizeof(st->addrs) / 2, 0);
 	if (st->kstack_sz > 0)
@@ -398,7 +399,7 @@ static void __capture_stack_trace(void *ctx, struct stack_trace *st)
 	st->ustack_sz = bpf_get_stack(ctx, (void *)st->addrs + off, sizeof(st->addrs) / 2, BPF_F_USER_STACK);
 }
 
-static struct stack_trace *grab_stack_trace(void *ctx, size_t *sz)
+static struct stack_trace *grab_stack_trace(void *ctx, size_t *sz, enum stack_trace_kind kind)
 {
 	struct stack_trace *st;
 
@@ -406,7 +407,7 @@ static struct stack_trace *grab_stack_trace(void *ctx, size_t *sz)
 	if (!st)
 		return *sz = 0, NULL; /* shouldn't happen */
 
-	__capture_stack_trace(ctx, st);
+	__capture_stack_trace(ctx, st, kind);
 	*sz = (st->kstack_sz < 0 ? 0 : st->kstack_sz) +
 	      (st->ustack_sz < 0 ? 0 : st->ustack_sz) +
 	      offsetof(struct stack_trace, addrs);
@@ -472,12 +473,12 @@ int wprof_timer_tick(void *ctx)
 	size_t fix_sz = EV_SZ(timer);
 
 	if (requested_stack_traces & ST_TIMER)
-		strace = grab_stack_trace(ctx, &dyn_sz);
+		strace = grab_stack_trace(ctx, &dyn_sz, ST_TIMER);
 
 	emit_task_event_dyn(e, dptr, fix_sz, dyn_sz, EV_TIMER, now_ts, cur) {
 		if (strace) {
 			emit_stack_trace(strace, dyn_sz, dptr, fix_sz);
-			e->flags |= EF_STACK_TRACE;
+			e->flags |= ST_TIMER;
 		}
 	}
 
@@ -538,7 +539,7 @@ int BPF_PROG(wprof_task_switch,
 	size_t fix_sz = EV_SZ(swtch);
 
 	if (requested_stack_traces & ST_SWITCH_OUT)
-		strace = grab_stack_trace(ctx, &dyn_sz);
+		strace = grab_stack_trace(ctx, &dyn_sz, ST_SWITCH_OUT);
 
 	int scx_layer_id = -1;
 	u64 scx_dsq_id = 0;
@@ -568,7 +569,7 @@ int BPF_PROG(wprof_task_switch,
 
 		if (strace) {
 			emit_stack_trace(strace, dyn_sz, dptr, fix_sz);
-			e->flags |= EF_STACK_TRACE;
+			e->flags |= ST_SWITCH_OUT;
 		}
 
 		e->swtch.next_task_scx_layer_id = scx_layer_id;

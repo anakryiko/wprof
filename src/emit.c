@@ -798,7 +798,7 @@ static int process_timer(struct worker_state *w, struct wprof_event *e, size_t s
 		}
 	}
 
-	int strace_id = event_stack_trace_id(w, e, size);
+	int strace_id = event_stack_trace_id(w, e, ST_TIMER);
 	if (strace_id > 0)
 		emit_stack_trace(e->ts, &e->task, strace_id);
 
@@ -906,7 +906,7 @@ skip_waker_task:
 			emit_kv_str(IID_ANNK_RENAMED_TO, e->task.comm);
 	}
 
-	int strace_id = event_stack_trace_id(w, e, size);
+	int strace_id = event_stack_trace_id(w, e, ST_SWITCH_OUT);
 	if (strace_id > 0)
 		emit_stack_trace(e->ts, &e->task, strace_id);
 
