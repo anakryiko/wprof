@@ -236,14 +236,22 @@ static int process_event_stack_trace(struct symb_state *state, struct wprof_even
 		 */
 		if (uaddrs) {
 			stack_trace_append(state, tr, tr->pid, state->sframe_cnt, ucnt, false /*!combine*/);
+			/*
+			 * Each "non-leaf" stack trace IP entry is actually
+			 * pointing after call instruction, so can result in
+			 * misleading inline functions symbolization. So
+			 * compensate for that by subtracting 1 from all but
+			 * the leaf address.
+			 */
 			for (int i = ucnt - 1; i >= 0; i--)
-				stack_frame_append(state, e->task.pid, e->task.pid, uaddrs[i]);
+				stack_frame_append(state, e->task.pid, e->task.pid, uaddrs[i] + ((i == 0) ? -1 : 0));
 		}
 
 		if (kaddrs) {
 			stack_trace_append(state, tr, 0, state->sframe_cnt, kcnt, !!uaddrs /*combine*/);
+			/* see above about that -1 compensation */
 			for (int i = kcnt - 1; i >= 0; i--)
-				stack_frame_append(state, 0 /* kernel */, e->task.pid, kaddrs[i]);
+				stack_frame_append(state, 0 /* kernel */, e->task.pid, kaddrs[i] + ((i == 0) ? -1 : 0));
 		}
 
 		st_mask &= ~tr->kind;
