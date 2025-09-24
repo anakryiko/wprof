@@ -3,6 +3,7 @@
 #ifndef __STACKTRACE_H_
 #define __STACKTRACE_H_
 
+#include <stddef.h>
 #include "utils.h"
 #include "wprof.h"
 #include "env.h"
@@ -11,7 +12,7 @@
 #include "perfetto_trace.pb.h"
 
 struct stack_trace_index {
-	struct wprof_event *event;
+	struct stack_trace *strace;
 	int orig_idx;
 	int pid;
 	int start_frame_idx;
@@ -36,8 +37,16 @@ struct stack_frame_index {
 	int *frame_iids;
 };
 
+static inline int stack_trace_sz(const struct stack_trace *tr)
+{
+	return offsetof(struct stack_trace, addrs) +
+	       (tr->kstack_sz < 0 ? tr->kstack_sz : 0) +
+	       (tr->ustack_sz < 0 ? tr->ustack_sz : 0);
+}
+
 int process_stack_traces(struct worker_state *w);
-int event_stack_trace_id(struct worker_state *w, const struct wprof_event *e, size_t size);
+int event_stack_trace_id(struct worker_state *w, const struct wprof_event *e,
+			 enum stack_trace_kind kind);
 int generate_stack_traces(struct worker_state *w);
 
 #endif /* __STACKTRACE_H_ */
