@@ -798,9 +798,11 @@ static int process_timer(struct worker_state *w, struct wprof_event *e, size_t s
 		}
 	}
 
-	int strace_id = event_stack_trace_id(w, e, ST_TIMER);
-	if (strace_id > 0)
-		emit_stack_trace(e->ts, &e->task, strace_id);
+	int tr_id = event_stack_trace_id(w, e, ST_TIMER);
+	if (tr_id > 0) {
+		mark_stack_trace_used(w, tr_id);
+		emit_stack_trace(e->ts, &e->task, tr_id);
+	}
 
 	return 0;
 }
@@ -908,8 +910,10 @@ skip_waker_task:
 
 	if (env.requested_stack_traces & ST_OFFCPU) {
 		int tr_id = event_stack_trace_id(w, e, ST_OFFCPU);
-		if (tr_id > 0)
+		if (tr_id > 0) {
+			mark_stack_trace_used(w, tr_id);
 			emit_stack_trace(e->ts, &e->task, tr_id);
+		}
 	}
 
 	if (prev_st->req_id) {
@@ -1201,8 +1205,10 @@ static int process_wakeup_new(struct worker_state *w, struct wprof_event *e, siz
 	(void)task_state(w, &e->task);
 
 	int tr_id = event_stack_trace_id(w, e, ST_WAKER);
-	if (tr_id > 0)
+	if (tr_id > 0) {
+		mark_stack_trace_used(w, tr_id);
 		emit_stack_trace(e->ts, &e->task, tr_id);
+	}
 
 	return 0;
 }
@@ -1216,8 +1222,10 @@ static int process_waking(struct worker_state *w, struct wprof_event *e, size_t 
 	(void)task_state(w, &e->task);
 
 	int tr_id = event_stack_trace_id(w, e, ST_WAKER);
-	if (tr_id > 0)
+	if (tr_id > 0) {
+		mark_stack_trace_used(w, tr_id);
 		emit_stack_trace(e->ts, &e->task, tr_id);
+	}
 
 	return 0;
 }
@@ -1624,16 +1632,14 @@ int emit_trace(struct worker_state *w)
 	int err;
 
 	fprintf(stderr, "Generating trace...\n");
-	if (env.requested_stack_traces) {
-		err = generate_stack_traces(w);
-		if (err) {
-			fprintf(stderr, "Failed to append stack traces to trace '%s': %d\n", env.trace_path, err);
-			return err;
-		}
-	}
-
 	if (env.capture_requests)
 		emit_track_descr(cur_stream, TRACK_UUID_REQUESTS, 0, "REQUESTS", 1000);
+
+	if (env.requested_stack_traces) {
+		struct wprof_stacks_hdr *shdr = wprof_stacks_hdr(w->dump_hdr);
+		w->stacks_used = calloc((shdr->stack_cnt + 63) / 64, sizeof(u64));
+		w->frames_used = calloc((shdr->frame_cnt + 63) / 64, sizeof(u64));
+	}
 
 	struct wprof_event_record *rec;
 	wprof_for_each_event(rec, w->dump_hdr) {
@@ -1642,6 +1648,14 @@ int emit_trace(struct worker_state *w)
 			fprintf(stderr, "Failed to process event #%d (kind %d, size %zu, offset %zu): %d\n",
 				rec->idx, rec->e->kind, rec->sz, (void *)rec->e - (void *)w->dump_hdr, err);
 			return err; /* YEAH, I know about all the clean up, whatever */
+		}
+	}
+
+	if (env.requested_stack_traces) {
+		err = generate_stack_traces(w);
+		if (err) {
+			fprintf(stderr, "Failed to append stack traces to trace '%s': %d\n", env.trace_path, err);
+			return err;
 		}
 	}
 
