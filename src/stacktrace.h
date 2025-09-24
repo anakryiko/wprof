@@ -40,8 +40,8 @@ struct stack_frame_index {
 static inline int stack_trace_sz(const struct stack_trace *tr)
 {
 	return offsetof(struct stack_trace, addrs) +
-	       (tr->kstack_sz < 0 ? tr->kstack_sz : 0) +
-	       (tr->ustack_sz < 0 ? tr->ustack_sz : 0);
+	       (tr->kstack_sz < 0 ? 0 : tr->kstack_sz) +
+	       (tr->ustack_sz < 0 ? 0 : tr->ustack_sz);
 }
 
 int process_stack_traces(struct worker_state *w);

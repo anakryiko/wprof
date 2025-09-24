@@ -7,7 +7,7 @@
 #include "wprof.h"
 
 #define WPROF_DATA_MAJOR 1
-#define WPROF_DATA_MINOR 8
+#define WPROF_DATA_MINOR 9
 #define WPROF_DATA_FLAG_INCOMPLETE 0xffffffffffffffffULL
 
 struct wprof_data_cfg {
