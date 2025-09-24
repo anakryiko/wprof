@@ -71,9 +71,17 @@ struct wprof_stack_trace {
 	u32 frame_mapping_cnt;
 };
 
+static inline struct wprof_stacks_hdr *wprof_stacks_hdr(struct wprof_data_hdr *hdr)
+{
+	if (hdr->stacks_sz == 0)
+		return NULL;
+
+	return (void *)hdr + hdr->hdr_sz + hdr->stacks_off;
+}
+
 static inline const char *wprof_stacks_str(struct wprof_data_hdr *hdr, u32 off)
 {
-	struct wprof_stacks_hdr *shdr = (void *)hdr + sizeof(*hdr) + hdr->stacks_off;
+	struct wprof_stacks_hdr *shdr = (void *)hdr + hdr->hdr_sz + hdr->stacks_off;
 	return (void *)shdr + sizeof(*shdr) + shdr->strs_off + off;
 }
 
@@ -140,7 +148,7 @@ struct wprof_stack_frame_iter {
 	struct wprof_stack_frame_record rec;
 };
 
-static inline struct wprof_stack_frame_iter wprof_stack_frame_iter_new(void *data)
+static inline struct wprof_stack_frame_iter wprof_stack_frame_iter_new(void *data, int from_id)
 {
 	struct wprof_data_hdr *hdr = data;
 
@@ -151,11 +159,11 @@ static inline struct wprof_stack_frame_iter wprof_stack_frame_iter_new(void *dat
 		};
 	}
 
-	struct wprof_stacks_hdr *shdr = data + sizeof(*hdr) + hdr->stacks_off;
+	struct wprof_stacks_hdr *shdr = data + hdr->hdr_sz + hdr->stacks_off;
 	return (struct wprof_stack_frame_iter) {
 		/* we skip first dummy frame */
-		.next_idx = 1,
-		.next = (void *)shdr + sizeof(*shdr) + shdr->frames_off + sizeof(struct wprof_stack_frame),
+		.next_idx = from_id == 0 ? 1 : from_id,
+		.next = (void *)shdr + sizeof(*shdr) + shdr->frames_off + (from_id == 0 ? 1 : from_id) * sizeof(struct wprof_stack_frame),
 		.last = (void *)shdr + sizeof(*shdr) + shdr->frames_off + shdr->frame_cnt * sizeof(struct wprof_stack_frame),
 	};
 }
@@ -174,8 +182,8 @@ static inline struct wprof_stack_frame_record *wprof_stack_frame_iter_next(struc
 	return &it->rec;
 }
 
-#define wprof_for_each_stack_frame(rec, data) for (					\
-	struct wprof_stack_frame_iter it = wprof_stack_frame_iter_new(data);		\
+#define wprof_for_each_stack_frame(rec, data, from_id) for (				\
+	struct wprof_stack_frame_iter it = wprof_stack_frame_iter_new(data, from_id);	\
 	(rec = wprof_stack_frame_iter_next(&it));					\
 )
 
@@ -195,7 +203,7 @@ struct wprof_stack_trace_iter {
 	struct wprof_stack_trace_record rec;
 };
 
-static inline struct wprof_stack_trace_iter wprof_stack_trace_iter_new(void *data)
+static inline struct wprof_stack_trace_iter wprof_stack_trace_iter_new(void *data, int from_id)
 {
 	struct wprof_data_hdr *hdr = data;
 
@@ -207,11 +215,11 @@ static inline struct wprof_stack_trace_iter wprof_stack_trace_iter_new(void *dat
 		};
 	}
 
-	struct wprof_stacks_hdr *shdr = data + sizeof(*hdr) + hdr->stacks_off;
+	struct wprof_stacks_hdr *shdr = data + hdr->hdr_sz + hdr->stacks_off;
 	return (struct wprof_stack_trace_iter) {
 		.shdr = shdr,
-		.next_idx = 1, /* we skip first dummy trace */
-		.next = (void *)shdr + sizeof(*shdr) + shdr->stacks_off + sizeof(struct wprof_stack_trace),
+		.next_idx = from_id == 0 ? 1 : from_id, /* we skip first dummy trace */
+		.next = (void *)shdr + sizeof(*shdr) + shdr->stacks_off + (from_id == 0 ? 1 : from_id) * sizeof(struct wprof_stack_trace),
 		.last = (void *)shdr + sizeof(*shdr) + shdr->stacks_off + shdr->stack_cnt * sizeof(struct wprof_stack_trace),
 	};
 }
@@ -233,8 +241,8 @@ static inline struct wprof_stack_trace_record *wprof_stack_trace_iter_next(struc
 	return &it->rec;
 }
 
-#define wprof_for_each_stack_trace(rec, data) for (					\
-	struct wprof_stack_trace_iter it = wprof_stack_trace_iter_new(data);		\
+#define wprof_for_each_stack_trace(rec, data, from_id) for (				\
+	struct wprof_stack_trace_iter it = wprof_stack_trace_iter_new(data, from_id);	\
 	(rec = wprof_stack_trace_iter_next(&it));					\
 )
 

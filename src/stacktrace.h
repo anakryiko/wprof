@@ -49,4 +49,6 @@ int event_stack_trace_id(struct worker_state *w, const struct wprof_event *e,
 			 enum stack_trace_kind kind);
 int generate_stack_traces(struct worker_state *w);
 
+void mark_stack_trace_used(struct worker_state *w, int stack_id);
+
 #endif /* __STACKTRACE_H_ */

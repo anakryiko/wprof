@@ -126,6 +126,10 @@ struct worker_state {
 	struct wprof_data_hdr *dump_hdr;
 	struct ring_buffer *rb_manager;
 
+	/* stack trace usage markers */
+	u64 *stacks_used; /* bitmask */
+	u64 *frames_used; /* bitmask */
+
 	/* stats */
 	u64 rb_handled_cnt;
 	u64 rb_handled_sz;

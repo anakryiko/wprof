@@ -810,6 +810,24 @@ int process_stack_traces(struct worker_state *w)
 	return 0;
 }
 
+/* returns whether bit was already set */
+static __always_inline bool bit_set(u64 *bitmask, int id)
+{
+	u64 *word = &bitmask[id / 64];
+	u64 bit = 1ULL << (id % 64);
+	bool is_set = *word & bit;
+
+	if (!is_set)
+		*word |= bit;
+
+	return is_set;
+}
+
+static __always_inline bool bit_is_set(u64 *bitmask, int id)
+{
+	return bitmask[id / 64] & (1ULL << (id % 64));
+}
+
 int generate_stack_traces(struct worker_state *w)
 {
 	struct stack_trace_iids strace_iids = {};
@@ -827,9 +845,21 @@ int generate_stack_traces(struct worker_state *w)
 	pb_iid user_unkn_iid = str_iid_for(&fname_iids, "[U] <unknown>", NULL, NULL);
 	append_str_iid(&strace_iids.func_names, user_unkn_iid, "[U] <unknown>");
 
+	struct wprof_stack_trace_record *trec;
+	wprof_for_each_stack_trace(trec, w->dump_hdr, 0) {
+		if (!bit_is_set(w->stacks_used, trec->idx))
+			continue;
+		for (int i = 0; i < trec->frame_cnt; i++) {
+			append_callstack_frame_iid(&strace_iids.callstacks, trec->idx, trec->frame_ids[i]);
+		}
+	}
+
 	char sym_buf[1024];
 	struct wprof_stack_frame_record *frec;
-	wprof_for_each_stack_frame(frec, w->dump_hdr) {
+	wprof_for_each_stack_frame(frec, w->dump_hdr, 0) {
+		if (!bit_is_set(w->frames_used, frec->idx))
+			continue;
+
 		struct wprof_stack_frame *f = frec->f;
 		pb_iid fname_iid = f->flags & WSF_KERNEL ? kern_unkn_iid : user_unkn_iid;
 		bool new_iid = false;
@@ -847,13 +877,6 @@ int generate_stack_traces(struct worker_state *w)
 			append_str_iid(&strace_iids.func_names, fname_iid, sym_name);
 
 		append_frame_iid(&strace_iids.frames, frec->idx, mapping_iid, fname_iid, f->func_offset);
-	}
-
-	struct wprof_stack_trace_record *trec;
-	wprof_for_each_stack_trace(trec, w->dump_hdr) {
-		for (int i = 0; i < trec->frame_cnt; i++) {
-			append_callstack_frame_iid(&strace_iids.callstacks, trec->idx, trec->frame_ids[i]);
-		}
 	}
 
 	ssize_t pb_sz_before = file_size(w->trace);
@@ -893,4 +916,19 @@ int event_stack_trace_id(struct worker_state *w, const struct wprof_event *e,
 	}
 
 	return -1;
+}
+
+void mark_stack_trace_used(struct worker_state *w, int stack_id)
+{
+	struct wprof_stack_trace_iter tr_it = wprof_stack_trace_iter_new(w->dump_hdr, stack_id);
+	struct wprof_stack_trace_record *trec = wprof_stack_trace_iter_next(&tr_it);
+
+	if (!trec)
+		return;
+
+	if (bit_set(w->stacks_used, stack_id))
+		return; /* already marked as used */
+
+	for (int i = 0; i < trec->frame_cnt; i++)
+		bit_set(w->frames_used, trec->frame_ids[i]);
 }

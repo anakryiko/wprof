@@ -12,7 +12,6 @@
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 struct task_state {
-	u64 ts;
 	u64 waking_ts;
 	u32 waking_flags;
 	u32 waker_cpu;
@@ -468,7 +467,6 @@ int wprof_timer_tick(void *ctx)
 		return 0; /* shouldn't happen, unless we ran out of space */
 
 	now_ts = bpf_ktime_get_ns();
-	scur->ts = now_ts;
 
 	struct wprof_event *e;
 	struct bpf_dynptr *dptr;
@@ -518,7 +516,6 @@ int BPF_PROG(wprof_task_switch,
 		capture_perf_counters(&counters, cpu);
 
 	/* prev task was on-cpu since last checkpoint */
-	sprev->ts = now_ts;
 	sprev->waking_ts = 0;
 
 	/* if process was involuntarily preempted, mark this as a start of
@@ -534,7 +531,6 @@ int BPF_PROG(wprof_task_switch,
 	sprev->last_task_state = prev->__state;
 
 	/* next task was off-cpu since last checkpoint */
-	snext->ts = now_ts;
 	snext->waking_ts = 0;
 
 	struct bpf_dynptr *dptr;
@@ -598,6 +594,9 @@ int BPF_PROG(wprof_task_waking, struct task_struct *p)
 	if (!s)
 		return 0;
 
+	if (s->waking_ts != 0)
+		return 0; /* there was an earlier wakeup */
+
 	now_ts = bpf_ktime_get_ns();
 	s->waking_ts = now_ts;
 	s->waking_flags = WF_WOKEN;
@@ -643,10 +642,10 @@ int BPF_PROG(wprof_task_wakeup_new, struct task_struct *p)
 	if (!s)
 		return 0;
 
-	now_ts = bpf_ktime_get_ns();
-	s->ts = now_ts;
 	if (s->waking_ts != 0)
 		goto skip_emit;
+
+	now_ts = bpf_ktime_get_ns();
 
 	s->waking_ts = now_ts;
 	s->waking_flags = WF_WOKEN_NEW;
