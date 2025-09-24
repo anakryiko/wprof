@@ -180,6 +180,10 @@ struct wprof_event {
 		} swtch;
 		struct wprof_timer {
 		} timer;
+		struct wprof_waking {
+		} waking;
+		struct wprof_wakeup_new {
+		} wakeup_new;
 		struct wprof_hardirq {
 			u64 hardirq_ts;
 			int irq;

@@ -384,7 +384,7 @@ static const char *event_kind_str_map[] = {
 	[EV_TIMER] = "TIMER",
 	[EV_SWITCH] = "SWITCH",
 	[EV_WAKEUP_NEW] = "WAKEUP_NEW",
-	[EV_WAKEUP] = "WAKEUP",
+	//[EV_WAKEUP] = "WAKEUP",
 	[EV_WAKING] = "WAKING",
 	[EV_HARDIRQ_EXIT] = "HARDIRQ_EXIT",
 	[EV_SOFTIRQ_EXIT] = "SOFTIRQ_EXIT",
@@ -1174,6 +1174,7 @@ skip_emit:
 }
 
 /* EV_WAKEUP */
+/*
 static int process_wakeup(struct worker_state *w, struct wprof_event *e, size_t size)
 {
 	if (!should_trace_task(&e->task))
@@ -1189,6 +1190,7 @@ static int process_wakeup(struct worker_state *w, struct wprof_event *e, size_t 
 
 	return 0;
 }
+*/
 
 /* EV_WAKEUP_NEW */
 static int process_wakeup_new(struct worker_state *w, struct wprof_event *e, size_t size)
@@ -1198,13 +1200,9 @@ static int process_wakeup_new(struct worker_state *w, struct wprof_event *e, siz
 
 	(void)task_state(w, &e->task);
 
-	/*
-	emit_instant(e->ts, &e->task, IID_NAME_WAKEUP_NEW, IID_CAT_WAKEUP_NEW) {
-		emit_kv_int(IID_ANNK_CPU, e->cpu);
-		if (env.emit_numa)
-			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
-	}
-	*/
+	int tr_id = event_stack_trace_id(w, e, ST_WAKER);
+	if (tr_id > 0)
+		emit_stack_trace(e->ts, &e->task, tr_id);
 
 	return 0;
 }
@@ -1217,13 +1215,9 @@ static int process_waking(struct worker_state *w, struct wprof_event *e, size_t 
 
 	(void)task_state(w, &e->task);
 
-	/*
-	emit_instant(e->ts, &e->task, IID_NAME_WAKER, IID_CAT_WAKER) {
-		emit_kv_int(IID_ANNK_CPU, e->cpu);
-		if (env.emit_numa)
-			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
-	}
-	*/
+	int tr_id = event_stack_trace_id(w, e, ST_WAKER);
+	if (tr_id > 0)
+		emit_stack_trace(e->ts, &e->task, tr_id);
 
 	return 0;
 }
@@ -1593,7 +1587,7 @@ static event_fn ev_fns[] = {
 	[EV_TIMER] = process_timer,
 	[EV_SWITCH] = process_switch,
 	[EV_WAKEUP_NEW] = process_wakeup_new,
-	[EV_WAKEUP] = process_wakeup,
+	//[EV_WAKEUP] = process_wakeup,
 	[EV_WAKING] = process_waking,
 	[EV_HARDIRQ_EXIT] = process_hardirq_exit,
 	[EV_SOFTIRQ_EXIT] = process_softirq_exit,

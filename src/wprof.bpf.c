@@ -607,11 +607,25 @@ int BPF_PROG(wprof_task_waking, struct task_struct *p)
 	task = bpf_get_current_task_btf();
 	fill_task_info(task, &s->waker_task);
 
-	/*
-	struct wprof_event *e;
-	emit_task_event(e, EV_SZ(task), 0, EV_WAKING, now_ts, p);
-	*/
+	if (!(requested_stack_traces & ST_WAKER))
+		goto skip_emit;
 
+	struct wprof_event *e;
+	struct bpf_dynptr *dptr;
+	struct stack_trace *tr = NULL;
+	size_t dyn_sz = 0;
+	size_t fix_sz = EV_SZ(waking);
+
+	tr = grab_stack_trace(0, ctx, NULL, &dyn_sz, ST_WAKER);
+	if (!tr)
+		goto skip_emit;
+
+	emit_task_event_dyn(e, dptr, fix_sz, dyn_sz, EV_WAKING, now_ts, task) {
+		emit_stack_trace(tr, dyn_sz, dptr, fix_sz);
+		e->flags |= ST_WAKER;
+	}
+
+skip_emit:
 	return 0;
 }
 
@@ -631,24 +645,40 @@ int BPF_PROG(wprof_task_wakeup_new, struct task_struct *p)
 
 	now_ts = bpf_ktime_get_ns();
 	s->ts = now_ts;
-	if (s->waking_ts == 0) {
-		s->waking_ts = now_ts;
-		s->waking_flags = WF_WOKEN_NEW;
-		s->waker_cpu = bpf_get_smp_processor_id();
-		s->waker_numa_node = bpf_get_numa_node_id();
-		s->last_task_state = p->__state;
-		task = bpf_get_current_task_btf();
-		fill_task_info(task, &s->waker_task);
+	if (s->waking_ts != 0)
+		goto skip_emit;
+
+	s->waking_ts = now_ts;
+	s->waking_flags = WF_WOKEN_NEW;
+	s->waker_cpu = bpf_get_smp_processor_id();
+	s->waker_numa_node = bpf_get_numa_node_id();
+	s->last_task_state = p->__state;
+	task = bpf_get_current_task_btf();
+	fill_task_info(task, &s->waker_task);
+
+	if (!(requested_stack_traces & ST_WAKER))
+		goto skip_emit;
+
+	struct wprof_event *e;
+	struct bpf_dynptr *dptr;
+	struct stack_trace *tr = NULL;
+	size_t dyn_sz = 0;
+	size_t fix_sz = EV_SZ(wakeup_new);
+
+	tr = grab_stack_trace(0, ctx, NULL, &dyn_sz, ST_WAKER);
+	if (!tr)
+		goto skip_emit;
+
+	emit_task_event_dyn(e, dptr, fix_sz, dyn_sz, EV_WAKEUP_NEW, now_ts, task) {
+		emit_stack_trace(tr, dyn_sz, dptr, fix_sz);
+		e->flags |= ST_WAKER;
 	}
 
-	/*
-	struct wprof_event *e;
-	emit_task_event(e, EV_SZ(task), 0, EV_WAKEUP_NEW, now_ts, p);
-	*/
-
+skip_emit:
 	return 0;
 }
 
+/*
 SEC("?tp_btf/sched_wakeup")
 int BPF_PROG(wprof_task_wakeup, struct task_struct *p)
 {
@@ -663,6 +693,7 @@ int BPF_PROG(wprof_task_wakeup, struct task_struct *p)
 
 	return 0;
 }
+*/
 
 SEC("tp_btf/task_rename")
 int BPF_PROG(wprof_task_rename, struct task_struct *task, const char *comm)
