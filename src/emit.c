@@ -906,9 +906,11 @@ skip_waker_task:
 			emit_kv_str(IID_ANNK_RENAMED_TO, e->task.comm);
 	}
 
-	int strace_id = event_stack_trace_id(w, e, ST_SWITCH_OUT);
-	if (strace_id > 0)
-		emit_stack_trace(e->ts, &e->task, strace_id);
+	if (env.requested_stack_traces & ST_OFFCPU) {
+		int tr_id = event_stack_trace_id(w, e, ST_OFFCPU);
+		if (tr_id > 0)
+			emit_stack_trace(e->ts, &e->task, tr_id);
+	}
 
 	if (prev_st->req_id) {
 		emit_track_slice_end(e->ts, trackid_req_thread(prev_st->req_id, &e->task),

@@ -235,7 +235,7 @@ static int process_event_stack_trace(struct symb_state *state, struct wprof_even
 		 * Perfetto-related stack merging to work correctly
 		 */
 		if (uaddrs) {
-			stack_trace_append(state, tr, e->task.pid, state->sframe_cnt, ucnt, false /*!combine*/);
+			stack_trace_append(state, tr, tr->pid, state->sframe_cnt, ucnt, false /*!combine*/);
 			for (int i = ucnt - 1; i >= 0; i--)
 				stack_frame_append(state, e->task.pid, e->task.pid, uaddrs[i]);
 		}

@@ -1574,14 +1574,10 @@ int main(int argc, char **argv)
 				       shdr->strs_sz / 1024.0 / 1024.0);
 				if (cfg->captured_stack_traces & ST_TIMER)
 					printf("timer, ");
-				if (cfg->captured_stack_traces & ST_SWITCH_OUT)
-					printf("switch_out, ");
-				if (cfg->captured_stack_traces & ST_SWITCH_IN)
-					printf("switch_in, ");
+				if (cfg->captured_stack_traces & ST_OFFCPU)
+					printf("offcpu, ");
 				if (cfg->captured_stack_traces & ST_WAKER)
 					printf("waker, ");
-				if (cfg->captured_stack_traces & ST_WAKEE)
-					printf("wakee, ");
 				printf("\n");
 			} else {
 				printf("%-*s%s\n", w, "Stack traces:", "NONE");

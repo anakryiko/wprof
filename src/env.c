@@ -75,7 +75,7 @@ static const struct argp_option opts[] = {
 	{ "replay-end", OPT_REPLAY_OFFSET_END, "TIME_OFFSET", 0, "Session end time offset (replay mode only). Supported syntax: 2s, 1.03s, 10.5ms, 12us, 101213ns" },
 	{ "replay-info", OPT_REPLAY_INFO, NULL, 0, "Print recorded data information" },
 
-	{ "stacks", 'S', "KIND", OPTION_ARG_OPTIONAL, "Capture stack traces (supported kinds: timer, switch_in, switch_out, waker, wakee, all; default = timer + switch_out)" },
+	{ "stacks", 'S', "KIND", OPTION_ARG_OPTIONAL, "Capture stack traces (supported kinds: timer, offcpu, waker, all; default = timer + offcpu)" },
 	{ "no-stacks", OPT_NO_STACK_TRACES, "KIND", OPTION_ARG_OPTIONAL, "Don't capture stack traces" },
 	{ "symbolize-frugal", OPT_SYMBOLIZE_FRUGALLY, NULL, 0, "Symbolize frugally (slower, but less memory hungry)" },
 
@@ -123,14 +123,10 @@ static enum stack_trace_kind parse_stack_kinds(const char *arg)
 
 	if (strcasecmp(arg, "timer") == 0)
 		return ST_TIMER;
-	if (strcasecmp(arg, "switch_out") == 0)
-		return ST_SWITCH_OUT;
-	if (strcasecmp(arg, "switch_in") == 0)
-		return ST_SWITCH_IN;
+	if (strcasecmp(arg, "offcpu") == 0)
+		return ST_OFFCPU;
 	if (strcasecmp(arg, "waker") == 0)
 		return ST_WAKER;
-	if (strcasecmp(arg, "wakee") == 0)
-		return ST_WAKEE;
 
 	if (strcasecmp(arg, "all") == 0)
 		return ST_ALL;
@@ -204,6 +200,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		if (kinds < 0)
 			return -EINVAL;
 
+		if (env.requested_stack_traces == ST_UNSET)
+			env.requested_stack_traces = 0;
+
 		env.requested_stack_traces |= kinds;
 		break;
 	}
@@ -213,6 +212,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		kinds = parse_stack_kinds(arg);
 		if (kinds < 0)
 			return -EINVAL;
+
+		if (env.requested_stack_traces == ST_UNSET)
+			env.requested_stack_traces = ST_DEFAULT;
 
 		env.requested_stack_traces &= ~kinds;
 		break;

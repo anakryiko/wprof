@@ -53,7 +53,7 @@ struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__type(key, u32);
 	__type(value, struct stack_trace);
-	__uint(max_entries, 1);
+	__uint(max_entries, 2); /* maximum number of stack traces per event */
 } stack_trace_scratch SEC(".maps");
 
 #define inc_stat(stat) ({							\
@@ -117,7 +117,7 @@ const volatile u64 rb_cpu_map_mask;
 
 const volatile u64 rb_submit_threshold_bytes;
 
-const volatile bool requested_stack_traces = ST_ALL;
+const volatile enum stack_trace_kind requested_stack_traces = ST_ALL;
 const volatile bool capture_scx_layer_id = true;
 
 static int zero = 0;
@@ -382,35 +382,39 @@ static void capture_perf_counters(struct perf_counters *c, int cpu)
 	}
 }
 
-static void __capture_stack_trace(void *ctx, struct stack_trace *st, enum stack_trace_kind kind)
+static void __capture_stack_trace(void *ctx, struct task_struct *task, struct stack_trace *st, enum stack_trace_kind kind)
 {
 	u64 off = zero;
 
+	if (!task)
+		task = bpf_get_current_task_btf();
+
 	st->stack_id = 0;
 	st->kind = kind;
+	st->pid = task->tgid;
 
-	st->kstack_sz = bpf_get_stack(ctx, st->addrs, sizeof(st->addrs) / 2, 0);
+	st->kstack_sz = bpf_get_task_stack(task, st->addrs, sizeof(st->addrs) / 2, 0);
 	if (st->kstack_sz > 0)
 		off += st->kstack_sz;
 
 	if (off > sizeof(st->addrs) / 2) /* impossible */
 		off = sizeof(st->addrs) / 2;
 
-	st->ustack_sz = bpf_get_stack(ctx, (void *)st->addrs + off, sizeof(st->addrs) / 2, BPF_F_USER_STACK);
+	st->ustack_sz = bpf_get_task_stack(task, (void *)st->addrs + off, sizeof(st->addrs) / 2, BPF_F_USER_STACK);
 }
 
-static struct stack_trace *grab_stack_trace(void *ctx, size_t *sz, enum stack_trace_kind kind)
+static struct stack_trace *grab_stack_trace(int slot, void *ctx, struct task_struct *task, size_t *sz, enum stack_trace_kind kind)
 {
 	struct stack_trace *st;
 
-	st = bpf_map_lookup_elem(&stack_trace_scratch, &zero);
+	st = bpf_map_lookup_elem(&stack_trace_scratch, &slot);
 	if (!st)
 		return *sz = 0, NULL; /* shouldn't happen */
 
-	__capture_stack_trace(ctx, st, kind);
+	__capture_stack_trace(ctx, task, st, kind);
 	*sz = (st->kstack_sz < 0 ? 0 : st->kstack_sz) +
-	      (st->ustack_sz < 0 ? 0 : st->ustack_sz) +
-	      offsetof(struct stack_trace, addrs);
+	       (st->ustack_sz < 0 ? 0 : st->ustack_sz) +
+	       offsetof(struct stack_trace, addrs);
 	return st;
 }
 
@@ -468,16 +472,16 @@ int wprof_timer_tick(void *ctx)
 
 	struct wprof_event *e;
 	struct bpf_dynptr *dptr;
-	struct stack_trace *strace = NULL;
+	struct stack_trace *tr = NULL;
 	size_t dyn_sz = 0;
 	size_t fix_sz = EV_SZ(timer);
 
 	if (requested_stack_traces & ST_TIMER)
-		strace = grab_stack_trace(ctx, &dyn_sz, ST_TIMER);
+		tr = grab_stack_trace(0, ctx, NULL, &dyn_sz, ST_TIMER);
 
 	emit_task_event_dyn(e, dptr, fix_sz, dyn_sz, EV_TIMER, now_ts, cur) {
-		if (strace) {
-			emit_stack_trace(strace, dyn_sz, dptr, fix_sz);
+		if (tr) {
+			emit_stack_trace(tr, dyn_sz, dptr, fix_sz);
 			e->flags |= ST_TIMER;
 		}
 	}
@@ -534,12 +538,12 @@ int BPF_PROG(wprof_task_switch,
 	snext->waking_ts = 0;
 
 	struct bpf_dynptr *dptr;
-	struct stack_trace *strace = NULL;
-	size_t dyn_sz = 0;
+	struct stack_trace *tr_out = NULL;
+	size_t tr_out_sz = 0;
 	size_t fix_sz = EV_SZ(swtch);
 
-	if (requested_stack_traces & ST_SWITCH_OUT)
-		strace = grab_stack_trace(ctx, &dyn_sz, ST_SWITCH_OUT);
+	if (requested_stack_traces & ST_OFFCPU)
+		tr_out = grab_stack_trace(0, ctx, NULL, &tr_out_sz, ST_OFFCPU);
 
 	int scx_layer_id = -1;
 	u64 scx_dsq_id = 0;
@@ -553,7 +557,7 @@ int BPF_PROG(wprof_task_switch,
 		}
 	}
 
-	emit_task_event_dyn(e, dptr, fix_sz, dyn_sz, EV_SWITCH, now_ts, prev) {
+	emit_task_event_dyn(e, dptr, fix_sz, tr_out_sz, EV_SWITCH, now_ts, prev) {
 		e->swtch.ctrs = counters;
 		e->swtch.prev_task_state = prev->__state;
 		e->swtch.last_next_task_state = snext->last_task_state;
@@ -567,9 +571,10 @@ int BPF_PROG(wprof_task_switch,
 			bpf_probe_read_kernel(&e->swtch.waker, sizeof(snext->waker_task), &snext->waker_task);
 		}
 
-		if (strace) {
-			emit_stack_trace(strace, dyn_sz, dptr, fix_sz);
-			e->flags |= ST_SWITCH_OUT;
+		e->flags = 0;
+		if (tr_out) {
+			emit_stack_trace(tr_out, tr_out_sz, dptr, fix_sz);
+			e->flags |= ST_OFFCPU;
 		}
 
 		e->swtch.next_task_scx_layer_id = scx_layer_id;
