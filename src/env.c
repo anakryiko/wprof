@@ -46,8 +46,7 @@ enum {
 	OPT_SYMBOLIZE_FRUGALLY = 1012,
 	OPT_REPLAY_OFFSET_START = 1013,
 	OPT_REPLAY_OFFSET_END = 1014,
-	OPT_REPLAY_INFO = 1015,
-	OPT_NO_STACK_TRACES = 1016,
+	OPT_NO_STACK_TRACES = 1015,
 
 	OPT_ALLOW_TID = 2000,
 	OPT_DENY_TID = 2001,
@@ -73,7 +72,7 @@ static const struct argp_option opts[] = {
 	{ "replay", 'R', NULL, 0, "Re-process raw dump (no actual BPF data gathering)" },
 	{ "replay-start", OPT_REPLAY_OFFSET_START, "TIME_OFFSET", 0, "Session start time offset (replay mode only). Supported syntax: 2s, 1.03s, 10.5ms, 12us, 101213ns" },
 	{ "replay-end", OPT_REPLAY_OFFSET_END, "TIME_OFFSET", 0, "Session end time offset (replay mode only). Supported syntax: 2s, 1.03s, 10.5ms, 12us, 101213ns" },
-	{ "replay-info", OPT_REPLAY_INFO, NULL, 0, "Print recorded data information" },
+	{ "replay-info", 'I', NULL, 0, "Print recorded data information" },
 
 	{ "stacks", 'S', "KIND", OPTION_ARG_OPTIONAL, "Capture stack traces (supported kinds: timer, offcpu, waker, all; default = timer + offcpu)" },
 	{ "no-stacks", OPT_NO_STACK_TRACES, "KIND", OPTION_ARG_OPTIONAL, "Don't capture stack traces" },
@@ -169,7 +168,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	case 'R':
 		env.replay = true;
 		break;
-	case OPT_REPLAY_INFO:
+	case 'I':
 		env.replay_info = true;
 		break;
 	case OPT_REPLAY_OFFSET_START:
