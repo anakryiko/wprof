@@ -883,7 +883,7 @@ skip_waker_task:
 
 		/* IDLE threads always go off-cpu to run something else */
 		if (prev_st->pid != 0)
-			emit_kv_str(IID_ANNK_STANDBY_REASON, preempted ? IID_ANNV_STANDBY_PREEMPTED : IID_ANNV_STANDBY_BLOCKED);
+			emit_kv_str(IID_ANNK_OFFCPU_REASON, preempted ? IID_ANNV_OFFCPU_PREEMPTED : IID_ANNV_OFFCPU_BLOCKED);
 
 		emit_kv_str(IID_ANNK_SWITCH_TO,
 			    iid_str(emit_intern_str(w, e->swtch.next.comm), e->swtch.next.comm));
