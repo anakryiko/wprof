@@ -177,7 +177,7 @@ static const char *pb_static_strs[] = {
 	[IID_ANNK_WAKER_TID] = "waker_tid",
 	[IID_ANNK_WAKER_PID] = "waker_pid",
 	[IID_ANNK_WAKING_REASON] = "waking_reason",
-	[IID_ANNK_STANDBY_REASON] = "standby_reason",
+	[IID_ANNK_OFFCPU_REASON] = "offcpu_reason",
 	[IID_ANNK_WAKEE] = "wakee",
 	[IID_ANNK_WAKEE_TID] = "wakee_tid",
 	[IID_ANNK_WAKEE_PID] = "wakee_pid",
@@ -227,8 +227,8 @@ static const char *pb_static_strs[] = {
 	[IID_ANNV_WAKING_REASON + WREASON_PREEMPTED] = "preempted",
 	[IID_ANNV_WAKING_REASON + WREASON_INVALID] = "???",
 
-	[IID_ANNV_STANDBY_BLOCKED] = "blocked",
-	[IID_ANNV_STANDBY_PREEMPTED] = "preempted",
+	[IID_ANNV_OFFCPU_BLOCKED] = "blocked",
+	[IID_ANNV_OFFCPU_PREEMPTED] = "preempted",
 };
 
 const char *pb_static_str(enum pb_static_iid iid)
