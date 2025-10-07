@@ -48,6 +48,7 @@ struct env {
 	bool emit_numa;
 	bool emit_tidpid;
 	bool emit_timer_ticks;
+	bool emit_waking_reason;
 	bool emit_req_extras;
 	bool emit_sched_extras;
 
