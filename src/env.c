@@ -17,9 +17,20 @@
 #include "env.h"
 #include "data.h"
 
-const char *argp_program_version = "wprof 0.0";
-const char *argp_program_bug_address = "<andrii@kernel.org>";
-const char argp_program_doc[] = "BPF-based wallclock profiler.\n";
+const char *argp_program_version = "wprof 0.1";
+const char *argp_program_bug_address = "Andrii Nakryiko <andrii@kernel.org>";
+const char argp_program_doc[] =
+"wprof is a system-wide workload tracer and profiler.\n"
+"\n"
+"USAGE\n"
+"    To capture system-wide trace for 3 seconds and generate Perfetto trace:\n"
+"        $ sudo wprof -d3000 -T trace.pb\n"
+"    To replay captured data and add aditional filters (note no sudo needed):\n"
+"        $ wprof -R --replay-end 1s --no-idle -T subtrace.pb\n"
+"    Check information about recorded data dump:\n"
+"        $ wprof -RI [-D wprof.data]\n"
+"\n"
+"See `wprof --help` for more information.\n";
 
 struct env env = {
 	.data_path = "wprof.data",
