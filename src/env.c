@@ -106,7 +106,7 @@ static const struct argp_option opts[] = {
 
 	/* trace emitting options */
 	{ "emit-feature", 'e', "FEAT", 0,
-	  "Trace visualization feature. Supported: sched-extras, numa, tidpid, timer-ticks, req-extras" },
+	  "Trace visualization feature. Supported: sched-extras, numa, tidpid, timer-ticks, req-extras, waking-reason" },
 
 	{ "ringbuf-size", OPT_RINGBUF_SZ, "SIZE", 0, "BPF ringbuf size (in KBs)" },
 	{ "task-state-size", OPT_TASK_STATE_SZ, "SIZE", 0, "BPF task state map size (in threads)" },
@@ -287,6 +287,8 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			env.emit_tidpid = true;
 		} else if (strcasecmp(arg, "timer-ticks") == 0) {
 			env.emit_timer_ticks = true;
+		} else if (strcasecmp(arg, "waking-reason") == 0) {
+			env.emit_waking_reason = true;
 		} else if (strcasecmp(arg, "req-extras") == 0) {
 			env.emit_req_extras = true;
 		} else if (strcasecmp(arg, "sched-extras") == 0) {
