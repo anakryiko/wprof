@@ -966,7 +966,6 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 		bpf_map__set_autocreate(skel->maps.req_states, false);
 	}
 
-	skel->rodata->capture_scx_layer_id = env.capture_scx_layer_info == TRUE;
 	if (env.capture_scx_layer_info) {
 		u32 next_id = 0;
 		bool found = false;
@@ -1022,12 +1021,16 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 		}
 
 		if (!found) {
-			eprintf("Failed to find sched-ext's 'task_ctxs' BPF map for fetching layer info! Drop '-f scx-layer' or make sure that scx-layered is running. \n");
-			return -EINVAL;
+			eprintf("WARNING: Failed to find sched-ext's 'task_ctxs' BPF map for fetching layer info.\n");
+			eprintf("WARNING: '-f scx-layer' feature will be disabled!\n");
+			eprintf("WARNING: Make sure that scx-layered is running to make effective use of this functionality.\n");
+			env.capture_scx_layer_info = FALSE;
 		}
-	} else {
-		bpf_map__set_autocreate(skel->maps.scx_task_ctxs, false);
 	}
+
+	skel->rodata->capture_scx_layer_id = env.capture_scx_layer_info == TRUE;
+	if (!env.capture_scx_layer_info)
+		bpf_map__set_autocreate(skel->maps.scx_task_ctxs, false);
 
 	bpf_map__set_max_entries(skel->maps.rbs, env.ringbuf_cnt);
 	bpf_map__set_max_entries(skel->maps.task_states, env.task_state_sz);
