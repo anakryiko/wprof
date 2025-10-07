@@ -38,10 +38,7 @@ enum {
 	OPT_TASK_STATE_SZ = 1001,
 	OPT_TIMER_FREQ = 1002,
 	OPT_STATS = 1003,
-	OPT_LIBBPF_LOGS = 1004,
-	OPT_BREAKOUT_COUNTERS = 1008,
-	OPT_PB_DEBUG_INTERNS = 1009,
-	OPT_PB_DISABLE_INTERNS = 1010,
+	OPT_DEBUG = 1004,
 	OPT_RINGBUF_CNT = 1011,
 	OPT_SYMBOLIZE_FRUGALLY = 1012,
 	OPT_REPLAY_OFFSET_START = 1013,
@@ -61,8 +58,7 @@ enum {
 static const struct argp_option opts[] = {
 	{ "verbose", 'v', NULL, 0, "Verbose output" },
 	{ "stats", OPT_STATS, NULL, 0, "Print various wprof stats (BPF, resource usage, etc.)" },
-	{ "libbpf-logs", OPT_LIBBPF_LOGS, NULL, 0, "Emit libbpf verbose logs" },
-
+	{ "debug", OPT_DEBUG, "FEAT", 0, "Debug features (libbpf, pb-debug-interns, pb-disable-interns)"},
 	{ "dur-ms", 'd', "DURATION", 0, "Limit running duration to given number of ms (default: 1000ms)" },
 	{ "timer-freq", OPT_TIMER_FREQ, "HZ", 0, "On-CPU timer interrupt frequency (default: 100Hz, i.e., every 10ms)" },
 
@@ -108,10 +104,6 @@ static const struct argp_option opts[] = {
 	{ "cpu-counter", 'C', "NAME", 0,
 	  "Capture and emit specified perf/CPU/hardware counter (cpu-cycles, cpu-insns, cache-hits, "
 	  "cache-misses, stalled-cycles-fe, stallec-cycles-be)" },
-	{ "breakout-counters", OPT_BREAKOUT_COUNTERS, NULL, 0, "Emit separate track for counters" },
-
-	{ "pb-debug-interns", OPT_PB_DEBUG_INTERNS, NULL, 0, "Emit interned strings" },
-	{ "pb-disable-interns", OPT_PB_DISABLE_INTERNS, NULL, 0, "Disable string interning for Perfetto traces" },
 	{},
 };
 
@@ -147,8 +139,17 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	case OPT_STATS:
 		env.stats = true;
 		break;
-	case OPT_LIBBPF_LOGS:
-		env.libbpf_logs = true;
+	case OPT_DEBUG:
+		if (strcasecmp(arg, "libbpf") == 0) {
+			env.libbpf_logs = true;
+		} else if (strcasecmp(arg, "pb-debug-interns") == 0) {
+			env.pb_debug_interns = true;
+		} else if (strcasecmp(arg, "pb-disable-interns") == 0) {
+			env.pb_disable_interns = true;
+		} else {
+			eprintf("Unrecognized debug feature '%s'!\n", arg);
+			argp_usage(state);
+		}
 		break;
 	case OPT_SYMBOLIZE_FRUGALLY:
 		env.symbolize_frugally = true;
@@ -420,15 +421,6 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		}
 		break;
 	}
-	case OPT_BREAKOUT_COUNTERS:
-		env.breakout_counters = true;
-		break;
-	case OPT_PB_DEBUG_INTERNS:
-		env.pb_debug_interns = true;
-		break;
-	case OPT_PB_DISABLE_INTERNS:
-		env.pb_disable_interns = true;
-		break;
 	case ARGP_KEY_ARG:
 		argp_usage(state);
 		break;
