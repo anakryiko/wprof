@@ -27,7 +27,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cargo llvm libelf-dev zlib1g-dev
+          sudo apt-get install -y cargo llvm libelf-dev zlib1g-dev libzstd-dev
 
       - name: Checkout wprof code
         uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4.1.0
@@ -38,8 +38,7 @@ jobs:
       - name: Build wprof
         working-directory: 'wprof'
         run: |
-          make -j -C src V=1
-          strip src/wprof
+          make -j$(nproc) -C src V=1
 
       - name: Test wprof binary
         working-directory: 'wprof/src'
@@ -61,9 +60,7 @@ jobs:
         working-directory: 'wprof'
         run: |
           # LDFLAGS here would also apply to bpftool which fails to build with static
-          CFLAGS=--static \
-              make -j -C src V=1
-          strip src/wprof
+          make EXTRA_CFLAGS=--static -j$(nproc) -C src V=1
 
       - name: Test wprof binary
         working-directory: 'wprof/src'
