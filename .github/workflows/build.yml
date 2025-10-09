@@ -1,0 +1,77 @@
+name: build
+
+on: pull_request
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.after }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build wprof binary
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            file_str: x86-64
+            target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+
+          - arch: arm64
+            file_str: aarch64
+            target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cargo llvm libelf-dev zlib1g-dev
+
+      - name: Checkout wprof code
+        uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4.1.0
+        with:
+          submodules: recursive
+          path: 'wprof'
+
+      - name: Build wprof
+        working-directory: 'wprof'
+        run: |
+          make -j -C src V=1
+          strip src/wprof
+
+      - name: Test wprof binary
+        working-directory: 'wprof/src'
+        run: |
+          file ./wprof | \
+              tee /dev/stderr | \
+              grep -q "${{ matrix.file_str }}"
+          ./wprof --usage | grep -q Usage
+          ldd ./wprof 2>&1 | \
+              tee /dev/stderr | \
+              grep -q 'libc.so'
+
+      - name: Clean up
+        working-directory: 'wprof'
+        run: |
+          make -C src clean
+
+      - name: Build static wprof
+        working-directory: 'wprof'
+        run: |
+          # LDFLAGS here would also apply to bpftool which fails to build with static
+          CFLAGS=--static \
+              make -j -C src V=1
+          strip src/wprof
+
+      - name: Test wprof binary
+        working-directory: 'wprof/src'
+        run: |
+          file ./wprof | \
+              tee /dev/stderr | \
+              grep -q "${{ matrix.file_str }}"
+          ./wprof --usage | grep -q Usage
+          ldd ./wprof 2>&1 | \
+              tee /dev/stderr | \
+              grep -q 'not a dynamic executable'
