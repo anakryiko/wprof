@@ -9,7 +9,7 @@ $ # curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 $ git clone https://github.com/anakryiko/wprof.git
 $ git submodule update --init --recursive
 $ cd wprof/src
-$ make RELEASE=1 -j$(nproc)
+$ make -j$(nproc)
 ```
 
 ## Using wprof

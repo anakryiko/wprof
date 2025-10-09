@@ -2,13 +2,14 @@
 OUTPUT := .output
 CLANG ?= clang
 CARGO ?= $(shell which cargo)
-RELEASE ?=
+DEBUG ?=
 BLAZESYM_DEBUG ?=
 
 LIBBPF_SRC := $(abspath ../libbpf/src)
 BPFTOOL_SRC := $(abspath ../bpftool/src)
 LIBBPF_OBJ := $(abspath $(OUTPUT)/libbpf.a)
 BPFTOOL_OUTPUT ?= $(abspath $(OUTPUT)/bpftool)
+BPFTOOL_OUTPUT_ABS ?= $(abspath $(OUTPUT)/bpftool)
 BPFTOOL ?= $(BPFTOOL_OUTPUT)/bootstrap/bpftool
 LIBBLAZESYM_SRC := $(abspath ../blazesym/)
 LIBBLAZESYM_INC := $(abspath $(LIBBLAZESYM_SRC)/capi/include)
@@ -25,7 +26,8 @@ VMLINUX := ../vmlinux.h/include/$(ARCH)/vmlinux.h
 # libbpf to avoid dependency on system-wide headers, which could be missing or
 # outdated
 INCLUDES := -I$(OUTPUT) -I../include -I../libbpf/include/uapi -I../libbpf/include -I$(dir $(VMLINUX)) -I$(LIBBLAZESYM_INC)
-CFLAGS := -g -Wall -O$(if $(RELEASE),2,0) -fno-omit-frame-pointer -Wno-c23-extensions
+CFLAGS ?= -g -O$(if $(DEBUG),0,2) -Wall
+ALL_CFLAGS := $(CFLAGS) $(EXTRA_CFLAGS) -fno-omit-frame-pointer -Wno-c23-extensions -Wno-sign-compare
 ALL_LDFLAGS := $(LDFLAGS) $(EXTRA_LDFLAGS) -lrt -ldl -lpthread -lm
 
 # Get Clang's default includes on this system. We'll explicitly add these dirs
@@ -75,19 +77,25 @@ $(OUTPUT) $(OUTPUT)/libbpf $(BPFTOOL_OUTPUT):
 # Build libbpf
 $(LIBBPF_OBJ): $(wildcard $(LIBBPF_SRC)/*.[ch] $(LIBBPF_SRC)/Makefile) | $(OUTPUT)/libbpf
 	$(call msg,LIB,$@)
+	$(Q) [ -d ../libbpf/src ] || git submodule update --init --recursive
 	$(Q)$(MAKE) -C $(LIBBPF_SRC) BUILD_STATIC_ONLY=1		      \
 		    OBJDIR=$(dir $@)/libbpf DESTDIR=$(dir $@)		      \
 		    INCLUDEDIR= LIBDIR= UAPIDIR=			      \
-		    EXTRA_CFLAGS="-g -O$(if $(RELEASE),2,0)" 		      \
+		    EXTRA_CFLAGS="-g -O$(if $(DEBUG),0,2) -Wno-sign-compare"  \
 		    install
 
 # Build bpftool
 $(BPFTOOL): | $(BPFTOOL_OUTPUT)
 	$(call msg,BPFTOOL,$@)
-	$(Q)$(MAKE) ARCH= CROSS_COMPILE= OUTPUT=$(BPFTOOL_OUTPUT)/ -C $(BPFTOOL_SRC) bootstrap
+	$(Q) [ -d ../bpftool/src ] || git submodule update --init --recursive
+	$(Q)CFLAGS= EXTRA_CFLAGS="$(CFLAGS) -Wno-sign-compare" 			\
+		$(MAKE) ARCH= CROSS_COMPILE=					\
+			BPF_DIR=$(LIBBPF_SRC) OUTPUT=$(BPFTOOL_OUTPUT_ABS)/	\
+			-C $(BPFTOOL_SRC) bootstrap
 
 # Build blazesym
 $(LIBBLAZESYM_SRC)/target/$(if $(BLAZESYM_DEBUG),debug,release)/libblazesym_c.a::
+	$(Q) [ -d ../blazesym/src ] || git submodule update --init --recursive
 	$(Q)cd $(LIBBLAZESYM_SRC) && $(CARGO) build --package=blazesym-c $(if $(BLAZESYM_DEBUG),,--release)
 
 $(LIBBLAZESYM_OBJ): $(LIBBLAZESYM_SRC)/target/$(if $(BLAZESYM_DEBUG),debug,release)/libblazesym_c.a | $(OUTPUT)
@@ -118,18 +126,18 @@ WPROF_HDRS := wprof.h utils.h env.h protobuf.h emit.h stacktrace.h data.h topolo
 # Build user space object files
 $(OUTPUT)/%.o: %.c $(OUTPUT)/wprof.skel.h $(WPROF_HDRS) | $(OUTPUT)
 	$(call msg,CC,$@)
-	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -c $(filter %.c,$^) -o $@
+	$(Q)$(CC) $(ALL_CFLAGS) $(INCLUDES) -c $(filter %.c,$^) -o $@
 
 # Build application binary
 wprof: wprof.h utils.h 								\
 		$(patsubst %.c,$(OUTPUT)/%.o,$(WPROF_SRCS)) 			\
 		$(LIBBPF_OBJ) $(LIBBLAZESYM_OBJ) | $(OUTPUT)
 	$(call msg,BINARY,$@)
-	$(Q)$(CC) $(CFLAGS) $(filter %.c %.a %.o,$^) $(ALL_LDFLAGS) -lelf -lz -o $@
+	$(Q)$(CC) $(ALL_CFLAGS) $(filter %.c %.a %.o,$^) $(ALL_LDFLAGS) -lelf -lz -lzstd -o $@
 
 sim: $(OUTPUT)/sim.o | $(OUTPUT)
 	$(call msg,BINARY,$@)
-	$(Q)$(CC) $(CFLAGS) $(filter %.c %.a %.o,$^) $(ALL_LDFLAGS) -o $@
+	$(Q)$(CC) $(ALL_CFLAGS) $(filter %.c %.a %.o,$^) $(ALL_LDFLAGS) -o $@
 
 # delete failed targets
 .DELETE_ON_ERROR:
