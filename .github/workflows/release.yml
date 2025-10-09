@@ -1,0 +1,101 @@
+name: release
+
+on: workflow_dispatch
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.after }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build static wprof binary
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            file_str: x86-64
+            target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+
+          - arch: arm64
+            file_str: aarch64
+            target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cargo llvm libelf-dev zlib1g-dev
+
+      - name: Checkout wprof code
+        uses: actions/checkout@8f4b7f84864484a7bf31766abe9204da3cbe65b3 # v3.5.0
+        with:
+          submodules: recursive
+          path: 'wprof'
+
+      - name: Build static wprof natively
+        working-directory: 'wprof'
+        run: |
+          CFLAGS=--static \
+              make -j -C src V=1
+          strip src/wprof
+
+      - name: Test wprof binary
+        working-directory: 'wprof/src'
+        run: |
+          file ./wprof | \
+              tee /dev/stderr | \
+              grep -q "${{ matrix.file_str }}"
+          ./wprof --usage | grep -q Usage
+          ldd ./wprof 2>&1 | \
+              tee /dev/stderr | \
+              grep -q 'not a dynamic executable'
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ format('wprof_{0}', matrix.arch) }}
+          path: wprof/src/wprof
+
+  draft-release:
+    name: Create a draft release
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts from build
+        uses: actions/download-artifact@v4
+
+      - name: Rename binaries and compress
+        run: |
+          archive_amd64="wprof-${{ github.ref_name }}-amd64.tar.gz"
+          archive_arm64="wprof-${{ github.ref_name }}-arm64.tar.gz"
+          tar -C wprof_amd64 -I 'gzip -9' -cvf "${archive_amd64}" wprof
+          tar -C wprof_arm64 -I 'gzip -9' -cvf "${archive_arm64}" wprof
+          sha256sum "${archive_amd64}" > "${archive_amd64}.sha256sum"
+          sha256sum "${archive_arm64}" > "${archive_arm64}.sha256sum"
+
+      - name: Checkout wprof and submodules code
+        uses: actions/checkout@8f4b7f84864484a7bf31766abe9204da3cbe65b3 # v3.5.0
+        with:
+          submodules: recursive
+          path: 'wprof'
+
+      - name: Package source code including submodules
+        uses: qmonnet/git-archive-all-action@791fb850881cf58b1d1fcc9b06c01940080bba0a # v1.0.1
+        with:
+          output-files: >-
+            srcs-full-${{ github.ref_name }}.tar.gz
+            srcs-full-${{ github.ref_name }}.zip
+          base-repo: wprof
+
+      - name: Create draft release and add artifacts
+        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v0.1.15
+        with:
+          draft: true
+          files: |
+            wprof*
+            srcs-full-*
