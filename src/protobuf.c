@@ -808,3 +808,52 @@ pb_iid str_iid_for(struct str_iid_domain *d, const char *s, bool *new_iid, const
 
 	return iid;
 }
+
+/*
+ * FTRACE EVENT BUFFERING
+ */
+void ftrace_buffer_init(struct ftrace_event_buffer *buf)
+{
+	buf->events = NULL;
+	buf->cnt = 0;
+	buf->cap = 0;
+}
+
+void ftrace_buffer_reset(struct ftrace_event_buffer *buf)
+{
+	buf->cnt = 0;
+}
+
+void ftrace_buffer_free(struct ftrace_event_buffer *buf)
+{
+	free(buf->events);
+	buf->events = NULL;
+	buf->cnt = 0;
+	buf->cap = 0;
+}
+
+FtraceEvent *ftrace_buffer_add(struct ftrace_event_buffer *buf)
+{
+	if (buf->cnt >= buf->cap) {
+		int new_cap = buf->cnt < 64 ? 64 : buf->cnt * 4 / 3;
+		if (new_cap > MAX_FTRACE_EVENTS_PER_BUNDLE)
+			new_cap = MAX_FTRACE_EVENTS_PER_BUNDLE;
+		buf->events = realloc(buf->events, new_cap * sizeof(*buf->events));
+		buf->cap = new_cap;
+	}
+	memset(&buf->events[buf->cnt], 0, sizeof(FtraceEvent));
+	return &buf->events[buf->cnt++];
+}
+
+bool enc_ftrace_events(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
+{
+	const struct ftrace_event_buffer *buf = *arg;
+
+	for (int i = 0; i < buf->cnt; i++) {
+		if (!pb_encode_tag_for_field(stream, field))
+			return false;
+		if (!pb_encode_submessage(stream, perfetto_protos_FtraceEvent_fields, &buf->events[i]))
+			return false;
+	}
+	return true;
+}

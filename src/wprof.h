@@ -172,6 +172,8 @@ struct wprof_event {
 			u64 waking_ts;
 			u32 prev_task_state;
 			u32 last_next_task_state;
+			u32 prev_prio;
+			u32 next_prio;
 			u32 waker_cpu;
 			u32 waker_numa_node;
 			enum waking_flags waking_flags;

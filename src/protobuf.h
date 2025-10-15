@@ -15,6 +15,11 @@ typedef perfetto_protos_TracePacket TracePacket;
 typedef perfetto_protos_TrackEvent TrackEvent;
 typedef perfetto_protos_DebugAnnotation DebugAnnotation;
 typedef perfetto_protos_InternedString InternedString;
+typedef perfetto_protos_FtraceEvent FtraceEvent;
+typedef perfetto_protos_FtraceEventBundle FtraceEventBundle;
+typedef perfetto_protos_SchedSwitchFtraceEvent SchedSwitchFtraceEvent;
+typedef perfetto_protos_SchedWakingFtraceEvent SchedWakingFtraceEvent;
+typedef perfetto_protos_SchedWakeupNewFtraceEvent SchedWakeupNewFtraceEvent;
 
 /* from include/linux/interrupt.h */
 enum irq_vec {
@@ -408,5 +413,26 @@ struct stack_trace_iids {
 };
 
 pb_iid str_iid_for(struct str_iid_domain *d, const char *s, bool *new_iid, const char **out_str);
+
+/* FtraceEvent buffering for per-CPU bundles */
+#define MAX_FTRACE_EVENTS_PER_BUNDLE 1024
+
+struct ftrace_event_buffer {
+	FtraceEvent *events;
+	int cnt;
+	int cap;
+};
+
+struct ftrace_cpu_bundle {
+	struct ftrace_event_buffer buffer;
+};
+
+void ftrace_buffer_init(struct ftrace_event_buffer *buf);
+void ftrace_buffer_reset(struct ftrace_event_buffer *buf);
+void ftrace_buffer_free(struct ftrace_event_buffer *buf);
+FtraceEvent *ftrace_buffer_add(struct ftrace_event_buffer *buf);
+
+bool enc_ftrace_events(pb_ostream_t *stream, const pb_field_t *field, void * const *arg);
+#define PB_FTRACE_EVENTS(buf) ((pb_callback_t){{.encode=enc_ftrace_events}, (void *)(buf)})
 
 #endif /* __PROTOBUF_H_ */

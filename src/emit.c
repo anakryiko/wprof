@@ -41,6 +41,7 @@ struct task_state {
 
 static struct hashmap *tasks;
 static __thread pb_ostream_t *cur_stream;
+extern int num_cpus;
 
 int init_emit(struct worker_state *w)
 {
@@ -49,6 +50,17 @@ int init_emit(struct worker_state *w)
 		return -ENOMEM;
 
 	cur_stream = &w->stream;
+
+	if (env.emit_sched_view) {
+		w->ftrace_bundles = calloc(num_cpus, sizeof(*w->ftrace_bundles));
+		if (!w->ftrace_bundles)
+			return -ENOMEM;
+
+		for (int i = 0; i < num_cpus; i++) {
+			ftrace_buffer_init(&w->ftrace_bundles[i].buffer);
+		}
+	}
+
 
 	return 0;
 }
@@ -203,7 +215,13 @@ static int task_tid(const struct wprof_task *t)
 
 static int track_tid(const struct wprof_task *t)
 {
-	return t->pid ? t->tid : (-t->tid - 1);
+	/*
+	 * Even though it would be natural to assing TID 0 to swapper/0, this
+	 * interferes with native ftrace scheduler view of Perfetto, so we
+	 * need to avoid having any thread with TID 0, so swapper/N have N+1
+	 * TID...
+	 */
+	return t->pid ? t->tid : -t->tid;
 }
 
 #define TRACK_PID_IDLE		2000000000ULL
@@ -807,6 +825,46 @@ static int process_timer(struct worker_state *w, struct wprof_event *e, size_t s
 	return 0;
 }
 
+static void flush_ftrace_bundle(struct worker_state *w, int cpu)
+{
+	struct ftrace_cpu_bundle *bundle = &w->ftrace_bundles[cpu];
+	struct ftrace_event_buffer *buf = &bundle->buffer;
+
+	if (buf->cnt == 0)
+		return;
+
+	TracePacket pb = {
+		PB_TRUST_SEQ_ID(),
+		PB_ONEOF(data, TracePacket_ftrace_events) = { .ftrace_events = {
+			PB_INIT(cpu) = cpu,
+			.event = PB_FTRACE_EVENTS(buf),
+		}},
+	};
+	emit_trace_packet(&w->stream, &pb);
+
+	ftrace_buffer_reset(buf);
+}
+
+static FtraceEvent *add_ftrace_event(struct worker_state *w, int cpu, u64 ts, u32 pid)
+{
+	struct ftrace_cpu_bundle *bundle = &w->ftrace_bundles[cpu];
+	struct ftrace_event_buffer *buf = &bundle->buffer;
+
+	if (buf->cnt >= MAX_FTRACE_EVENTS_PER_BUNDLE)
+		flush_ftrace_bundle(w, cpu);
+
+	FtraceEvent *ev = ftrace_buffer_add(buf);
+	if (!ev)
+		return NULL;
+
+	ev->has_timestamp = true;
+	ev->timestamp = ts - env.sess_start_ts;
+	ev->has_pid = true;
+	ev->pid = pid;
+
+	return ev;
+}
+
 /* EV_SWITCH */
 static int process_switch(struct worker_state *w, struct wprof_event *e, size_t size)
 {
@@ -1044,6 +1102,41 @@ skip_waking:
 	next_st->run_state = TASK_STATE_RUNNING;
 
 skip_next_task:
+	if (!env.emit_sched_view)
+		goto skip_sched_view;
+
+	if (should_trace_task(&e->task) || should_trace_task(&e->swtch.next)) {
+		FtraceEvent *fev = add_ftrace_event(w, e->cpu, e->ts, task_tid(&e->task));
+
+		fev->which_event = perfetto_protos_FtraceEvent_sched_switch_tag;
+		fev->event.sched_switch = (SchedSwitchFtraceEvent) {
+			.prev_comm = e->task.pid ? PB_STRING(e->task.comm) : PB_NONE,
+			PB_INIT(prev_pid) = task_tid(&e->task),
+			PB_INIT(prev_prio) = e->swtch.prev_prio,
+			PB_INIT(prev_state) = e->swtch.prev_task_state,
+			.next_comm = e->swtch.next.pid ? PB_STRING(e->swtch.next.comm) : PB_NONE,
+			PB_INIT(next_pid) = task_tid(&e->swtch.next),
+			PB_INIT(next_prio) = e->swtch.next_prio,
+		};
+	}
+
+	if (e->swtch.waking_ts &&
+	    is_ts_in_range(e->swtch.waking_ts) &&
+	    should_trace_task(&e->swtch.waker)) {
+		FtraceEvent *fev = add_ftrace_event(w, e->swtch.waker_cpu, e->swtch.waking_ts,
+						    task_tid(&e->task));
+		fev->which_event = e->swtch.waking_flags == WF_WOKEN_NEW
+			? perfetto_protos_FtraceEvent_sched_wakeup_new_tag
+			: perfetto_protos_FtraceEvent_sched_waking_tag;
+		fev->event.sched_waking = (SchedWakingFtraceEvent) {
+			.comm = PB_STRING(e->swtch.next.comm),
+			PB_INIT(pid) = task_tid(&e->swtch.next),
+			PB_INIT(prio) = e->swtch.next_prio,
+			PB_INIT(target_cpu) = e->cpu,
+		};
+	}
+
+skip_sched_view:
 	return 0;
 }
 
@@ -1650,6 +1743,12 @@ int emit_trace(struct worker_state *w)
 			fprintf(stderr, "Failed to process event #%d (kind %d, size %zu, offset %zu): %d\n",
 				rec->idx, rec->e->kind, rec->sz, (void *)rec->e - (void *)w->dump_hdr, err);
 			return err; /* YEAH, I know about all the clean up, whatever */
+		}
+	}
+
+	if (env.emit_sched_view) {
+		for (int cpu = 0; cpu < num_cpus; cpu++) {
+			flush_ftrace_bundle(w, cpu);
 		}
 	}
 
