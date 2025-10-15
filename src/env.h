@@ -45,6 +45,7 @@ struct env {
 	enum tristate capture_scx_layer_info;
 
 	/* trace visualization features */
+	bool emit_sched_view;
 	bool emit_numa;
 	bool emit_tidpid;
 	bool emit_timer_ticks;
@@ -129,6 +130,9 @@ struct worker_state {
 	/* stack trace usage markers */
 	u64 *stacks_used; /* bitmask */
 	u64 *frames_used; /* bitmask */
+
+	/* ftrace event buffering per-CPU */
+	struct ftrace_cpu_bundle *ftrace_bundles;
 
 	/* stats */
 	u64 rb_handled_cnt;

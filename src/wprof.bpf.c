@@ -557,6 +557,8 @@ int BPF_PROG(wprof_task_switch,
 		e->swtch.ctrs = counters;
 		e->swtch.prev_task_state = prev->__state;
 		e->swtch.last_next_task_state = snext->last_task_state;
+		e->swtch.prev_prio = prev->prio;
+		e->swtch.next_prio = next->prio;
 		fill_task_info(next, &e->swtch.next);
 
 		e->swtch.waking_ts = waking_ts;
