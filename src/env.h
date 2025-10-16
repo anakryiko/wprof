@@ -133,6 +133,7 @@ struct worker_state {
 
 	/* ftrace event buffering per-CPU */
 	struct ftrace_cpu_bundle *ftrace_bundles;
+	int ftrace_bundle_cnt;
 
 	/* stats */
 	u64 rb_handled_cnt;

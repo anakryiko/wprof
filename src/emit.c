@@ -41,7 +41,6 @@ struct task_state {
 
 static struct hashmap *tasks;
 static __thread pb_ostream_t *cur_stream;
-extern int num_cpus;
 
 int init_emit(struct worker_state *w)
 {
@@ -50,17 +49,6 @@ int init_emit(struct worker_state *w)
 		return -ENOMEM;
 
 	cur_stream = &w->stream;
-
-	if (env.emit_sched_view) {
-		w->ftrace_bundles = calloc(num_cpus, sizeof(*w->ftrace_bundles));
-		if (!w->ftrace_bundles)
-			return -ENOMEM;
-
-		for (int i = 0; i < num_cpus; i++) {
-			ftrace_buffer_init(&w->ftrace_bundles[i].buffer);
-		}
-	}
-
 
 	return 0;
 }
@@ -845,9 +833,22 @@ static void flush_ftrace_bundle(struct worker_state *w, int cpu)
 	ftrace_buffer_reset(buf);
 }
 
+static struct ftrace_cpu_bundle *ftrace_get_bundle(struct worker_state *w, int cpu)
+{
+	if (cpu >= w->ftrace_bundle_cnt) {
+
+		w->ftrace_bundles = realloc(w->ftrace_bundles, (cpu + 1) * sizeof(*w->ftrace_bundles));
+		for (int i = w->ftrace_bundle_cnt; i <= cpu; i++)
+			ftrace_buffer_init(&w->ftrace_bundles[i].buffer);
+		w->ftrace_bundle_cnt = cpu + 1;
+	}
+
+	return &w->ftrace_bundles[cpu];
+}
+
 static FtraceEvent *add_ftrace_event(struct worker_state *w, int cpu, u64 ts, u32 pid)
 {
-	struct ftrace_cpu_bundle *bundle = &w->ftrace_bundles[cpu];
+	struct ftrace_cpu_bundle *bundle = ftrace_get_bundle(w, cpu);
 	struct ftrace_event_buffer *buf = &bundle->buffer;
 
 	if (buf->cnt >= MAX_FTRACE_EVENTS_PER_BUNDLE)
@@ -1747,7 +1748,7 @@ int emit_trace(struct worker_state *w)
 	}
 
 	if (env.emit_sched_view) {
-		for (int cpu = 0; cpu < num_cpus; cpu++) {
+		for (int cpu = 0; cpu < w->ftrace_bundle_cnt; cpu++) {
 			flush_ftrace_bundle(w, cpu);
 		}
 	}

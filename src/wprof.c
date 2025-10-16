@@ -1493,12 +1493,10 @@ static void cleanup_workers(struct worker_state *workers, int worker_cnt)
 	}
 }
 
-int num_cpus;
-
 int main(int argc, char **argv)
 {
 	struct bpf_state bpf_state = {};
-	int err = 0;
+	int num_cpus = -1, err = 0;
 	struct itimerval timer_ival = {};
 	int worker_cnt = 0;
 	struct worker_state *workers = NULL;
