@@ -685,10 +685,12 @@ static int discover_pid_req_binaries(int pid)
 		err = add_req_binary(dev, vma->inode, vma->vma_name, tmp);
 		if (err)
 			return err;
+		/* reset errno, so we don't trigger false error reporting after the loop */
+		errno = 0;
 	}
 	if (errno && (errno != ENOENT && errno != ESRCH)) {
 		err = -errno;
-		eprintf("PROCMAP_QUERY failed for PID %d: %d\n", pid, err);
+		eprintf("VMA iteration failed for PID %d: %d\n", pid, err);
 		return err;
 	}
 
@@ -706,8 +708,8 @@ static int setup_req_tracking_discovery(void)
 			pid = *pidp;
 			err = discover_pid_req_binaries(pid);
 			if (err) {
-				eprintf("Failed to discover request tracking binaries for PID %d: %d\n", pid, err);
-				break;
+				eprintf("Failed to discover request tracking binaries for PID %d: %d (skipping...)\n", pid, err);
+				continue;
 			}
 		}
 	}
@@ -718,14 +720,14 @@ static int setup_req_tracking_discovery(void)
 		err = stat(env.req_paths[i], &st);
 		if (err) {
 			err = -errno;
-			eprintf("Failed to stat() binary '%s' for request tracking: %d\n", env.req_paths[i], err);
-			return err;
+			eprintf("Failed to stat() binary '%s' for request tracking: %d (skipping...)\n", env.req_paths[i], err);
+			continue;
 		}
 
 		err = add_req_binary(st.st_dev, st.st_ino, env.req_paths[i], NULL);
 		if (err) {
-			eprintf("Failed to record binary path '%s' for request tracking: %d\n", env.req_paths[i], err);
-			return err;
+			eprintf("Failed to record binary path '%s' for request tracking: %d (skipping...)\n", env.req_paths[i], err);
+			continue;
 		}
 	}
 
@@ -734,8 +736,8 @@ static int setup_req_tracking_discovery(void)
 
 		err = discover_pid_req_binaries(pid);
 		if (err) {
-			eprintf("Failed to discover request tracking binaries for PID %d: %d\n", pid, err);
-			return err;
+			eprintf("Failed to discover request tracking binaries for PID %d: %d (skipping...)\n", pid, err);
+			continue;
 		}
 	}
 
