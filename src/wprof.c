@@ -15,9 +15,9 @@
 #include <sys/sysinfo.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
-#include <sys/ioctl.h>
 #include <sys/resource.h>
 #include <sys/mman.h>
+#include <sys/ioctl.h>
 #include <linux/perf_event.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
@@ -27,7 +27,6 @@
 #include <pthread.h>
 #include <limits.h>
 #include <linux/fs.h>
-#include <dirent.h>
 #include <sched.h>
 
 #include "utils.h"
@@ -40,6 +39,7 @@
 #include "emit.h"
 #include "stacktrace.h"
 #include "topology.h"
+#include "proc.h"
 
 #define FILE_BUF_SZ (64 * 1024)
 
@@ -662,67 +662,37 @@ static int add_req_binary(u64 dev, u64 inode, const char *path, const char *atta
 
 static int discover_pid_req_binaries(int pid)
 {
-	struct procmap_query query;
-	char proc_path[64], path_buf[PATH_MAX];
-	int err = 0, fd;
-	u64 addr = 0;
+	struct vma_info *vma;
+	int err = 0;
 
-	snprintf(proc_path, sizeof(proc_path), "/proc/%d/maps", pid);
-	fd = open(proc_path, O_RDONLY);
-	if (fd < 0) {
+	wprof_for_each(vma, vma, pid,
+		       PROCMAP_QUERY_VMA_EXECUTABLE | PROCMAP_QUERY_FILE_BACKED_VMA) {
+		if (vma->vma_name[0] != '/')
+			continue; /* special file, ignore */
+
+		/*
+		 * Using map_files symlink ensures we bypass
+		 * mount namespacing issues and don't care if the file
+		 * was deleted from the file system or not.
+		 * The only downside is that we now rely on that
+		 * specific process to be alive at the time of attachment.
+		 */
+		char tmp[1024];
+		snprintf(tmp, sizeof(tmp), "/proc/%d/map_files/%llx-%llx",
+			 pid, vma->vma_start, vma->vma_end);
+
+		u64 dev = makedev(vma->dev_major, vma->dev_minor);
+		err = add_req_binary(dev, vma->inode, vma->vma_name, tmp);
+		if (err)
+			return err;
+	}
+	if (errno && (errno != ENOENT && errno != ESRCH)) {
 		err = -errno;
-		if (err == -ENOENT)
-			return 0; /* process is gone now */
-		eprintf("Failed to open '%s': %d\n", proc_path, err);
+		eprintf("PROCMAP_QUERY failed for PID %d: %d\n", pid, err);
 		return err;
 	}
 
-	memset(&query, 0, sizeof(query));
-
-	while (true) {
-		query.size = sizeof(query);
-		query.query_flags = PROCMAP_QUERY_COVERING_OR_NEXT_VMA |
-				    PROCMAP_QUERY_VMA_EXECUTABLE |
-				    PROCMAP_QUERY_FILE_BACKED_VMA;
-		query.query_addr = addr;
-		query.vma_name_addr = (__u64)path_buf;
-		query.vma_name_size = sizeof(path_buf);
-
-		err = ioctl(fd, PROCMAP_QUERY, &query);
-		if (err && (errno == ENOENT || errno == ESRCH)) {
-			err = 0;
-			break;
-		}
-		if (err) {
-			err = -errno;
-			eprintf("PROCMAP_QUERY failed for PID %d: %d\n", pid, err);
-			break;
-		}
-
-		if (path_buf[0] == '/') {
-			char tmp[1024];
-
-			/*
-			 * Using map_files symlink ensures we bypass
-			 * mount namespacing issues and don't care if the file
-			 * was deleted from the file system or not.
-			 * The only downside is that we now rely on that
-			 * specific process to be alive at the time of attachment.
-			 */
-			snprintf(tmp, sizeof(tmp), "/proc/%d/map_files/%llx-%llx",
-				 pid, query.vma_start, query.vma_end);
-
-			u64 dev = makedev(query.dev_major, query.dev_minor);
-			err = add_req_binary(dev, query.inode, path_buf, tmp);
-			if (err)
-				break;
-		}
-
-		addr = query.vma_end;
-	}
-
-	close(fd);
-	return err;
+	return 0;
 }
 
 static int setup_req_tracking_discovery(void)
@@ -730,32 +700,16 @@ static int setup_req_tracking_discovery(void)
 	int err = 0;
 
 	if (env.req_global_discovery) {
-		struct dirent *entry;
-		DIR *proc_dir;
+		int *pidp, pid;
 
-		proc_dir = opendir("/proc");
-		if (!proc_dir) {
-			err = -errno;
-			eprintf("Failed to open /proc directory: %d\n", err);
-			return err;
-		}
-
-		while ((entry = readdir(proc_dir)) != NULL) {
-			int pid, n;
-
-			if (sscanf(entry->d_name, "%d%n", &pid, &n) != 1 || entry->d_name[n] != '\0')
-				continue;
-
+		wprof_for_each(proc, pidp) {
+			pid = *pidp;
 			err = discover_pid_req_binaries(pid);
 			if (err) {
 				eprintf("Failed to discover request tracking binaries for PID %d: %d\n", pid, err);
 				break;
 			}
 		}
-
-		closedir(proc_dir);
-		if (err)
-			return err;
 	}
 
 	for (int i = 0; i < env.req_path_cnt; i++) {

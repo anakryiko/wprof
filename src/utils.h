@@ -4,6 +4,7 @@
 #define __UTILS_H_
 
 #include <stdint.h>
+#include <stdio.h>
 #include <limits.h>
 #include <errno.h>
 #include <time.h>
