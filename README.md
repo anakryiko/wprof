@@ -1,5 +1,15 @@
 # wprof
 
+## About
+
+Wprof is a low-overhead BPF-based tracer and profiler with the focus
+on holistic system-level performance data capture and analysis. It
+employs powerful and flexible model of split data capture vs
+analysis/visualization phases, which allows to iterate on captured
+performance data with exactly the same original data. Wprof generates
+Perfetto-based traces and provides many options for filtering and
+narrowing down exact subset of data to be visualized.
+
 ## Building wprof
 
 ```shell
