@@ -17,6 +17,7 @@
 #define DEFAULT_CAPTURE_IPIS FALSE
 #define DEFAULT_CAPTURE_REQUESTS FALSE
 #define DEFAULT_CAPTURE_SCX_LAYER_INFO FALSE
+#define DEFAULT_CAPTURE_CUDA FALSE
 
 struct env {
 	bool verbose;
@@ -43,6 +44,7 @@ struct env {
 	enum tristate capture_requests;
 	enum tristate capture_req_experimental; /* experimental extra request-related events */
 	enum tristate capture_scx_layer_info;
+	enum tristate capture_cuda;
 
 	/* trace visualization features */
 	bool emit_sched_view;
@@ -97,6 +99,11 @@ struct env {
 	bool req_global_discovery;
 
 	struct hashmap *req_binaries;
+
+	/* EXPERIMENTAL (CUDA tracking) */
+	int *cuda_pids;
+	int cuda_pid_cnt;
+	bool cuda_global_discovery;
 };
 
 extern struct env env;

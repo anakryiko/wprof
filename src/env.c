@@ -42,6 +42,7 @@ struct env env = {
 	.capture_requests = UNSET,
 	.capture_req_experimental = UNSET,
 	.capture_scx_layer_info = UNSET,
+	.capture_cuda = UNSET,
 };
 
 enum {
@@ -101,7 +102,7 @@ static const struct argp_option opts[] = {
 
 	/* event subset targeting */
 	{ "feature", 'f', "FEAT", 0,
-	  "Data capture feature selector. Supported: ipi, req[=PATH|PID], scx-layer, req-experimental.\n"
+	  "Data capture feature selector. Supported: ipi, req[=PATH|PID], scx-layer, req-experimental, cuda.\n"
 	  "All features can be prefixed with 'no-' to disable them explicitly." },
 
 	/* trace emitting options */
@@ -274,6 +275,29 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			env.capture_req_experimental = val;
 		} else if (strcasecmp(arg, "scx-layer") == 0) {
 			env.capture_scx_layer_info = val;
+		} else if (strcasecmp(arg, "cuda") == 0) {
+			env.cuda_global_discovery = val == TRUE;
+			env.capture_cuda = val;
+		} else if (strncasecmp(arg, "cuda=", 5) == 0) {
+			const char *cuda_arg = arg + 5;
+			int pid, n;
+
+			if (val == FALSE) {
+				eprintf("-f no-cuda=... feature form doesn't make much sense!\n");
+				return -EINVAL;
+			}
+
+			if (sscanf(cuda_arg, "%d %n", &pid, &n) == 1 && cuda_arg[n] == '\0') {
+				err = append_num(&env.cuda_pids, &env.cuda_pid_cnt, cuda_arg);
+				if (err) {
+					eprintf("Failed to record PID '%s' for CUDA tracking!\n", cuda_arg);
+					return err;
+				}
+			} else {
+				eprintf("Use -fcuda or -fcuda=<PID> to enable CUDA tracking!\n");
+				return -EINVAL;
+			}
+			env.capture_cuda = val;
 		} else {
 			fprintf(stderr, "Unrecognized data feature '%s!\n", arg);
 			return -EINVAL;

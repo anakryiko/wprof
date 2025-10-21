@@ -19,6 +19,7 @@ struct wprof_data_cfg {
 	u64 capture_requests : 1;
 	u64 capture_scx_layer_info : 1;
 	u64 capture_req_experimental : 1;
+	u64 capture_cuda : 1;
 
 	enum stack_trace_kind captured_stack_traces;
 
