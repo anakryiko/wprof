@@ -40,6 +40,7 @@ struct vma_info {
 struct vma_iter {
 	int pid;
 	int procmap_fd;
+	FILE *file;
 	int query_flags;
 	bool use_procmap_query;
 	struct procmap_query query;

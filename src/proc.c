@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause)
 /* Copyright (c) 2025 Meta Platforms, Inc. */
-
+#include <stdio.h>
 #include <string.h>
+#include <ctype.h>
 #include <linux/fs.h>
 #include <sys/types.h>
 #include <sys/ioctl.h>
@@ -75,6 +76,17 @@ int vma_iter_new(struct vma_iter *it, int pid, int query_flags)
 
 	err = ioctl(it->procmap_fd, PROCMAP_QUERY, &it->query);
 	it->use_procmap_query = err == 0 || errno != ENOTTY;
+	if (!it->use_procmap_query) {
+		it->file = fdopen(it->procmap_fd, "re");
+		if (!it->file) {
+			err = -errno;
+			close(it->procmap_fd);
+			it->procmap_fd = -1;
+			errno = -err;
+			return err;
+		}
+		it->procmap_fd = -1;
+	}
 
 	it->query_flags = query_flags;
 	it->addr = 0;
@@ -83,9 +95,19 @@ int vma_iter_new(struct vma_iter *it, int pid, int query_flags)
 	return 0;
 }
 
+#define PROCMAP_QUERY_VMA_FLAGS (				\
+		PROCMAP_QUERY_VMA_READABLE |			\
+		PROCMAP_QUERY_VMA_WRITABLE |			\
+		PROCMAP_QUERY_VMA_EXECUTABLE |			\
+		PROCMAP_QUERY_VMA_SHARED			\
+)
+
 struct vma_info *vma_iter_next(struct vma_iter *it)
 {
 	int err = 0;
+
+	if (it->procmap_fd < 0 && !it->file)
+		return NULL;
 
 	if (it->use_procmap_query) {
 		it->query.size = sizeof(it->query);
@@ -96,12 +118,16 @@ struct vma_info *vma_iter_next(struct vma_iter *it)
 		it->path_buf[0] = '\0';
 
 		err = ioctl(it->procmap_fd, PROCMAP_QUERY, &it->query);
-		if (err && (errno == ENOENT || errno == ESRCH))
-			return NULL; /* we are done or process is gone */
+		if (err && errno == ENOENT) {
+			errno = 0;
+			return NULL; /* exhausted all VMA entries, expected outcome */
+		}
+		if (err && errno == ESRCH)
+			return NULL; /* process is gone, sort of expected, but let caller know */
 		if (err) {
 			err = -errno;
 			eprintf("PROCMAP_QUERY failed for PID %d: %d\n", it->pid, err);
-			errno = -err;
+			errno = -err; /* unexpected error, let caller deal with it */
 			return NULL;
 		}
 
@@ -118,20 +144,73 @@ struct vma_info *vma_iter_next(struct vma_iter *it)
 		errno = 0;
 		return &it->vma;
 	} else {
-		/* TODO: fallback to /proc/PID/maps text parsing */
-		return NULL;
+		/* We need to handle lines with no path at the end:
+		 *
+		 * 7f5c6f5d1000-7f5c6f5d3000 rw-p 001c7000 08:04 21238613      /usr/lib64/libc-2.17.so
+		 * 7f5c6f5d3000-7f5c6f5d8000 rw-p 00000000 00:00 0
+		 * 7f5c6f5d8000-7f5c6f5d9000 r-xp 00000000 103:01 362990598    /data/users/andriin/linux/tools/bpf/usdt/libhello_usdt.so
+		 */
+again:
+		char mode[8];
+		int ret;
+
+		ret = fscanf(it->file, "%llx-%llx %s %llx %x:%x %lld%[^\n]",
+			     &it->vma.vma_start, &it->vma.vma_end, mode, &it->vma.vma_offset,
+			     &it->vma.dev_major, &it->vma.dev_minor, &it->vma.inode, it->path_buf);
+		if (ret != 8) {
+			err = -errno;
+			if (feof(it->file)) {
+				errno = 0;
+				return NULL; /* expected outcome, no more VMAs */
+			}
+			errno = -err;
+			return NULL;
+		}
+
+		it->vma.vma_flags = 0;
+		if (mode[0] == 'r')
+			it->vma.vma_flags |= PROCMAP_QUERY_VMA_READABLE;
+		if (mode[1] == 'w')
+			it->vma.vma_flags |= PROCMAP_QUERY_VMA_WRITABLE;
+		if (mode[2] == 'x')
+			it->vma.vma_flags |= PROCMAP_QUERY_VMA_EXECUTABLE;
+		if (mode[3] == 's')
+			it->vma.vma_flags |= PROCMAP_QUERY_VMA_SHARED;
+
+		int perm_query = it->query_flags & PROCMAP_QUERY_VMA_FLAGS;
+		if (perm_query && (it->vma.vma_flags & perm_query) != perm_query)
+			goto again;
+
+		/*
+		 * To handle no path case (see above) we need to capture line
+		 * without skipping any whitespaces. So we need to strip
+		 * leading whitespaces manually here
+		 */
+		int i = 0;
+		while (isblank(it->path_buf[i]))
+			i++;
+		it->vma.vma_name = it->path_buf + i;
+
+		if ((it->query_flags & PROCMAP_QUERY_FILE_BACKED_VMA) && it->path_buf[i] == '\0')
+			goto again;
+
+		errno = 0;
+		return &it->vma;
 	}
 }
 
 void vma_iter_destroy(struct vma_iter *it)
 {
-	if (it->procmap_fd < 0)
-		return;
-
 	int old_errno = errno;
 
-	close(it->procmap_fd);
-	it->procmap_fd = -1;
+	if (it->procmap_fd >= 0) {
+		close(it->procmap_fd);
+		it->procmap_fd = -1;
+	}
+	if (it->file) {
+		fclose(it->file);
+		it->file = NULL;
+	}
 
 	errno = old_errno;
 }
