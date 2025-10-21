@@ -14,7 +14,6 @@
 #include <sys/syscall.h>
 #include <sys/sysinfo.h>
 #include <sys/stat.h>
-#include <sys/sysmacros.h>
 #include <sys/resource.h>
 #include <sys/mman.h>
 #include <sys/ioctl.h>
@@ -40,6 +39,8 @@
 #include "stacktrace.h"
 #include "topology.h"
 #include "proc.h"
+#include "requests.h"
+#include "bpf_utils.h"
 
 #define FILE_BUF_SZ (64 * 1024)
 
@@ -589,178 +590,6 @@ static int timer_plan_cmp(const void *a, const void *b)
 	return x->cpu - y->cpu;
 }
 
-struct req_binary {
-	/* unique binary identifier */
-	u64 dev;
-	u64 inode;
-
-	/* informational info */
-	char *path;
-	char *attach_path;
-};
-
-static unsigned long hash_combine(unsigned long h, unsigned long value)
-{
-	return h * 31 + value;
-}
-
-static size_t req_binary_hash_fn(long key, void *ctx)
-{
-	struct req_binary *b = (void *)key;
-
-	return hash_combine(b->dev, b->inode);
-}
-
-static bool req_binary_equal_fn(long a, long b, void *ctx)
-{
-	struct req_binary *x = (void *)a;
-	struct req_binary *y = (void *)b;
-
-	return x->dev == y->dev && x->inode == y->inode;
-}
-
-static int add_req_binary(u64 dev, u64 inode, const char *path, const char *attach_path)
-{
-	struct req_binary *binary, key = {};
-
-	if (!env.req_binaries) {
-		env.req_binaries = hashmap__new(req_binary_hash_fn, req_binary_equal_fn, NULL);
-		if (!env.req_binaries)
-			return -ENOMEM;
-	}
-
-	key.dev = dev;
-	key.inode = inode;
-	key.path = strdup(path);
-	if (!key.path)
-		return -ENOMEM;
-
-	if (hashmap__find(env.req_binaries, &key, NULL)) {
-		free(key.path);
-		return 0;
-	}
-
-	binary = calloc(1, sizeof(*binary));
-	if (!binary) {
-		free(key.path);
-		return -ENOMEM;
-	}
-
-	*binary = key;
-	if (attach_path)
-		binary->attach_path = strdup(attach_path);
-
-	hashmap__set(env.req_binaries, binary, binary, NULL, NULL);
-
-	/*
-	printf("Added binary: DEV %llu INODE %llu PATH %s ATTACH %s\n",
-	       dev, inode, path, attach_path ?: path);
-	*/
-
-	return 0;
-}
-
-static int discover_pid_req_binaries(int pid)
-{
-	struct vma_info *vma;
-	int err = 0;
-
-	wprof_for_each(vma, vma, pid,
-		       PROCMAP_QUERY_VMA_EXECUTABLE | PROCMAP_QUERY_FILE_BACKED_VMA) {
-		if (vma->vma_name[0] != '/')
-			continue; /* special file, ignore */
-
-		/*
-		 * Using map_files symlink ensures we bypass
-		 * mount namespacing issues and don't care if the file
-		 * was deleted from the file system or not.
-		 * The only downside is that we now rely on that
-		 * specific process to be alive at the time of attachment.
-		 */
-		char tmp[1024];
-		snprintf(tmp, sizeof(tmp), "/proc/%d/map_files/%llx-%llx",
-			 pid, vma->vma_start, vma->vma_end);
-
-		u64 dev = makedev(vma->dev_major, vma->dev_minor);
-		err = add_req_binary(dev, vma->inode, vma->vma_name, tmp);
-		if (err)
-			return err;
-		/* reset errno, so we don't trigger false error reporting after the loop */
-		errno = 0;
-	}
-	if (errno && (errno != ENOENT && errno != ESRCH)) {
-		err = -errno;
-		eprintf("VMA iteration failed for PID %d: %d\n", pid, err);
-		return err;
-	}
-
-	return 0;
-}
-
-static int setup_req_tracking_discovery(void)
-{
-	int err = 0;
-
-	if (env.req_global_discovery) {
-		int *pidp, pid;
-
-		wprof_for_each(proc, pidp) {
-			pid = *pidp;
-			err = discover_pid_req_binaries(pid);
-			if (err) {
-				eprintf("Failed to discover request tracking binaries for PID %d: %d (skipping...)\n", pid, err);
-				continue;
-			}
-		}
-	}
-
-	for (int i = 0; i < env.req_path_cnt; i++) {
-		struct stat st;
-
-		err = stat(env.req_paths[i], &st);
-		if (err) {
-			err = -errno;
-			eprintf("Failed to stat() binary '%s' for request tracking: %d (skipping...)\n", env.req_paths[i], err);
-			continue;
-		}
-
-		err = add_req_binary(st.st_dev, st.st_ino, env.req_paths[i], NULL);
-		if (err) {
-			eprintf("Failed to record binary path '%s' for request tracking: %d (skipping...)\n", env.req_paths[i], err);
-			continue;
-		}
-	}
-
-	for (int i = 0; i < env.req_pid_cnt; i++) {
-		int pid = env.req_pids[i];
-
-		err = discover_pid_req_binaries(pid);
-		if (err) {
-			eprintf("Failed to discover request tracking binaries for PID %d: %d (skipping...)\n", pid, err);
-			continue;
-		}
-	}
-
-	return 0;
-}
-
-struct bpf_state {
-	bool detached;
-	bool drained;
-	struct wprof_bpf *skel;
-	struct bpf_link **links;
-	int link_cnt;
-	struct ring_buffer **rb_managers;
-	pthread_t *rb_threads;
-	int *perf_timer_fds;
-	int *perf_counter_fds;
-	int perf_counter_fd_cnt;
-	int *rb_map_fds;
-	int stats_fd;
-	bool *online_mask;
-	int num_online_cpus;
-};
-
 static int setup_perf_timer_ticks(struct bpf_state *st, int num_cpus)
 {
 	struct perf_event_attr attr;
@@ -1213,9 +1042,9 @@ static void *rb_worker(void *ctx)
 	return NULL;
 }
 
-static int attach_usdt_probe(struct bpf_state *st, struct bpf_program *prog,
-			     struct req_binary *binary,
-			     const char *usdt_provider, const char *usdt_name)
+int attach_usdt_probe(struct bpf_state *st, struct bpf_program *prog,
+		      const char *binary_path, const char *binary_attach_path,
+		      const char *usdt_provider, const char *usdt_name)
 {
 	struct bpf_link *link, **tmp;
 
@@ -1224,20 +1053,20 @@ static int attach_usdt_probe(struct bpf_state *st, struct bpf_program *prog,
 	 * warning and move on if there is an error
 	 */
 	ignore_libbpf_warns = true;
-	link = bpf_program__attach_usdt(prog, -1, binary->attach_path,
+	link = bpf_program__attach_usdt(prog, -1, binary_attach_path,
 					usdt_provider, usdt_name,
 					NULL);
 	ignore_libbpf_warns = false;
 	if (!link) {
 		if (env.debug_level >= 2) {
 			eprintf("Failed to attach USDT %s:%s to %s (%s), ignoring...\n",
-			       usdt_provider, usdt_name, binary->path, binary->attach_path);
+			       usdt_provider, usdt_name, binary_path, binary_attach_path);
 		}
 		return -ENOENT;
 	} else {
 		if (env.debug_level >= 1) {
 			printf("Attached USDT %s:%s to %s (%s).\n",
-			       usdt_provider, usdt_name, binary->path, binary->attach_path);
+			       usdt_provider, usdt_name, binary_path, binary_attach_path);
 		}
 	}
 
@@ -1276,41 +1105,10 @@ static int attach_bpf(struct bpf_state *st, struct worker_state *workers, int nu
 	}
 
 	if (env.req_binaries) {
-		struct hashmap_entry *entry;
-		size_t bkt;
-
-		hashmap__for_each_entry(env.req_binaries, entry, bkt) {
-			struct req_binary *binary = (struct req_binary *)entry->value;
-
-			err = attach_usdt_probe(st, st->skel->progs.wprof_req_ctx,
-						binary, "thrift", "crochet_request_data_context");
-			if (err == -ENOENT)
-				continue;
-			if (err)
-				return err;
-
-			if (env.capture_req_experimental) {
-				err = attach_usdt_probe(st, st->skel->progs.wprof_req_task_enqueue,
-							binary, "folly", "thread_pool_executor_task_enqueued");
-				if (err == -ENOENT)
-					continue;
-				if (err)
-					return err;
-
-				err = attach_usdt_probe(st, st->skel->progs.wprof_req_task_dequeue,
-							binary, "folly", "thread_pool_executor_task_dequeued");
-				if (err == -ENOENT)
-					continue;
-				if (err)
-					return err;
-
-				err = attach_usdt_probe(st, st->skel->progs.wprof_req_task_stats,
-							binary, "folly", "thread_pool_executor_task_stats");
-				if (err == -ENOENT)
-					continue;
-				if (err)
-					return err;
-			}
+		err = attach_req_tracking_usdts(st);
+		if (err) {
+			eprintf("Failed to attach request tracking USDTs: %d\n", err);
+			return err;
 		}
 	}
 

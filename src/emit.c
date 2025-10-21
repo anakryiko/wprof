@@ -346,11 +346,6 @@ static const int kind_track_rank(enum task_kind kind)
 	}
 }
 
-static unsigned long hash_combine(unsigned long h, unsigned long value)
-{
-	return h * 31 + value;
-}
-
 static uint64_t trackid_thread(const struct wprof_task *t)
 {
 	enum task_kind k = task_kind(t);
