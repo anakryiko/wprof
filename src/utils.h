@@ -113,7 +113,7 @@ const char *vsfmt(const char *fmt, va_list ap);
 int parse_int_from_file(const char *file, const char *fmt, void *val);
 int parse_str_from_file(const char *file, char *buf, size_t buf_sz);
 
-bool wprof_glob_match(const char *glob, const char *s);
+bool wprof_glob_match(const char *pat, const char *str);
 
 /* HASHMAP HELPERS */
 static inline size_t str_hash_fn(long key, void *ctx)

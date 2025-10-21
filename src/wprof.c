@@ -81,6 +81,9 @@ static void cfg_set_capture_req_experimental(struct wprof_data_cfg *cfg, bool va
 static bool cfg_get_capture_scx_layer_info(const struct wprof_data_cfg *cfg) { return cfg->capture_scx_layer_info; }
 static void cfg_set_capture_scx_layer_info(struct wprof_data_cfg *cfg, bool val) { cfg->capture_scx_layer_info = val; }
 
+static bool cfg_get_capture_cuda(const struct wprof_data_cfg *cfg) { return cfg->capture_cuda; }
+static void cfg_set_capture_cuda(struct wprof_data_cfg *cfg, bool val) { cfg->capture_cuda = val; }
+
 static struct capture_feature {
 	const char *name;
 	const char *header;
@@ -98,6 +101,8 @@ static struct capture_feature {
 	{"sched-ext layer info", "SCX layer info:", DEFAULT_CAPTURE_SCX_LAYER_INFO,
 	  offsetof(struct env, capture_scx_layer_info),
 	  cfg_get_capture_scx_layer_info, cfg_set_capture_scx_layer_info},
+	{"CUDA", "CUDA:", DEFAULT_CAPTURE_CUDA,
+	 offsetof(struct env, capture_cuda), cfg_get_capture_cuda, cfg_set_capture_cuda},
 };
 
 static volatile bool exiting;
@@ -1352,7 +1357,7 @@ int main(int argc, char **argv)
 			printf("\n");
 			for (int i = 0; i < ARRAY_SIZE(capture_features); i++) {
 				const struct capture_feature *f = &capture_features[i];
-				printf("%-*s%s\n", w, f->header, f->cfg_get_flag(cfg) ? "true" : "false");
+				printf("%-*s%s\n", w, f->header, f->cfg_get_flag(cfg) ? "YES" : "NO");
 			}
 			goto cleanup;
 		}

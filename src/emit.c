@@ -171,6 +171,7 @@ enum track_special {
 	TKS_KTHREAD = 3,
 
 	TKS_REQUESTS = 4,
+	TKS_CUDA = 5,
 };
 
 #define TRACK_UUID(kind, id) (((u64)(id) * TK_MULT) + (u64)kind)
@@ -179,6 +180,7 @@ enum track_special {
 #define TRACK_UUID_KWORKER	TRACK_UUID(TK_SPECIAL, TKS_KWORKER)
 #define TRACK_UUID_KTHREAD	TRACK_UUID(TK_SPECIAL, TKS_KTHREAD)
 #define TRACK_UUID_REQUESTS	TRACK_UUID(TK_SPECIAL, TKS_REQUESTS)
+#define TRACK_UUID_CUDA		TRACK_UUID(TK_SPECIAL, TKS_CUDA)
 
 #define TRACK_RANK_IDLE		-3
 #define TRACK_RANK_KWORKER	-2
@@ -1725,6 +1727,8 @@ int emit_trace(struct worker_state *w)
 	fprintf(stderr, "Generating trace...\n");
 	if (env.capture_requests)
 		emit_track_descr(cur_stream, TRACK_UUID_REQUESTS, 0, "REQUESTS", 1000);
+	if (env.capture_requests)
+		emit_track_descr(cur_stream, TRACK_UUID_CUDA, 0, "CUDA", 2000);
 
 	if (env.requested_stack_traces) {
 		struct wprof_stacks_hdr *shdr = wprof_stacks_hdr(w->dump_hdr);
