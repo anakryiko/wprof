@@ -10,6 +10,7 @@
 #include <time.h>
 #include <linux/perf_event.h>
 #include <sys/syscall.h>
+#include <unistd.h>
 #include "../libbpf/src/hashmap.h" /* internal to libbpf, yep */
 
 typedef unsigned long long u64;
@@ -133,6 +134,11 @@ static inline size_t hash_identity_fn(long key, void *ctx)
 static inline bool hash_equal_fn(long k1, long k2, void *ctx)
 {
 	return k1 == k2;
+}
+
+static inline unsigned long hash_combine(unsigned long h, unsigned long value)
+{
+	return h * 31 + value;
 }
 
 /* TIME ROUTINES */
