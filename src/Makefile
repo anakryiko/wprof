@@ -128,16 +128,31 @@ WPROF_SRCS := wprof.c utils.c env.c protobuf.c emit.c stacktrace.c				\
 	      pb_common.c pb_encode.c perfetto_trace.pb.c topology.c proc.c			\
 	      requests.c cuda.c
 WPROF_HDRS := wprof.h utils.h env.h protobuf.h emit.h stacktrace.h data.h topology.h		\
-	      proc.h requests.h cuda.h
+	      proc.h requests.h cuda.h inj_common.h
 
 # Build user space object files
 $(OUTPUT)/%.o: %.c $(OUTPUT)/wprof.skel.h $(WPROF_HDRS) | $(OUTPUT)
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(ALL_CFLAGS) $(INCLUDES) -c $(filter %.c,$^) -o $@
 
+$(OUTPUT)/inj_lib.o: ALL_CFLAGS += -fPIC
+
+# Build injection shared library
+$(OUTPUT)/libwprofinj.so: $(OUTPUT)/inj_lib.o | $(OUTPUT)
+	$(call msg,CC,$@)
+	$(Q)$(CC) $(ALL_CFLAGS) -shared $< -o $@
+
+$(OUTPUT)/libwprofinj_embed.o: $(OUTPUT)/libwprofinj.so
+	$(call msg,LD,$@)
+	$(Q)$(LD) -r -b binary $< -o $@								\
+		--defsym libwprofinj_so_start=_binary__output_libwprofinj_so_start		\
+		--defsym libwprofinj_so_end=_binary__output_libwprofinj_so_end			\
+		--defsym libwprofinj_so_size=_binary__output_libwprofinj_so_size
+
 # Build application binary
-wprof: wprof.h utils.h 								\
-		$(patsubst %.c,$(OUTPUT)/%.o,$(WPROF_SRCS)) 			\
+wprof: wprof.h utils.h										\
+		$(patsubst %.c,$(OUTPUT)/%.o,$(WPROF_SRCS))					\
+		$(OUTPUT)/libwprofinj_embed.o							\
 		$(LIBBPF_OBJ) $(LIBBLAZESYM_OBJ) | $(OUTPUT)
 	$(call msg,BINARY,$@)
 	$(Q)$(CC) $(ALL_CFLAGS) $(filter %.c %.a %.o,$^) $(ALL_LDFLAGS) -lelf -lz -lzstd -o $@
