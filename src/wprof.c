@@ -40,6 +40,7 @@
 #include "topology.h"
 #include "proc.h"
 #include "requests.h"
+#include "cuda.h"
 #include "bpf_utils.h"
 
 #define FILE_BUF_SZ (64 * 1024)
@@ -754,6 +755,14 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 		bpf_map__set_max_entries(skel->maps.req_states, max(16 * 1024, env.task_state_sz));
 	} else {
 		bpf_map__set_autocreate(skel->maps.req_states, false);
+	}
+
+	if (env.cuda_pid_cnt > 0 || env.cuda_global_discovery) {
+		err = setup_cuda_tracking_discovery();
+		if (err) {
+			eprintf("CUDA tracking discovery step failed: %d\n", err);
+			return err;
+		}
 	}
 
 	if (env.capture_scx_layer_info) {
