@@ -270,14 +270,14 @@ int process_stack_traces(struct worker_state *w)
 	int err;
 	u64 base_off = 0;
 
-	fprintf(stderr, "Symbolizing...\n");
+	printf("Symbolizing...\n");
 	u64 symb_start_ns = ktime_now_ns();
 
 	struct wprof_event_record *rec;
 	wprof_for_each_event(rec, w->dump_hdr) {
 		err = process_event_stack_trace(state, rec->e, rec->sz);
 		if (err) {
-			fprintf(stderr, "Failed to pre-process stack trace for event #%d (kind %d, size %zu, offset %zu): %d\n",
+			eprintf("Failed to pre-process stack trace for event #%d (kind %d, size %zu, offset %zu): %d\n",
 				rec->idx, rec->e->kind, rec->sz, (void *)rec - (void *)w->dump_hdr, err);
 			return err;
 		}
@@ -289,7 +289,7 @@ int process_stack_traces(struct worker_state *w)
 	memset(&hdr, 0, sizeof(hdr));
 	if (fwrite(&hdr, sizeof(hdr), 1, w->dump) != 1) {
 		err = -errno;
-		fprintf(stderr, "Failed to write initial stack header: %d\n", err);
+		eprintf("Failed to write initial stack header: %d\n", err);
 		return err;
 	}
 	base_off = ftell(w->dump);
@@ -306,7 +306,7 @@ int process_stack_traces(struct worker_state *w)
 		memset(&dummy_frm, 0, sizeof(dummy_frm));
 		if (fwrite(&dummy_frm, sizeof(dummy_frm), 1, w->dump) != 1) {
 			err = -errno;
-			fprintf(stderr, "Failed to write dummy stack frame: %d\n", err);
+			eprintf("Failed to write dummy stack frame: %d\n", err);
 			return err;
 		}
 		hdr.frame_cnt = 1;
@@ -344,7 +344,7 @@ int process_stack_traces(struct worker_state *w)
 			blaze_err berr = blaze_err_last();
 			const char *berr_str = blaze_err_str(berr);
 
-			fprintf(stderr, "Failed to create a symbolizer: %s (%d)\n", berr_str, berr);
+			eprintf("Failed to create a symbolizer: %s (%d)\n", berr_str, berr);
 			return berr;
 		}
 	}
@@ -380,7 +380,7 @@ int process_stack_traces(struct worker_state *w)
 				blaze_err berr = blaze_err_last();
 				const char *berr_str = blaze_err_str(berr);
 
-				fprintf(stderr, "Failed to create a symbolizer: %s (%d)\n", berr_str, berr);
+				eprintf("Failed to create a symbolizer: %s (%d)\n", berr_str, berr);
 				return berr;
 			}
 		}
@@ -436,10 +436,8 @@ int process_stack_traces(struct worker_state *w)
 
 			unkn_cnt += addr_cnt;
 
-			if (env.verbose) {
-				eprintf("Symbolization failed for PID %d, skipping %zu unique addrs: %s (%d)\n",
-					state->sframe_idx[start].pid, addr_cnt, berr_str, berr);
-			}
+			vprintf("Symbolization failed for PID %d, skipping %zu unique addrs: %s (%d)\n",
+				state->sframe_idx[start].pid, addr_cnt, berr_str, berr);
 		}
 
 		for (int i = 0, j = 0; i < end - start; i++) {
@@ -468,7 +466,7 @@ int process_stack_traces(struct worker_state *w)
 
 					if (fwrite(&frm, sizeof(frm), 1, w->dump) != 1) {
 						err = -errno;
-						fprintf(stderr, "Failed to write stack frame: %d\n", err);
+						eprintf("Failed to write stack frame: %d\n", err);
 						return err;
 					}
 
@@ -489,7 +487,7 @@ int process_stack_traces(struct worker_state *w)
 
 				if (fwrite(&frm, sizeof(frm), 1, w->dump) != 1) {
 					err = -errno;
-					fprintf(stderr, "Failed to write stack frame: %d\n", err);
+					eprintf("Failed to write stack frame: %d\n", err);
 					return err;
 				}
 
@@ -534,7 +532,7 @@ int process_stack_traces(struct worker_state *w)
 		    (last_uniq_cnt + addr_cnt) * 100.0 / total_uniq_cnt - last_progress_pct >= min_progress_pct) {
 			last_progress_ns = ktime_now_ns();
 			last_progress_pct = (last_uniq_cnt + addr_cnt) * 100.0 / total_uniq_cnt;
-			fprintf(stderr, "Symbolized %zu (%.3lf%%) unique addresses in %.3lfs...\n",
+			printf("Symbolized %zu (%.3lf%%) unique addresses in %.3lfs...\n",
 				last_uniq_cnt + addr_cnt, (last_uniq_cnt + addr_cnt) * 100.0 / total_uniq_cnt,
 				(last_progress_ns - symb_start_ns) / 1000000000.0);
 		}
@@ -551,7 +549,7 @@ int process_stack_traces(struct worker_state *w)
 	free(addrs);
 
 	u64 symb_end_ns = ktime_now_ns();
-	fprintf(stderr, "Symbolized %zu user and %zu kernel UNIQUE addresses (%zu total, failed %zu) in %.3lfs.\n",
+	printf("Symbolized %zu user and %zu kernel UNIQUE addresses (%zu total, failed %zu) in %.3lfs.\n",
 		uaddr_cnt, kaddr_cnt, uaddr_cnt + kaddr_cnt, unkn_cnt,
 		(symb_end_ns - symb_start_ns) / 1000000000.0);
 
@@ -655,7 +653,7 @@ int process_stack_traces(struct worker_state *w)
 				u32 frame_iid = f->frame_cnt > 1 ? f->frame_iids[k] : f->frame_iid;
 				if (fwrite(&frame_iid, sizeof(frame_iid), 1, w->dump) != 1) {
 					err = -errno;
-					fprintf(stderr, "Failed to write stack trace frame id: %d\n", err);
+					eprintf("Failed to write stack trace frame id: %d\n", err);
 					return err;
 				}
 				hdr.frame_mapping_cnt += 1;
@@ -682,7 +680,7 @@ int process_stack_traces(struct worker_state *w)
 		memset(&dummy_stack, 0, sizeof(dummy_stack));
 		if (fwrite(&dummy_stack, sizeof(dummy_stack), 1, w->dump) != 1) {
 			err = -errno;
-			fprintf(stderr, "Failed to write dummy stack frame: %d\n", err);
+			eprintf("Failed to write dummy stack frame: %d\n", err);
 			return err;
 		}
 		hdr.stack_cnt = 1;
@@ -699,7 +697,7 @@ int process_stack_traces(struct worker_state *w)
 		};
 		if (fwrite(&stack, sizeof(stack), 1, w->dump) != 1) {
 			err = -errno;
-			fprintf(stderr, "Failed to write stack trace header: %d\n", err);
+			eprintf("Failed to write stack trace header: %d\n", err);
 			return err;
 		}
 		hdr.stack_cnt += 1;
@@ -719,7 +717,7 @@ int process_stack_traces(struct worker_state *w)
 	}
 	if (strs_written <= 0) {
 		err = -errno;
-		fprintf(stderr, "Failed to write strings: %d\n", err);
+		eprintf("Failed to write strings: %d\n", err);
 		return err;
 	}
 
@@ -734,20 +732,20 @@ int process_stack_traces(struct worker_state *w)
 	err = fseek(w->dump, base_off - sizeof(hdr), SEEK_SET);
 	if (err) {
 		err = -errno;
-		fprintf(stderr, "Failed to fseek() to stacks header: %d\n", err);
+		eprintf("Failed to fseek() to stacks header: %d\n", err);
 		return err;
 	}
 
 	if (fwrite(&hdr, sizeof(hdr), 1, w->dump) != 1) {
 		err = -errno;
-		fprintf(stderr, "Failed to update stacks header: %d\n", err);
+		eprintf("Failed to update stacks header: %d\n", err);
 		return err;
 	}
 
 	err = fseek(w->dump, orig_pos, SEEK_SET);
 	if (err) {
 		err = -errno;
-		fprintf(stderr, "Failed to fseek() to after stacks: %d\n", err);
+		eprintf("Failed to fseek() to after stacks: %d\n", err);
 		return err;
 	}
 
@@ -757,7 +755,7 @@ int process_stack_traces(struct worker_state *w)
 	w->dump_mem = mremap(w->dump_mem, w->dump_sz, orig_pos, MREMAP_MAYMOVE);
 	if (w->dump_mem == MAP_FAILED) {
 		err = -errno;
-		fprintf(stderr, "Failed to expand data dump mmap: %d\n", err);
+		eprintf("Failed to expand data dump mmap: %d\n", err);
 		w->dump_mem = NULL;
 		return err;
 	}
@@ -765,7 +763,7 @@ int process_stack_traces(struct worker_state *w)
 	w->dump_sz = orig_pos;
 
 	u64 end_ns = ktime_now_ns();
-	fprintf(stderr, "Symbolized %zu stack traces with %zu frames (%zu traces and %zu frames deduped, %zu unknown frames, %.3lfMB) in %.3lfs.\n",
+	printf("Symbolized %zu stack traces with %zu frames (%zu traces and %zu frames deduped, %zu unknown frames, %.3lfMB) in %.3lfs.\n",
 		state->strace_cnt, frames_total,
 		callstacks_deduped, frames_deduped,
 		frames_failed,
@@ -782,7 +780,7 @@ int process_stack_traces(struct worker_state *w)
 
 		const char *fname = f->func_name_stroff ? wprof_stacks_str(w->dump_hdr, f->func_name_stroff) : "???";
 		const char *src = f->src_path_stroff ? wprof_stacks_str(w->dump_hdr, f->src_path_stroff) : "???";
-		fprintf(stderr, "%sFRAME #%d: [%c] '%s'+%llx (%s%s), %s:%d (ADDR %llx)\n",
+		eprintf("%sFRAME #%d: [%c] '%s'+%llx (%s%s), %s:%d (ADDR %llx)\n",
 			indent, fr_idx,
 			f->flags & WSF_KERNEL ? 'K' : 'U',
 			fname, f->func_offset,
@@ -794,7 +792,7 @@ int process_stack_traces(struct worker_state *w)
 	wprof_for_each_stack_trace(trec, w->dump_hdr) {
 		const char *indent = "    ";
 
-		fprintf(stderr, "STACK #%d (%u -> %u) HAS %u FRAMES:\n",
+		eprintf("STACK #%d (%u -> %u) HAS %u FRAMES:\n",
 			trec->idx, trec->t->frame_mapping_idx,
 			trec->t->frame_mapping_idx + trec->t->frame_mapping_cnt - 1,
 			trec->t->frame_mapping_cnt);
@@ -805,7 +803,7 @@ int process_stack_traces(struct worker_state *w)
 
 			const char *fname = f->func_name_stroff ? wprof_stacks_str(w->dump_hdr, f->func_name_stroff) : "???";
 			const char *src = f->src_path_stroff ? wprof_stacks_str(w->dump_hdr, f->src_path_stroff) : "???";
-			fprintf(stderr, "%sFRAME #%d: [%c] '%s'+%llx (%s%s), %s:%d (ADDR %llx)\n",
+			eprintf("%sFRAME #%d: [%c] '%s'+%llx (%s%s), %s:%d (ADDR %llx)\n",
 				indent, fr_idx,
 				f->flags & WSF_KERNEL ? 'K' : 'U',
 				fname, f->func_offset,
@@ -900,7 +898,7 @@ int generate_stack_traces(struct worker_state *w)
 	};
 	enc_trace_packet(&w->stream, &ev_pb);
 	ssize_t pb_sz_after = file_size(w->trace);
-	fprintf(stderr, "Emitted %.3lfMB of stack traces data.\n", (pb_sz_after - pb_sz_before) / 1024.0 / 1024.0);
+	printf("Emitted %.3lfMB of stack traces data.\n", (pb_sz_after - pb_sz_before) / 1024.0 / 1024.0);
 	return 0;
 }
 

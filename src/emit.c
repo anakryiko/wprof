@@ -120,11 +120,11 @@ static void emit_trace_packet(pb_ostream_t *stream, TracePacket *pb)
 {
 	if (em.str_iids.cnt > 0) {
 		if (pb->has_interned_data && pb->interned_data.event_names.funcs.encode) {
-			fprintf(stderr, "BUG: interned_data.event_names is already set!\n");
+			eprintf("BUG: interned_data.event_names is already set!\n");
 			exit(1);
 		}
 		if (pb->has_interned_data && pb->interned_data.debug_annotation_string_values.funcs.encode) {
-			fprintf(stderr, "BUG: interned_data.debug_annotation_string_values is already set!\n");
+			eprintf("BUG: interned_data.debug_annotation_string_values is already set!\n");
 			exit(1);
 		}
 		pb->has_interned_data = true;
@@ -232,7 +232,7 @@ static int track_pid(const struct wprof_task *t)
 	case TASK_KTHREAD:
 		return TRACK_PID_KTHREAD;
 	default:
-		fprintf(stderr, "BUG: unexpected task kind in track_pid(): %d\n", kind);
+		eprintf("BUG: unexpected task kind in track_pid(): %d\n", kind);
 		exit(1);
 	}
 }
@@ -256,7 +256,7 @@ static int track_process_rank(const struct wprof_task *t)
 	case TASK_KTHREAD:
 		return TRACK_RANK_KTHREAD;
 	default:
-		fprintf(stderr, "BUG: unexpected task kind in track_process_rank(): %d\n", kind);
+		eprintf("BUG: unexpected task kind in track_process_rank(): %d\n", kind);
 		exit(1);
 	}
 }
@@ -279,7 +279,7 @@ static const char *track_pcomm(const struct wprof_task *t)
 	case TASK_KTHREAD:
 		return TRACK_NAME_KTHREAD;
 	default:
-		fprintf(stderr, "BUG: unexpected task kind in track_pcomm(): %d\n", kind);
+		eprintf("BUG: unexpected task kind in track_pcomm(): %d\n", kind);
 		exit(1);
 	}
 }
@@ -295,7 +295,7 @@ static const u64 kind_track_uuid(enum task_kind kind)
 	case TASK_KTHREAD:
 		return TRACK_UUID_KTHREAD;
 	default:
-		fprintf(stderr, "BUG: unexpected task kind in kind_track_uuid(): %d\n", kind);
+		eprintf("BUG: unexpected task kind in kind_track_uuid(): %d\n", kind);
 		exit(1);
 	}
 }
@@ -311,7 +311,7 @@ static const u64 kind_track_pid(enum task_kind kind)
 	case TASK_KTHREAD:
 		return TRACK_PID_KTHREAD;
 	default:
-		fprintf(stderr, "BUG: unexpected task kind in kind_track_pid(): %d\n", kind);
+		eprintf("BUG: unexpected task kind in kind_track_pid(): %d\n", kind);
 		exit(1);
 	}
 }
@@ -327,7 +327,7 @@ static const char *kind_track_name(enum task_kind kind)
 	case TASK_KTHREAD:
 		return TRACK_NAME_KTHREAD;
 	default:
-		fprintf(stderr, "BUG: unexpected task kind in kind_track_name(): %d\n", kind);
+		eprintf("BUG: unexpected task kind in kind_track_name(): %d\n", kind);
 		exit(1);
 	}
 }
@@ -343,7 +343,7 @@ static const int kind_track_rank(enum task_kind kind)
 	case TASK_KTHREAD:
 		return TRACK_RANK_KTHREAD;
 	default:
-		fprintf(stderr, "BUG: unexpected task kind in kind_track_rank(): %d\n", kind);
+		eprintf("BUG: unexpected task kind in kind_track_rank(): %d\n", kind);
 		exit(1);
 	}
 }
@@ -1608,7 +1608,7 @@ static int process_req_event(struct worker_state *w, struct wprof_event *e, size
 		st->req_id = 0;
 		break;
 	default:
-		fprintf(stderr, "UNHANDLED REQ EVENT %d\n", e->req.req_event);
+		eprintf("UNHANDLED REQ EVENT %d\n", e->req.req_event);
 		exit(1);
 	}
 
@@ -1675,7 +1675,7 @@ static int process_req_task_event(struct worker_state *w, struct wprof_event *e,
 		}
 		break;
 	default:
-		fprintf(stderr, "UNHANDLED REQ TASK EVENT %d\n", e->req_task.req_task_event);
+		eprintf("UNHANDLED REQ TASK EVENT %d\n", e->req_task.req_task_event);
 		exit(1);
 	}
 
@@ -1712,7 +1712,7 @@ static int process_event(struct worker_state *w, struct wprof_event *e, size_t s
 		return 0;
 
 	if (e->kind >= ARRAY_SIZE(ev_fns) || !(ev_fn = ev_fns[e->kind])) {
-		fprintf(stderr, "UNHANDLED EVENT %d\n", e->kind);
+		eprintf("UNHANDLED EVENT %d\n", e->kind);
 		exit(1);
 		return 0;
 	}
@@ -1724,7 +1724,7 @@ int emit_trace(struct worker_state *w)
 {
 	int err;
 
-	fprintf(stderr, "Generating trace...\n");
+	printf("Generating trace...\n");
 	if (env.capture_requests)
 		emit_track_descr(cur_stream, TRACK_UUID_REQUESTS, 0, "REQUESTS", 1000);
 	if (env.capture_requests)
@@ -1740,7 +1740,7 @@ int emit_trace(struct worker_state *w)
 	wprof_for_each_event(rec, w->dump_hdr) {
 		err = process_event(w, rec->e, rec->sz);
 		if (err) {
-			fprintf(stderr, "Failed to process event #%d (kind %d, size %zu, offset %zu): %d\n",
+			eprintf("Failed to process event #%d (kind %d, size %zu, offset %zu): %d\n",
 				rec->idx, rec->e->kind, rec->sz, (void *)rec->e - (void *)w->dump_hdr, err);
 			return err; /* YEAH, I know about all the clean up, whatever */
 		}
@@ -1755,7 +1755,7 @@ int emit_trace(struct worker_state *w)
 	if (env.requested_stack_traces) {
 		err = generate_stack_traces(w);
 		if (err) {
-			fprintf(stderr, "Failed to append stack traces to trace '%s': %d\n", env.trace_path, err);
+			eprintf("Failed to append stack traces to trace '%s': %d\n", env.trace_path, err);
 			return err;
 		}
 	}

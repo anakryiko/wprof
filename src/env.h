@@ -19,6 +19,9 @@
 #define DEFAULT_CAPTURE_SCX_LAYER_INFO FALSE
 #define DEFAULT_CAPTURE_CUDA FALSE
 
+extern bool env_verbose;
+extern int env_debug_level;
+
 struct env {
 	bool verbose;
 	int debug_level;

@@ -250,15 +250,13 @@ int setup_cpu_to_ringbuf_mapping(u32 *rb_cpu_mapping, int rb_cnt, int cpu_cnt)
 
 			set_cnt -= 1;
 
-			if (env.debug_level >= 2) {
-				printf("COMBINING CPU %d and CPU %d -> %d + %d = %d (%s)\n",
-						topo[i - 1].cpu, topo[i].cpu,
-						cnt1, cnt2, sets_find_count(sets, cpu_cnt, topo[i].cpu),
-						k == TOPO_NUMA ? "NUMA" : (
-						k == TOPO_L3 ? "L3" : (
-						k == TOPO_L2 ? "L2" : (
-						k == TOPO_L1 ? "L1" : "???"))));
-			}
+			dprintf(2, "COMBINING CPU %d and CPU %d -> %d + %d = %d (%s)\n",
+				topo[i - 1].cpu, topo[i].cpu,
+				cnt1, cnt2, sets_find_count(sets, cpu_cnt, topo[i].cpu),
+				k == TOPO_NUMA ? "NUMA" : (
+				k == TOPO_L3 ? "L3" : (
+				k == TOPO_L2 ? "L2" : (
+				k == TOPO_L1 ? "L1" : "???"))));
 		}
 
 		topo_regroup(topo, sets, cpu_cnt);
@@ -309,15 +307,13 @@ balance:
 		int cnt1 = sets_find_count(sets, cpu_cnt, cpu);
 		int cnt2 = sets_find_count(sets, cpu_cnt, best_cpu);
 		if (sets_union(sets, cpu_cnt, cpu, best_cpu)) {
-			if (env.debug_level >= 2) {
-				printf("COMBINING CPU %d and CPU %d -> %d + %d = %d (%s)\n",
-						cpu, best_cpu,
-						cnt1, cnt2, sets_find_count(sets, cpu_cnt, cpu),
-						k == TOPO_NUMA ? "NUMA" : (
-						k == TOPO_L3 ? "L3" : (
-						k == TOPO_L2 ? "L2" : (
-						k == TOPO_L1 ? "L1" : "???"))));
-			}
+			dprintf(2, "COMBINING CPU %d and CPU %d -> %d + %d = %d (%s)\n",
+				cpu, best_cpu,
+				cnt1, cnt2, sets_find_count(sets, cpu_cnt, cpu),
+				k == TOPO_NUMA ? "NUMA" : (
+				k == TOPO_L3 ? "L3" : (
+				k == TOPO_L2 ? "L2" : (
+				k == TOPO_L1 ? "L1" : "???"))));
 			set_cnt -= 1;
 		}
 	}
@@ -333,7 +329,7 @@ assign:
 		rb_cpu_mapping[i] = topo[i].group;
 
 done:
-	if (env.debug_level) {
+	if (env.debug_level >= 1) {
 		printf("CPU topology and CPU-to-ringbuf mapping:\n");
 		printf("========================================\n");
 		for (int i = 0; i < cpu_cnt; i++) {
