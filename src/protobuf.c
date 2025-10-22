@@ -11,6 +11,7 @@
 
 #include "protobuf.h"
 #include "env.h"
+#include "utils.h"
 
 bool file_stream_cb(pb_ostream_t *stream, const uint8_t *buf, size_t count)
 {
@@ -234,7 +235,7 @@ static const char *pb_static_strs[] = {
 const char *pb_static_str(enum pb_static_iid iid)
 {
 	if (iid < 0 || iid >= ARRAY_SIZE(pb_static_strs) || !pb_static_strs[iid]) {
-		fprintf(stderr, "Missing string value mapping for IID #%d!\n", iid);
+		eprintf("Missing string value mapping for IID #%d!\n", iid);
 		exit(1);
 	}
 
@@ -302,7 +303,7 @@ void anns_reset(struct pb_anns *anns)
 void anns_add_ann(struct pb_anns *anns, struct pb_ann *ann)
 {
 	if (anns->cnt == MAX_ANN_CNT) {
-		fprintf(stderr, "Annotations overflow!\n");
+		eprintf("Annotations overflow!\n");
 		exit(1);
 	}
 
@@ -315,7 +316,7 @@ struct pb_ann_val *anns_add_val(struct pb_anns *anns, pb_iid key_iid, const char
 	struct pb_ann *ann;
 
 	if (anns->cnt == ARRAY_SIZE(anns->anns)) {
-		fprintf(stderr, "Annotations overflow!\n");
+		eprintf("Annotations overflow!\n");
 		exit(1);
 	}
 
@@ -682,11 +683,11 @@ static pb_field_iter_t trace_pkt_it;
 void enc_trace_packet(pb_ostream_t *stream, TracePacket *msg)
 {
 	if (!pb_encode_tag_for_field(stream, &trace_pkt_it)) {
-		fprintf(stderr, "Failed to encode Trace.packet field tag!\n");
+		eprintf("Failed to encode Trace.packet field tag!\n");
 		exit(1);
 	}
 	if (!pb_encode_submessage(stream, perfetto_protos_TracePacket_fields, msg)) {
-		fprintf(stderr, "Failed to encode TracePacket value!\n");
+		eprintf("Failed to encode TracePacket value!\n");
 		exit(1);
 	}
 }
@@ -735,11 +736,11 @@ __unused static void emit_clock_snapshot(pb_ostream_t *stream)
 int init_pb_trace(pb_ostream_t *stream)
 {
 	if (!pb_field_iter_begin(&trace_pkt_it, perfetto_protos_Trace_fields, NULL)) {
-		fprintf(stderr, "Failed to start Trace fields iterator!\n");
+		eprintf("Failed to start Trace fields iterator!\n");
 		return -1;
 	}
 	if (!pb_field_iter_find(&trace_pkt_it, 1)) {
-		fprintf(stderr, "Failed to find Trace field!\n");
+		eprintf("Failed to find Trace field!\n");
 		return -1;
 	}
 
@@ -773,7 +774,7 @@ int init_pb_trace(pb_ostream_t *stream)
 
 		for (int k = 0; k < ARRAY_SIZE(ranges); k++)
 			for (int i = ranges[k].start; i < ranges[k].end; i++)
-				fprintf(stderr, "% 3d: %-20s [%s]\n", i, pb_static_strs[i] ?: "??????", ranges[k].name);
+				eprintf("% 3d: %-20s [%s]\n", i, pb_static_strs[i] ?: "??????", ranges[k].name);
 	}
 
 	return 0;
@@ -800,7 +801,7 @@ pb_iid str_iid_for(struct str_iid_domain *d, const char *s, bool *new_iid, const
 	hashmap__set(d->str_iids, sdup, iid, NULL, NULL);
 
 	if (env.pb_debug_interns)
-		fprintf(stderr, "%03ld: %-20s [%s]\n", iid, sdup, d->domain_desc);
+		eprintf("%03ld: %-20s [%s]\n", iid, sdup, d->domain_desc);
 	if (new_iid)
 		*new_iid = true;
 	if (out_str)

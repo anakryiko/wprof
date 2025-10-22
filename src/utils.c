@@ -51,7 +51,7 @@ int append_str_file(char ***strs, int *cnt, const char *file)
 	f = fopen(file, "r");
 	if (!f) {
 		err = -errno;
-		fprintf(stderr, "Failed to open '%s': %d\n", file, err);
+		eprintf("Failed to open '%s': %d\n", file, err);
 		return err;
 	}
 
@@ -75,7 +75,7 @@ int append_num(int **nums, int *cnt, const char *arg)
 	errno = 0;
 	pid = strtol(arg, NULL, 10);
 	if (errno || pid < 0) {
-		fprintf(stderr, "Invalid PID: %d\n", pid);
+		eprintf("Invalid PID: %d\n", pid);
 		return -EINVAL;
 	}
 

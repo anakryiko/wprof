@@ -137,7 +137,7 @@ static int init_wprof_data(FILE *dump)
 	err = fseek(dump, 0, SEEK_SET);
 	if (err) {
 		err = -errno;
-		fprintf(stderr, "Failed to fseek(0): %d\n", err);
+		eprintf("Failed to fseek(0): %d\n", err);
 		return err;
 	}
 
@@ -147,7 +147,7 @@ static int init_wprof_data(FILE *dump)
 
 	if (fwrite(&hdr, sizeof(hdr), 1, dump) != 1) {
 		err = -errno;
-		fprintf(stderr, "Failed to fwrite() header: %d\n", err);
+		eprintf("Failed to fwrite() header: %d\n", err);
 		return err;
 	}
 
@@ -164,18 +164,18 @@ static int merge_wprof_data(struct worker_state *workers)
 	FILE *data_dump = fopen(env.data_path, "w+");
 	if (!data_dump) {
 		err = -errno;
-		fprintf(stderr, "Failed to create final data dump at '%s': %d\n", env.data_path, err);
+		eprintf("Failed to create final data dump at '%s': %d\n", env.data_path, err);
 		return err;
 	}
 	err = init_wprof_data(data_dump);
 	if (err) {
-		fprintf(stderr, "Failed to initialize data dump at '%s': %d\n", env.data_path, err);
+		eprintf("Failed to initialize data dump at '%s': %d\n", env.data_path, err);
 		fclose(data_dump);
 		return err;
 	}
 	if (setvbuf(data_dump, NULL, _IOFBF, FILE_BUF_SZ)) {
 		err = -errno;
-		fprintf(stderr, "Failed to set data file buffer size to %dKB: %d\n", FILE_BUF_SZ / 1024, err);
+		eprintf("Failed to set data file buffer size to %dKB: %d\n", FILE_BUF_SZ / 1024, err);
 		fclose(data_dump);
 		return err;
 	}
@@ -192,7 +192,7 @@ static int merge_wprof_data(struct worker_state *workers)
 		long pos = ftell(w->dump);
 		if (pos < 0) {
 			err = -errno;
-			fprintf(stderr, "Failed to get ringbuf #%d file position for '%s': %d\n", i, w->dump_path, err);
+			eprintf("Failed to get ringbuf #%d file position for '%s': %d\n", i, w->dump_path, err);
 			return err;
 		}
 
@@ -203,7 +203,7 @@ static int merge_wprof_data(struct worker_state *workers)
 		w->dump_mem = mmap(NULL, w->dump_sz, PROT_READ | PROT_WRITE, MAP_SHARED, fileno(w->dump), 0);
 		if (w->dump_mem == MAP_FAILED) {
 			err = -errno;
-			fprintf(stderr, "Failed to mmap ringbuf #%d dump file '%s': %d\n", i, w->dump_path, err);
+			eprintf("Failed to mmap ringbuf #%d dump file '%s': %d\n", i, w->dump_path, err);
 			w->dump_mem = NULL;
 			return err;
 		}
@@ -265,7 +265,7 @@ static int merge_wprof_data(struct worker_state *workers)
 	dump_sz = ftell(data_dump);
 	if (dump_sz < 0) {
 		err = -errno;
-		fprintf(stderr, "Failed to get data dump file postiion: %d\n", -err);
+		eprintf("Failed to get data dump file postiion: %d\n", -err);
 		return err;
 	}
 
@@ -297,13 +297,13 @@ static int merge_wprof_data(struct worker_state *workers)
 	err = fseek(data_dump, 0, SEEK_SET);
 	if (err) {
 		err = -errno;
-		fprintf(stderr, "Failed to fseek(0): %d\n", err);
+		eprintf("Failed to fseek(0): %d\n", err);
 		return err;
 	}
 
 	if (fwrite(&hdr, sizeof(hdr), 1, data_dump) != 1) {
 		err = -errno;
-		fprintf(stderr, "Failed to fwrite() header: %d\n", err);
+		eprintf("Failed to fwrite() header: %d\n", err);
 		return err;
 	}
 
@@ -318,7 +318,7 @@ static int merge_wprof_data(struct worker_state *workers)
 	w->dump_mem = mmap(NULL, w->dump_sz, PROT_READ | PROT_WRITE, MAP_SHARED, fileno(data_dump), 0);
 	if (w->dump_mem == MAP_FAILED) {
 		err = -errno;
-		fprintf(stderr, "Failed to mmap data dump '%s': %d\n", env.data_path, err);
+		eprintf("Failed to mmap data dump '%s': %d\n", env.data_path, err);
 		w->dump_mem = NULL;
 		return err;
 	}
@@ -327,7 +327,7 @@ static int merge_wprof_data(struct worker_state *workers)
 	err = fseek(data_dump, dump_sz, SEEK_SET);
 	if (err) {
 		err = -errno;
-		fprintf(stderr, "Failed to fseek() to end: %d\n", err);
+		eprintf("Failed to fseek() to end: %d\n", err);
 		return err;
 	}
 
@@ -341,7 +341,7 @@ static int load_data_dump(struct worker_state *w)
 	err = fseek(w->dump, 0, SEEK_SET);
 	if (err) {
 		err = -errno;
-		fprintf(stderr, "Failed to fseek(0): %d\n", err);
+		eprintf("Failed to fseek(0): %d\n", err);
 		return err;
 	}
 
@@ -349,26 +349,26 @@ static int load_data_dump(struct worker_state *w)
 	w->dump_mem = mmap(NULL, w->dump_sz, PROT_READ, MAP_SHARED, fileno(w->dump), 0);
 	if (w->dump_mem == MAP_FAILED) {
 		err = -errno;
-		fprintf(stderr, "Failed to mmap data dump: %d\n", err);
+		eprintf("Failed to mmap data dump: %d\n", err);
 		w->dump_mem = NULL;
 		return err;
 	}
 	w->dump_hdr = w->dump_mem;
 
 	if (w->dump_hdr->flags == WPROF_DATA_FLAG_INCOMPLETE) {
-		fprintf(stderr, "wprof data file is incomplete!\n");
+		eprintf("wprof data file is incomplete!\n");
 		return -EINVAL;
 	}
 
 	if (w->dump_hdr->version_major != WPROF_DATA_MAJOR) {
-		fprintf(stderr, "wprof data file MAJOR version mismatch: ACTUAL is v%d.%d vs EXPECTED v%d.%d!\n",
+		eprintf("wprof data file MAJOR version mismatch: ACTUAL is v%d.%d vs EXPECTED v%d.%d!\n",
 			w->dump_hdr->version_major, w->dump_hdr->version_minor,
 			WPROF_DATA_MAJOR, WPROF_DATA_MINOR);
 		return -EINVAL;
 	}
 	/* XXX: backwards compat in the future? */
 	if (w->dump_hdr->version_minor != WPROF_DATA_MINOR) {
-		fprintf(stderr, "wprof data file MINOR version mismatch: ACTUAL is v%d.%d vs EXPECTED v%d.%d!\n",
+		eprintf("wprof data file MINOR version mismatch: ACTUAL is v%d.%d vs EXPECTED v%d.%d!\n",
 			w->dump_hdr->version_major, w->dump_hdr->version_minor,
 			WPROF_DATA_MAJOR, WPROF_DATA_MINOR);
 		return -EINVAL;
@@ -397,7 +397,7 @@ static int handle_rb_event(void *ctx, void *data, size_t size)
 	    fwrite(data, size, 1, w->dump) != 1) {
 		int err = -errno;
 
-		fprintf(stderr, "Failed to write raw data dump: %d\n", err);
+		eprintf("Failed to write raw data dump: %d\n", err);
 		return err;
 	}
 
@@ -423,7 +423,7 @@ static void print_exit_summary(struct worker_state *workers, int worker_cnt, str
 		goto skip_prog_stats;
 
 	if (env.stats)
-		fprintf(stderr, "BPF program stats:\n");
+		printf("BPF program stats:\n");
 
 	struct bpf_program *prog;
 	u64 total_run_cnt = 0, total_run_ns = 0;
@@ -437,18 +437,18 @@ static void print_exit_summary(struct worker_state *workers, int worker_cnt, str
 		memset(&info, 0, sizeof(info));
 		err = bpf_prog_get_info_by_fd(bpf_program__fd(prog), &info, &info_sz);
 		if (err) {
-			fprintf(stderr, "!!! %s: failed to fetch prog info: %d\n",
+			eprintf("!!! %s: failed to fetch prog info: %d\n",
 				bpf_program__name(prog), err);
 			continue;
 		}
 
 		if (info.recursion_misses) {
-			fprintf(stderr, "!!! %s: %llu recursion misses!\n",
+			eprintf("!!! %s: %llu recursion misses!\n",
 				bpf_program__name(prog), info.recursion_misses);
 		}
 
 		if (env.stats) {
-			fprintf(stderr, "\t%s%-*s %8llu (%6.0lf/CPU/s) runs for total of %.3lfms (%.3lfms/CPU/s).\n",
+			printf("\t%s%-*s %8llu (%6.0lf/CPU/s) runs for total of %.3lfms (%.3lfms/CPU/s).\n",
 				bpf_program__name(prog),
 				(int)max(1UL, 24 - strlen(bpf_program__name(prog))), ":",
 				info.run_cnt,
@@ -461,7 +461,7 @@ static void print_exit_summary(struct worker_state *workers, int worker_cnt, str
 	}
 
 	if (env.stats) {
-		fprintf(stderr, "\t%-24s %8llu (%6.0lf/CPU/s) runs for total of %.3lfms (%.3lfms/CPU/s).\n",
+		printf("\t%-24s %8llu (%6.0lf/CPU/s) runs for total of %.3lfms (%.3lfms/CPU/s).\n",
 			"TOTAL:", total_run_cnt,
 			total_run_cnt / num_cpus / dur_s,
 			total_run_ns / 1000000.0,
@@ -473,7 +473,7 @@ skip_prog_stats:
 		goto skip_rb_stats;
 
 	if (env.stats)
-		fprintf(stderr, "Data procesing stats:\n");
+		printf("Data procesing stats:\n");
 
 	for (int i = 0; i < worker_cnt; i++) {
 		struct worker_state *w = &workers[i];
@@ -487,7 +487,7 @@ skip_prog_stats:
 	err = bpf_map__lookup_elem(skel->maps.stats, &zero, sizeof(int),
 				   stats_by_cpu, sizeof(stats_by_cpu[0]) * num_cpus, 0);
 	if (err) {
-		fprintf(stderr, "Failed to fetch BPF-side stats: %d\n", err);
+		eprintf("Failed to fetch BPF-side stats: %d\n", err);
 		goto skip_rb_stats;
 	}
 
@@ -510,13 +510,13 @@ skip_prog_stats:
 			char rb_name[32];
 			snprintf(rb_name, sizeof(rb_name), "RB #%d:", i);
 
-			fprintf(stderr, "\t%-8s %8llu records (%.3lfMB, %.3lfMB/s) processed, %llu dropped (%.3lf%% drop rate), %llu records (%.3lfMB) ignored.\n",
+			printf("\t%-8s %8llu records (%.3lfMB, %.3lfMB/s) processed, %llu dropped (%.3lf%% drop rate), %llu records (%.3lfMB) ignored.\n",
 				rb_name, w->rb_handled_cnt, w->rb_handled_sz / 1024.0 / 1024.0,
 				w->rb_handled_sz / 1024.0 / 1024.0 / dur_s,
 				stats_by_rb[i].rb_drops, stats_by_rb[i].rb_drops * 100.0 / (w->rb_handled_cnt + stats_by_rb[i].rb_drops),
 				w->rb_ignored_cnt, w->rb_ignored_sz / 1024.0 / 1024.0);
 		}
-		fprintf(stderr, "\t%-8s %8llu records (%.3lfMB, %.3lfMB/s, %.3lfMB/RB/s) processed, %llu dropped (%.3lf%% drop rate), %llu records (%.3lfMB) ignored.\n",
+		printf("\t%-8s %8llu records (%.3lfMB, %.3lfMB/s, %.3lfMB/RB/s) processed, %llu dropped (%.3lf%% drop rate), %llu records (%.3lfMB) ignored.\n",
 			"TOTAL:", rb_handled_cnt, rb_handled_sz / 1024.0 / 1024.0,
 			rb_handled_sz / 1024.0 / 1024.0 / dur_s,
 			rb_handled_sz / 1024.0 / 1024.0 / dur_s / env.ringbuf_cnt,
@@ -530,32 +530,32 @@ skip_rb_stats:
 
 	struct rusage ru;
 	if (getrusage(RUSAGE_SELF, &ru)) {
-		fprintf(stderr, "Failed to get wprof's resource usage data!..\n");
+		eprintf("Failed to get wprof's resource usage data!..\n");
 		goto skip_rusage;
 	}
 
-	fprintf(stderr, "wprof's own resource usage:\n");
-	fprintf(stderr, "\tCPU time (user/system, s):\t\t%.3lf/%.3lf\n",
+	printf("wprof's own resource usage:\n");
+	printf("\tCPU time (user/system, s):\t\t%.3lf/%.3lf\n",
 		ru.ru_utime.tv_sec + ru.ru_utime.tv_usec / 1000000.0,
 		ru.ru_stime.tv_sec + ru.ru_stime.tv_usec / 1000000.0);
-	fprintf(stderr, "\tMemory (max RSS, MB):\t\t\t%.3lf\n",
+	printf("\tMemory (max RSS, MB):\t\t\t%.3lf\n",
 		ru.ru_maxrss / 1024.0);
-	fprintf(stderr, "\tPage faults (maj/min, K)\t\t%.3lf/%.3lf\n",
+	printf("\tPage faults (maj/min, K)\t\t%.3lf/%.3lf\n",
 		ru.ru_majflt / 1000.0, ru.ru_minflt / 1000.0);
-	fprintf(stderr, "\tBlock I/Os (K):\t\t\t\t%.3lf/%.3lf\n",
+	printf("\tBlock I/Os (K):\t\t\t\t%.3lf/%.3lf\n",
 		ru.ru_inblock / 1000.0, ru.ru_oublock / 1000.0);
-	fprintf(stderr, "\tContext switches (vol/invol, K):\t%.3lf/%.3lf\n",
+	printf("\tContext switches (vol/invol, K):\t%.3lf/%.3lf\n",
 		ru.ru_nvcsw / 1000.0, ru.ru_nivcsw / 1000.0);
 
 skip_rusage:
 	if (s.rb_misses)
-		fprintf(stderr, "!!! Ringbuf fetch misses: %llu\n", s.rb_misses);
+		eprintf("!!! Ringbuf fetch misses: %llu\n", s.rb_misses);
 	if (s.rb_drops) {
 		for (int i = 0; i < num_cpus; i++) {
 			if (stats_by_cpu[i].rb_drops == 0)
 				continue;
 
-			fprintf(stderr, "!!! Drops (CPU #%d): %llu (%llu handled, %.3lf%% drop rate)\n",
+			eprintf("!!! Drops (CPU #%d): %llu (%llu handled, %.3lf%% drop rate)\n",
 				i, stats_by_cpu[i].rb_drops, stats_by_cpu[i].rb_handled,
 				stats_by_cpu[i].rb_drops * 100.0 / (stats_by_cpu[i].rb_handled + stats_by_cpu[i].rb_drops));
 		}
@@ -564,19 +564,19 @@ skip_rusage:
 				continue;
 
 			struct worker_state *w = &workers[i];
-			fprintf(stderr, "!!! Drops (RB #%d): %llu (%llu handled, %.3lf%% drop rate)\n",
+			eprintf("!!! Drops (RB #%d): %llu (%llu handled, %.3lf%% drop rate)\n",
 				i, stats_by_rb[i].rb_drops, w->rb_handled_cnt,
 				stats_by_rb[i].rb_drops * 100.0 / (w->rb_handled_cnt + stats_by_rb[i].rb_drops));
 		}
-		fprintf(stderr, "!!! Drops (TOTAL): %llu (%llu handled, %.3lf%% drop rate)\n",
+		eprintf("!!! Drops (TOTAL): %llu (%llu handled, %.3lf%% drop rate)\n",
 			s.rb_drops, rb_handled_cnt, s.rb_drops * 100.0 / (rb_handled_cnt + s.rb_drops));
 	}
 	if (s.task_state_drops)
-		fprintf(stderr, "!!! Task state drops: %llu\n", s.task_state_drops);
+		eprintf("!!! Task state drops: %llu\n", s.task_state_drops);
 	if (s.req_state_drops)
-		fprintf(stderr, "!!! Request state drops: %llu\n", s.req_state_drops);
+		eprintf("!!! Request state drops: %llu\n", s.req_state_drops);
 
-	fprintf(stderr, "Exited %s (after %.3lfs).\n",
+	printf("Exited %s (after %.3lfs).\n",
 		exit_code ? "with errors" : "cleanly",
 		(ktime_now_ns() - env.actual_start_ts) / 1000000000.0);
 }
@@ -638,7 +638,7 @@ static int setup_perf_timer_ticks(struct bpf_state *st, int num_cpus)
 		int pefd = perf_event_open(&attr, -1, cpu, -1, PERF_FLAG_FD_CLOEXEC);
 		if (pefd < 0) {
 			int err = -errno;
-			fprintf(stderr, "Failed to set up performance monitor on CPU %d: %d\n", cpu, err);
+			eprintf("Failed to set up performance monitor on CPU %d: %d\n", cpu, err);
 			return err;
 		}
 		st->perf_timer_fds[cpu] = pefd;
@@ -671,20 +671,20 @@ static int setup_perf_counters(struct bpf_state *st, int num_cpus)
 
 			int pefd = perf_event_open(&attr, -1, cpu, -1, PERF_FLAG_FD_CLOEXEC);
 			if (pefd < 0) {
-				fprintf(stderr, "Failed to create %s PMU for CPU #%d, skipping...\n", def->alias, cpu);
+				eprintf("Failed to create %s PMU for CPU #%d, skipping...\n", def->alias, cpu);
 			} else {
 				st->perf_counter_fds[pe_idx] = pefd;
 				err = bpf_map__update_elem(st->skel->maps.perf_cntrs,
 							   &pe_idx, sizeof(pe_idx),
 							   &pefd, sizeof(pefd), 0);
 				if (err) {
-					fprintf(stderr, "Failed to set up %s PMU on CPU#%d for BPF: %d\n", def->alias, cpu, err);
+					eprintf("Failed to set up %s PMU on CPU#%d for BPF: %d\n", def->alias, cpu, err);
 					return err;
 				}
 				err = ioctl(pefd, PERF_EVENT_IOC_ENABLE, 0);
 				if (err) {
 					err = -errno;
-					fprintf(stderr, "Failed to enable %s PMU on CPU#%d: %d\n", def->alias, cpu, err);
+					eprintf("Failed to enable %s PMU on CPU#%d: %d\n", def->alias, cpu, err);
 					return err;
 				}
 			}
@@ -702,7 +702,7 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 
 #ifndef __x86_64__
 	if (env.capture_ipis) {
-		fprintf(stderr, "IPI capture is supported only on x86-64 architecture!\n");
+		eprintf("IPI capture is supported only on x86-64 architecture!\n");
 		return -EOPNOTSUPP;
 	}
 #endif /* __x86_64 */
@@ -711,7 +711,7 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 
 	err = parse_cpu_mask_file(online_cpus_file, &st->online_mask, &st->num_online_cpus);
 	if (err) {
-		fprintf(stderr, "Failed to get online CPU numbers: %d\n", err);
+		eprintf("Failed to get online CPU numbers: %d\n", err);
 		return -EINVAL;
 	}
 
@@ -720,7 +720,7 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 	st->skel = skel = wprof_bpf__open();
 	if (!skel) {
 		err = -errno;
-		fprintf(stderr, "Failed to open and load BPF skeleton: %d\n", err);
+		eprintf("Failed to open and load BPF skeleton: %d\n", err);
 		return err;
 	}
 
@@ -879,7 +879,7 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 		skel->rodata->filt_mode |= f->filt_mode;
 		*f->skel_cnt = f->cnt;
 		if ((err = bpf_map__set_value_size(f->map, f->cnt * sizeof(int)))) {
-			fprintf(stderr, "Failed to size BPF-side %s: %d\n", f->name, err);
+			eprintf("Failed to size BPF-side %s: %d\n", f->name, err);
 			return err;
 		}
 		*f->mmap = bpf_map__initial_value(f->map, &_sz);
@@ -931,7 +931,7 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 		skel->rodata->filt_mode |= f->filt_mode;
 		*f->skel_cnt = f->cnt;
 		if ((err = bpf_map__set_value_size(f->map, f->cnt * sizeof(**f->mmap)))) {
-			fprintf(stderr, "Failed to size BPF-side %s: %d\n", f->name, err);
+			eprintf("Failed to size BPF-side %s: %d\n", f->name, err);
 			return err;
 		}
 		*f->mmap = bpf_map__initial_value(f->map, &_sz);
@@ -959,7 +959,7 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 	int cpu_cnt_pow2 = round_pow_of_2(num_cpus);
 	skel->rodata->rb_cpu_map_mask = cpu_cnt_pow2 - 1;
 	if ((err = bpf_map__set_value_size(skel->maps.data_rb_cpu_map, cpu_cnt_pow2 * sizeof(*skel->data_rb_cpu_map)))) {
-		fprintf(stderr, "Failed to size RB-to-CPU mapping: %d\n", err);
+		eprintf("Failed to size RB-to-CPU mapping: %d\n", err);
 		return err;
 	}
 	size_t _sz;
@@ -977,12 +977,12 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 	if (env.stats) {
 		st->stats_fd = bpf_enable_stats(BPF_STATS_RUN_TIME);
 		if (st->stats_fd < 0)
-			fprintf(stderr, "Failed to enable BPF run stats tracking: %d!\n", st->stats_fd);
+			eprintf("Failed to enable BPF run stats tracking: %d!\n", st->stats_fd);
 	}
 
 	err = wprof_bpf__load(skel);
 	if (err) {
-		fprintf(stderr, "Fail to load BPF skeleton: %d\n", err);
+		eprintf("Failed to load BPF skeleton: %d\n", err);
 		return err;
 	}
 
@@ -992,13 +992,13 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 
 		map_fd = bpf_map_create(BPF_MAP_TYPE_RINGBUF, sfmt("wprof_rb_%d", i), 0, 0, env.ringbuf_sz, NULL);
 		if (map_fd < 0) {
-			fprintf(stderr, "Failed to create BPF ringbuf #%d: %d\n", i, map_fd);
+			eprintf("Failed to create BPF ringbuf #%d: %d\n", i, map_fd);
 			return map_fd;
 		}
 
 		err = bpf_map_update_elem(bpf_map__fd(skel->maps.rbs), &i, &map_fd, BPF_NOEXIST);
 		if (err < 0) {
-			fprintf(stderr, "Failed to set BPF ringbuf #%d into ringbuf map-of-maps: %d\n", i, err);
+			eprintf("Failed to set BPF ringbuf #%d into ringbuf map-of-maps: %d\n", i, err);
 			close(map_fd);
 			return err;
 		}
@@ -1011,7 +1011,7 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 	for (i = 0; i < env.ringbuf_cnt; i++) {
 		st->rb_managers[i] = ring_buffer__new(st->rb_map_fds[i], handle_rb_event, &workers[i], NULL);
 		if (!st->rb_managers[i]) {
-			fprintf(stderr, "Failed to create ring buffer manager for ringbuf #%d: %d\n", i, err);
+			eprintf("Failed to create ring buffer manager for ringbuf #%d: %d\n", i, err);
 			err = -errno;
 			return err;
 		}
@@ -1072,16 +1072,12 @@ int attach_usdt_probe(struct bpf_state *st, struct bpf_program *prog,
 					NULL);
 	ignore_libbpf_warns = false;
 	if (!link) {
-		if (env.debug_level >= 2) {
-			eprintf("Failed to attach USDT %s:%s to %s (%s), ignoring...\n",
-			       usdt_provider, usdt_name, binary_path, binary_attach_path);
-		}
+		deprintf(2, "Failed to attach USDT %s:%s to %s (%s), ignoring...\n",
+		       usdt_provider, usdt_name, binary_path, binary_attach_path);
 		return -ENOENT;
 	} else {
-		if (env.debug_level >= 1) {
-			printf("Attached USDT %s:%s to %s (%s).\n",
-			       usdt_provider, usdt_name, binary_path, binary_attach_path);
-		}
+		dprintf(1, "Attached USDT %s:%s to %s (%s).\n",
+			usdt_provider, usdt_name, binary_path, binary_attach_path);
 	}
 
 	tmp = realloc(st->links, (st->link_cnt + 1) * sizeof(struct bpf_link *));
@@ -1114,7 +1110,7 @@ static int attach_bpf(struct bpf_state *st, struct worker_state *workers, int nu
 
 	err = wprof_bpf__attach(st->skel);
 	if (err) {
-		fprintf(stderr, "Failed to attach skeleton: %d\n", err);
+		eprintf("Failed to attach skeleton: %d\n", err);
 		return err;
 	}
 
@@ -1247,7 +1243,7 @@ static void cleanup_workers(struct worker_state *workers, int worker_cnt)
 			int err = munmap(w->dump_mem, w->dump_sz);
 			if (err < 0) {
 				err = -errno;
-				fprintf(stderr, "Failed to munmap() dump file '%s': %d\n", env.data_path, err);
+				eprintf("Failed to munmap() dump file '%s': %d\n", env.data_path, err);
 			}
 		}
 
@@ -1280,7 +1276,7 @@ int main(int argc, char **argv)
 
 	num_cpus = libbpf_num_possible_cpus();
 	if (num_cpus <= 0) {
-		fprintf(stderr, "Failed to get the number of processors\n");
+		eprintf("Failed to get the number of processors\n");
 		err = -1;
 		goto cleanup;
 	}
@@ -1297,8 +1293,7 @@ int main(int argc, char **argv)
 		}
 	}
 	env.ringbuf_cnt = min(env.ringbuf_cnt, num_cpus);
-	if (env.verbose)
-		printf("Using %d BPF ring buffers.\n", env.ringbuf_cnt);
+	vprintf("Using %d BPF ring buffers.\n", env.ringbuf_cnt);
 
 	/* during replay or trace generation there is only one worker */
 	worker_cnt = env.replay ? 1 : env.ringbuf_cnt;
@@ -1316,12 +1311,12 @@ int main(int argc, char **argv)
 		worker->dump = fopen(env.data_path, "r");
 		if (!worker->dump) {
 			err = -errno;
-			fprintf(stderr, "Failed to open data dump at '%s': %d\n", env.data_path, err);
+			eprintf("Failed to open data dump at '%s': %d\n", env.data_path, err);
 			goto cleanup;
 		}
 		err = load_data_dump(worker);
 		if (err) {
-			fprintf(stderr, "Failed to load data dump at '%s': %d\n", env.data_path, err);
+			eprintf("Failed to load data dump at '%s': %d\n", env.data_path, err);
 			goto cleanup;
 		}
 		const struct wprof_data_hdr *dump_hdr = worker->dump_hdr;
@@ -1498,31 +1493,31 @@ int main(int argc, char **argv)
 		worker->dump = fopen(dump_path, "w+");
 		if (!worker->dump) {
 			err = -errno;
-			fprintf(stderr, "Failed to create data dump at '%s': %d\n", dump_path, err);
+			eprintf("Failed to create data dump at '%s': %d\n", dump_path, err);
 			goto cleanup;
 		}
 		err = init_wprof_data(worker->dump);
 		if (err) {
-			fprintf(stderr, "Failed to initialize ringbuf dump #%d at '%s': %d\n", i, dump_path, err);
+			eprintf("Failed to initialize ringbuf dump #%d at '%s': %d\n", i, dump_path, err);
 			fclose(worker->dump);
 			return err;
 		}
 		if (setvbuf(worker->dump, NULL, _IOFBF, FILE_BUF_SZ)) {
 			err = -errno;
-			fprintf(stderr, "Failed to set data file buffer size to %dKB: %d\n", FILE_BUF_SZ / 1024, err);
+			eprintf("Failed to set data file buffer size to %dKB: %d\n", FILE_BUF_SZ / 1024, err);
 			goto cleanup;
 		}
 	}
 
 	err = setup_bpf(&bpf_state, workers, num_cpus);
 	if (err) {
-		fprintf(stderr, "Failed to setup BPF parts: %d\n", err);
+		eprintf("Failed to setup BPF parts: %d\n", err);
 		goto cleanup;
 	}
 
 	err = attach_bpf(&bpf_state, workers, num_cpus);
 	if (err) {
-		fprintf(stderr, "Failed to attach BPF parts: %d\n", err);
+		eprintf("Failed to attach BPF parts: %d\n", err);
 		goto cleanup;
 	}
 
@@ -1531,11 +1526,11 @@ int main(int argc, char **argv)
 	timer_ival.it_value.tv_usec = env.duration_ns / 1000 % 1000000;
 	err = setitimer(ITIMER_REAL, &timer_ival, NULL);
 	if (err < 0) {
-		fprintf(stderr, "Failed to setup run duration timeout timer: %d\n", err);
+		eprintf("Failed to setup run duration timeout timer: %d\n", err);
 		goto cleanup;
 	}
 
-	fprintf(stderr, "Running...\n");
+	printf("Running...\n");
 
 	env.ktime_start_ns = ktime_now_ns();
 	env.realtime_start_ns = ktime_to_realtime_ns(env.ktime_start_ns);
@@ -1545,27 +1540,27 @@ int main(int argc, char **argv)
 
 	err = run_bpf(&bpf_state);
 	if (err) {
-		fprintf(stderr, "Failed during collecting BPF-generated data: %d\n", err);
+		eprintf("Failed during collecting BPF-generated data: %d\n", err);
 		goto cleanup;
 	}
 
-	fprintf(stderr, "Stopping...\n");
+	printf("Stopping...\n");
 	detach_bpf(&bpf_state, num_cpus);
 
-	fprintf(stderr, "Draining...\n");
+	printf("Draining...\n");
 	drain_bpf(&bpf_state, num_cpus);
 
-	fprintf(stderr, "Merging...\n");
+	printf("Merging...\n");
 	err = merge_wprof_data(workers);
 	if (err) {
-		fprintf(stderr, "Failed to finalize data dump: %d\n", err);
+		eprintf("Failed to finalize data dump: %d\n", err);
 		goto cleanup;
 	}
 
 	if (env.requested_stack_traces) {
 		err = process_stack_traces(&workers[0]);
 		if (err) {
-			fprintf(stderr, "Failed to symbolize and dump stack traces: %d\n", err);
+			eprintf("Failed to symbolize and dump stack traces: %d\n", err);
 			goto cleanup;
 		}
 	}
@@ -1574,11 +1569,11 @@ int main(int argc, char **argv)
 		fflush(workers[0].dump);
 		if (fchmod(fileno(workers[0].dump), 0644)) {
 			err = -errno;
-			fprintf(stderr, "Failed to chmod() data file '%s': %d\n", env.data_path, err);
+			eprintf("Failed to chmod() data file '%s': %d\n", env.data_path, err);
 			goto cleanup;
 		}
 		ssize_t file_sz = file_size(workers[0].dump);
-		fprintf(stderr, "Produced %.3lfMB data file at '%s'.\n",
+		printf("Produced %.3lfMB data file at '%s'.\n",
 			file_sz / (1024.0 * 1024.0), env.data_path);
 	}
 
@@ -1589,38 +1584,38 @@ skip_data_collection:
 		w->trace = fopen(env.trace_path, "w+");
 		if (!w->trace) {
 			err = -errno;
-			fprintf(stderr, "Failed to create trace file '%s': %d\n", env.trace_path, err);
+			eprintf("Failed to create trace file '%s': %d\n", env.trace_path, err);
 			goto cleanup;
 		}
 		if (setvbuf(w->trace, NULL, _IOFBF, FILE_BUF_SZ)) {
 			err = -errno;
-			fprintf(stderr, "Failed to set trace file buffer size to %dKB: %d\n", FILE_BUF_SZ / 1024, err);
+			eprintf("Failed to set trace file buffer size to %dKB: %d\n", FILE_BUF_SZ / 1024, err);
 			goto cleanup;
 		}
 		w->stream = (pb_ostream_t){&file_stream_cb, w->trace, SIZE_MAX, 0};
 
 		err = init_emit(w);
 		if (err) {
-			fprintf(stderr, "Failed to init trace emitting logic: %d\n", err);
+			eprintf("Failed to init trace emitting logic: %d\n", err);
 			goto cleanup;
 		}
 
 		if (init_pb_trace(&w->stream)) {
 			err = -1;
-			fprintf(stderr, "Failed to init protobuf!\n");
+			eprintf("Failed to init protobuf!\n");
 			goto cleanup;
 		}
 
 		/* process dumped events, and generate trace */
 		err = emit_trace(w);
 		if (err) {
-			fprintf(stderr, "Failed to generate Perfetto trac: %d\n", err);
+			eprintf("Failed to generate Perfetto trac: %d\n", err);
 			goto cleanup;
 		}
 
 		fflush(w->trace);
 		ssize_t file_sz = file_size(w->trace);
-		fprintf(stderr, "Produced %.3lfMB trace file at '%s'.\n",
+		printf("Produced %.3lfMB trace file at '%s'.\n",
 			file_sz / (1024.0 * 1024.0), env.trace_path);
 	}
 cleanup:

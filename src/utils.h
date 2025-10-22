@@ -48,7 +48,19 @@ static inline bool is_false_or_unset(enum tristate tri)
 #define offsetofend(TYPE, MEMBER) (offsetof(TYPE, MEMBER) + sizeof((((TYPE *)0)->MEMBER)))
 #endif
 
-#define eprintf(fmt, ...) fprintf(stderr, fmt, ##__VA_ARGS__)
+extern bool env_verbose;
+extern int env_debug_level;
+
+#define eprintf(fmt, ...) \
+	do { fprintf(stderr, fmt, ##__VA_ARGS__); } while (0);
+#define vprintf(fmt, ...) \
+	do { if (env_verbose) fprintf(stdout, fmt, ##__VA_ARGS__); } while (0);
+#define veprintf(fmt, ...) \
+	do { if (env_verbose) fprintf(stderr, fmt, ##__VA_ARGS__); } while (0);
+#define dprintf(level, fmt, ...) \
+	do { if (env_debug_level >= level) fprintf(stdout, fmt, ##__VA_ARGS__); } while (0);
+#define deprintf(level, fmt, ...) \
+	do { if (env_debug_level >= level) fprintf(stderr, fmt, ##__VA_ARGS__); } while (0);
 
 /*
  * This function is from libbpf, but it is not a public API and can only be

@@ -32,6 +32,9 @@ const char argp_program_doc[] =
 "\n"
 "See `wprof --help` for more information.\n";
 
+bool env_verbose;
+int env_debug_level;
+
 struct env env = {
 	.data_path = "wprof.data",
 	.ringbuf_sz = DEFAULT_RINGBUF_SZ,
@@ -144,9 +147,12 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 
 	switch (key) {
 	case 'v':
-		if (env.verbose)
+		if (env.verbose) {
 			env.debug_level++;
+			env_debug_level++;
+		}
 		env.verbose = true;
+		env_verbose = true;
 		break;
 	case OPT_STATS:
 		env.stats = true;
