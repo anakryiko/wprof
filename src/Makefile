@@ -126,9 +126,9 @@ $(OUTPUT)/wprof.skel.h: $(OUTPUT)/wprof.bpf.o $(OUTPUT)/utils.bpf.o | $(OUTPUT) 
 
 WPROF_SRCS := wprof.c utils.c env.c protobuf.c emit.c stacktrace.c				\
 	      pb_common.c pb_encode.c perfetto_trace.pb.c topology.c proc.c			\
-	      requests.c
+	      requests.c cuda.c
 WPROF_HDRS := wprof.h utils.h env.h protobuf.h emit.h stacktrace.h data.h topology.h		\
-	      proc.h requests.h
+	      proc.h requests.h cuda.h
 
 # Build user space object files
 $(OUTPUT)/%.o: %.c $(OUTPUT)/wprof.skel.h $(WPROF_HDRS) | $(OUTPUT)

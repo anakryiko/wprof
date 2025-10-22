@@ -11,6 +11,29 @@
 #include "proc.h"
 #include "utils.h"
 
+int proc_name_by_pid(int pid, char *buf, size_t buf_sz)
+{
+	char path[32];
+	snprintf(path, sizeof(path), "/proc/%d/comm", pid);
+
+	FILE *fp = fopen(path, "re");
+	if (!fp) {
+		snprintf(buf, buf_sz, "???");
+		return -errno;
+	}
+
+	if (fgets(buf, buf_sz, fp)) {
+		char *endline = strchr(buf, '\n');
+		if (endline)
+			*endline = '\0';
+		fclose(fp);
+		return 0;
+	}
+
+	fclose(fp);
+	return -ESRCH;
+}
+
 int proc_iter_new(struct proc_iter *it)
 {
 	memset(it, 0, sizeof(*it));
