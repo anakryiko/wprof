@@ -283,4 +283,3 @@ u64 ktime_to_realtime_ns(u64 ts_ns)
 {
 	return ktime_off + ts_ns;
 }
-

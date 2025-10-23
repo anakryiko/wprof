@@ -7,6 +7,8 @@
 #include <sys/syscall.h>
 #include <dirent.h>
 
+#include "utils.h"
+
 int proc_name_by_pid(int pid, char *buf, size_t buf_sz);
 
 static inline const char *proc_name(int pid)

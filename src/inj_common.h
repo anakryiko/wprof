@@ -3,7 +3,9 @@
 #ifndef __INJ_COMMON_H_
 #define __INJ_COMMON_H_
 
+#ifndef MAX_UDS_FD_CNT
 #define MAX_UDS_FD_CNT 16
+#endif
 
 struct inj_init_ctx {
 	int uds_fd;
