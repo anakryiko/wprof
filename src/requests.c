@@ -85,7 +85,7 @@ static int discover_pid_req_binaries(int pid)
 	}
 	if (errno && (errno != ENOENT && errno != ESRCH)) {
 		err = -errno;
-		eprintf("VMA iteration failed for PID %d: %d\n", pid, err);
+		eprintf("Failed VMA iteration for PID %d: %d\n", pid, err);
 		return err;
 	}
 

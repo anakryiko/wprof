@@ -42,6 +42,7 @@
 #include "requests.h"
 #include "cuda.h"
 #include "bpf_utils.h"
+#include "sys.h"
 
 #define FILE_BUF_SZ (64 * 1024)
 
@@ -635,7 +636,7 @@ static int setup_perf_timer_ticks(struct bpf_state *st, int num_cpus)
 		if (now < timer_start_ts + timer_plan[i].delay_ns)
 			usleep((timer_start_ts + timer_plan[i].delay_ns - now) / 1000);
 
-		int pefd = perf_event_open(&attr, -1, cpu, -1, PERF_FLAG_FD_CLOEXEC);
+		int pefd = sys_perf_event_open(&attr, -1, cpu, -1, PERF_FLAG_FD_CLOEXEC);
 		if (pefd < 0) {
 			int err = -errno;
 			eprintf("Failed to set up performance monitor on CPU %d: %d\n", cpu, err);
@@ -669,7 +670,7 @@ static int setup_perf_counters(struct bpf_state *st, int num_cpus)
 			attr.type = def->perf_type;
 			attr.config = def->perf_cfg;
 
-			int pefd = perf_event_open(&attr, -1, cpu, -1, PERF_FLAG_FD_CLOEXEC);
+			int pefd = sys_perf_event_open(&attr, -1, cpu, -1, PERF_FLAG_FD_CLOEXEC);
 			if (pefd < 0) {
 				eprintf("Failed to create %s PMU for CPU #%d, skipping...\n", def->alias, cpu);
 			} else {

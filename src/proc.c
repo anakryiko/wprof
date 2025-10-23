@@ -84,7 +84,10 @@ int vma_iter_new(struct vma_iter *it, int pid, int query_flags)
 	it->procmap_fd = -1;
 	it->pid = pid;
 
-	snprintf(proc_path, sizeof(proc_path), "/proc/%d/maps", pid);
+	if (pid < 0)
+		snprintf(proc_path, sizeof(proc_path), "/proc/self/maps");
+	else
+		snprintf(proc_path, sizeof(proc_path), "/proc/%d/maps", pid);
 	it->procmap_fd = open(proc_path, O_RDONLY);
 	if (it->procmap_fd < 0) {
 		err = -errno; /* -ENOENT if process is gone */

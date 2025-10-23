@@ -51,16 +51,39 @@ static inline bool is_false_or_unset(enum tristate tri)
 extern bool env_verbose;
 extern int env_debug_level;
 
-#define eprintf(fmt, ...) \
-	do { fprintf(stderr, fmt, ##__VA_ARGS__); } while (0);
-#define vprintf(fmt, ...) \
-	do { if (env_verbose) fprintf(stdout, fmt, ##__VA_ARGS__); } while (0);
+#define eprintf(fmt, ...) do {									\
+	int _errno = errno;									\
+	fprintf(stderr, fmt, ##__VA_ARGS__);							\
+	errno = _errno;										\
+} while (0);
+#define vprintf(fmt, ...) do {									\
+	if (env_verbose) {									\
+		int _errno = errno;								\
+		fprintf(stdout, fmt, ##__VA_ARGS__);						\
+		errno = _errno;									\
+	}											\
+} while (0);
 #define veprintf(fmt, ...) \
-	do { if (env_verbose) fprintf(stderr, fmt, ##__VA_ARGS__); } while (0);
-#define dprintf(level, fmt, ...) \
-	do { if (env_debug_level >= level) fprintf(stdout, fmt, ##__VA_ARGS__); } while (0);
-#define deprintf(level, fmt, ...) \
-	do { if (env_debug_level >= level) fprintf(stderr, fmt, ##__VA_ARGS__); } while (0);
+	if (env_verbose) {									\
+		int _errno = errno;								\
+		fprintf(stderr, fmt, ##__VA_ARGS__);						\
+		errno = _errno;									\
+	}											\
+} while (0);
+#define dprintf(_level, fmt, ...) do {								\
+	if (env_debug_level >= _level) {							\
+		int _errno = errno;								\
+		fprintf(stdout, fmt, ##__VA_ARGS__);						\
+		errno = _errno;									\
+	}											\
+} while (0);
+#define deprintf(_level, fmt, ...) do {								\
+	if (env_debug_level >= _level) {							\
+		int _errno = errno;								\
+		fprintf(stderr, fmt, ##__VA_ARGS__);						\
+		errno = _errno;									\
+	}											\
+} while (0);
 
 /*
  * This function is from libbpf, but it is not a public API and can only be
@@ -68,13 +91,6 @@ extern int env_debug_level;
  * against the libbpf built from submodule during build.
  */
 extern int parse_cpu_mask_file(const char *fcpu, bool **mask, int *mask_sz);
-
-static inline long perf_event_open(struct perf_event_attr *hw_event,
-				   pid_t pid, int cpu, int group_fd,
-				   unsigned long flags)
-{
-	return syscall(__NR_perf_event_open, hw_event, pid, cpu, group_fd, flags);
-}
 
 ssize_t file_size(FILE *f);
 
