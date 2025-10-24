@@ -58,8 +58,15 @@ static inline bool is_false_or_unset(enum tristate tri)
 	(((cur) = type##_iter_next(&___it)));							\
 )
 
+enum log_subset {
+	LOG_LIBBPF = 0x01,
+	LOG_USDT = 0x02,
+	LOG_TOPOLOGY = 0x04,
+};
+
 extern bool env_verbose;
 extern int env_debug_level;
+extern enum log_subset env_log_set;
 
 #define eprintf(fmt, ...) do {									\
 	int _errno = errno;									\
@@ -89,6 +96,13 @@ extern int env_debug_level;
 } while (0);
 #define deprintf(_level, fmt, ...) do {								\
 	if (env_debug_level >= _level) {							\
+		int _errno = errno;								\
+		fprintf(stderr, fmt, ##__VA_ARGS__);						\
+		errno = _errno;									\
+	}											\
+} while (0);
+#define dlogf(_set, _level, fmt, ...) do {							\
+	if ((env_log_set & LOG_##_set) || (_level > 0 && env_debug_level >= _level)) {		\
 		int _errno = errno;								\
 		fprintf(stderr, fmt, ##__VA_ARGS__);						\
 		errno = _errno;									\

@@ -50,7 +50,7 @@ static bool ignore_libbpf_warns;
 
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
 {
-	if (level == LIBBPF_DEBUG && !env.libbpf_logs)
+	if (level == LIBBPF_DEBUG && !(env.log_set & LOG_LIBBPF))
 		return 0;
 	if (ignore_libbpf_warns)
 		return 0;
@@ -1073,11 +1073,11 @@ int attach_usdt_probe(struct bpf_state *st, struct bpf_program *prog,
 					NULL);
 	ignore_libbpf_warns = false;
 	if (!link) {
-		deprintf(2, "Failed to attach USDT %s:%s to %s (%s), ignoring...\n",
-		       usdt_provider, usdt_name, binary_path, binary_attach_path);
+		dlogf(USDT, 2, "Failed to attach USDT %s:%s to %s (%s), ignoring...\n",
+		      usdt_provider, usdt_name, binary_path, binary_attach_path);
 		return -ENOENT;
 	} else {
-		dprintf(1, "Attached USDT %s:%s to %s (%s).\n",
+		dlogf(USDT, 1, "Attached USDT %s:%s to %s (%s).\n",
 			usdt_provider, usdt_name, binary_path, binary_attach_path);
 	}
 
