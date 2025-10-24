@@ -33,6 +33,29 @@
 #include "proc.h"
 #include "elf_utils.h"
 
+struct tracee_state {
+	int pid;
+	int pid_fd;
+	char *proc_name;
+
+	struct user_regs_struct orig_regs;
+
+	long data_mmap_addr;
+	size_t data_mmap_sz;
+	long exec_mmap_addr;
+	size_t exec_mmap_sz;
+
+	int uds_local_fd;
+	int memfd_local_fd;
+
+	long dlopen_addr;
+	long dlclose_addr;
+	long dlsym_addr;
+
+	long dlopen_handle;
+	long inj_setup_addr;
+};
+
 #define elog(fmt, ...) eprintf("tracee(%d, %s): " fmt, tracee->pid, tracee->proc_name, ##__VA_ARGS__)
 #define vlog(fmt, ...) vprintf("tracee(%d, %s): " fmt, tracee->pid, tracee->proc_name, ##__VA_ARGS__)
 #define dlog(fmt, ...) dlogf(INJECTION, 1, "tracee(%d, %s): " fmt, tracee->pid, tracee->proc_name, ##__VA_ARGS__)
@@ -271,12 +294,11 @@ static int ptrace_wait_syscall(const struct tracee_state *tracee)
 	return __ptrace_wait(tracee, SIGTRAP | 0x80, false /* !PTRACE_EVENT_STOP */, 0);
 }
 
-static int ptrace_restart_syscall(const struct tracee_state *tracee,
-				  const struct user_regs_struct *orig_regs)
+static int ptrace_restart_syscall(const struct tracee_state *tracee)
 {
 	int err = 0;
 
-	err = err ?: ptrace_set_regs(tracee, orig_regs);
+	err = err ?: ptrace_set_regs(tracee, &tracee->orig_regs);
 	err = err ?: ptrace_op(tracee, PTRACE_SYSCALL, 0);
 	err = err ?: ptrace_wait_syscall(tracee);
 
@@ -284,30 +306,36 @@ static int ptrace_restart_syscall(const struct tracee_state *tracee,
 }
 
 static int ptrace_exec_syscall(const struct tracee_state *tracee,
-			       const struct user_regs_struct *orig_regs,
 			       const struct user_regs_struct *pre_regs,
-			       struct user_regs_struct *post_regs)
+			       long *res)
 {
+	struct user_regs_struct post_regs;
 	int err = 0;
 
 	err = err ?: ptrace_set_regs(tracee, pre_regs);
 	err = err ?: ptrace_op(tracee, PTRACE_SYSCALL, 0);
 	err = err ?: ptrace_wait_syscall(tracee);
-	err = err ?: ptrace_get_regs(tracee, post_regs);
-	err = err ?: ptrace_restart_syscall(tracee, orig_regs);
+	err = err ?: ptrace_get_regs(tracee, &post_regs);
+	err = err ?: ptrace_restart_syscall(tracee);
+
+	/* XXX: ARCH SPECIFIC */
+	if (!err)
+		*res = post_regs.rax;
 
 	return err;
 }
 
-int ptrace_inject(int pid, struct tracee_state *tracee)
+struct tracee_state *ptrace_inject(int pid)
 {
+	struct tracee_state *tracee;
 	int err = 0;
 	u64 start_ts = ktime_now_ns();
 
-	memset(tracee, 0, sizeof(*tracee));
-
+	tracee = calloc(1, sizeof(*tracee));
 	tracee->pid = pid;
 	tracee->proc_name = strdup(proc_name(pid));
+	tracee->uds_local_fd = -1;
+	tracee->memfd_local_fd = -1;
 
 	/* We need pidfd to open tracee's FDs later on */
 	tracee->pid_fd = sys_pidfd_open(pid, 0);
@@ -339,15 +367,16 @@ int ptrace_inject(int pid, struct tracee_state *tracee)
 	long dlopen_tracee_off = sym_addrs[0];
 	long dlclose_tracee_off = sym_addrs[1];
 	long dlsym_tracee_off = sym_addrs[2];
-	long dlopen_tracee_addr = libc_start + dlopen_tracee_off;
-	long dlclose_tracee_addr = libc_start + dlclose_tracee_off;
-	long dlsym_tracee_addr = libc_start + dlsym_tracee_off;
+
+	tracee->dlopen_addr = libc_start + dlopen_tracee_off;
+	tracee->dlclose_addr = libc_start + dlclose_tracee_off;
+	tracee->dlsym_addr = libc_start + dlsym_tracee_off;
 
 	dlog("Remote libc found at '%s' base 0x%lx (dlopen off %lx -> %lx, dlclose off %lx -> %lx, dlsym off %lx -> %lx)\n",
 	     libc_path, libc_start,
-	     dlopen_tracee_off, dlopen_tracee_addr,
-	     dlclose_tracee_off, dlclose_tracee_addr,
-	     dlsym_tracee_off, dlsym_tracee_addr);
+	     dlopen_tracee_off, tracee->dlopen_addr,
+	     dlclose_tracee_off, tracee->dlclose_addr,
+	     dlsym_tracee_off, tracee->dlsym_addr);
 
 	u64 ptrace_start_ts = ktime_now_ns();
 
@@ -357,21 +386,19 @@ int ptrace_inject(int pid, struct tracee_state *tracee)
 	dlog("Seizing...\n");
 	if ((err = ptrace_op(tracee, PTRACE_SEIZE, 0)) < 0)
 		goto cleanup;
-	dlog("Interrupting...\n");
 	if ((err = ptrace_op(tracee, PTRACE_INTERRUPT, 0)) < 0)
 		goto cleanup;
-	dlog("Waiting for SIGTRAP | PTRACE_EVENT_STOP...\n");
 	if ((err = ptrace_wait_stop(tracee)) < 0)
 		goto cleanup;
 
 	/*
 	 * Take over next syscall
 	 */
-	struct user_regs_struct orig_regs, regs;
+	struct user_regs_struct regs;
 
+	dlog("Resuming until syscall...\n");
 	if ((err = ptrace_set_options(tracee, PTRACE_O_TRACESYSGOOD)) < 0)
 		goto cleanup;
-	dlog("Resuming until syscall...\n");
 	if ((err = ptrace_op(tracee, PTRACE_SYSCALL, 0)) < 0)
 		goto cleanup;
 	if ((err = ptrace_wait_syscall(tracee)) < 0)
@@ -380,49 +407,46 @@ int ptrace_inject(int pid, struct tracee_state *tracee)
 	u64 ptrace_intercept_ts = ktime_now_ns();
 
 	/* backup original registers */
-	if ((err = ptrace_get_regs(tracee, &orig_regs)) < 0)
+	if ((err = ptrace_get_regs(tracee, &tracee->orig_regs)) < 0)
 		goto cleanup;
 
 	/* XXX: arm64 will need something else */
-	orig_regs.rip -= 2; /* adjust for syscall replay, syscall instruction is 2 bytes */
+	tracee->orig_regs.rip -= 2; /* adjust for syscall replay, syscall instruction is 2 bytes */
 
 	/*
 	 * Inject mmap() syscall
 	 */
 	const long page_size = sysconf(_SC_PAGESIZE);
-	const long data_mmap_sz = page_size;
-	const long exec_mmap_sz = page_size;
-	long data_mmap_addr = 0;
-	long exec_mmap_addr = 0;
+	tracee->data_mmap_sz = page_size;
+	tracee->exec_mmap_sz = page_size;
 
 	dlog("Executing mmap()...\n");
 	/* void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset); */
-	memcpy(&regs, &orig_regs, sizeof(orig_regs));
+	regs = tracee->orig_regs;
 	regs.orig_rax = __NR_mmap;
 	regs.rdi = 0; /* addr */
-	regs.rsi = data_mmap_sz + exec_mmap_sz; /* length */
+	regs.rsi = tracee->data_mmap_sz + tracee->exec_mmap_sz; /* length */
 	regs.rdx = PROT_WRITE | PROT_READ; /* prot */
 	regs.r10 = MAP_ANONYMOUS | MAP_PRIVATE; /* flags */
 	regs.r8 = 0; /* fd */
 	regs.r9 = 0; /* offset */
 
-	if ((err = ptrace_exec_syscall(tracee, &orig_regs, &regs, &regs)) < 0)
+	if ((err = ptrace_exec_syscall(tracee, &regs, &tracee->data_mmap_addr)) < 0)
 		goto cleanup;
-
-	data_mmap_addr = regs.rax;
-	if (data_mmap_addr <= 0) {
-		elog("mmap() inside tracee failed: %ld, bailing!\n", data_mmap_addr);
-		return 1;
+	if (tracee->data_mmap_addr <= 0) {
+		elog("mmap() inside tracee failed: %ld, bailing!\n", tracee->data_mmap_addr);
+		goto cleanup;
 	}
-	exec_mmap_addr = data_mmap_addr + data_mmap_sz;
+
+	tracee->exec_mmap_addr = tracee->data_mmap_addr + tracee->data_mmap_sz;
 	dlog("mmap() returned 0x%lx (data @ %lx, code @ %lx)\n",
-	     (long)data_mmap_addr, (long)data_mmap_addr, (long)exec_mmap_addr);
+	     (long)tracee->data_mmap_addr, (long)tracee->data_mmap_addr, (long)tracee->exec_mmap_addr);
 
 	/*
-	 * Setup executable function call trampoline, by copying inj_call()
-	 * code into (to be) executable mmap()'ed memory
+	 * Setup executable function call trampoline by copying inj_call()
+	 * code into (soon-to-be) executable mmap()'ed memory
 	 */
-	if ((err = remote_vm_write(tracee, exec_mmap_addr, __inj_call, __inj_call_sz)) < 0)
+	if ((err = remote_vm_write(tracee, tracee->exec_mmap_addr, __inj_call, __inj_call_sz)) < 0)
 		goto cleanup;
 
 	/*
@@ -430,16 +454,15 @@ int ptrace_inject(int pid, struct tracee_state *tracee)
 	 */
 	dlog("Executing mprotect(r-xp)...\n");
 	/* int mprotect(void *addr, size_t size, int prot); */
-	memcpy(&regs, &orig_regs, sizeof(orig_regs));
+	regs = tracee->orig_regs;
 	regs.orig_rax = __NR_mprotect;
-	regs.rdi = exec_mmap_addr; /* addr */
-	regs.rsi = exec_mmap_sz; /* size */
+	regs.rdi = tracee->exec_mmap_addr; /* addr */
+	regs.rsi = tracee->exec_mmap_sz; /* size */
 	regs.rdx = PROT_EXEC | PROT_READ; /* prot */
 
-	if ((err = ptrace_exec_syscall(tracee, &orig_regs, &regs, &regs)) < 0)
+	long mprotect_ret;
+	if ((err = ptrace_exec_syscall(tracee, &regs, &mprotect_ret)) < 0)
 		goto cleanup;
-
-	long mprotect_ret = regs.rax;
 	if (mprotect_ret < 0) {
 		elog("mprotect(r-x) inside tracee failed: %ld, bailing!\n", mprotect_ret);
 		goto cleanup;
@@ -450,26 +473,24 @@ int ptrace_inject(int pid, struct tracee_state *tracee)
 	 */
 	dlog("Executing memfd_create()...\n");
 
-	int memfd_remote_fd = -1;
 	char memfd_name[] = "wprof-inject";
-
-	if ((err = remote_vm_write(tracee, data_mmap_addr, memfd_name, sizeof(memfd_name))) < 0)
+	if ((err = remote_vm_write(tracee, tracee->data_mmap_addr, memfd_name, sizeof(memfd_name))) < 0)
 		goto cleanup;
 
 	/* int memfd_create(const char *name, unsigned int flags); */
-	memcpy(&regs, &orig_regs, sizeof(orig_regs));
+	regs = tracee->orig_regs;
 	regs.orig_rax = __NR_memfd_create;
-	regs.rdi = data_mmap_addr; /* name */
+	regs.rdi = tracee->data_mmap_addr; /* name */
 	regs.rsi = MFD_CLOEXEC; /* flags */
-	if ((err = ptrace_exec_syscall(tracee, &orig_regs, &regs, &regs)) < 0)
-		goto cleanup;
 
-	memfd_remote_fd = regs.rax;
+	long memfd_remote_fd;
+	if ((err = ptrace_exec_syscall(tracee, &regs, &memfd_remote_fd)) < 0)
+		goto cleanup;
 	if (memfd_remote_fd < 0) {
-		elog("memfd_create() inside tracee failed: %d, bailing!\n", memfd_remote_fd);
+		elog("memfd_create() inside tracee failed: %ld, bailing!\n", memfd_remote_fd);
 		goto cleanup;
 	}
-	dlog("memfd_create() result: %d\n", memfd_remote_fd);
+	dlog("memfd_create() result: %ld\n", memfd_remote_fd);
 
 	/*
 	 * Execute socketpair(AF_UNIX, SOCK_STREAM)
@@ -477,50 +498,50 @@ int ptrace_inject(int pid, struct tracee_state *tracee)
 	dlog("Executing socketpair(AF_UNIX, SOCK_STREAM)...\n");
 
 	/* int socketpair(int domain, int type, int protocol, int sv[2]); */
-	memcpy(&regs, &orig_regs, sizeof(orig_regs));
+	regs = tracee->orig_regs;
 	regs.orig_rax = __NR_socketpair;
 	regs.rdi = AF_UNIX; /* domain */
 	regs.rsi = SOCK_STREAM; /* length */
 	regs.rdx = 0; /* protocol */
-	regs.r10 = data_mmap_addr; /* sv */
-	if ((err = ptrace_exec_syscall(tracee, &orig_regs, &regs, &regs)) < 0)
-		goto cleanup;
+	regs.r10 = tracee->data_mmap_addr; /* sv */
 
-	int sockpair_ret = regs.rax;
+	long sockpair_ret;
+	if ((err = ptrace_exec_syscall(tracee, &regs, &sockpair_ret)) < 0)
+		goto cleanup;
 	if (sockpair_ret != 0) {
-		elog("socketpair(AF_UNIX, SOCK_STREAM) failed: %d\n", sockpair_ret);
+		elog("socketpair(AF_UNIX, SOCK_STREAM) failed: %ld\n", sockpair_ret);
 		goto cleanup;
 	}
 
 	int uds_remote_fds[2];
-	err = remote_vm_read(tracee, uds_remote_fds, data_mmap_addr, sizeof(uds_remote_fds));
+	err = remote_vm_read(tracee, uds_remote_fds, tracee->data_mmap_addr, sizeof(uds_remote_fds));
 	if (err)
 		goto cleanup;
 	dlog("socket_pair() FDs = {%d, %d}\n", uds_remote_fds[0], uds_remote_fds[1]);
 
-	int uds_local_fd = sys_pidfd_getfd(tracee->pid_fd, uds_remote_fds[0], 0);
-	if (uds_local_fd < 0) {
+	tracee->uds_local_fd = sys_pidfd_getfd(tracee->pid_fd, uds_remote_fds[0], 0);
+	if (tracee->uds_local_fd < 0) {
 		elog("pidfd_getfd(remote_fd %d) failed: %d\n", uds_remote_fds[0], -errno);
 		goto cleanup;
 	}
-	dlog("pidfd_getfd() returned UDS FD %d for tracer\n", uds_local_fd);
+	dlog("pidfd_getfd() returned UDS FD %d for tracer\n", tracee->uds_local_fd);
 
 	u64 ptrace_prepped_ts = ktime_now_ns();
 
 	/* Open tracee's allocated FD for shared lib code */
-	int memfd_local_fd = sys_pidfd_getfd(tracee->pid_fd, memfd_remote_fd, 0);
-	if (memfd_local_fd < 0) {
-		elog("pidfd_getfd(remote_fd %d) failed: %d\n", memfd_remote_fd, -errno);
+	tracee->memfd_local_fd = sys_pidfd_getfd(tracee->pid_fd, memfd_remote_fd, 0);
+	if (tracee->memfd_local_fd < 0) {
+		elog("pidfd_getfd(remote_fd %ld) failed: %d\n", memfd_remote_fd, -errno);
 		goto cleanup;
 	}
-	err = ftruncate(memfd_local_fd, libwprofinj_so_sz);
+	err = ftruncate(tracee->memfd_local_fd, libwprofinj_so_sz);
 	if (err) {
 		elog("Failed to ftruncate() memfd to %ld bytes: %d\n", libwprofinj_so_sz, -errno);
 		goto cleanup;
 	}
 	/* Copy over contents of libinj.so into memfd file */
 	void *libinj_so_mem = mmap(NULL, libwprofinj_so_sz, PROT_READ | PROT_WRITE, MAP_SHARED,
-				   memfd_local_fd, 0);
+				   tracee->memfd_local_fd, 0);
 	if (libinj_so_mem == MAP_FAILED) {
 		elog("Failed to mmap() libinj.so desitnation memfd file: %d\n", -errno);
 		goto cleanup;
@@ -531,20 +552,22 @@ int ptrace_inject(int pid, struct tracee_state *tracee)
 
 	/* Copy over memfd path for passing into dlopen() */
 	char memfd_path[64];
-	snprintf(memfd_path, sizeof(memfd_path), "/proc/self/fd/%d", memfd_remote_fd);
-	if ((err = remote_vm_write(tracee, data_mmap_addr, memfd_path, sizeof(memfd_path))) < 0)
+	snprintf(memfd_path, sizeof(memfd_path), "/proc/self/fd/%ld", memfd_remote_fd);
+	if ((err = remote_vm_write(tracee, tracee->data_mmap_addr, memfd_path, sizeof(memfd_path))) < 0)
 		goto cleanup;
 
 	dlog("Executing dlopen()...\n");
-	long inj_trap_addr = exec_mmap_addr + __inj_trap - __inj_call;
+	long inj_trap_addr = tracee->exec_mmap_addr + __inj_trap - __inj_call;
 
 	/* void *dlopen(const char *path, int flags); */
-	memcpy(&regs, &orig_regs, sizeof(orig_regs));
+	regs = tracee->orig_regs;
+	/* XXX: arch specific */
 	regs.orig_rax = -1; /* cancel pending syscall continuation */
-	regs.rip = exec_mmap_addr;
-	regs.rax = dlopen_tracee_addr;
-	regs.rdi = data_mmap_addr; /* name */
+	regs.rip = tracee->exec_mmap_addr;
+	regs.rax = tracee->dlopen_addr;
+	regs.rdi = tracee->data_mmap_addr; /* name */
 	regs.rsi = RTLD_LAZY; /* flags */
+	/* XXX: arch specific */
 	regs.rsp = (regs.rsp & ~0xFULL) - 128; /* ensure 16-byte alignment and set up red zone */
 
 	if ((err = ptrace_set_regs(tracee, &regs)) < 0)
@@ -556,24 +579,24 @@ int ptrace_inject(int pid, struct tracee_state *tracee)
 	if ((err = ptrace_get_regs(tracee, &regs)) < 0)
 		goto cleanup;
 
-	long dlopen_handle = regs.rax;
-	if (dlopen_handle == 0) {
+	tracee->dlopen_handle = regs.rax;
+	if (tracee->dlopen_handle == 0) {
 		elog("Failed to dlopen() injection library!\n");
 		goto cleanup;
 	}
-	dlog("dlopen() result: %lx\n", dlopen_handle);
+	dlog("dlopen() result: %lx\n", tracee->dlopen_handle);
 
 	dlog("Resolving __libinj_setup() through dlsym()...\n");
-	if ((err = remote_vm_write(tracee, data_mmap_addr, LIBWPROFINJ_SETUP_SYM_NAME,
+	if ((err = remote_vm_write(tracee, tracee->data_mmap_addr, LIBWPROFINJ_SETUP_SYM_NAME,
 				   sizeof(LIBWPROFINJ_SETUP_SYM_NAME))) < 0)
 		goto cleanup;
 
 	/* void *dlsym(void *restrict handle, const char *restrict symbol); */
-	memcpy(&regs, &orig_regs, sizeof(orig_regs));
-	regs.rip = exec_mmap_addr;
-	regs.rax = dlsym_tracee_addr;
-	regs.rdi = dlopen_handle; /* handle */
-	regs.rsi = data_mmap_addr; /* symbol */
+	regs = tracee->orig_regs;
+	regs.rip = tracee->exec_mmap_addr;
+	regs.rax = tracee->dlsym_addr;
+	regs.rdi = tracee->dlopen_handle; /* handle */
+	regs.rsi = tracee->data_mmap_addr; /* symbol */
 	regs.rsp = (regs.rsp & ~0xFULL) - 128; /* ensure 16-byte alignment and set up red zone */
 
 	if ((err = ptrace_set_regs(tracee, &regs)) < 0)
@@ -585,12 +608,12 @@ int ptrace_inject(int pid, struct tracee_state *tracee)
 	if ((err = ptrace_get_regs(tracee, &regs)) < 0)
 		goto cleanup;
 
-	long inj_setup_addr = regs.rax;
-	dlog("dlsym() result: %lx\n", inj_setup_addr);
-	if (inj_setup_addr == 0) {
+	tracee->inj_setup_addr = regs.rax;
+	if (tracee->inj_setup_addr == 0) {
 		elog("Failed to find '%s' using dlsym()...\n", LIBWPROFINJ_SETUP_SYM_NAME);
 		goto cleanup;
 	}
+	dlog("dlsym() returned address of %s(): %lx\n", LIBWPROFINJ_SETUP_SYM_NAME, tracee->inj_setup_addr);
 
 	dlog("Setting up injected context calling into %s()...\n", LIBWPROFINJ_SETUP_SYM_NAME);
 	struct inj_setup_ctx setup_ctx = {
@@ -598,14 +621,14 @@ int ptrace_inject(int pid, struct tracee_state *tracee)
 		.uds_parent_fd = uds_remote_fds[0],
 		.lib_mem_fd = memfd_remote_fd,
 	};
-	if ((err = remote_vm_write(tracee, data_mmap_addr, &setup_ctx, sizeof(setup_ctx))) < 0)
+	if ((err = remote_vm_write(tracee, tracee->data_mmap_addr, &setup_ctx, sizeof(setup_ctx))) < 0)
 		goto cleanup;
 
 	/* int __libinj_setup(struct inj_init_ctx *ctx) */
-	memcpy(&regs, &orig_regs, sizeof(orig_regs));
-	regs.rip = exec_mmap_addr;
-	regs.rax = inj_setup_addr;
-	regs.rdi = data_mmap_addr; /* ctx */
+	regs = tracee->orig_regs;
+	regs.rip = tracee->exec_mmap_addr;
+	regs.rax = tracee->inj_setup_addr;
+	regs.rdi = tracee->data_mmap_addr; /* ctx */
 	regs.rsp = (regs.rsp & ~0xFULL) - 128; /* ensure 16-byte alignment and set up red zone */
 
 	if ((err = ptrace_set_regs(tracee, &regs)) < 0)
@@ -618,18 +641,18 @@ int ptrace_inject(int pid, struct tracee_state *tracee)
 		goto cleanup;
 
 	long inj_setup_res = regs.rax;
-	dlog("%s() result: %ld\n", LIBWPROFINJ_SETUP_SYM_NAME, inj_setup_res);
 	if (inj_setup_res != 0) {
 		elog("Injection init with %s() failed (result %ld), bailing!..\n",
 		     LIBWPROFINJ_SETUP_SYM_NAME, inj_setup_res);
 		goto cleanup;
 	}
+	dlog("%s() call succeeded\n", LIBWPROFINJ_SETUP_SYM_NAME);
 
 	/* 
 	 * Prepare for execution of the original intercepted syscall
 	 */
 	dlog("Replaying original syscall and detaching tracee...\n");
-	if ((err = ptrace_restart_syscall(tracee, &orig_regs)) < 0)
+	if ((err = ptrace_restart_syscall(tracee)) < 0)
 		goto cleanup;
 	if ((err = ptrace_op(tracee, PTRACE_DETACH, 0)) < 0)
 		goto cleanup;
@@ -648,10 +671,11 @@ int ptrace_inject(int pid, struct tracee_state *tracee)
 	     (ptrace_injected_ts - ptrace_prepped_ts) / 1000.0,
 	     (ptrace_injected_ts - start_ts) / 1000.0);
 
-	return 0;
+	return tracee;
 
 cleanup:
+	free(tracee);
 	/* XXX: ACTUALLY CLEANUP */
-	return err;
-#undef elog
+	errno = -err;
+	return NULL;
 }

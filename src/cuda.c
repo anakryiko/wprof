@@ -14,7 +14,6 @@
 static int discover_pid_cuda_binaries(int pid)
 {
 	struct vma_info *vma;
-	int err = 0;
 	bool has_cuda = false, has_cupti = false;
 
 	wprof_for_each(vma, vma, pid,
@@ -32,9 +31,8 @@ static int discover_pid_cuda_binaries(int pid)
 			break;
 	}
 	if (errno && (errno != ENOENT && errno != ESRCH)) {
-		err = -errno;
-		eprintf("VMA iteration failed for PID %d: %d\n", pid, err);
-		return err;
+		eprintf("VMA iteration failed for PID %d: %d\n", pid, -errno);
+		return -errno;
 	}
 
 	if (!has_cuda && !has_cupti)
@@ -48,11 +46,10 @@ static int discover_pid_cuda_binaries(int pid)
 	if (env.verbose)
 		printf("PID %d (%s) has CUPTI!\n", pid, proc_name(pid));
 
-	struct tracee_state tracee;
-	err = ptrace_inject(pid, &tracee);
-	if (err) {
-		eprintf("PTRACE INJECTION FAILED FOR PID %d: %d\n", pid, err);
-		return err;
+	struct tracee_state *tracee = ptrace_inject(pid);
+	if (!tracee) {
+		eprintf("PTRACE INJECTION FAILED FOR PID %d: %d\n", pid, -errno);
+		return -errno;
 	}
 
 	return 0;
