@@ -3,12 +3,8 @@
 #ifndef __INJECT_H_
 #define __INJECT_H_
 
-struct tracee_state {
-	int pid;
-	int pid_fd;
-	char *proc_name;
-};
+struct tracee_state;
 
-int ptrace_inject(int pid, struct tracee_state *tracee);
+struct tracee_state *ptrace_inject(int pid);
 
 #endif /* __INJECT_H_ */
