@@ -62,6 +62,7 @@ enum log_subset {
 	LOG_LIBBPF = 0x01,
 	LOG_USDT = 0x02,
 	LOG_TOPOLOGY = 0x04,
+	LOG_INJECTION = 0x08,
 };
 
 extern bool env_verbose;

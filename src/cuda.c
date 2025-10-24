@@ -9,6 +9,7 @@
 #include "cuda.h"
 #include "proc.h"
 #include "env.h"
+#include "inject.h"
 
 static int discover_pid_cuda_binaries(int pid)
 {
@@ -17,7 +18,7 @@ static int discover_pid_cuda_binaries(int pid)
 	bool has_cuda = false, has_cupti = false;
 
 	wprof_for_each(vma, vma, pid,
-		       PROCMAP_QUERY_VMA_EXECUTABLE | PROCMAP_QUERY_FILE_BACKED_VMA) {
+		       VMA_QUERY_VMA_EXECUTABLE | VMA_QUERY_FILE_BACKED_VMA) {
 		if (vma->vma_name[0] != '/')
 			continue; /* special file, ignore */
 
@@ -46,6 +47,13 @@ static int discover_pid_cuda_binaries(int pid)
 
 	if (env.verbose)
 		printf("PID %d (%s) has CUPTI!\n", pid, proc_name(pid));
+
+	struct tracee_state tracee;
+	err = ptrace_inject(pid, &tracee);
+	if (err) {
+		eprintf("PTRACE INJECTION FAILED FOR PID %d: %d\n", pid, err);
+		return err;
+	}
 
 	return 0;
 }

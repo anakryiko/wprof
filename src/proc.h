@@ -39,18 +39,23 @@ struct vma_info {
 	const char *vma_name;
 };
 
+enum vma_query_flags {
+	VMA_QUERY_FILE_BACKED_VMA = 0x01,
+	VMA_QUERY_VMA_EXECUTABLE = 0x02,
+};
+
 struct vma_iter {
 	int pid;
 	int procmap_fd;
 	FILE *file;
-	int query_flags;
+	enum vma_query_flags query_flags;
 	bool use_procmap_query;
 	__u64 addr;
 	char path_buf[PATH_MAX];
 	struct vma_info vma;
 };
 
-int vma_iter_new(struct vma_iter *it, int pid, int query_flags);
+int vma_iter_new(struct vma_iter *it, int pid, enum vma_query_flags query_flags);
 struct vma_info *vma_iter_next(struct vma_iter *it);
 void vma_iter_destroy(struct vma_iter *it);
 
