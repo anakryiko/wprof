@@ -49,6 +49,9 @@ static inline bool is_false_or_unset(enum tristate tri)
 #define offsetofend(TYPE, MEMBER) (offsetof(TYPE, MEMBER) + sizeof((((TYPE *)0)->MEMBER)))
 #endif
 
+#define __str(X) __str_(X)
+#define __str_(X) #X
+
 #define wprof_for_each(type, cur, args...) for (						\
 	/* initialize and define destructor */							\
 	struct type##_iter ___it __attribute__((cleanup(type##_iter_destroy))),			\

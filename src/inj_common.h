@@ -7,11 +7,12 @@
 #define MAX_UDS_FD_CNT 16
 #endif
 
-struct inj_init_ctx {
+#define LIBWPROFINJ_SETUP_SYM __libwprof_inj_setup
+
+struct inj_setup_ctx {
 	int uds_fd;
 	int uds_parent_fd;
 	int lib_mem_fd;
-	const char *setup_sym_name;
 };
 
 struct inj_run_ctx {

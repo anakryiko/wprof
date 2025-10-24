@@ -17,15 +17,20 @@ int uds_send_fds(int uds_fd, int *fds, int fd_cnt);
 struct perf_event_attr;
 
 static inline long sys_perf_event_open(struct perf_event_attr *attr,
-				       pid_t pid, int cpu, int group_fd,
+				       int pid, int cpu, int group_fd,
 				       unsigned long flags)
 {
 	return syscall(SYS_perf_event_open, attr, pid, cpu, group_fd, flags);
 }
 
-static inline int sys_pidfd_open(pid_t pid, unsigned int flags)
+static inline int sys_pidfd_open(int pid, unsigned int flags)
 {
 	return syscall(SYS_pidfd_open, pid, flags);
+}
+
+static inline int sys_pidfd_getfd(int pid, int targetfd, unsigned int flags)
+{
+	return syscall(SYS_pidfd_getfd, pid, targetfd, flags);
 }
 
 #endif /* __SYS_H__ */

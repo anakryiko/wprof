@@ -20,7 +20,7 @@
 
 #include "inj_common.h"
 
-static struct inj_init_ctx *init_ctx, _init_ctx;
+static struct inj_setup_ctx *setup_ctx, _setup_ctx;
 static struct inj_run_ctx *run_ctx;
 static FILE *log;
 
@@ -49,7 +49,7 @@ static int worker_thread_func(void *arg)
 		.msg_controllen = sizeof(buf),
 	};
 
-	ret = recvmsg(init_ctx->uds_fd, &msg, 0);
+	ret = recvmsg(setup_ctx->uds_fd, &msg, 0);
 	if (ret < 0) {
 		err = -errno;
 		logf("LIBINJ: UDS recvmsg() error (ret %d): %d\n", ret, err);
@@ -122,7 +122,7 @@ static int worker_thread_func(void *arg)
 	logf("LIBINJ: Worker thread exiting\n");
 
 cleanup:
-	close(init_ctx->uds_fd);
+	close(setup_ctx->uds_fd);
 	if (run_ctx_memfd >= 0)
 		close(run_ctx_memfd);
 
@@ -225,16 +225,16 @@ void libwprofinj_init()
     logf("LIBINJ: ========================================\n");
 }
 
-int __wprofinj_setup(struct inj_init_ctx *ctx)
+int LIBWPROFINJ_SETUP_SYM(struct inj_setup_ctx *ctx)
 {
-	/* memory backing init_ctx might go away after this call, so copy */
-	_init_ctx = *ctx;
-	init_ctx = &_init_ctx;
+	/* memory backing setup_ctx might go away after this call, so copy */
+	_setup_ctx = *ctx;
+	setup_ctx = &_setup_ctx;
 
-	logf("LIBINJ: INIT SETUP init_ctx at %p\n", init_ctx);
+	logf("LIBINJ: INIT SETUP setup_ctx at %p\n", setup_ctx);
 
-	close(init_ctx->lib_mem_fd);
-	close(init_ctx->uds_parent_fd);
+	close(setup_ctx->lib_mem_fd);
+	close(setup_ctx->uds_parent_fd);
 
 	/* Start worker thread (CUPTI will be initialized inside the thread) */
 	int err = start_worker_thread();
