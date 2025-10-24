@@ -76,7 +76,7 @@ static const struct argp_option opts[] = {
 	{ "verbose", 'v', NULL, 0, "Verbose output" },
 	{ "stats", OPT_STATS, NULL, 0, "Print various wprof stats (BPF, resource usage, etc.)" },
 	{ "debug", OPT_DEBUG, "FEAT", 0, "Debug features (pb-debug-interns, pb-disable-interns)"},
-	{ "log", OPT_LOG, "LOG", 0, "Debug logging subset selector (libbpf, usdt, topology)"},
+	{ "log", OPT_LOG, "LOG", 0, "Debug logging subset selector (libbpf, usdt, topology, inject)"},
 	{ "dur-ms", 'd', "DURATION", 0, "Limit running duration to given number of ms (default: 1000ms)" },
 	{ "timer-freq", OPT_TIMER_FREQ, "HZ", 0, "On-CPU timer interrupt frequency (default: 100Hz, i.e., every 10ms)" },
 
@@ -177,6 +177,8 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			env.log_set |= LOG_USDT;
 		} else if (strcasecmp(arg, "topology") == 0) {
 			env.log_set |= LOG_TOPOLOGY;
+		} else if (strcasecmp(arg, "inject") == 0) {
+			env.log_set |= LOG_INJECTION;
 		} else {
 			eprintf("Unrecognized log subset '%s'!\n", arg);
 			argp_usage(state);

@@ -75,7 +75,7 @@ void proc_iter_destroy(struct proc_iter *it)
 	it->proc_dir = NULL;
 }
 
-int vma_iter_new(struct vma_iter *it, int pid, int query_flags)
+int vma_iter_new(struct vma_iter *it, int pid, enum vma_query_flags query_flags)
 {
 	char proc_path[64];
 	int err = 0;
@@ -141,7 +141,11 @@ struct vma_info *vma_iter_next(struct vma_iter *it)
 
 		memset(&query, 0, sizeof(query));
 		query.size = sizeof(query);
-		query.query_flags = PROCMAP_QUERY_COVERING_OR_NEXT_VMA | it->query_flags;
+		query.query_flags = PROCMAP_QUERY_COVERING_OR_NEXT_VMA;
+		if (it->query_flags & VMA_QUERY_FILE_BACKED_VMA)
+			it->query_flags |= PROCMAP_QUERY_FILE_BACKED_VMA;
+		if (it->query_flags & VMA_QUERY_VMA_EXECUTABLE)
+			it->query_flags |= PROCMAP_QUERY_VMA_EXECUTABLE;
 		query.query_addr = it->addr;
 		query.vma_name_addr = (__u64)it->path_buf;
 		query.vma_name_size = sizeof(it->path_buf);
