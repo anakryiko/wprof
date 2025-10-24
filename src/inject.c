@@ -180,23 +180,6 @@ static int ptrace_set_options(const struct tracee_state *tracee, int options)
 	return 0;
 }
 
-static int ptrace_write_insns(const struct tracee_state *tracee, long rip, void *insns, size_t insn_sz)
-{
-	long word;
-
-	for (size_t i = 0; i < insn_sz; i += sizeof(word)) {
-		memcpy(&word, insns + i, sizeof(word));
-
-		errno = 0;
-		if (ptrace(PTRACE_POKETEXT, tracee->pid, rip + i, word) < 0) {
-			elog("ptrace(PTRACE_POKETEXT, off %zu) failed: %d\n", i, -errno);
-			return -errno;
-		}
-		ddlog("PTRACE_POKETEXT(dst %lx, src %lx, word %lx)\n", (long)rip + i, (long)insns + i, word);
-	}
-	return 0;
-}
-
 static int ptrace_op(const struct tracee_state *tracee, enum __ptrace_request op, long data)
 {
 	const char *op_name;
@@ -404,45 +387,20 @@ int ptrace_inject(int pid, struct tracee_state *tracee)
 	orig_regs.rip -= 2; /* adjust for syscall replay, syscall instruction is 2 bytes */
 
 	/*
-	 * Inject mmap(r-xp) syscall
+	 * Inject mmap() syscall
 	 */
 	const long page_size = sysconf(_SC_PAGESIZE);
+	const long data_mmap_sz = page_size;
 	const long exec_mmap_sz = page_size;
+	long data_mmap_addr = 0;
 	long exec_mmap_addr = 0;
 
-	dlog("Executing mmap(r-xp)...\n");
+	dlog("Executing mmap()...\n");
 	/* void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset); */
 	memcpy(&regs, &orig_regs, sizeof(orig_regs));
 	regs.orig_rax = __NR_mmap;
 	regs.rdi = 0; /* addr */
-	regs.rsi = exec_mmap_sz; /* length */
-	regs.rdx = PROT_EXEC | PROT_READ; /* prot */
-	regs.r10 = MAP_ANONYMOUS | MAP_PRIVATE; /* flags */
-	regs.r8 = 0; /* fd */
-	regs.r9 = 0; /* offset */
-
-	if ((err = ptrace_exec_syscall(tracee, &orig_regs, &regs, &regs)) < 0)
-		goto cleanup;
-
-	exec_mmap_addr = regs.rax;
-	if (exec_mmap_addr <= 0) {
-		elog("mmap(r-xp) inside tracee failed: %ld, bailing!\n", exec_mmap_addr);
-		return 1;
-	}
-	dlog("mmap(r-xp) result: 0x%lx\n", (long)exec_mmap_addr);
-
-	/*
-	 * Inject mmap(rw-p) syscall
-	 */
-	const long data_mmap_sz = page_size;
-	long data_mmap_addr = 0;
-
-	dlog("Executing mmap(rw-p)...\n");
-	/* void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset); */
-	memcpy(&regs, &orig_regs, sizeof(orig_regs));
-	regs.orig_rax = __NR_mmap;
-	regs.rdi = 0; /* addr */
-	regs.rsi = data_mmap_sz; /* length */
+	regs.rsi = data_mmap_sz + exec_mmap_sz; /* length */
 	regs.rdx = PROT_WRITE | PROT_READ; /* prot */
 	regs.r10 = MAP_ANONYMOUS | MAP_PRIVATE; /* flags */
 	regs.r8 = 0; /* fd */
@@ -453,10 +411,39 @@ int ptrace_inject(int pid, struct tracee_state *tracee)
 
 	data_mmap_addr = regs.rax;
 	if (data_mmap_addr <= 0) {
-		elog("mmap(rw-p) inside tracee failed: %ld, bailing!\n", data_mmap_addr);
+		elog("mmap() inside tracee failed: %ld, bailing!\n", data_mmap_addr);
 		return 1;
 	}
-	dlog("mmap(rw-p) result: 0x%lx\n", (long)data_mmap_addr);
+	exec_mmap_addr = data_mmap_addr + data_mmap_sz;
+	dlog("mmap() returned 0x%lx (data @ %lx, code @ %lx)\n",
+	     (long)data_mmap_addr, (long)data_mmap_addr, (long)exec_mmap_addr);
+
+	/*
+	 * Setup executable function call trampoline, by copying inj_call()
+	 * code into (to be) executable mmap()'ed memory
+	 */
+	if ((err = remote_vm_write(tracee, exec_mmap_addr, __inj_call, __inj_call_sz)) < 0)
+		goto cleanup;
+
+	/*
+	 * Inject mprotect(r-x) syscall
+	 */
+	dlog("Executing mprotect(r-xp)...\n");
+	/* int mprotect(void *addr, size_t size, int prot); */
+	memcpy(&regs, &orig_regs, sizeof(orig_regs));
+	regs.orig_rax = __NR_mprotect;
+	regs.rdi = exec_mmap_addr; /* addr */
+	regs.rsi = exec_mmap_sz; /* size */
+	regs.rdx = PROT_EXEC | PROT_READ; /* prot */
+
+	if ((err = ptrace_exec_syscall(tracee, &orig_regs, &regs, &regs)) < 0)
+		goto cleanup;
+
+	long mprotect_ret = regs.rax;
+	if (mprotect_ret < 0) {
+		elog("mprotect(r-x) inside tracee failed: %ld, bailing!\n", mprotect_ret);
+		goto cleanup;
+	}
 
 	/*
 	 * Execute memfd_create() syscall
@@ -516,6 +503,7 @@ int ptrace_inject(int pid, struct tracee_state *tracee)
 		elog("pidfd_getfd(remote_fd %d) failed: %d\n", uds_remote_fds[0], -errno);
 		goto cleanup;
 	}
+	dlog("pidfd_getfd() returned UDS FD %d for tracer\n", uds_local_fd);
 
 	u64 ptrace_prepped_ts = ktime_now_ns();
 
@@ -540,10 +528,6 @@ int ptrace_inject(int pid, struct tracee_state *tracee)
 	memcpy(libinj_so_mem, libwprofinj_so_start, libwprofinj_so_sz);
 	(void)munmap(libinj_so_mem, libwprofinj_so_sz);
 	libinj_so_mem = NULL;
-
-	/* Copy over inj_call() code into executable mmap() */
-	if ((err = ptrace_write_insns(tracee, exec_mmap_addr, __inj_call, __inj_call_sz)) < 0)
-		goto cleanup;
 
 	/* Copy over memfd path for passing into dlopen() */
 	char memfd_path[64];
