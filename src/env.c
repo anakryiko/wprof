@@ -34,6 +34,7 @@ const char argp_program_doc[] =
 
 bool env_verbose;
 int env_debug_level;
+enum log_subset env_log_set;
 
 struct env env = {
 	.data_path = "wprof.data",
@@ -54,6 +55,7 @@ enum {
 	OPT_TIMER_FREQ = 1002,
 	OPT_STATS = 1003,
 	OPT_DEBUG = 1004,
+	OPT_LOG = 1005,
 	OPT_RINGBUF_CNT = 1011,
 	OPT_SYMBOLIZE_FRUGALLY = 1012,
 	OPT_REPLAY_OFFSET_START = 1013,
@@ -73,7 +75,8 @@ enum {
 static const struct argp_option opts[] = {
 	{ "verbose", 'v', NULL, 0, "Verbose output" },
 	{ "stats", OPT_STATS, NULL, 0, "Print various wprof stats (BPF, resource usage, etc.)" },
-	{ "debug", OPT_DEBUG, "FEAT", 0, "Debug features (libbpf, pb-debug-interns, pb-disable-interns)"},
+	{ "debug", OPT_DEBUG, "FEAT", 0, "Debug features (pb-debug-interns, pb-disable-interns)"},
+	{ "log", OPT_LOG, "LOG", 0, "Debug logging subset selector (libbpf, usdt, topology)"},
 	{ "dur-ms", 'd', "DURATION", 0, "Limit running duration to given number of ms (default: 1000ms)" },
 	{ "timer-freq", OPT_TIMER_FREQ, "HZ", 0, "On-CPU timer interrupt frequency (default: 100Hz, i.e., every 10ms)" },
 
@@ -158,9 +161,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		env.stats = true;
 		break;
 	case OPT_DEBUG:
-		if (strcasecmp(arg, "libbpf") == 0) {
-			env.libbpf_logs = true;
-		} else if (strcasecmp(arg, "pb-debug-interns") == 0) {
+		if (strcasecmp(arg, "pb-debug-interns") == 0) {
 			env.pb_debug_interns = true;
 		} else if (strcasecmp(arg, "pb-disable-interns") == 0) {
 			env.pb_disable_interns = true;
@@ -168,6 +169,19 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			eprintf("Unrecognized debug feature '%s'!\n", arg);
 			argp_usage(state);
 		}
+		break;
+	case OPT_LOG:
+		if (strcasecmp(arg, "libbpf") == 0) {
+			env.log_set |= LOG_LIBBPF;
+		} else if (strcasecmp(arg, "usdt") == 0) {
+			env.log_set |= LOG_USDT;
+		} else if (strcasecmp(arg, "topology") == 0) {
+			env.log_set |= LOG_TOPOLOGY;
+		} else {
+			eprintf("Unrecognized log subset '%s'!\n", arg);
+			argp_usage(state);
+		}
+		env_log_set = env.log_set;
 		break;
 	case OPT_SYMBOLIZE_FRUGALLY:
 		env.symbolize_frugally = true;

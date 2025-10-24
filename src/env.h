@@ -21,12 +21,13 @@
 
 extern bool env_verbose;
 extern int env_debug_level;
+extern enum log_subset env_log_set;
 
 struct env {
 	bool verbose;
 	int debug_level;
+	enum log_subset log_set;
 	bool stats;
-	bool libbpf_logs;
 	bool replay;
 	bool replay_info;
 	bool symbolize_frugally;
