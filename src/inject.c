@@ -288,7 +288,20 @@ static int ptrace_wait_syscall(const struct tracee_state *tracee)
 	return __ptrace_wait(tracee, SIGTRAP | 0x80, false /* !PTRACE_EVENT_STOP */, 0);
 }
 
+static int ptrace_restart_syscall(const struct tracee_state *tracee,
+				  const struct user_regs_struct *orig_regs)
+{
+	int err = 0;
+
+	err = err ?: ptrace_set_regs(tracee, orig_regs);
+	err = err ?: ptrace_op(tracee, PTRACE_SYSCALL, 0);
+	err = err ?: ptrace_wait_syscall(tracee);
+
+	return err;
+}
+
 static int ptrace_exec_syscall(const struct tracee_state *tracee,
+			       const struct user_regs_struct *orig_regs,
 			       const struct user_regs_struct *pre_regs,
 			       struct user_regs_struct *post_regs)
 {
@@ -298,18 +311,7 @@ static int ptrace_exec_syscall(const struct tracee_state *tracee,
 	err = err ?: ptrace_op(tracee, PTRACE_SYSCALL, 0);
 	err = err ?: ptrace_wait_syscall(tracee);
 	err = err ?: ptrace_get_regs(tracee, post_regs);
-
-	return err;
-}
-
-static int ptrace_restart_syscall(const struct tracee_state *tracee,
-				  const struct user_regs_struct *orig_regs)
-{
-	int err = 0;
-
-	err = err ?: ptrace_set_regs(tracee, orig_regs);
-	err = err ?: ptrace_op(tracee, PTRACE_SYSCALL, 0);
-	err = err ?: ptrace_wait_syscall(tracee);
+	err = err ?: ptrace_restart_syscall(tracee, orig_regs);
 
 	return err;
 }
@@ -419,7 +421,7 @@ int ptrace_inject(int pid, struct tracee_state *tracee)
 	regs.r8 = 0; /* fd */
 	regs.r9 = 0; /* offset */
 
-	if ((err = ptrace_exec_syscall(tracee, &regs, &regs)) < 0)
+	if ((err = ptrace_exec_syscall(tracee, &orig_regs, &regs, &regs)) < 0)
 		goto cleanup;
 
 	exec_mmap_addr = regs.rax;
@@ -428,9 +430,6 @@ int ptrace_inject(int pid, struct tracee_state *tracee)
 		return 1;
 	}
 	dlog("mmap(r-xp) result: 0x%lx\n", (long)exec_mmap_addr);
-
-	if ((err = ptrace_restart_syscall(tracee, &orig_regs)) < 0)
-		goto cleanup;
 
 	/*
 	 * Inject mmap(rw-p) syscall
@@ -449,7 +448,7 @@ int ptrace_inject(int pid, struct tracee_state *tracee)
 	regs.r8 = 0; /* fd */
 	regs.r9 = 0; /* offset */
 
-	if ((err = ptrace_exec_syscall(tracee, &regs, &regs)) < 0)
+	if ((err = ptrace_exec_syscall(tracee, &orig_regs, &regs, &regs)) < 0)
 		goto cleanup;
 
 	data_mmap_addr = regs.rax;
@@ -459,11 +458,8 @@ int ptrace_inject(int pid, struct tracee_state *tracee)
 	}
 	dlog("mmap(rw-p) result: 0x%lx\n", (long)data_mmap_addr);
 
-	if ((err = ptrace_restart_syscall(tracee, &orig_regs)) < 0)
-		goto cleanup;
-
 	/*
-	 * HIJACK SYSCALL: memfd_create()
+	 * Execute memfd_create() syscall
 	 */
 	dlog("Executing memfd_create()...\n");
 
@@ -478,7 +474,7 @@ int ptrace_inject(int pid, struct tracee_state *tracee)
 	regs.orig_rax = __NR_memfd_create;
 	regs.rdi = data_mmap_addr; /* name */
 	regs.rsi = MFD_CLOEXEC; /* flags */
-	if ((err = ptrace_exec_syscall(tracee, &regs, &regs)) < 0)
+	if ((err = ptrace_exec_syscall(tracee, &orig_regs, &regs, &regs)) < 0)
 		goto cleanup;
 
 	memfd_remote_fd = regs.rax;
@@ -488,8 +484,40 @@ int ptrace_inject(int pid, struct tracee_state *tracee)
 	}
 	dlog("memfd_create() result: %d\n", memfd_remote_fd);
 
-	if ((err = ptrace_restart_syscall(tracee, &orig_regs)) < 0)
+	/*
+	 * Execute socketpair(AF_UNIX, SOCK_STREAM)
+	 */
+	dlog("Executing socketpair(AF_UNIX, SOCK_STREAM)...\n");
+
+	/* int socketpair(int domain, int type, int protocol, int sv[2]); */
+	memcpy(&regs, &orig_regs, sizeof(orig_regs));
+	regs.orig_rax = __NR_socketpair;
+	regs.rdi = AF_UNIX; /* domain */
+	regs.rsi = SOCK_STREAM; /* length */
+	regs.rdx = 0; /* protocol */
+	regs.r10 = data_mmap_addr; /* sv */
+	if ((err = ptrace_exec_syscall(tracee, &orig_regs, &regs, &regs)) < 0)
 		goto cleanup;
+
+	int sockpair_ret = regs.rax;
+	if (sockpair_ret != 0) {
+		elog("socketpair(AF_UNIX, SOCK_STREAM) failed: %d\n", sockpair_ret);
+		goto cleanup;
+	}
+
+	int uds_remote_fds[2];
+	err = remote_vm_read(tracee, uds_remote_fds, data_mmap_addr, sizeof(uds_remote_fds));
+	if (err)
+		goto cleanup;
+	dlog("socket_pair() FDs = {%d, %d}\n", uds_remote_fds[0], uds_remote_fds[1]);
+
+	int uds_local_fd = sys_pidfd_getfd(tracee->pid_fd, uds_remote_fds[0], 0);
+	if (uds_local_fd < 0) {
+		elog("pidfd_getfd(remote_fd %d) failed: %d\n", uds_remote_fds[0], -errno);
+		goto cleanup;
+	}
+
+	u64 ptrace_prepped_ts = ktime_now_ns();
 
 	/* Open tracee's allocated FD for shared lib code */
 	int memfd_local_fd = sys_pidfd_getfd(tracee->pid_fd, memfd_remote_fd, 0);
@@ -517,52 +545,18 @@ int ptrace_inject(int pid, struct tracee_state *tracee)
 	if ((err = ptrace_write_insns(tracee, exec_mmap_addr, __inj_call, __inj_call_sz)) < 0)
 		goto cleanup;
 
-	/*
-	 * Execute socketpair(AF_UNIX, SOCK_STREAM)
-	 */
-	dlog("Executing socketpair(AF_UNIX, SOCK_STREAM)...\n");
-
-	/* int socketpair(int domain, int type, int protocol, int sv[2]); */
-	memcpy(&regs, &orig_regs, sizeof(orig_regs));
-	regs.orig_rax = __NR_socketpair;
-	regs.rdi = AF_UNIX; /* domain */
-	regs.rsi = SOCK_STREAM; /* length */
-	regs.rdx = 0; /* protocol */
-	regs.r10 = data_mmap_addr; /* sv */
-	if ((err = ptrace_exec_syscall(tracee, &regs, &regs)) < 0)
-		goto cleanup;
-
-	int sockpair_ret = regs.rax;
-	if (sockpair_ret != 0) {
-		elog("socketpair(AF_UNIX, SOCK_STREAM) failed: %d\n", sockpair_ret);
-		goto cleanup;
-	}
-
-	int uds_remote_fds[2];
-	err = remote_vm_read(tracee, uds_remote_fds, data_mmap_addr, sizeof(uds_remote_fds));
-	if (err)
-		goto cleanup;
-	dlog("socket_pair() FDs = {%d, %d}\n", uds_remote_fds[0], uds_remote_fds[1]);
-
-	int uds_local_fd = sys_pidfd_getfd(tracee->pid_fd, uds_remote_fds[0], 0);
-	if (uds_local_fd < 0) {
-		elog("pidfd_getfd(remote_fd %d) failed: %d\n", uds_remote_fds[0], -errno);
-		goto cleanup;
-	}
-
 	/* Copy over memfd path for passing into dlopen() */
 	char memfd_path[64];
 	snprintf(memfd_path, sizeof(memfd_path), "/proc/self/fd/%d", memfd_remote_fd);
 	if ((err = remote_vm_write(tracee, data_mmap_addr, memfd_path, sizeof(memfd_path))) < 0)
 		goto cleanup;
 
-	u64 ptrace_prepped_ts = ktime_now_ns();
-
 	dlog("Executing dlopen()...\n");
 	long inj_trap_addr = exec_mmap_addr + __inj_trap - __inj_call;
 
 	/* void *dlopen(const char *path, int flags); */
 	memcpy(&regs, &orig_regs, sizeof(orig_regs));
+	regs.orig_rax = -1; /* cancel pending syscall continuation */
 	regs.rip = exec_mmap_addr;
 	regs.rax = dlopen_tracee_addr;
 	regs.rdi = data_mmap_addr; /* name */
