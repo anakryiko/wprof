@@ -106,7 +106,7 @@ extern enum log_subset env_log_set;
 	}											\
 } while (0);
 #define dlogf(_set, _level, fmt, ...) do {							\
-	if ((env_log_set & LOG_##_set) || (_level > 0 && env_debug_level >= _level)) {		\
+	if ((env_log_set & LOG_##_set) && env_debug_level >= _level) {				\
 		int _errno = errno;								\
 		fprintf(stderr, fmt, ##__VA_ARGS__);						\
 		errno = _errno;									\

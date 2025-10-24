@@ -262,7 +262,7 @@ int setup_cpu_to_ringbuf_mapping(u32 *rb_cpu_mapping, int rb_cnt, int cpu_cnt)
 		topo_regroup(topo, sets, cpu_cnt);
 
 		if (last_set_cnt != set_cnt &&
-		    ((env.log_set & LOG_TOPOLOGY) || env.debug_level >= 2))
+		    ((env.log_set & LOG_TOPOLOGY) && env.debug_level >= 2))
 			print_cpu_grouping(topo, sets, cpu_cnt);
 
 		if (set_cnt == rb_cnt)
@@ -320,7 +320,7 @@ balance:
 	}
 
 	topo_regroup(topo, sets, cpu_cnt);
-	if ((env.log_set & LOG_TOPOLOGY) || env.debug_level >= 2)
+	if ((env.log_set & LOG_TOPOLOGY) && env.debug_level >= 2)
 		print_cpu_grouping(topo, sets, cpu_cnt);
 
 assign:
@@ -330,7 +330,7 @@ assign:
 		rb_cpu_mapping[i] = topo[i].group;
 
 done:
-	if ((env.log_set & LOG_TOPOLOGY) || env.debug_level >= 1) {
+	if ((env.log_set & LOG_TOPOLOGY) && env.debug_level >= 1) {
 		printf("CPU topology and CPU-to-ringbuf mapping:\n");
 		printf("========================================\n");
 		for (int i = 0; i < cpu_cnt; i++) {
