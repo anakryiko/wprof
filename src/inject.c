@@ -35,8 +35,8 @@
 
 #define elog(fmt, ...) eprintf("tracee(%d, %s): " fmt, tracee->pid, tracee->proc_name, ##__VA_ARGS__)
 #define vlog(fmt, ...) vprintf("tracee(%d, %s): " fmt, tracee->pid, tracee->proc_name, ##__VA_ARGS__)
-#define dlog(fmt, ...) dlogf(INJECTION, 2, "tracee(%d, %s): " fmt, tracee->pid, tracee->proc_name, ##__VA_ARGS__)
-#define delog(fmt, ...) dlogf(INJECTION, 1, "tracee(%d, %s): " fmt, tracee->pid, tracee->proc_name, ##__VA_ARGS__)
+#define dlog(fmt, ...) dlogf(INJECTION, 1, "tracee(%d, %s): " fmt, tracee->pid, tracee->proc_name, ##__VA_ARGS__)
+#define ddlog(fmt, ...) dlogf(INJECTION, 2, "tracee(%d, %s): " fmt, tracee->pid, tracee->proc_name, ##__VA_ARGS__)
 
 #define LIBWPROFINJ_SETUP_SYM_NAME __str(LIBWPROFINJ_SETUP_SYM)
 
@@ -97,8 +97,8 @@ static int find_libc(const struct tracee_state *tracee, long *out_start_addr, lo
 			if (path_buf)
 				snprintf(path_buf, path_buf_sz, "%s", vma->vma_name);
 
-			dlog("Found libc mapping: %llx-%llx %llx (%s)\n",
-			     vma->vma_start, vma->vma_end, vma->vma_offset, vma->vma_name);
+			ddlog("Found libc mapping: %llx-%llx %llx (%s)\n",
+			      vma->vma_start, vma->vma_end, vma->vma_offset, vma->vma_name);
 
 			errno = 0;
 			break;
@@ -125,7 +125,7 @@ static int remote_vm_write(const struct tracee_state *tracee, long remote_dst, c
 	remote.iov_len = sz;
 
 	if (process_vm_writev(tracee->pid, &local, 1, &remote, 1, 0) != (ssize_t)sz) {
-		delog("Failed to process_vm_writev() of %zu bytes: %d\n", sz, -errno);
+		dlog("Failed to process_vm_writev() of %zu bytes: %d\n", sz, -errno);
 		return -errno;
 	}
 
@@ -143,7 +143,7 @@ static int remote_vm_read(const struct tracee_state *tracee, const void *local_d
 	remote.iov_len = sz;
 
 	if (process_vm_readv(tracee->pid, &local, 1, &remote, 1, 0) != (ssize_t)sz) {
-		delog("Failed to process_vm_readv() of %zu bytes: %d\n", sz, -errno);
+		dlog("Failed to process_vm_readv() of %zu bytes: %d\n", sz, -errno);
 		return -errno;
 	}
 
@@ -153,30 +153,30 @@ static int remote_vm_read(const struct tracee_state *tracee, const void *local_d
 static int ptrace_get_regs(const struct tracee_state *tracee, struct user_regs_struct *regs)
 {
 	if (ptrace(PTRACE_GETREGS, tracee->pid, NULL, regs) < 0) {
-		delog("ptrace(PTRACE_GETREGS) failed: %d\n", -errno);
+		dlog("ptrace(PTRACE_GETREGS) failed: %d\n", -errno);
 		return -errno;
 	}
-	dlog("ptrace(PTRACE_GETREGS)\n");
+	ddlog("ptrace(PTRACE_GETREGS)\n");
 	return 0;
 }
 
 static int ptrace_set_regs(const struct tracee_state *tracee, const struct user_regs_struct *regs)
 {
 	if (ptrace(PTRACE_SETREGS, tracee->pid, NULL, regs) < 0) {
-		delog("ptrace(PTRACE_SETREGS) failed: %d\n", -errno);
+		dlog("ptrace(PTRACE_SETREGS) failed: %d\n", -errno);
 		return -errno;
 	}
-	dlog("ptrace(PTRACE_SETREGS)\n");
+	ddlog("ptrace(PTRACE_SETREGS)\n");
 	return 0;
 }
 
 static int ptrace_set_options(const struct tracee_state *tracee, int options)
 {
 	if (ptrace(PTRACE_SETOPTIONS, tracee->pid, NULL, options) < 0) {
-		delog("ptrace(PTRACE_SETOPTIONS, opts %x) failed: %d\n", options, -errno);
+		dlog("ptrace(PTRACE_SETOPTIONS, opts %x) failed: %d\n", options, -errno);
 		return -errno;
 	}
-	dlog("PTRACE_SET_OPTIONS(%x)\n", options);
+	ddlog("PTRACE_SET_OPTIONS(%x)\n", options);
 	return 0;
 }
 
@@ -192,7 +192,7 @@ static int ptrace_write_insns(const struct tracee_state *tracee, long rip, void 
 			elog("ptrace(PTRACE_POKETEXT, off %zu) failed: %d\n", i, -errno);
 			return -errno;
 		}
-		dlog("PTRACE_POKETEXT(dst %lx, src %lx, word %lx)\n", (long)rip + i, (long)insns + i, word);
+		ddlog("PTRACE_POKETEXT(dst %lx, src %lx, word %lx)\n", (long)rip + i, (long)insns + i, word);
 	}
 	return 0;
 }
@@ -215,11 +215,11 @@ static int ptrace_op(const struct tracee_state *tracee, enum __ptrace_request op
 	}
 
 	if (ptrace(op, tracee->pid, NULL, data) < 0) {
-		delog("ptrace(%s) failed: %d\n", op_name, -errno);
+		dlog("ptrace(%s) failed: %d\n", op_name, -errno);
 		return -errno;
 	}
 
-	dlog("%s\n", op_name);
+	ddlog("%s\n", op_name);
 	return 0;
 }
 
@@ -229,12 +229,12 @@ static int __ptrace_wait(const struct tracee_state *tracee, int signal, bool ptr
 
 	while (true) {
 		if (waitpid(tracee->pid, &status, __WALL) != tracee->pid) {
-			delog("waitpid() failed: %d\n", -errno);
+			dlog("waitpid() failed: %d\n", -errno);
 			return -errno;
 		}
 
 		if (WIFEXITED(status)) {
-			delog("WIFEXITED()\n");
+			dlog("WIFEXITED()\n");
 			return -ENOENT;
 		}
 
@@ -258,9 +258,9 @@ static int __ptrace_wait(const struct tracee_state *tracee, int signal, bool ptr
 				}
 			}
 
-			dlog("STOPPED%s PID=%d STOPSIG=%d (%s)\n",
-			     ptrace_event ? " (PTRACE_EVENT_STOP)" : "",
-			     tracee->pid, WSTOPSIG(status), sig_name(WSTOPSIG(status)));
+			ddlog("STOPPED%s PID=%d STOPSIG=%d (%s)\n",
+			      ptrace_event ? " (PTRACE_EVENT_STOP)" : "",
+			      tracee->pid, WSTOPSIG(status), sig_name(WSTOPSIG(status)));
 			return 0;
 		}
 
