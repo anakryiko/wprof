@@ -95,12 +95,13 @@ int vma_iter_new(struct vma_iter *it, int pid, int query_flags)
 	}
 
 	/* feature-test PROCMAP_QUERY availability */
-	memset(&it->query, 0, sizeof(struct procmap_query));
-	it->query.size = sizeof(struct procmap_query);
-	it->query.query_flags = PROCMAP_QUERY_COVERING_OR_NEXT_VMA;
-	it->query.query_addr = 0;
+	struct procmap_query query;
+	memset(&query, 0, sizeof(struct procmap_query));
+	query.size = sizeof(struct procmap_query);
+	query.query_flags = PROCMAP_QUERY_COVERING_OR_NEXT_VMA;
+	query.query_addr = 0;
 
-	err = ioctl(it->procmap_fd, PROCMAP_QUERY, &it->query);
+	err = ioctl(it->procmap_fd, PROCMAP_QUERY, &query);
 	it->use_procmap_query = err == 0 || errno != ENOTTY;
 	if (!it->use_procmap_query) {
 		it->file = fdopen(it->procmap_fd, "re");
@@ -136,14 +137,17 @@ struct vma_info *vma_iter_next(struct vma_iter *it)
 		return NULL;
 
 	if (it->use_procmap_query) {
-		it->query.size = sizeof(it->query);
-		it->query.query_flags = PROCMAP_QUERY_COVERING_OR_NEXT_VMA | it->query_flags;
-		it->query.query_addr = it->addr;
-		it->query.vma_name_addr = (__u64)it->path_buf;
-		it->query.vma_name_size = sizeof(it->path_buf);
+		struct procmap_query query;
+
+		memset(&query, 0, sizeof(query));
+		query.size = sizeof(query);
+		query.query_flags = PROCMAP_QUERY_COVERING_OR_NEXT_VMA | it->query_flags;
+		query.query_addr = it->addr;
+		query.vma_name_addr = (__u64)it->path_buf;
+		query.vma_name_size = sizeof(it->path_buf);
 		it->path_buf[0] = '\0';
 
-		err = ioctl(it->procmap_fd, PROCMAP_QUERY, &it->query);
+		err = ioctl(it->procmap_fd, PROCMAP_QUERY, &query);
 		if (err && errno == ENOENT) {
 			errno = 0;
 			return NULL; /* exhausted all VMA entries, expected outcome */
@@ -157,16 +161,16 @@ struct vma_info *vma_iter_next(struct vma_iter *it)
 			return NULL;
 		}
 
-		it->vma.vma_start = it->query.vma_start;
-		it->vma.vma_end = it->query.vma_end;
-		it->vma.vma_offset = it->query.vma_offset;
-		it->vma.vma_flags = it->query.vma_flags;
-		it->vma.dev_minor = it->query.dev_minor;
-		it->vma.dev_major = it->query.dev_major;
-		it->vma.inode = it->query.inode;
+		it->vma.vma_start = query.vma_start;
+		it->vma.vma_end = query.vma_end;
+		it->vma.vma_offset = query.vma_offset;
+		it->vma.vma_flags = query.vma_flags;
+		it->vma.dev_minor = query.dev_minor;
+		it->vma.dev_major = query.dev_major;
+		it->vma.inode = query.inode;
 		it->vma.vma_name = it->path_buf[0] ? it->path_buf : NULL;
 
-		it->addr = it->query.vma_end;
+		it->addr = query.vma_end;
 		errno = 0;
 		return &it->vma;
 	} else {

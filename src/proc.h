@@ -18,15 +18,6 @@ static inline const char *proc_name(int pid)
 	return proc_name_by_pid(pid, comm, sizeof(comm)) < 0 ? "???" : comm;
 }
 
-#define wprof_for_each(type, cur, args...) for (						\
-	/* initialize and define destructor */							\
-	struct type##_iter ___it __attribute__((cleanup(type##_iter_destroy))),			\
-			       *___p __attribute__((unused)) = (				\
-					type##_iter_new(&___it, ##args),			\
-					(void *)0);						\
-	(((cur) = type##_iter_next(&___it)));							\
-)
-
 struct proc_iter {
 	DIR *proc_dir;
 	struct dirent *entry;
@@ -54,7 +45,6 @@ struct vma_iter {
 	FILE *file;
 	int query_flags;
 	bool use_procmap_query;
-	struct procmap_query query;
 	__u64 addr;
 	char path_buf[PATH_MAX];
 	struct vma_info vma;

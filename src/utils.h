@@ -5,6 +5,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include <limits.h>
 #include <errno.h>
 #include <time.h>
@@ -47,6 +48,15 @@ static inline bool is_false_or_unset(enum tristate tri)
 #ifndef offsetofend
 #define offsetofend(TYPE, MEMBER) (offsetof(TYPE, MEMBER) + sizeof((((TYPE *)0)->MEMBER)))
 #endif
+
+#define wprof_for_each(type, cur, args...) for (						\
+	/* initialize and define destructor */							\
+	struct type##_iter ___it __attribute__((cleanup(type##_iter_destroy))),			\
+			       *___p __attribute__((unused)) = (				\
+					type##_iter_new(&___it, ##args),			\
+					(void *)0);						\
+	(((cur) = type##_iter_next(&___it)));							\
+)
 
 extern bool env_verbose;
 extern int env_debug_level;
