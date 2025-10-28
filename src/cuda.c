@@ -46,11 +46,19 @@ static int discover_pid_cuda_binaries(int pid)
 	if (env.verbose)
 		printf("PID %d (%s) has CUPTI!\n", pid, proc_name(pid));
 
-	struct tracee_state *tracee = ptrace_inject(pid);
+	struct tracee_state *tracee = tracee_inject(pid);
 	if (!tracee) {
 		eprintf("PTRACE INJECTION FAILED FOR PID %d: %d\n", pid, -errno);
 		return -errno;
 	}
+
+	int err = tracee_retract(tracee);
+	if (err) {
+		eprintf("PTRACE RETRACTION FAILED FOR PID %d: %d\n", pid, err);
+		return err;
+	}
+
+	tracee_free(tracee);
 
 	return 0;
 }

@@ -324,12 +324,56 @@ static int ptrace_exec_syscall(const struct tracee_state *tracee,
 	return err;
 }
 
-struct tracee_state *ptrace_inject(int pid)
+static int ptrace_intercept(const struct tracee_state *tracee, struct user_regs_struct *regs)
+{
+	int err = 0;
+	/*
+	 * Attach to tracee
+	 */
+	dlog("Seizing...\n");
+	if ((err = ptrace_op(tracee, PTRACE_SEIZE, 0)) < 0)
+		return err;
+
+	if ((err = ptrace_op(tracee, PTRACE_INTERRUPT, 0)) < 0)
+		goto err_detach;
+	if ((err = ptrace_wait_stop(tracee)) < 0)
+		goto err_detach;
+	/*
+	 * Take over next syscall
+	 */
+	dlog("Resuming until syscall...\n");
+	if ((err = ptrace_set_options(tracee, PTRACE_O_TRACESYSGOOD)) < 0)
+		goto err_detach;
+	if ((err = ptrace_op(tracee, PTRACE_SYSCALL, 0)) < 0)
+		goto err_detach;
+	if ((err = ptrace_wait_syscall(tracee)) < 0)
+		goto err_detach;
+	/* backup original registers */
+	if ((err = ptrace_get_regs(tracee, regs)) < 0)
+		goto err_detach;
+
+	/* XXX: arm64 will need something else */
+	regs->rip -= 2; /* adjust for syscall replay, syscall instruction is 2 bytes */
+	return 0;
+
+err_detach:
+	(void)ptrace_op(tracee, PTRACE_DETACH, 0);
+	return err;
+}
+
+enum ptrace_state {
+	PTRACE_STATE_DETACHED,
+	PTRACE_STATE_ATTACHED,
+	PTRACE_STATE_PENDING_SYSCALL,
+};
+
+struct tracee_state *tracee_inject(int pid)
 {
 	struct tracee_state *tracee;
+	struct user_regs_struct regs;
 	u64 start_ts = ktime_now_ns();
 	int err = 0, pid_fd = -1, memfd_local_fd = -1;
-	bool restore_syscall = false;
+	enum ptrace_state ptrace_state = PTRACE_STATE_DETACHED;
 
 	tracee = calloc(1, sizeof(*tracee));
 	tracee->pid = pid;
@@ -379,39 +423,11 @@ struct tracee_state *ptrace_inject(int pid)
 
 	u64 ptrace_start_ts = ktime_now_ns();
 
-	/*
-	 * Attach to tracee
-	 */
-	dlog("Seizing...\n");
-	if ((err = ptrace_op(tracee, PTRACE_SEIZE, 0)) < 0)
+	if ((err = ptrace_intercept(tracee, &tracee->orig_regs)) < 0)
 		goto cleanup;
-	if ((err = ptrace_op(tracee, PTRACE_INTERRUPT, 0)) < 0)
-		goto cleanup;
-	if ((err = ptrace_wait_stop(tracee)) < 0)
-		goto cleanup;
-
-	/*
-	 * Take over next syscall
-	 */
-	struct user_regs_struct regs;
-
-	dlog("Resuming until syscall...\n");
-	if ((err = ptrace_set_options(tracee, PTRACE_O_TRACESYSGOOD)) < 0)
-		goto cleanup;
-	if ((err = ptrace_op(tracee, PTRACE_SYSCALL, 0)) < 0)
-		goto cleanup;
-	if ((err = ptrace_wait_syscall(tracee)) < 0)
-		goto cleanup;
+	ptrace_state = PTRACE_STATE_PENDING_SYSCALL;
 
 	u64 ptrace_intercept_ts = ktime_now_ns();
-
-	/* backup original registers */
-	if ((err = ptrace_get_regs(tracee, &tracee->orig_regs)) < 0)
-		goto cleanup;
-
-	/* XXX: arm64 will need something else */
-	tracee->orig_regs.rip -= 2; /* adjust for syscall replay, syscall instruction is 2 bytes */
-	restore_syscall = true; /* when cleaning up prematurely, restore regs and replay syscall */
 
 	/*
 	 * Inject mmap() syscall
@@ -469,7 +485,7 @@ struct tracee_state *ptrace_inject(int pid)
 	}
 
 	/*
-	 * Execute memfd_create() syscall
+	 * Inject memfd_create() syscall
 	 */
 	dlog("Executing memfd_create()...\n");
 
@@ -493,7 +509,7 @@ struct tracee_state *ptrace_inject(int pid)
 	dlog("memfd_create() result: %ld\n", memfd_remote_fd);
 
 	/*
-	 * Execute socketpair(AF_UNIX, SOCK_STREAM)
+	 * Inject socketpair(AF_UNIX, SOCK_STREAM)
 	 */
 	dlog("Executing socketpair(AF_UNIX, SOCK_STREAM)...\n");
 
@@ -556,7 +572,7 @@ struct tracee_state *ptrace_inject(int pid)
 	if ((err = remote_vm_write(tracee, tracee->data_mmap_addr, memfd_path, sizeof(memfd_path))) < 0)
 		goto cleanup;
 
-	dlog("Executing dlopen()...\n");
+	dlog("Inject dlopen() call...\n");
 	long inj_trap_addr = tracee->exec_mmap_addr + __inj_trap - __inj_call;
 
 	/* void *dlopen(const char *path, int flags); */
@@ -654,11 +670,12 @@ struct tracee_state *ptrace_inject(int pid)
 	 * Prepare for execution of the original intercepted syscall
 	 */
 	dlog("Replaying original syscall and detaching tracee...\n");
-	restore_syscall = false;
 	if ((err = ptrace_restart_syscall(tracee)) < 0)
 		goto cleanup;
+	ptrace_state = PTRACE_STATE_ATTACHED;
 	if ((err = ptrace_op(tracee, PTRACE_DETACH, 0)) < 0)
 		goto cleanup;
+	ptrace_state = PTRACE_STATE_DETACHED;
 
 	u64 ptrace_injected_ts = ktime_now_ns();
 
@@ -680,10 +697,16 @@ struct tracee_state *ptrace_inject(int pid)
 	return tracee;
 
 cleanup:
-	if (restore_syscall) {
-		dlog("Trying to restore and replay original syscall...\n");
+	switch (ptrace_state) {
+	case PTRACE_STATE_PENDING_SYSCALL:
+		dlog("Trying to restore & replay the original syscall...\n");
 		(void)ptrace_restart_syscall(tracee);
+		/* fallthrough */
+	case PTRACE_STATE_ATTACHED:
+		dlog("Trying to detach tracee...\n");
 		(void)ptrace_op(tracee, PTRACE_DETACH, 0);
+		break;
+	default:
 	}
 	zclose(pid_fd);
 	zclose(memfd_local_fd);
@@ -692,4 +715,116 @@ cleanup:
 	free(tracee);
 	errno = -err;
 	return NULL;
+}
+
+int tracee_retract(struct tracee_state *tracee)
+{
+	enum ptrace_state ptrace_state = PTRACE_STATE_DETACHED;
+	struct user_regs_struct regs;
+	int err = 0;
+
+	u64 ptrace_start_ts = ktime_now_ns();
+
+	if ((err = ptrace_intercept(tracee, &tracee->orig_regs)) < 0)
+		goto cleanup;
+	ptrace_state = PTRACE_STATE_PENDING_SYSCALL;
+
+	u64 ptrace_intercept_ts = ktime_now_ns();
+
+	/*
+	 * Inject dlclose(libwprofinj.so)
+	 */
+	dlog("Executing dlclose(libwprofinj.so)...\n");
+	long inj_trap_addr = tracee->exec_mmap_addr + __inj_trap - __inj_call;
+
+	/* int dlclose(void *handle); */
+	regs = tracee->orig_regs;
+	/* XXX: arch specific */
+	regs.orig_rax = -1; /* cancel pending syscall continuation */
+	regs.rip = tracee->exec_mmap_addr;
+	regs.rax = tracee->dlclose_addr;
+	regs.rdi = tracee->dlopen_handle;
+	/* XXX: arch specific */
+	regs.rsp = (regs.rsp & ~0xFULL) - 128; /* ensure 16-byte alignment and set up red zone */
+
+	if ((err = ptrace_set_regs(tracee, &regs)) < 0)
+		goto cleanup;
+	if ((err = ptrace_op(tracee, PTRACE_CONT, 0)) < 0)
+		goto cleanup;
+	if ((err = ptrace_wait_trap(tracee, inj_trap_addr)) < 0)
+		goto cleanup;
+	if ((err = ptrace_get_regs(tracee, &regs)) < 0)
+		goto cleanup;
+
+	long dlclose_res = regs.rax;
+	if (dlclose_res != 0) {
+		elog("Failed to dlclose() injection library (result %ld)!\n", dlclose_res);
+		goto cleanup;
+	}
+
+	/*
+	 * Inject munmap() syscall
+	 */
+	dlog("Executing munmap()...\n");
+	/* int munmap(void *addr, size_t len); */
+	regs = tracee->orig_regs;
+	regs.orig_rax = __NR_munmap;
+	regs.rdi = tracee->data_mmap_addr; /* addr */
+	regs.rsi = tracee->data_mmap_sz + tracee->exec_mmap_sz; /* size */
+
+	long munmap_ret;
+	if ((err = ptrace_exec_syscall(tracee, &regs, &munmap_ret)) < 0)
+		goto cleanup;
+	if (munmap_ret < 0) {
+		elog("munmap() inside tracee failed: %ld, bailing!\n", munmap_ret);
+		goto cleanup;
+	}
+
+	u64 ptrace_undone_ts = ktime_now_ns();
+
+	/* 
+	 * Prepare for execution of the original intercepted syscall
+	 */
+	dlog("Replaying original syscall and detaching tracee...\n");
+	if ((err = ptrace_restart_syscall(tracee)) < 0)
+		goto cleanup;
+	ptrace_state = PTRACE_STATE_ATTACHED;
+	if ((err = ptrace_op(tracee, PTRACE_DETACH, 0)) < 0)
+		goto cleanup;
+	ptrace_state = PTRACE_STATE_DETACHED;
+
+	u64 ptrace_retracted_ts = ktime_now_ns();
+
+	dlog("PTRACE TIMING:\n"
+	     "\tintercept\t%.3lfus,\n"
+	     "\tsetup:\t%.3lfus,\n"
+	     "\tinject:\t%.3lfus,\n"
+	     "\ttotal:\t%.3lfus\n",
+	     (ptrace_intercept_ts - ptrace_start_ts) / 1000.0,
+	     (ptrace_undone_ts - ptrace_intercept_ts) / 1000.0,
+	     (ptrace_retracted_ts - ptrace_undone_ts) / 1000.0,
+	     (ptrace_retracted_ts - ptrace_start_ts) / 1000.0);
+
+	return 0;
+cleanup:
+	switch (ptrace_state) {
+	case PTRACE_STATE_PENDING_SYSCALL:
+		dlog("Trying to restore & replay the original syscall...\n");
+		(void)ptrace_restart_syscall(tracee);
+		/* fallthrough */
+	case PTRACE_STATE_ATTACHED:
+		dlog("Trying to detach tracee...\n");
+		(void)ptrace_op(tracee, PTRACE_DETACH, 0);
+		break;
+	default:
+	}
+	return err;
+}
+
+void tracee_free(struct tracee_state *tracee)
+{
+	if (!tracee)
+		return;
+	free(tracee->proc_name);
+	free(tracee);
 }
