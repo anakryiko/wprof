@@ -10,9 +10,16 @@
 #define LIBWPROFINJ_SETUP_SYM __libwprof_inj_setup
 #define LIBWPROFINJ_VERSION 1
 
+#define LIBWPROFINJ_LOG_PATH_FMT "wprofinj-log.%d.%d.log"
+
 struct inj_setup_ctx {
 	int version; /* should be set to LIBWPROFINJ_VERSION */
 	int mmap_sz;
+	int parent_pid;
+
+	int stderr_verbosity;
+	int filelog_verbosity;
+
 	int uds_fd;
 	int uds_parent_fd;
 	int lib_mem_fd;

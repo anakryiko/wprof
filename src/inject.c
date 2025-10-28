@@ -635,6 +635,9 @@ struct tracee_state *tracee_inject(int pid)
 	struct inj_setup_ctx setup_ctx = {
 		.version = LIBWPROFINJ_VERSION,
 		.mmap_sz = tracee->data_mmap_sz + tracee->exec_mmap_sz,
+		.parent_pid = getpid(),
+		.stderr_verbosity = 3, /* debug level */
+		.filelog_verbosity = 3, /* debug level */
 		.uds_fd = uds_remote_fds[1],
 		.uds_parent_fd = uds_remote_fds[0],
 		.lib_mem_fd = memfd_remote_fd,
@@ -679,7 +682,7 @@ struct tracee_state *tracee_inject(int pid)
 
 	u64 ptrace_injected_ts = ktime_now_ns();
 
-	dlog("PTRACE TIMING:\n"
+	dlog("PTRACE INJECTION TIMING:\n"
 	     "\tprep\t%.3lfus,\n"
 	     "\tattach\t%.3lfus,\n"
 	     "\tsetup:\t%.3lfus,\n"
@@ -723,13 +726,16 @@ int tracee_retract(struct tracee_state *tracee)
 	struct user_regs_struct regs;
 	int err = 0;
 
+	/* notify child we are pulling back */
+	zclose(tracee->uds_local_fd);
+
 	u64 ptrace_start_ts = ktime_now_ns();
 
 	if ((err = ptrace_intercept(tracee, &tracee->orig_regs)) < 0)
 		goto cleanup;
 	ptrace_state = PTRACE_STATE_PENDING_SYSCALL;
 
-	u64 ptrace_intercept_ts = ktime_now_ns();
+	u64 ptrace_attached_ts = ktime_now_ns();
 
 	/*
 	 * Inject dlclose(libwprofinj.so)
@@ -762,6 +768,8 @@ int tracee_retract(struct tracee_state *tracee)
 		goto cleanup;
 	}
 
+	u64 ptrace_dlclosed_ts = ktime_now_ns();
+
 	/*
 	 * Inject munmap() syscall
 	 */
@@ -773,36 +781,38 @@ int tracee_retract(struct tracee_state *tracee)
 	regs.rsi = tracee->data_mmap_sz + tracee->exec_mmap_sz; /* size */
 
 	long munmap_ret;
+	if ((err = ptrace_restart_syscall(tracee)) < 0)
+		goto cleanup;
 	if ((err = ptrace_exec_syscall(tracee, &regs, &munmap_ret)) < 0)
 		goto cleanup;
+	ptrace_state = PTRACE_STATE_ATTACHED;
 	if (munmap_ret < 0) {
 		elog("munmap() inside tracee failed: %ld, bailing!\n", munmap_ret);
 		goto cleanup;
 	}
 
-	u64 ptrace_undone_ts = ktime_now_ns();
+	u64 ptrace_unmapped_ts = ktime_now_ns();
 
 	/* 
 	 * Prepare for execution of the original intercepted syscall
 	 */
 	dlog("Replaying original syscall and detaching tracee...\n");
-	if ((err = ptrace_restart_syscall(tracee)) < 0)
-		goto cleanup;
-	ptrace_state = PTRACE_STATE_ATTACHED;
 	if ((err = ptrace_op(tracee, PTRACE_DETACH, 0)) < 0)
 		goto cleanup;
 	ptrace_state = PTRACE_STATE_DETACHED;
 
 	u64 ptrace_retracted_ts = ktime_now_ns();
 
-	dlog("PTRACE TIMING:\n"
-	     "\tintercept\t%.3lfus,\n"
-	     "\tsetup:\t%.3lfus,\n"
-	     "\tinject:\t%.3lfus,\n"
+	dlog("PTRACE RETRACTION TIMING:\n"
+	     "\tattach:\t%.3lfus,\n"
+	     "\tunload:\t%.3lfus,\n"
+	     "\tmunmap:\t%.3lfus,\n"
+	     "\treplay:\t%.3lfus,\n"
 	     "\ttotal:\t%.3lfus\n",
-	     (ptrace_intercept_ts - ptrace_start_ts) / 1000.0,
-	     (ptrace_undone_ts - ptrace_intercept_ts) / 1000.0,
-	     (ptrace_retracted_ts - ptrace_undone_ts) / 1000.0,
+	     (ptrace_attached_ts - ptrace_start_ts) / 1000.0,
+	     (ptrace_dlclosed_ts - ptrace_attached_ts) / 1000.0,
+	     (ptrace_unmapped_ts - ptrace_dlclosed_ts) / 1000.0,
+	     (ptrace_retracted_ts - ptrace_unmapped_ts) / 1000.0,
 	     (ptrace_retracted_ts - ptrace_start_ts) / 1000.0);
 
 	return 0;
