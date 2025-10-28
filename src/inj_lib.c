@@ -49,6 +49,8 @@ static int worker_thread_func(void *arg)
 		.msg_controllen = sizeof(buf),
 	};
 
+	goto skip_uds_for_now;
+
 	ret = recvmsg(setup_ctx->uds_fd, &msg, 0);
 	if (ret < 0) {
 		err = -errno;
@@ -105,6 +107,7 @@ static int worker_thread_func(void *arg)
 		fds[i] = -1;
 	}
 
+skip_uds_for_now:
 	/* Wait for exit signal on eventfd */
 	logf("LIBINJ: Worker thread waiting for exit signal...\n");
 	

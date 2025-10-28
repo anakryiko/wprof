@@ -5,6 +5,8 @@
 
 struct tracee_state;
 
-struct tracee_state *ptrace_inject(int pid);
+struct tracee_state *tracee_inject(int pid);
+int tracee_retract(struct tracee_state *tracee);
+void tracee_free(struct tracee_state *tracee);
 
 #endif /* __INJECT_H_ */
