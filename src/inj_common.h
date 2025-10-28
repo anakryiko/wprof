@@ -8,8 +8,11 @@
 #endif
 
 #define LIBWPROFINJ_SETUP_SYM __libwprof_inj_setup
+#define LIBWPROFINJ_VERSION 1
 
 struct inj_setup_ctx {
+	int version; /* should be set to LIBWPROFINJ_VERSION */
+	int mmap_sz;
 	int uds_fd;
 	int uds_parent_fd;
 	int lib_mem_fd;

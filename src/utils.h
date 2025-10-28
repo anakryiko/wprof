@@ -45,6 +45,8 @@ static inline bool is_false_or_unset(enum tristate tri)
 #define __unused __attribute__((unused))
 #define __cleanup(fn) __attribute__((cleanup(fn)))
 
+#define zclose(fd) do { if (fd >= 0) { close(fd); fd = -1; } } while (0)
+
 #ifndef offsetofend
 #define offsetofend(TYPE, MEMBER) (offsetof(TYPE, MEMBER) + sizeof((((TYPE *)0)->MEMBER)))
 #endif
