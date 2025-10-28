@@ -3,6 +3,7 @@
 #define _GNU_SOURCE
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <errno.h>
 #include <dlfcn.h>
 #include <string.h>
@@ -20,13 +21,55 @@
 
 #include "inj_common.h"
 
+#define zclose(fd) do { if (fd >= 0) { close(fd); fd = -1; } } while (0)
+#define __printf(a, b)	__attribute__((format(printf, a, b)))
+
+#define DEBUG_LOG 1
+#define elog(fmt, ...) do { log_printf(0, fmt, ##__VA_ARGS__); } while (0)
+#define log(fmt, ...) do { log_printf(1, fmt, ##__VA_ARGS__); } while (0)
+#define vlog(fmt, ...) do { log_printf(2, fmt, ##__VA_ARGS__); } while (0)
+#define dlog(fmt, ...) do { log_printf(3, fmt, ##__VA_ARGS__); } while (0)
+
 static struct inj_setup_ctx *setup_ctx;
 static struct inj_run_ctx *run_ctx;
-static FILE *log;
 
-#define logf(fmt, ...) do { fprintf(stderr, fmt, ##__VA_ARGS__); if (log) fprintf(log, fmt, ##__VA_ARGS__); } while (0)
+static FILE *filelog;
+static int filelog_verbosity = -1;
+
+#if DEBUG_LOG
+static int stderr_verbosity = 3;
+#else /* DEBUG_LOG */
+static int stderr_verbosity = -1;
+#endif /* DEBUG_LOG */
+
+__printf(2, 3)
+static void log_printf(int verbosity, const char *fmt, ...)
+{
+	va_list args;
+	int old_errno;
+
+	old_errno = errno;
+
+	if (verbosity <= stderr_verbosity) {
+		/* append "WPROFINJ: " prefix for stderr-based log messages */
+		char final_fmt[1024];
+		snprintf(final_fmt, sizeof(final_fmt), "WPROFINJ: %s", fmt);
+
+		va_start(args, fmt);
+		vfprintf(stderr, final_fmt, args);
+		va_end(args);
+	}
+	if (filelog && verbosity <= filelog_verbosity) {
+		va_start(args, fmt);
+		vfprintf(filelog, fmt, args);
+		va_end(args);
+	}
+
+	errno = old_errno;
+}
 
 #define WORKER_STACK_SIZE (256 * 1024)
+
 static pid_t inj_tid = -1;
 static void *stack = NULL;
 static int exit_evfd = -1;
@@ -38,7 +81,7 @@ static int worker_thread_func(void *arg)
 	int ret, err = 0;
 	int run_ctx_memfd = -1, workdir_fd = -1;
 
-	logf("LIBINJ: Worker thread started (tid=%d)\n", gettid());
+	vlog("Worker thread started (TID %d, PID %d)\n", gettid(), getpid());
 
 	struct iovec io = { .iov_base = &fd_cnt, .iov_len = sizeof(fd_cnt) };
 	char buf[CMSG_SPACE(sizeof(fds))];
@@ -49,29 +92,27 @@ static int worker_thread_func(void *arg)
 		.msg_controllen = sizeof(buf),
 	};
 
-	goto skip_uds_for_now;
-
 	ret = recvmsg(setup_ctx->uds_fd, &msg, 0);
 	if (ret < 0) {
 		err = -errno;
-		logf("LIBINJ: UDS recvmsg() error (ret %d): %d\n", ret, err);
+		elog("UDS recvmsg() error (ret %d): %d\n", ret, err);
 		goto cleanup;
 	} else if (ret != sizeof(fd_cnt)) {
 		err = -errno;
-		logf("LIBINJ: UDS recvmsg() unexpected result (ret %d): %d\n", ret, err);
+		elog("UDS recvmsg() unexpected result (ret %d): %d\n", ret, err);
 		goto cleanup;
 	}
 
 	int exp_cnt = 2;
 	if (fd_cnt != exp_cnt) {
 		err = -E2BIG;
-		logf("LIBINJ: UDS recvmsg() returned invalid number of FDs (got %d, expected %d)\n", fd_cnt, exp_cnt);
+		elog("UDS recvmsg() returned invalid number of FDs (got %d, expected %d)\n", fd_cnt, exp_cnt);
 		goto cleanup;
 	}
 
 	struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
 	memcpy(fds, CMSG_DATA(cmsg), sizeof(*fds) * fd_cnt);
-	logf("LIBINJ: RECEIVED %d FDs FROM TRACER\n", fd_cnt);
+	dlog("RECEIVED %d FDs FROM TRACER\n", fd_cnt);
 
 	run_ctx_memfd = fds[0];
 	workdir_fd = fds[1];
@@ -81,55 +122,59 @@ static int worker_thread_func(void *arg)
 	run_ctx = mmap(NULL, run_ctx_sz, PROT_READ | PROT_WRITE, MAP_SHARED, run_ctx_memfd, 0);
 	if (run_ctx == MAP_FAILED) {
 		err = -errno;
-		logf("LIBINJ: failed to mmap() provided run_ctx: %d\n", err);
+		elog("Failed to mmap() provided run_ctx: %d\n", err);
 		goto cleanup;
 	}
+	zclose(run_ctx_memfd);
 
 	/* fd[1] is directory FD for working dir */
-	char log_path[32];
-	snprintf(log_path, sizeof(log_path), "log.%d.txt", getpid());
+	char log_path[64];
+	snprintf(log_path, sizeof(log_path), LIBWPROFINJ_LOG_PATH_FMT,
+		 setup_ctx->parent_pid, getpid());
 	int log_fd = openat(workdir_fd, log_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
 	if (log_fd < 0) {
 		err = -errno;
-		logf("LIBINJ: failed to create log file '%s': %d\n", log_path, err);
+		elog("Failed to create log file '%s': %d\n", log_path, err);
 		goto cleanup;
 	}
-	log = fdopen(log_fd, "w");
-	if (!log) {
+	filelog = fdopen(log_fd, "w");
+	if (!filelog) {
 		err = -errno;
-		logf("LIBINJ: failed to create FILE wrapper around log file '%s': %d\n", log_path, err);
+		elog("Failed to create FILE wrapper around log file '%s': %d\n", log_path, err);
 		goto cleanup;
 	}
-	setlinebuf(log); /* line-buffered FILE for logging */
+	setlinebuf(filelog); /* line-buffered FILE for logging */
 
 	for (int i = 0; i < fd_cnt; i++) {
 		close(fds[i]);
 		fds[i] = -1;
 	}
 
-skip_uds_for_now:
 	/* Wait for exit signal on eventfd */
-	logf("LIBINJ: Worker thread waiting for exit signal...\n");
+	vlog("Worker thread waiting for exit signal...\n");
 	
 	long long unsigned tmp;
 	ret = read(exit_evfd, &tmp, sizeof(tmp));
 	if (ret != sizeof(tmp)) {
 		err = -errno;
-		logf("LIBINJ: Worker thread eventfd read failed (ret %d): %d\n", ret, err);
+		elog("Worker thread eventfd read failed (ret %d): %d\n", ret, err);
 	} else {
-		logf("LIBINJ: Worker thread received exit signal (value %llu)\n", tmp);
+		vlog("Worker thread received exit signal (value %llu)\n", tmp);
 	}
 	close(exit_evfd);
 	exit_evfd = -1;
 
-	logf("LIBINJ: Worker thread exiting\n");
+	vlog("Worker thread exiting...\n");
 
 cleanup:
-	close(setup_ctx->uds_fd);
-	if (run_ctx_memfd >= 0)
-		close(run_ctx_memfd);
+	zclose(setup_ctx->uds_fd);
+	zclose(run_ctx_memfd);
+	zclose(workdir_fd);
 
-	logf("LIBINJ: Worker thread exited (err %d)\n", err);
+	if (err)
+		elog("Worker thread exited with ERROR %d.\n", err);
+	else
+		vlog("Worker thread exited successfully.\n");
 
 	return err;
 }
@@ -138,13 +183,13 @@ static int start_worker_thread(void)
 {
 	int err;
 
-	logf("LIBINJ: Creating worker thread...\n");
+	vlog("Creating worker thread...\n");
 
 	/* Create eventfd()s for exit signaling */
 	exit_evfd = eventfd(0, EFD_CLOEXEC);
 	if (exit_evfd < 0) {
 		err = -errno;
-		logf("LIBINJ: Failed to create exit-command eventfd: %d\n", err);
+		elog("Failed to create exit-command eventfd: %d\n", err);
 		goto err_out;
 	}
 
@@ -153,10 +198,11 @@ static int start_worker_thread(void)
 		     MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
 	if (stack == MAP_FAILED) {
 		err = -errno;
-		logf("LIBINJ: Failed to allocate worker stack: %d\n", err);
+		elog("Failed to allocate worker stack: %d\n", err);
 		goto err_out;
 	}
 
+	/* Now finally create a thread */
 	inj_tid = clone(worker_thread_func, stack + WORKER_STACK_SIZE /* top-of-stack */,
 			CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_SYSVSEM |
 			CLONE_THREAD |
@@ -167,11 +213,11 @@ static int start_worker_thread(void)
 			&worker_tid); /* child_tid for SETTID/CLEARTID */
 	if (inj_tid < 0) {
 		err = -errno;
-		logf("LIBINJ: Failed to clone() worker thread: %d\n", err);
+		elog("Failed to clone() worker thread: %d\n", err);
 		goto err_out;
 	}
 
-	logf("LIBINJ: Worker thread created successfully (tid=%d)\n", inj_tid);
+	log("Worker thread created successfully (TID %d, PID %d)\n", inj_tid, getpid());
 	return 0;
 err_out:
 	if (stack && stack != MAP_FAILED)
@@ -190,21 +236,26 @@ static void stop_worker_thread(void)
 	long long unsigned tmp;
 
 	if (inj_tid < 0) {
-		logf("LIBINJ: No worker thread to stop\n");
+		elog("No worker thread to stop...\n");
 		return;
 	}
 
-	logf("LIBINJ: Signaling worker thread to exit...\n");
+	vlog("Signaling worker thread to exit...\n");
+
+	if (exit_evfd < 0) {
+		elog("No exit signalling eventfd, exiting.\n");
+		return;
+	}
 
 	/* Signal worker thread via eventfd */
 	tmp = 1;
 	ret = write(exit_evfd, &tmp, sizeof(tmp));
 	if (ret != sizeof(tmp)) {
 		err = -errno;
-		logf("LIBINJ: Failed to write to eventfd: %d\n", err);
+		elog("Failed to write to eventfd: %d\n", err);
 	}
 
-	logf("LIBINJ: Waiting for worker thread to exit...\n");
+	vlog("Waiting for worker thread to exit...\n");
 
 	/* wait for worker thread to exit fully */
 	while (*(volatile pid_t *)&worker_tid == inj_tid)
@@ -216,57 +267,51 @@ static void stop_worker_thread(void)
 		stack = NULL;
 	}
 
-	logf("LIBINJ: Worker thread cleanup complete\n");
+	vlog("Worker thread teardown is complete.\n");
 	inj_tid = -1;
 }
 
 __attribute__((constructor))
 void libwprofinj_init()
 {
-    logf("LIBINJ: ========================================\n");
-    logf("LIBINJ: libinj.so: Constructor called - library loaded\n");
-    logf("LIBINJ: ========================================\n");
+    vlog("======= CONSTRUCTOR ======\n");
 }
 
 struct inj_setup_ctx *LIBWPROFINJ_SETUP_SYM(struct inj_setup_ctx *ctx)
 {
-	logf("LIBINJ: INIT SETUP new_setup_ctx %p old_setup_ctx %p\n", ctx, setup_ctx);
-
 	/*
 	 * If we already went through the setup step, let caller know where
 	 * out setup context is located (most probably for cleanup after
 	 * unclean injection)
 	 */
-	if (setup_ctx)
+	if (setup_ctx) {
+		elog("Setup called more than once! old_setup_ctx %p new_setup_ctx %p\n", setup_ctx, ctx);
 		return setup_ctx;
+	}
 
 	setup_ctx = ctx;
 
 	/* it's easier to close everything from tracee side */
-	close(setup_ctx->lib_mem_fd);
-	close(setup_ctx->uds_parent_fd);
+	zclose(setup_ctx->lib_mem_fd);
+	zclose(setup_ctx->uds_parent_fd);
 
-	/* Start worker thread (CUPTI will be initialized inside the thread) */
 	int err = start_worker_thread();
 	if (err) {
-		logf("LIBINJ: FAILED TO START LIBINJ WORKER THREAD!\n");
+		zclose(setup_ctx->uds_fd);
+		elog("Failed to start worker thread!\n");
 		return NULL;
 	}
 
-	logf("LIBINJ: Constructor complete\n");
+	vlog("Setup completed.\n");
 	return setup_ctx;
 }
 
 __attribute__((destructor))
 void libwprofinj_fini()
 {
-    logf("LIBINJ: ========================================\n");
-    logf("LIBINJ: libinj.so: Destructor called - library unloaded\n");
-    logf("LIBINJ: ========================================\n");
+    vlog("======= DESTRUCTOR STARTED ======\n");
 
-    /* Stop worker thread (CUPTI will be finalized inside the thread before it exits) */
     stop_worker_thread();
 
-    logf("LIBINJ: Destructor complete\n");
-    logf("LIBINJ: ========================================\n");
+    vlog("======= DESTRUCTOR FINISHED ======\n");
 }
