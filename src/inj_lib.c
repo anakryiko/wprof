@@ -20,7 +20,7 @@
 
 #include "inj_common.h"
 
-static struct inj_setup_ctx *setup_ctx, _setup_ctx;
+static struct inj_setup_ctx *setup_ctx;
 static struct inj_run_ctx *run_ctx;
 static FILE *log;
 
@@ -225,14 +225,21 @@ void libwprofinj_init()
     logf("LIBINJ: ========================================\n");
 }
 
-int LIBWPROFINJ_SETUP_SYM(struct inj_setup_ctx *ctx)
+struct inj_setup_ctx *LIBWPROFINJ_SETUP_SYM(struct inj_setup_ctx *ctx)
 {
-	/* memory backing setup_ctx might go away after this call, so copy */
-	_setup_ctx = *ctx;
-	setup_ctx = &_setup_ctx;
+	logf("LIBINJ: INIT SETUP new_setup_ctx %p old_setup_ctx %p\n", ctx, setup_ctx);
 
-	logf("LIBINJ: INIT SETUP setup_ctx at %p\n", setup_ctx);
+	/*
+	 * If we already went through the setup step, let caller know where
+	 * out setup context is located (most probably for cleanup after
+	 * unclean injection)
+	 */
+	if (setup_ctx)
+		return setup_ctx;
 
+	setup_ctx = ctx;
+
+	/* it's easier to close everything from tracee side */
 	close(setup_ctx->lib_mem_fd);
 	close(setup_ctx->uds_parent_fd);
 
@@ -240,11 +247,11 @@ int LIBWPROFINJ_SETUP_SYM(struct inj_setup_ctx *ctx)
 	int err = start_worker_thread();
 	if (err) {
 		logf("LIBINJ: FAILED TO START LIBINJ WORKER THREAD!\n");
-		return err;
+		return NULL;
 	}
 
 	logf("LIBINJ: Constructor complete\n");
-	return 0;
+	return setup_ctx;
 }
 
 __attribute__((destructor))

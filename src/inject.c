@@ -46,7 +46,6 @@ struct tracee_state {
 	size_t exec_mmap_sz;
 
 	int uds_local_fd;
-	int memfd_local_fd;
 
 	long dlopen_addr;
 	long dlclose_addr;
@@ -328,18 +327,18 @@ static int ptrace_exec_syscall(const struct tracee_state *tracee,
 struct tracee_state *ptrace_inject(int pid)
 {
 	struct tracee_state *tracee;
-	int err = 0;
 	u64 start_ts = ktime_now_ns();
+	int err = 0, pid_fd = -1, memfd_local_fd = -1;
+	bool restore_syscall = false;
 
 	tracee = calloc(1, sizeof(*tracee));
 	tracee->pid = pid;
 	tracee->proc_name = strdup(proc_name(pid));
 	tracee->uds_local_fd = -1;
-	tracee->memfd_local_fd = -1;
 
 	/* We need pidfd to open tracee's FDs later on */
-	tracee->pid_fd = sys_pidfd_open(pid, 0);
-	if (tracee->pid_fd < 0) {
+	pid_fd = sys_pidfd_open(pid, 0);
+	if (pid_fd < 0) {
 		elog("pidfd_open() failed: %d\n", -errno);
 		goto cleanup;
 	}
@@ -412,6 +411,7 @@ struct tracee_state *ptrace_inject(int pid)
 
 	/* XXX: arm64 will need something else */
 	tracee->orig_regs.rip -= 2; /* adjust for syscall replay, syscall instruction is 2 bytes */
+	restore_syscall = true; /* when cleaning up prematurely, restore regs and replay syscall */
 
 	/*
 	 * Inject mmap() syscall
@@ -473,7 +473,7 @@ struct tracee_state *ptrace_inject(int pid)
 	 */
 	dlog("Executing memfd_create()...\n");
 
-	char memfd_name[] = "wprof-inject";
+	char memfd_name[] = "wprof-injection";
 	if ((err = remote_vm_write(tracee, tracee->data_mmap_addr, memfd_name, sizeof(memfd_name))) < 0)
 		goto cleanup;
 
@@ -519,7 +519,7 @@ struct tracee_state *ptrace_inject(int pid)
 		goto cleanup;
 	dlog("socket_pair() FDs = {%d, %d}\n", uds_remote_fds[0], uds_remote_fds[1]);
 
-	tracee->uds_local_fd = sys_pidfd_getfd(tracee->pid_fd, uds_remote_fds[0], 0);
+	tracee->uds_local_fd = sys_pidfd_getfd(pid_fd, uds_remote_fds[0], 0);
 	if (tracee->uds_local_fd < 0) {
 		elog("pidfd_getfd(remote_fd %d) failed: %d\n", uds_remote_fds[0], -errno);
 		goto cleanup;
@@ -529,19 +529,19 @@ struct tracee_state *ptrace_inject(int pid)
 	u64 ptrace_prepped_ts = ktime_now_ns();
 
 	/* Open tracee's allocated FD for shared lib code */
-	tracee->memfd_local_fd = sys_pidfd_getfd(tracee->pid_fd, memfd_remote_fd, 0);
-	if (tracee->memfd_local_fd < 0) {
+	memfd_local_fd = sys_pidfd_getfd(pid_fd, memfd_remote_fd, 0);
+	if (memfd_local_fd < 0) {
 		elog("pidfd_getfd(remote_fd %ld) failed: %d\n", memfd_remote_fd, -errno);
 		goto cleanup;
 	}
-	err = ftruncate(tracee->memfd_local_fd, libwprofinj_so_sz);
+	err = ftruncate(memfd_local_fd, libwprofinj_so_sz);
 	if (err) {
 		elog("Failed to ftruncate() memfd to %ld bytes: %d\n", libwprofinj_so_sz, -errno);
 		goto cleanup;
 	}
 	/* Copy over contents of libinj.so into memfd file */
 	void *libinj_so_mem = mmap(NULL, libwprofinj_so_sz, PROT_READ | PROT_WRITE, MAP_SHARED,
-				   tracee->memfd_local_fd, 0);
+				   memfd_local_fd, 0);
 	if (libinj_so_mem == MAP_FAILED) {
 		elog("Failed to mmap() libinj.so desitnation memfd file: %d\n", -errno);
 		goto cleanup;
@@ -566,7 +566,7 @@ struct tracee_state *ptrace_inject(int pid)
 	regs.rip = tracee->exec_mmap_addr;
 	regs.rax = tracee->dlopen_addr;
 	regs.rdi = tracee->data_mmap_addr; /* name */
-	regs.rsi = RTLD_LAZY; /* flags */
+	regs.rsi = RTLD_LAZY | RTLD_LOCAL; /* flags */
 	/* XXX: arch specific */
 	regs.rsp = (regs.rsp & ~0xFULL) - 128; /* ensure 16-byte alignment and set up red zone */
 
@@ -617,6 +617,8 @@ struct tracee_state *ptrace_inject(int pid)
 
 	dlog("Setting up injected context calling into %s()...\n", LIBWPROFINJ_SETUP_SYM_NAME);
 	struct inj_setup_ctx setup_ctx = {
+		.version = LIBWPROFINJ_VERSION,
+		.mmap_sz = tracee->data_mmap_sz + tracee->exec_mmap_sz,
 		.uds_fd = uds_remote_fds[1],
 		.uds_parent_fd = uds_remote_fds[0],
 		.lib_mem_fd = memfd_remote_fd,
@@ -641,17 +643,18 @@ struct tracee_state *ptrace_inject(int pid)
 		goto cleanup;
 
 	long inj_setup_res = regs.rax;
-	if (inj_setup_res != 0) {
-		elog("Injection init with %s() failed (result %ld), bailing!..\n",
+	if (inj_setup_res != tracee->data_mmap_addr) {
+		elog("Injection init call %s() failed (result %lx), bailing!..\n",
 		     LIBWPROFINJ_SETUP_SYM_NAME, inj_setup_res);
 		goto cleanup;
 	}
-	dlog("%s() call succeeded\n", LIBWPROFINJ_SETUP_SYM_NAME);
+	dlog("Injection init %s() call succeeded!\n", LIBWPROFINJ_SETUP_SYM_NAME);
 
 	/* 
 	 * Prepare for execution of the original intercepted syscall
 	 */
 	dlog("Replaying original syscall and detaching tracee...\n");
+	restore_syscall = false;
 	if ((err = ptrace_restart_syscall(tracee)) < 0)
 		goto cleanup;
 	if ((err = ptrace_op(tracee, PTRACE_DETACH, 0)) < 0)
@@ -671,11 +674,22 @@ struct tracee_state *ptrace_inject(int pid)
 	     (ptrace_injected_ts - ptrace_prepped_ts) / 1000.0,
 	     (ptrace_injected_ts - start_ts) / 1000.0);
 
+	zclose(pid_fd);
+	zclose(memfd_local_fd);
+
 	return tracee;
 
 cleanup:
+	if (restore_syscall) {
+		dlog("Trying to restore and replay original syscall...\n");
+		(void)ptrace_restart_syscall(tracee);
+		(void)ptrace_op(tracee, PTRACE_DETACH, 0);
+	}
+	zclose(pid_fd);
+	zclose(memfd_local_fd);
+	zclose(tracee->uds_local_fd);
+	free(tracee->proc_name);
 	free(tracee);
-	/* XXX: ACTUALLY CLEANUP */
 	errno = -err;
 	return NULL;
 }
