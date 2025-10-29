@@ -56,7 +56,14 @@ struct tracee_state {
 	long inj_setup_addr;
 
 	struct inj_run_ctx *run_ctx;
+
+	struct tracee_info info;
 };
+
+const struct tracee_info *tracee_info(const struct tracee_state *tracee)
+{
+	return &tracee->info;
+}
 
 enum ptrace_state {
 	PTRACE_STATE_DETACHED,
@@ -760,6 +767,10 @@ struct tracee_state *tracee_inject(int pid)
 	zclose(pid_fd);
 	zclose(memfd_local_fd);
 
+	tracee->info.pid = tracee->pid;
+	tracee->info.name = tracee->proc_name;
+	tracee->info.uds_fd = tracee->uds_local_fd;
+
 	return tracee;
 
 cleanup:
@@ -918,7 +929,7 @@ int tracee_handshake(struct tracee_state *tracee, int workdir_fd)
 	dlog("Handshake with tracee PID %d (%s) started...\n", tracee->pid, tracee->proc_name);
 
 	char memfd_name[64];
-	snprintf(memfd_name, sizeof(memfd_name), "wprofinj-ctx-%d", tracee->pid);
+	snprintf(memfd_name, sizeof(memfd_name), "wprofinj-ctx-%d", getpid());
 
 	const size_t run_ctx_sz = sizeof(struct inj_run_ctx);
 	ctx_mem_fd = memfd_create(memfd_name, MFD_CLOEXEC);

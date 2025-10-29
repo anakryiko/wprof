@@ -36,6 +36,7 @@ struct inj_run_ctx {
 enum inj_msg_kind {
 	__INJ_INVALID = 0,
 	INJ_MSG_SETUP = 1,
+	INJ_MSG_CUDA_SESSION = 2,
 };
 
 struct inj_msg {
@@ -45,6 +46,10 @@ struct inj_msg {
 		struct inj_msg_setup {
 			int fd_cnt;
 		} setup;
+		struct inj_msg_cuda_session {
+			long long session_start_ns;
+			long long session_end_ns;
+		} cuda_session;
 	};
 };
 

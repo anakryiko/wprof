@@ -111,7 +111,6 @@ struct env {
 	bool cuda_global_discovery;
 
 	struct tracee_state **tracees;
-	int *tracee_pids;
 	int tracee_cnt;
 };
 
