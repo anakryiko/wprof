@@ -78,6 +78,7 @@ struct env {
 
 	bool pb_debug_interns;
 	bool pb_disable_interns;
+	bool keep_workdir;
 
 	/* FILTERING */
 	char **allow_pnames, **deny_pnames;
@@ -108,6 +109,10 @@ struct env {
 	int *cuda_pids;
 	int cuda_pid_cnt;
 	bool cuda_global_discovery;
+
+	struct tracee_state **tracees;
+	int *tracee_pids;
+	int tracee_cnt;
 };
 
 extern struct env env;

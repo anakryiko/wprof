@@ -33,7 +33,7 @@
 static struct inj_setup_ctx *setup_ctx;
 static struct inj_run_ctx *run_ctx;
 
-static FILE *filelog;
+static FILE *filelog = NULL;
 static int filelog_verbosity = -1;
 
 #if DEBUG_LOG
@@ -131,12 +131,14 @@ static int worker_thread_func(void *arg)
 	char log_path[64];
 	snprintf(log_path, sizeof(log_path), LIBWPROFINJ_LOG_PATH_FMT,
 		 setup_ctx->parent_pid, getpid());
-	int log_fd = openat(workdir_fd, log_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	int log_fd = openat(workdir_fd, log_path, O_WRONLY | O_CREAT | O_CLOEXEC, 0644);
 	if (log_fd < 0) {
 		err = -errno;
 		elog("Failed to create log file '%s': %d\n", log_path, err);
 		goto cleanup;
 	}
+	zclose(workdir_fd);
+
 	filelog = fdopen(log_fd, "w");
 	if (!filelog) {
 		err = -errno;
@@ -145,14 +147,9 @@ static int worker_thread_func(void *arg)
 	}
 	setlinebuf(filelog); /* line-buffered FILE for logging */
 
-	for (int i = 0; i < fd_cnt; i++) {
-		close(fds[i]);
-		fds[i] = -1;
-	}
-
 	/* Wait for exit signal on eventfd */
 	vlog("Worker thread waiting for exit signal...\n");
-	
+
 	long long unsigned tmp;
 	ret = read(exit_evfd, &tmp, sizeof(tmp));
 	if (ret != sizeof(tmp)) {
@@ -295,6 +292,9 @@ struct inj_setup_ctx *LIBWPROFINJ_SETUP_SYM(struct inj_setup_ctx *ctx)
 	zclose(setup_ctx->lib_mem_fd);
 	zclose(setup_ctx->uds_parent_fd);
 
+	stderr_verbosity = ctx->stderr_verbosity;
+	filelog_verbosity = ctx->filelog_verbosity;
+
 	int err = start_worker_thread();
 	if (err) {
 		zclose(setup_ctx->uds_fd);
@@ -309,9 +309,12 @@ struct inj_setup_ctx *LIBWPROFINJ_SETUP_SYM(struct inj_setup_ctx *ctx)
 __attribute__((destructor))
 void libwprofinj_fini()
 {
-    vlog("======= DESTRUCTOR STARTED ======\n");
+	vlog("======= DESTRUCTOR STARTED ======\n");
 
-    stop_worker_thread();
+	stop_worker_thread();
 
-    vlog("======= DESTRUCTOR FINISHED ======\n");
+	vlog("======= DESTRUCTOR FINISHED ======\n");
+
+	if (filelog)
+		fclose(filelog);
 }

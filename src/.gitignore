@@ -8,6 +8,7 @@
 /wprof.*.data
 /*.wprof.*.data
 /*.wprof.data
+/wprof-session.*
 /compile_commands.json
 /.cache
 /.gdb_history

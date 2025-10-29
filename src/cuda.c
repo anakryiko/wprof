@@ -11,13 +11,24 @@
 #include "env.h"
 #include "inject.h"
 
-static int discover_pid_cuda_binaries(int pid)
+static void add_tracee(int tracee_pid, struct tracee_state *tracee)
+{
+	env.tracees = realloc(env.tracees, (env.tracee_cnt + 1) * sizeof(*env.tracees));
+	env.tracee_pids = realloc(env.tracee_pids, (env.tracee_cnt + 1) * sizeof(*env.tracee_pids));
+
+	env.tracees[env.tracee_cnt] = tracee;
+	env.tracee_pids[env.tracee_cnt] = tracee_pid;
+
+	env.tracee_cnt++;
+}
+
+static int discover_pid_cuda_binaries(int pid, int workdir_fd)
 {
 	struct vma_info *vma;
 	bool has_cuda = false, has_cupti = false;
+	int err = 0;
 
-	wprof_for_each(vma, vma, pid,
-		       VMA_QUERY_VMA_EXECUTABLE | VMA_QUERY_FILE_BACKED_VMA) {
+	wprof_for_each(vma, vma, pid, VMA_QUERY_VMA_EXECUTABLE | VMA_QUERY_FILE_BACKED_VMA) {
 		if (vma->vma_name[0] != '/')
 			continue; /* special file, ignore */
 
@@ -48,22 +59,31 @@ static int discover_pid_cuda_binaries(int pid)
 
 	struct tracee_state *tracee = tracee_inject(pid);
 	if (!tracee) {
-		eprintf("PTRACE INJECTION FAILED FOR PID %d: %d\n", pid, -errno);
+		err = -errno;
+		eprintf("PTRACE injection failed for PID %d (%s): %d\n", pid, proc_name(pid), err);
 		return -errno;
 	}
 
-	int err = tracee_retract(tracee);
+	err = tracee_handshake(tracee, workdir_fd);
 	if (err) {
-		eprintf("PTRACE RETRACTION FAILED FOR PID %d: %d\n", pid, err);
-		return err;
+		eprintf("Injection handshake failed with PID %d (%s): %d\n", pid, proc_name(pid), err);
+		goto err_retract;
 	}
 
-	tracee_free(tracee);
-
+	add_tracee(pid, tracee);
 	return 0;
+
+err_retract:
+	int rerr = tracee_retract(tracee);
+	if (rerr) {
+		eprintf("PTRACE retraction failed for PID %d (%s): %d\n", pid, proc_name(pid), rerr);
+		return err;
+	}
+	tracee_free(tracee);
+	return err;
 }
 
-int setup_cuda_tracking_discovery(void)
+int setup_cuda_tracking_discovery(int workdir_fd)
 {
 	int err = 0;
 
@@ -72,18 +92,21 @@ int setup_cuda_tracking_discovery(void)
 
 		wprof_for_each(proc, pidp) {
 			pid = *pidp;
-			err = discover_pid_cuda_binaries(pid);
+			err = discover_pid_cuda_binaries(pid, workdir_fd);
 			if (err) {
 				eprintf("Failed to check if PID %d uses CUDA+CUPTI: %d (skipping...)\n", pid, err);
 				continue;
 			}
 		}
+
+		/* no point in doing per-PID discovery, we just found all applicable processes */
+		return 0;
 	}
 
 	for (int i = 0; i < env.req_pid_cnt; i++) {
 		int pid = env.req_pids[i];
 
-		err = discover_pid_cuda_binaries(pid);
+		err = discover_pid_cuda_binaries(pid, workdir_fd);
 		if (err) {
 			eprintf("Failed to check if PID %d uses CUDA+CUPTI: %d (skipping...)\n", pid, err);
 			continue;
@@ -92,3 +115,21 @@ int setup_cuda_tracking_discovery(void)
 
 	return 0;
 }
+
+void teardown_cuda_tracking(void)
+{
+	for (int i = 0; i < env.tracee_cnt; i++) {
+		struct tracee_state *tracee = env.tracees[i];
+
+		int err = tracee_retract(tracee);
+		if (err) {
+			eprintf("Ptrace retraction for PID %d (%s) returned error: %d\n",
+				env.tracee_pids[i], proc_name(env.tracee_pids[i]), err);
+		}
+		tracee_free(tracee);
+	}
+	free(env.tracees);
+	free(env.tracee_pids);
+	env.tracees = NULL;
+}
+

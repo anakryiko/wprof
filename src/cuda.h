@@ -5,8 +5,7 @@
 
 #include <stdint.h>
 
-#include "utils.h"
-
-int setup_cuda_tracking_discovery(void);
+int setup_cuda_tracking_discovery(int workdir_fd);
+void teardown_cuda_tracking(void);
 
 #endif /* __CUDA_H_ */

@@ -53,6 +53,8 @@ struct tracee_state {
 
 	long dlopen_handle;
 	long inj_setup_addr;
+
+	struct inj_run_ctx *run_ctx;
 };
 
 #define elog(fmt, ...) eprintf("tracee(%d, %s): " fmt, tracee->pid, tracee->proc_name, ##__VA_ARGS__)
@@ -837,4 +839,48 @@ void tracee_free(struct tracee_state *tracee)
 		return;
 	free(tracee->proc_name);
 	free(tracee);
+}
+
+int tracee_handshake(struct tracee_state *tracee, int workdir_fd)
+{
+	int err = 0, ctx_mem_fd = -1;
+
+	dlog("Handshake with tracee PID %d (%s) started...\n", tracee->pid, tracee->proc_name);
+
+	char memfd_name[64];
+	snprintf(memfd_name, sizeof(memfd_name), "wprofinj-ctx-%d", tracee->pid);
+
+	const size_t run_ctx_sz = sizeof(struct inj_run_ctx);
+	ctx_mem_fd = memfd_create(memfd_name, MFD_CLOEXEC);
+	if (ctx_mem_fd < 0) {
+		err = -errno;
+		elog("Failed to created shared context memfd file '%s': %d\n", memfd_name, err);
+		goto cleanup;
+	}
+	err = ftruncate(ctx_mem_fd, run_ctx_sz);
+	if (err) {
+		err = -errno;
+		elog("Failed to ftruncate() shared context memfd file '%s': %d\n", memfd_name, err);
+		goto cleanup;
+	}
+	void *ctx_mem = mmap(NULL, run_ctx_sz, PROT_READ | PROT_WRITE, MAP_SHARED, ctx_mem_fd, 0);
+	if (ctx_mem == MAP_FAILED) {
+		err = -errno;
+		elog("Failed to mmap() shared context memfd file '%s': %d\n", memfd_name, err);
+		goto cleanup;
+	}
+	tracee->run_ctx = ctx_mem;
+
+	int tracee_fds[2] = {ctx_mem_fd, workdir_fd};
+	err = uds_send_fds(tracee->uds_local_fd, tracee_fds, ARRAY_SIZE(tracee_fds));
+	if (err) {
+		elog("Failed to send over FDs for handshake: %d\n", err);
+		goto cleanup;
+	}
+
+	dlog("Handshake with tracee PID %d (%s) completed successfully.\n", tracee->pid, tracee->proc_name);
+
+cleanup:
+	zclose(ctx_mem_fd); /* we still have mmap()'ed memory active, no need for FD */
+	return err;
 }

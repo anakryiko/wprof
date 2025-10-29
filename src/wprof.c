@@ -11,9 +11,11 @@
 #include <string.h>
 #include <stdatomic.h>
 #include <fcntl.h>
+#include <libgen.h>
 #include <sys/syscall.h>
 #include <sys/sysinfo.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <sys/resource.h>
 #include <sys/mman.h>
 #include <sys/ioctl.h>
@@ -252,7 +254,8 @@ static int merge_wprof_data(struct worker_state *workers)
 		struct worker_state *w = &workers[i];
 		munmap(w->dump_mem, w->dump_sz);
 		fclose(w->dump);
-		unlink(w->dump_path);
+		if (!env.keep_workdir)
+			unlink(w->dump_path);
 
 		w->dump = NULL;
 		free(w->dump_path);
@@ -695,7 +698,7 @@ static int setup_perf_counters(struct bpf_state *st, int num_cpus)
 	return 0;
 }
 
-static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num_cpus)
+static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num_cpus, int workdir_fd)
 {
 	const char *online_cpus_file = "/sys/devices/system/cpu/online";
 	struct wprof_bpf *skel;
@@ -759,7 +762,7 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 	}
 
 	if (env.cuda_pid_cnt > 0 || env.cuda_global_discovery) {
-		err = setup_cuda_tracking_discovery();
+		err = setup_cuda_tracking_discovery(workdir_fd);
 		if (err) {
 			eprintf("CUDA tracking discovery step failed: %d\n", err);
 			return err;
@@ -1265,6 +1268,8 @@ int main(int argc, char **argv)
 	struct itimerval timer_ival = {};
 	int worker_cnt = 0;
 	struct worker_state *workers = NULL;
+	char workdir_name[PATH_MAX] = {};
+	int workdir_fd = -1;
 
 	env.actual_start_ts = ktime_now_ns();
 
@@ -1294,7 +1299,8 @@ int main(int argc, char **argv)
 		}
 	}
 	env.ringbuf_cnt = min(env.ringbuf_cnt, num_cpus);
-	vprintf("Using %d BPF ring buffers.\n", env.ringbuf_cnt);
+	if (!env.replay)
+		vprintf("Using %d BPF ring buffers.\n", env.ringbuf_cnt);
 
 	/* during replay or trace generation there is only one worker */
 	worker_cnt = env.replay ? 1 : env.ringbuf_cnt;
@@ -1485,11 +1491,41 @@ int main(int argc, char **argv)
 			*flag = f->default_val;
 	}
 
+	/* create workdir specific to this wprof run */
+	struct timespec ts_now;
+	struct tm *tm_now;
+	char tm_str[32];
+	char *data_path_copy = strdup(env.data_path);
+	char *data_dir = dirname(data_path_copy);
+	clock_gettime(CLOCK_REALTIME, &ts_now);
+	tm_now = localtime(&ts_now.tv_sec);
+	strftime(tm_str, sizeof(tm_str), "%Y-%m-%d_%H%M%S", tm_now);
+	snprintf(workdir_name, sizeof(workdir_name), "%s/wprof-session.%d.%s.%06ld",
+		 data_dir, getpid(), tm_str, ts_now.tv_nsec / 1000);
+	free(data_path_copy);
+
+	if (mkdir(workdir_name, 0755) < 0) {
+		err = -errno;
+		eprintf("Failed to create session workdir '%s': %d\n", workdir_name, err);
+		goto cleanup;
+	}
+	workdir_fd = open(workdir_name, O_DIRECTORY | O_RDONLY);
+	if (workdir_fd < 0) {
+		err = -errno;
+		eprintf("Failed to open() session workdir at '%s': %d\n", workdir_name, err);
+		goto cleanup;
+	}
+	if (fchmod(workdir_fd, 0777) < 0) {
+		err = -errno;
+		eprintf("Failed to chmod(0777) session workdir at '%s': %d\n", workdir_name, err);
+		goto cleanup;
+	}
+
 	for (int i = 0; i < env.ringbuf_cnt; i++) {
 		struct worker_state *worker = &workers[i];
 
 		char dump_path[PATH_MAX];
-		snprintf(dump_path, sizeof(dump_path), "%s.%d", env.data_path, i);
+		snprintf(dump_path, sizeof(dump_path), "%s/rb-worker.%03d", workdir_name, i);
 		worker->dump_path = strdup(dump_path);
 		worker->dump = fopen(dump_path, "w+");
 		if (!worker->dump) {
@@ -1510,7 +1546,7 @@ int main(int argc, char **argv)
 		}
 	}
 
-	err = setup_bpf(&bpf_state, workers, num_cpus);
+	err = setup_bpf(&bpf_state, workers, num_cpus, workdir_fd);
 	if (err) {
 		eprintf("Failed to setup BPF parts: %d\n", err);
 		goto cleanup;
@@ -1550,6 +1586,11 @@ int main(int argc, char **argv)
 
 	printf("Draining...\n");
 	drain_bpf(&bpf_state, num_cpus);
+
+	if (env.tracee_cnt > 0) {
+		printf("Retracting CUDA tracking...\n");
+		teardown_cuda_tracking();
+	}
 
 	printf("Merging...\n");
 	err = merge_wprof_data(workers);
@@ -1625,5 +1666,9 @@ cleanup:
 	drain_bpf(&bpf_state, num_cpus);
 	print_exit_summary(workers, worker_cnt, bpf_state.skel, num_cpus, err);
 	cleanup_bpf(&bpf_state);
+	if (workdir_fd >= 0)
+		close(workdir_fd);
+	if (!env.keep_workdir && workdir_name[0])
+		delete_dir(workdir_name);
 	return -err;
 }
