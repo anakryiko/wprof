@@ -183,6 +183,9 @@ int uds_send_data(int uds_fd, void *data, size_t data_len, int *fds, int fd_cnt)
 	if (fd_cnt > MAX_UDS_FD_CNT)
 		return -E2BIG;
 
+	int fds_sz = sizeof(*fds) * fd_cnt;
+	char fds_buf[CMSG_SPACE(sizeof(*fds) * MAX_UDS_FD_CNT)];
+
 	struct msghdr msg = {};
 	struct iovec io = { .iov_base = data, .iov_len = data_len };
 
@@ -190,11 +193,8 @@ int uds_send_data(int uds_fd, void *data, size_t data_len, int *fds, int fd_cnt)
 	msg.msg_iovlen = 1;
 
 	if (fd_cnt > 0) {
-		int fds_sz = sizeof(*fds) * fd_cnt;
-		char fds_buf[CMSG_SPACE(fds_sz)];
-
 		msg.msg_control = fds_buf;
-		msg.msg_controllen = sizeof(fds_buf);
+		msg.msg_controllen = CMSG_SPACE(fds_sz);
 
 		struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
 		cmsg->cmsg_level = SOL_SOCKET;
