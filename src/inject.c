@@ -57,6 +57,12 @@ struct tracee_state {
 	struct inj_run_ctx *run_ctx;
 };
 
+enum ptrace_state {
+	PTRACE_STATE_DETACHED,
+	PTRACE_STATE_ATTACHED,
+	PTRACE_STATE_PENDING_SYSCALL,
+};
+
 #define elog(fmt, ...) eprintf("tracee(%d, %s): " fmt, tracee->pid, tracee->proc_name, ##__VA_ARGS__)
 #define vlog(fmt, ...) vprintf("tracee(%d, %s): " fmt, tracee->pid, tracee->proc_name, ##__VA_ARGS__)
 #define dlog(fmt, ...) dlogf(INJECTION, 1, "tracee(%d, %s): " fmt, tracee->pid, tracee->proc_name, ##__VA_ARGS__)
@@ -363,11 +369,105 @@ err_detach:
 	return err;
 }
 
-enum ptrace_state {
-	PTRACE_STATE_DETACHED,
-	PTRACE_STATE_ATTACHED,
-	PTRACE_STATE_PENDING_SYSCALL,
-};
+static int tracee_dlclose(const struct tracee_state *tracee, long dl_handle)
+{
+	struct user_regs_struct regs;
+	long inj_trap_addr = tracee->exec_mmap_addr + __inj_trap - __inj_call;
+	int err;
+
+	/* int dlclose(void *handle); */
+	regs = tracee->orig_regs;
+	/* XXX: arch specific */
+	regs.orig_rax = -1; /* cancel pending syscall continuation, if any */
+	regs.rip = tracee->exec_mmap_addr;
+	regs.rax = tracee->dlclose_addr;
+	regs.rdi = dl_handle;
+	/* XXX: arch specific */
+	regs.rsp = (regs.rsp & ~0xFULL) - 128; /* ensure 16-byte alignment and set up red zone */
+
+	if ((err = ptrace_set_regs(tracee, &regs)) < 0)
+		return err;
+	if ((err = ptrace_op(tracee, PTRACE_CONT, 0)) < 0)
+		return err;
+	if ((err = ptrace_wait_trap(tracee, inj_trap_addr)) < 0)
+		return err;
+	if ((err = ptrace_get_regs(tracee, &regs)) < 0)
+		return err;
+
+	long dlclose_res = regs.rax;
+	if (dlclose_res != 0) {
+		elog("Failed to dlclose() injection library (result %ld)!\n", dlclose_res);
+		return -EFAULT;
+	}
+
+	return 0;
+}
+
+static int tracee_munmap(const struct tracee_state *tracee, long mmap_addr, int mmap_sz, bool restart_syscall)
+{
+	struct user_regs_struct regs;
+	int err;
+
+	/* int munmap(void *addr, size_t len); */
+	regs = tracee->orig_regs;
+	regs.orig_rax = __NR_munmap;
+	regs.rdi = mmap_addr; /* addr */
+	regs.rsi = mmap_sz; /* size */
+
+	if (restart_syscall) {
+		if ((err = ptrace_restart_syscall(tracee)) < 0)
+			return err;
+	}
+
+	long munmap_ret;
+	if ((err = ptrace_exec_syscall(tracee, &regs, &munmap_ret)) < 0)
+		return err;
+
+	if (munmap_ret < 0) {
+		elog("munmap() inside tracee failed: %ld, bailing!\n", munmap_ret);
+		return munmap_ret;
+	}
+	return 0;
+}
+
+static int tracee_purge_leftovers(const struct tracee_state *tracee, long setup_ctx_addr, struct inj_setup_ctx *old_ctx)
+{
+	int err;
+
+	vlog("Attempting to purge leftover injection w/ setup ctx at %lx...\n", setup_ctx_addr);
+
+	err = remote_vm_read(tracee, old_ctx, setup_ctx_addr, sizeof(*old_ctx));
+	if (err < 0) {
+		elog("Failed to fetch setup context of previous injection at %lx: %d\n", setup_ctx_addr, err);
+		return err;
+	}
+
+	if (old_ctx->version != LIBWPROFINJ_VERSION) {
+		elog("Leftover injection context is of incompatible version %d (expecting %d), bailing!\n",
+		     old_ctx->version, LIBWPROFINJ_VERSION);
+		return -EOPNOTSUPP;
+	}
+
+	vlog("Leftover injection context: mmap_sz %d lib_handle %lx parent_pid %d\n",
+	     old_ctx->mmap_sz, old_ctx->lib_handle, old_ctx->parent_pid);
+
+	err = tracee_dlclose(tracee, old_ctx->lib_handle);
+	if (err) {
+		elog("Failed to dlclose() leftover libwprofinj.so w/ lib handle %lx and setup ctx at %lx: %d!\n",
+		     old_ctx->lib_handle, setup_ctx_addr, err);
+		return err;
+	}
+	err = tracee_munmap(tracee, setup_ctx_addr, old_ctx->mmap_sz, true /* restart_syscall */);
+	if (err) {
+		elog("Failed to munmap() leftover libwprofinj.so setup context at %lx: %d!\n", setup_ctx_addr, err);
+		return err;
+	}
+
+	vlog("Leftover injection w/ setup ctx at %lx (parent PID %d) successfully purged!\n",
+	      setup_ctx_addr, old_ctx->parent_pid);
+
+	return 0;
+}
 
 struct tracee_state *tracee_inject(int pid)
 {
@@ -561,12 +661,16 @@ struct tracee_state *tracee_inject(int pid)
 	void *libinj_so_mem = mmap(NULL, libwprofinj_so_sz, PROT_READ | PROT_WRITE, MAP_SHARED,
 				   memfd_local_fd, 0);
 	if (libinj_so_mem == MAP_FAILED) {
-		elog("Failed to mmap() libinj.so desitnation memfd file: %d\n", -errno);
+		elog("Failed to mmap() libinj.so destination memfd file: %d\n", -errno);
 		goto cleanup;
 	}
 	memcpy(libinj_so_mem, libwprofinj_so_start, libwprofinj_so_sz);
 	(void)munmap(libinj_so_mem, libwprofinj_so_sz);
 	libinj_so_mem = NULL;
+
+reattempt_dlopen:
+	dlog("Inject dlopen() call...\n");
+	long inj_trap_addr = tracee->exec_mmap_addr + __inj_trap - __inj_call;
 
 	/* Copy over memfd path for passing into dlopen() */
 	char memfd_path[64];
@@ -574,17 +678,14 @@ struct tracee_state *tracee_inject(int pid)
 	if ((err = remote_vm_write(tracee, tracee->data_mmap_addr, memfd_path, sizeof(memfd_path))) < 0)
 		goto cleanup;
 
-	dlog("Inject dlopen() call...\n");
-	long inj_trap_addr = tracee->exec_mmap_addr + __inj_trap - __inj_call;
-
 	/* void *dlopen(const char *path, int flags); */
 	regs = tracee->orig_regs;
 	/* XXX: arch specific */
-	regs.orig_rax = -1; /* cancel pending syscall continuation */
+	regs.orig_rax = -1; /* cancel pending syscall continuation, if any */
 	regs.rip = tracee->exec_mmap_addr;
 	regs.rax = tracee->dlopen_addr;
 	regs.rdi = tracee->data_mmap_addr; /* name */
-	regs.rsi = RTLD_LAZY | RTLD_LOCAL; /* flags */
+	regs.rsi = RTLD_NOW | RTLD_LOCAL; /* flags */
 	/* XXX: arch specific */
 	regs.rsp = (regs.rsp & ~0xFULL) - 128; /* ensure 16-byte alignment and set up red zone */
 
@@ -604,6 +705,7 @@ struct tracee_state *tracee_inject(int pid)
 	}
 	dlog("dlopen() result: %lx\n", tracee->dlopen_handle);
 
+reattempt_setup:
 	dlog("Resolving __libinj_setup() through dlsym()...\n");
 	if ((err = remote_vm_write(tracee, tracee->data_mmap_addr, LIBWPROFINJ_SETUP_SYM_NAME,
 				   sizeof(LIBWPROFINJ_SETUP_SYM_NAME))) < 0)
@@ -611,6 +713,7 @@ struct tracee_state *tracee_inject(int pid)
 
 	/* void *dlsym(void *restrict handle, const char *restrict symbol); */
 	regs = tracee->orig_regs;
+	regs.orig_rax = -1; /* cancel pending syscall continuation, if any */
 	regs.rip = tracee->exec_mmap_addr;
 	regs.rax = tracee->dlsym_addr;
 	regs.rdi = tracee->dlopen_handle; /* handle */
@@ -637,6 +740,7 @@ struct tracee_state *tracee_inject(int pid)
 	struct inj_setup_ctx setup_ctx = {
 		.version = LIBWPROFINJ_VERSION,
 		.mmap_sz = tracee->data_mmap_sz + tracee->exec_mmap_sz,
+		.lib_handle = tracee->dlopen_handle,
 		.parent_pid = getpid(),
 		.stderr_verbosity = 3, /* debug level */
 		.filelog_verbosity = 3, /* debug level */
@@ -649,6 +753,7 @@ struct tracee_state *tracee_inject(int pid)
 
 	/* int __libinj_setup(struct inj_init_ctx *ctx) */
 	regs = tracee->orig_regs;
+	regs.orig_rax = -1;
 	regs.rip = tracee->exec_mmap_addr;
 	regs.rax = tracee->inj_setup_addr;
 	regs.rdi = tracee->data_mmap_addr; /* ctx */
@@ -664,10 +769,54 @@ struct tracee_state *tracee_inject(int pid)
 		goto cleanup;
 
 	long inj_setup_res = regs.rax;
-	if (inj_setup_res != tracee->data_mmap_addr) {
-		elog("Injection init call %s() failed (result %lx), bailing!..\n",
+	if (inj_setup_res == 0) {
+		elog("Injection init call %s() failed (result %lx), bailing!\n",
 		     LIBWPROFINJ_SETUP_SYM_NAME, inj_setup_res);
 		goto cleanup;
+	} else if (inj_setup_res != tracee->data_mmap_addr) {
+		struct inj_setup_ctx old_ctx = {};
+
+		err = tracee_purge_leftovers(tracee, inj_setup_res, &old_ctx);
+		if (err) {
+			elog("Purging leftover previous injection w/ setup ctx at %lx failed: %d, bailing!\n",
+			     inj_setup_res, err);
+			goto cleanup;
+		}
+		tracee->inj_setup_addr = 0;
+
+		/*
+		 * We can get unlucky and happen to use **exactly the same FD**
+		 * for memfd (with libwprofinj.so contents) as previous
+		 * instance of wprof that left libwprofinj.so loaded
+		 * (presumably due to crash or buggy clean up).
+		 *
+		 * In such case, tracee's libc will just blindly reused cached
+		 * previous libwprofinj.so, because its cache is based purely
+		 * on file path, which in out case will be exactly the same
+		 * /proc/self/fd/<memfd>, which is very unfortunate but there
+		 * doesn't seem to be any clean way to 100% guarantee this can
+		 * never happen.
+		 *
+		 * So, in an unlikely case (which isn't actually unlikely
+		 * during local development due to exact FD allocation
+		 * sequence between two attempts to inject, but I digress...)
+		 * that such occurence happens, we need to dlclose()
+		 * our tracee->dlopen_handle to make sure tracee's libc
+		 * actually unload the library (due to last dropped refcount),
+		 * and start over again with dlopen().
+		 *
+		 * No big deal.
+		 */
+		if (old_ctx.lib_handle == tracee->dlopen_handle) {
+			err = tracee_dlclose(tracee, tracee->dlopen_handle);
+			if (err) {
+				elog("Failed dlclose() of own dlopen()-returend libwprofinj.so handle, bailing!\n");
+				goto cleanup;
+			}
+			tracee->dlopen_handle = 0;
+			goto reattempt_dlopen;
+		}
+		goto reattempt_setup;
 	}
 	dlog("Injection init %s() call succeeded!\n", LIBWPROFINJ_SETUP_SYM_NAME);
 
@@ -787,11 +936,12 @@ int tracee_retract(struct tracee_state *tracee)
 		goto cleanup;
 	if ((err = ptrace_exec_syscall(tracee, &regs, &munmap_ret)) < 0)
 		goto cleanup;
-	ptrace_state = PTRACE_STATE_ATTACHED;
 	if (munmap_ret < 0) {
 		elog("munmap() inside tracee failed: %ld, bailing!\n", munmap_ret);
 		goto cleanup;
 	}
+
+	ptrace_state = PTRACE_STATE_ATTACHED;
 
 	u64 ptrace_unmapped_ts = ktime_now_ns();
 
