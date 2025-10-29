@@ -332,8 +332,6 @@ struct inj_setup_ctx *LIBWPROFINJ_SETUP_SYM(struct inj_setup_ctx *ctx)
 
 	setup_ctx = ctx;
 
-	/* it's easier to close everything from tracee side */
-	zclose(setup_ctx->lib_mem_fd);
 	zclose(setup_ctx->uds_parent_fd);
 
 	stderr_verbosity = ctx->stderr_verbosity;
