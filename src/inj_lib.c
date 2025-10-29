@@ -80,6 +80,16 @@ static pid_t worker_tid; /* for clone() and futex() only */
 
 static char msg_buf[UDS_MAX_MSG_LEN] __attribute__((aligned(8)));
 
+static int handle_msg(struct inj_msg *msg)
+{
+	switch (msg->kind) {
+	default:
+		elog("Unexpected message (kind %d)!\n", msg->kind);
+		return -EINVAL;
+	}
+	return 0;
+}
+
 static int worker_thread_func(void *arg)
 {
 	int ret, err = 0;
@@ -107,8 +117,9 @@ static int worker_thread_func(void *arg)
 		elog("UDS recvmsg() returned ZERO, meaning tracer process died, cleaning up...\n");
 		goto cleanup;
 	} else if (ret != sizeof(struct inj_msg)) {
-		err = -errno;
-		elog("UDS recvmsg() unexpected result (ret %d): %d\n", ret, err);
+		err = -EPROTO;
+		elog("UDS recvmsg() returned unexpected setup msg size %d (expecting %zd). Exiting!\n",
+		     ret, sizeof(struct inj_msg));
 		goto cleanup;
 	}
 
@@ -189,7 +200,7 @@ static int worker_thread_func(void *arg)
 
 	vlog("Waiting for exit or incoming commands...\n");
 
-wait:
+event_loop:
 	int n = epoll_wait(epoll_fd, evs, ARRAY_SIZE(evs), -1);
 	if (n < 0) {
 		err = -errno;
@@ -198,8 +209,28 @@ wait:
 	}
 	for (int i = 0; i < n; i++) {
 		if (evs[i].data.fd == setup_ctx->uds_fd) {
-			/* XXX */
-			goto wait;
+			ret = recvmsg(setup_ctx->uds_fd, &msg, 0);
+			if (ret < 0) {
+				err = -errno;
+				elog("UDS recvmsg() error (ret %d): %d\n", ret, err);
+				goto cleanup;
+			} else if (ret == 0) {
+				err = -EFAULT;
+				elog("UDS recvmsg() returned ZERO, meaning tracer process died, cleaning up...\n");
+				goto cleanup;
+			} else if (ret != sizeof(struct inj_msg)) {
+				err = -EPROTO;
+				elog("UDS recvmsg() returned unexpected message size %d (expecting %zd), exiting!\n",
+				     ret, sizeof(struct inj_msg));
+				goto cleanup;
+			}
+
+			struct inj_msg *m = (void *)msg_buf;
+			err = handle_msg(m);
+			if (err) {
+				elog("Failure while handling message (kind %d): %d, exiting!\n", m->kind, err);
+				goto cleanup;
+			}
 		} else if (evs[i].data.fd == exit_fd) {
 			long long unsigned tmp;
 			ret = read(exit_fd, &tmp, sizeof(tmp));
@@ -212,11 +243,12 @@ wait:
 			}
 			goto cleanup;
 		} else {
-			elog("Unrecognized epoll event w/ FD %d, exiting...\n", evs[i].data.fd);
+			elog("Unrecognized epoll event from FD %d, exiting...\n", evs[i].data.fd);
 			err = -EINVAL;
 			goto cleanup;
 		}
 	}
+	goto event_loop;
 
 cleanup:
 	vlog("Worker thread exiting...\n");
