@@ -9,16 +9,14 @@
 #include "cuda.h"
 #include "proc.h"
 #include "env.h"
+#include "sys.h"
+#include "inj_common.h"
 #include "inject.h"
 
 static void add_tracee(int tracee_pid, struct tracee_state *tracee)
 {
 	env.tracees = realloc(env.tracees, (env.tracee_cnt + 1) * sizeof(*env.tracees));
-	env.tracee_pids = realloc(env.tracee_pids, (env.tracee_cnt + 1) * sizeof(*env.tracee_pids));
-
 	env.tracees[env.tracee_cnt] = tracee;
-	env.tracee_pids[env.tracee_cnt] = tracee_pid;
-
 	env.tracee_cnt++;
 }
 
@@ -83,7 +81,7 @@ err_retract:
 	return err;
 }
 
-int setup_cuda_tracking_discovery(int workdir_fd)
+int cuda_trace_setup(int workdir_fd)
 {
 	int err = 0;
 
@@ -116,20 +114,45 @@ int setup_cuda_tracking_discovery(int workdir_fd)
 	return 0;
 }
 
-void teardown_cuda_tracking(void)
+void cuda_trace_teardown(void)
 {
 	for (int i = 0; i < env.tracee_cnt; i++) {
 		struct tracee_state *tracee = env.tracees[i];
+		const struct tracee_info *info = tracee_info(tracee);
 
 		int err = tracee_retract(tracee);
 		if (err) {
 			eprintf("Ptrace retraction for PID %d (%s) returned error: %d\n",
-				env.tracee_pids[i], proc_name(env.tracee_pids[i]), err);
+				info->pid, info->name, err);
 		}
 		tracee_free(tracee);
 	}
 	free(env.tracees);
-	free(env.tracee_pids);
 	env.tracees = NULL;
+	env.tracee_cnt = 0;
+}
+
+int cuda_trace_activate(uint64_t sess_start_ts, uint64_t sess_end_ts)
+{
+	for (int i = 0; i < env.tracee_cnt; i++) {
+		struct tracee_state *tracee = env.tracees[i];
+		const struct tracee_info *info = tracee_info(tracee);
+
+		struct inj_msg msg = {
+			.kind = INJ_MSG_CUDA_SESSION,
+			.cuda_session = {
+				.session_start_ns = sess_start_ts,
+				.session_end_ns = sess_end_ts,
+			},
+		};
+		int err = uds_send_data(info->uds_fd, &msg, sizeof(msg), NULL, 0);
+		if (err < 0) {
+			eprintf("Failed to start CUDA trace session for tracee (%d, %s): %d\n",
+				info->pid, info->name, err);
+			continue;
+		}
+
+	}
+	return 0;
 }
 

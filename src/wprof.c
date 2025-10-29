@@ -762,9 +762,9 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 	}
 
 	if (env.cuda_pid_cnt > 0 || env.cuda_global_discovery) {
-		err = setup_cuda_tracking_discovery(workdir_fd);
+		err = cuda_trace_setup(workdir_fd);
 		if (err) {
-			eprintf("CUDA tracking discovery step failed: %d\n", err);
+			eprintf("CUDA trace setup failed: %d\n", err);
 			return err;
 		}
 	}
@@ -1575,6 +1575,15 @@ int main(int argc, char **argv)
 	env.sess_start_ts = env.ktime_start_ns;
 	env.sess_end_ts = env.ktime_start_ns + env.duration_ns;
 
+	/* XXX: synchronize BPF and CUDA collection better */
+	if (env.tracee_cnt > 0) {
+		err = cuda_trace_activate(env.sess_start_ts, env.sess_end_ts);
+		if (err) {
+			eprintf("Failed to active CUDA tracing sessions: %d\n", err);
+			goto cleanup;
+		}
+	}
+
 	err = run_bpf(&bpf_state);
 	if (err) {
 		eprintf("Failed during collecting BPF-generated data: %d\n", err);
@@ -1588,8 +1597,8 @@ int main(int argc, char **argv)
 	drain_bpf(&bpf_state, num_cpus);
 
 	if (env.tracee_cnt > 0) {
-		printf("Retracting CUDA tracking...\n");
-		teardown_cuda_tracking();
+		printf("Retracting CUDA trace injections...\n");
+		cuda_trace_teardown();
 	}
 
 	printf("Merging...\n");
@@ -1661,6 +1670,8 @@ skip_data_collection:
 			file_sz / (1024.0 * 1024.0), env.trace_path);
 	}
 cleanup:
+	if (env.tracee_cnt > 0)
+		cuda_trace_teardown();
 	cleanup_workers(workers, worker_cnt);
 	detach_bpf(&bpf_state, num_cpus);
 	drain_bpf(&bpf_state, num_cpus);

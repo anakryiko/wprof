@@ -6,11 +6,10 @@
 #include <stdarg.h>
 #include <errno.h>
 #include <dlfcn.h>
-#include <string.h>
-#include <stdlib.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sched.h>
+#include <time.h>
 #include <sys/un.h>
 #include <sys/socket.h>
 #include <sys/mman.h>
@@ -18,6 +17,7 @@
 #include <sys/epoll.h>
 #include <sys/wait.h>
 #include <sys/syscall.h>
+#include <sys/timerfd.h>
 #include <linux/futex.h>
 
 #include "inj_common.h"
@@ -77,12 +77,102 @@ static pid_t inj_tid = -1;
 static void *stack = NULL;
 static int exit_fd = -1;
 static pid_t worker_tid; /* for clone() and futex() only */
+static int epoll_fd = -1;
+static int timer_fd = -1;
+
+static __u64 cuda_sess_start_ts, cuda_sess_end_ts;
 
 static char msg_buf[UDS_MAX_MSG_LEN] __attribute__((aligned(8)));
 
+static inline uint64_t timespec_to_ns(struct timespec *ts)
+{
+	return ts->tv_sec * 1000000000ULL + ts->tv_nsec;
+}
+
+static inline __u64 ktime_now_ns()
+{
+	struct timespec t;
+
+	clock_gettime(CLOCK_MONOTONIC, &t);
+
+	return timespec_to_ns(&t);
+}
+
+enum epoll_kind {
+	EK_EXIT,
+	EK_UDS,
+	EK_TIMER,
+};
+
+static int epoll_add(int epoll_fd, int fd, __u32 epoll_events, enum epoll_kind kind)
+{
+	struct epoll_event ev = {
+		.events = epoll_events,
+		.data = {
+			.u32 = kind,
+		},
+	};
+	if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &ev) < 0) {
+		int err = -errno;
+		elog("Failed to EPOLL_CTL_ADD FD %d (kind %d) to epoll_fd %d: %d\n", fd, kind, epoll_fd, err);
+		return err;
+	}
+	return 0;
+}
+
+__attribute__((unused))
+static int epoll_del(int epoll_fd, int fd)
+{
+	if (epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL) < 0) {
+		int err = -errno;
+		elog("Failed to EPOLL_CTL_DEL FD %d from epoll_fd %d: %d\n", fd, epoll_fd, err);
+		return err;
+	}
+	return 0;
+}
+
 static int handle_msg(struct inj_msg *msg)
 {
+	int err = 0;
+
 	switch (msg->kind) {
+	case INJ_MSG_CUDA_SESSION:
+		__u64 now = ktime_now_ns();
+
+		cuda_sess_start_ts = msg->cuda_session.session_start_ns;
+		cuda_sess_end_ts = msg->cuda_session.session_end_ns;
+
+		vlog("CUDA session request received (start delay %.3lfus, end delay %.3lfus)\n",
+			(cuda_sess_start_ts - (double)now) / 1000.0,
+			(cuda_sess_end_ts - (double)now) / 1000.0);
+
+		timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+		if (timer_fd < 0) {
+			err = -errno;
+			elog("Failed to create timerfd: %d\n", err);
+			return err;
+		}
+
+		struct itimerspec spec = {
+			.it_value = {
+				.tv_sec = cuda_sess_end_ts / 1000000000,
+				.tv_nsec = cuda_sess_end_ts % 1000000000,
+			},
+		};
+		if (timerfd_settime(timer_fd, TFD_TIMER_ABSTIME, &spec, NULL) < 0) {
+			err = -errno;
+			elog("Failed to timerfd_settime(): %d\n", err);
+			return err;
+		}
+
+		if ((err = epoll_add(epoll_fd, timer_fd, EPOLLIN, EK_TIMER)) < 0) {
+			elog("Failed to add timerfd into epoll: %d\n", err);
+			return err;
+		}
+
+		vlog("CUDA session timeout successfully set up %.3lfus from now.\n",
+		     (cuda_sess_end_ts - (double)now) / 1000.0);
+		break;
 	default:
 		elog("Unexpected message (kind %d)!\n", msg->kind);
 		return -EINVAL;
@@ -93,7 +183,7 @@ static int handle_msg(struct inj_msg *msg)
 static int worker_thread_func(void *arg)
 {
 	int ret, err = 0;
-	int run_ctx_memfd = -1, workdir_fd = -1, epoll_fd = -1;
+	int run_ctx_memfd = -1, workdir_fd = -1;
 
 	vlog("Worker thread started (TID %d, PID %d)\n", gettid(), getpid());
 
@@ -144,8 +234,7 @@ static int worker_thread_func(void *arg)
 	workdir_fd = fds[1];
 
 	/* fd[0] is memfd for run context */
-	const size_t run_ctx_sz = sizeof(struct inj_run_ctx);
-	run_ctx = mmap(NULL, run_ctx_sz, PROT_READ | PROT_WRITE, MAP_SHARED, run_ctx_memfd, 0);
+	run_ctx = mmap(NULL, sizeof(struct inj_run_ctx), PROT_READ | PROT_WRITE, MAP_SHARED, run_ctx_memfd, 0);
 	if (run_ctx == MAP_FAILED) {
 		err = -errno;
 		elog("Failed to mmap() provided run_ctx: %d\n", err);
@@ -182,25 +271,15 @@ static int worker_thread_func(void *arg)
 		goto cleanup;
 	}
 
-	struct epoll_event evs[2] = {};
-	evs[0].events = EPOLLIN;
-	evs[0].data.fd = exit_fd;
-	if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, exit_fd, &evs[0]) < 0) {
-		err = -errno;
-		elog("Failed to EPOLL_CTL_ADD eventfd: %d\n", err);
+	if ((err = epoll_add(epoll_fd, exit_fd, EPOLLIN, EK_EXIT)) < 0)
 		goto cleanup;
-	}
-	evs[0].events = EPOLLIN;
-	evs[0].data.fd = setup_ctx->uds_fd;
-	if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, setup_ctx->uds_fd, &evs[0]) < 0) {
-		err = -errno;
-		elog("Failed to EPOLL_CTL_ADD UDS FD: %d\n", err);
+	if ((err = epoll_add(epoll_fd, setup_ctx->uds_fd, EPOLLIN, EK_UDS)) < 0)
 		goto cleanup;
-	}
 
 	vlog("Waiting for exit or incoming commands...\n");
 
 event_loop:
+	struct epoll_event evs[8];
 	int n = epoll_wait(epoll_fd, evs, ARRAY_SIZE(evs), -1);
 	if (n < 0) {
 		err = -errno;
@@ -208,7 +287,8 @@ event_loop:
 		goto cleanup;
 	}
 	for (int i = 0; i < n; i++) {
-		if (evs[i].data.fd == setup_ctx->uds_fd) {
+		switch (evs[i].data.u32) {
+		case EK_UDS:
 			ret = recvmsg(setup_ctx->uds_fd, &msg, 0);
 			if (ret < 0) {
 				err = -errno;
@@ -231,7 +311,17 @@ event_loop:
 				elog("Failure while handling message (kind %d): %d, exiting!\n", m->kind, err);
 				goto cleanup;
 			}
-		} else if (evs[i].data.fd == exit_fd) {
+			break;
+		case EK_TIMER: {
+			__u64 expirations;
+
+			(void)read(timer_fd, &expirations, sizeof(expirations));
+
+			vlog("CUDA session timer expired with %.3lfus delay after planned session end.\n",
+			     (ktime_now_ns() - cuda_sess_end_ts) / 1000.0);
+			break;
+		}
+		case EK_EXIT:
 			long long unsigned tmp;
 			ret = read(exit_fd, &tmp, sizeof(tmp));
 			if (ret != sizeof(tmp)) {
@@ -242,7 +332,7 @@ event_loop:
 				err = 0;
 			}
 			goto cleanup;
-		} else {
+		default:
 			elog("Unrecognized epoll event from FD %d, exiting...\n", evs[i].data.fd);
 			err = -EINVAL;
 			goto cleanup;
@@ -256,8 +346,11 @@ cleanup:
 	zclose(exit_fd);
 	zclose(setup_ctx->uds_fd);
 	zclose(run_ctx_memfd);
+	if (run_ctx && run_ctx != MAP_FAILED)
+		munmap(run_ctx, sizeof(struct inj_run_ctx));
 	zclose(workdir_fd);
 	zclose(epoll_fd);
+	zclose(timer_fd);
 
 	if (err)
 		elog("Worker thread exited with ERROR %d.\n", err);
