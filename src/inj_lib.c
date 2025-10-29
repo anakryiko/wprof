@@ -78,16 +78,16 @@ static void *stack = NULL;
 static int exit_fd = -1;
 static pid_t worker_tid; /* for clone() and futex() only */
 
-static char msg_buf[UDS_MAX_MSG_LEN];
+static char msg_buf[UDS_MAX_MSG_LEN] __attribute__((aligned(8)));
 
 static int worker_thread_func(void *arg)
 {
-	int fds[MAX_UDS_FD_CNT] = { [0 ... MAX_UDS_FD_CNT - 1] = -1}, fd_cnt = 0;
 	int ret, err = 0;
-	int run_ctx_memfd = -1, workdir_fd = -1, ep_fd = -1;
+	int run_ctx_memfd = -1, workdir_fd = -1, epoll_fd = -1;
 
 	vlog("Worker thread started (TID %d, PID %d)\n", gettid(), getpid());
 
+	int fds[MAX_UDS_FD_CNT] = { [0 ... MAX_UDS_FD_CNT - 1] = -1};
 	struct iovec io = { .iov_base = msg_buf, .iov_len = sizeof(msg_buf) };
 	char buf[CMSG_SPACE(sizeof(fds))];
 	struct msghdr msg = {
@@ -102,23 +102,33 @@ static int worker_thread_func(void *arg)
 		err = -errno;
 		elog("UDS recvmsg() error (ret %d): %d\n", ret, err);
 		goto cleanup;
-	} else if (ret != sizeof(fd_cnt)) {
+	} else if (ret == 0) {
+		err = -EFAULT;
+		elog("UDS recvmsg() returned ZERO, meaning tracer process died, cleaning up...\n");
+		goto cleanup;
+	} else if (ret != sizeof(struct inj_msg)) {
 		err = -errno;
 		elog("UDS recvmsg() unexpected result (ret %d): %d\n", ret, err);
 		goto cleanup;
 	}
 
-	int exp_cnt = 2;
-	if (fd_cnt != exp_cnt) {
+	struct inj_msg *setup_msg = (void *)msg_buf;
+	if (setup_msg->kind != INJ_MSG_SETUP) {
+		err = -EFAULT;
+		elog("Unexpected UDS message (kind %d) received, bailing...\n", setup_msg->kind);
+		goto cleanup;
+	}
+
+	const int exp_fd_cnt = 2;
+	if (setup_msg->setup.fd_cnt != exp_fd_cnt) {
 		err = -E2BIG;
-		elog("UDS recvmsg() returned invalid number of FDs (got %d, expected %d)\n", fd_cnt, exp_cnt);
+		elog("Unexpected number of FDs received for INJ_MSG_SETUP message (got %d, expected %d)\n",
+		     setup_msg->setup.fd_cnt, exp_fd_cnt);
 		goto cleanup;
 	}
 
 	struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
-	memcpy(fds, CMSG_DATA(cmsg), sizeof(*fds) * fd_cnt);
-	dlog("RECEIVED %d FDs FROM TRACER\n", fd_cnt);
-
+	memcpy(fds, CMSG_DATA(cmsg), sizeof(*fds) * exp_fd_cnt);
 	run_ctx_memfd = fds[0];
 	workdir_fd = fds[1];
 
@@ -152,8 +162,10 @@ static int worker_thread_func(void *arg)
 	}
 	setlinebuf(filelog); /* line-buffered FILE for logging */
 
-	ep_fd = epoll_create1(EPOLL_CLOEXEC);
-	if (ep_fd < 0) {
+	vlog("Log setup completed successfully! wprof PID is %d.\n", setup_ctx->parent_pid);
+
+	epoll_fd = epoll_create1(EPOLL_CLOEXEC);
+	if (epoll_fd < 0) {
 		err = -errno;
 		elog("Failed to create epoll FD: %d\n", err);
 		goto cleanup;
@@ -162,14 +174,14 @@ static int worker_thread_func(void *arg)
 	struct epoll_event evs[2] = {};
 	evs[0].events = EPOLLIN;
 	evs[0].data.fd = exit_fd;
-	if (epoll_ctl(ep_fd, EPOLL_CTL_ADD, exit_fd, &evs[0]) < 0) {
+	if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, exit_fd, &evs[0]) < 0) {
 		err = -errno;
 		elog("Failed to EPOLL_CTL_ADD eventfd: %d\n", err);
 		goto cleanup;
 	}
 	evs[0].events = EPOLLIN;
 	evs[0].data.fd = setup_ctx->uds_fd;
-	if (epoll_ctl(ep_fd, EPOLL_CTL_ADD, setup_ctx->uds_fd, &evs[0]) < 0) {
+	if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, setup_ctx->uds_fd, &evs[0]) < 0) {
 		err = -errno;
 		elog("Failed to EPOLL_CTL_ADD UDS FD: %d\n", err);
 		goto cleanup;
@@ -178,7 +190,7 @@ static int worker_thread_func(void *arg)
 	vlog("Waiting for exit or incoming commands...\n");
 
 wait:
-	int n = epoll_wait(ep_fd, evs, ARRAY_SIZE(evs), -1);
+	int n = epoll_wait(epoll_fd, evs, ARRAY_SIZE(evs), -1);
 	if (n < 0) {
 		err = -errno;
 		elog("epoll_wait() failed: %d\n", err);
@@ -213,7 +225,7 @@ cleanup:
 	zclose(setup_ctx->uds_fd);
 	zclose(run_ctx_memfd);
 	zclose(workdir_fd);
-	zclose(ep_fd);
+	zclose(epoll_fd);
 
 	if (err)
 		elog("Worker thread exited with ERROR %d.\n", err);
