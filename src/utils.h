@@ -225,6 +225,4 @@ int append_str(char ***strs, int *cnt, const char *str);
 int append_str_file(char ***strs, int *cnt, const char *file);
 int append_num(int **nums, int *cnt, const char *arg);
 
-int delete_dir(const char *path);
-
 #endif /* __UTILS_H_ */

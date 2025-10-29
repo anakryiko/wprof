@@ -15,6 +15,7 @@
 #include <sys/socket.h>
 #include <sys/mman.h>
 #include <sys/eventfd.h>
+#include <sys/epoll.h>
 #include <sys/wait.h>
 #include <sys/syscall.h>
 #include <linux/futex.h>
@@ -23,6 +24,7 @@
 
 #define zclose(fd) do { if (fd >= 0) { close(fd); fd = -1; } } while (0)
 #define __printf(a, b)	__attribute__((format(printf, a, b)))
+#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
 
 #define DEBUG_LOG 1
 #define elog(fmt, ...) do { log_printf(0, fmt, ##__VA_ARGS__); } while (0)
@@ -69,21 +71,24 @@ static void log_printf(int verbosity, const char *fmt, ...)
 }
 
 #define WORKER_STACK_SIZE (256 * 1024)
+#define UDS_MAX_MSG_LEN 1024
 
 static pid_t inj_tid = -1;
 static void *stack = NULL;
-static int exit_evfd = -1;
+static int exit_fd = -1;
 static pid_t worker_tid; /* for clone() and futex() only */
+
+static char msg_buf[UDS_MAX_MSG_LEN];
 
 static int worker_thread_func(void *arg)
 {
 	int fds[MAX_UDS_FD_CNT] = { [0 ... MAX_UDS_FD_CNT - 1] = -1}, fd_cnt = 0;
 	int ret, err = 0;
-	int run_ctx_memfd = -1, workdir_fd = -1;
+	int run_ctx_memfd = -1, workdir_fd = -1, ep_fd = -1;
 
 	vlog("Worker thread started (TID %d, PID %d)\n", gettid(), getpid());
 
-	struct iovec io = { .iov_base = &fd_cnt, .iov_len = sizeof(fd_cnt) };
+	struct iovec io = { .iov_base = msg_buf, .iov_len = sizeof(msg_buf) };
 	char buf[CMSG_SPACE(sizeof(fds))];
 	struct msghdr msg = {
 		.msg_iov = &io,
@@ -147,26 +152,68 @@ static int worker_thread_func(void *arg)
 	}
 	setlinebuf(filelog); /* line-buffered FILE for logging */
 
-	/* Wait for exit signal on eventfd */
-	vlog("Worker thread waiting for exit signal...\n");
-
-	long long unsigned tmp;
-	ret = read(exit_evfd, &tmp, sizeof(tmp));
-	if (ret != sizeof(tmp)) {
+	ep_fd = epoll_create1(EPOLL_CLOEXEC);
+	if (ep_fd < 0) {
 		err = -errno;
-		elog("Worker thread eventfd read failed (ret %d): %d\n", ret, err);
-	} else {
-		vlog("Worker thread received exit signal (value %llu)\n", tmp);
+		elog("Failed to create epoll FD: %d\n", err);
+		goto cleanup;
 	}
-	close(exit_evfd);
-	exit_evfd = -1;
 
-	vlog("Worker thread exiting...\n");
+	struct epoll_event evs[2] = {};
+	evs[0].events = EPOLLIN;
+	evs[0].data.fd = exit_fd;
+	if (epoll_ctl(ep_fd, EPOLL_CTL_ADD, exit_fd, &evs[0]) < 0) {
+		err = -errno;
+		elog("Failed to EPOLL_CTL_ADD eventfd: %d\n", err);
+		goto cleanup;
+	}
+	evs[0].events = EPOLLIN;
+	evs[0].data.fd = setup_ctx->uds_fd;
+	if (epoll_ctl(ep_fd, EPOLL_CTL_ADD, setup_ctx->uds_fd, &evs[0]) < 0) {
+		err = -errno;
+		elog("Failed to EPOLL_CTL_ADD UDS FD: %d\n", err);
+		goto cleanup;
+	}
+
+	vlog("Waiting for exit or incoming commands...\n");
+
+wait:
+	int n = epoll_wait(ep_fd, evs, ARRAY_SIZE(evs), -1);
+	if (n < 0) {
+		err = -errno;
+		elog("epoll_wait() failed: %d\n", err);
+		goto cleanup;
+	}
+	for (int i = 0; i < n; i++) {
+		if (evs[i].data.fd == setup_ctx->uds_fd) {
+			/* XXX */
+			goto wait;
+		} else if (evs[i].data.fd == exit_fd) {
+			long long unsigned tmp;
+			ret = read(exit_fd, &tmp, sizeof(tmp));
+			if (ret != sizeof(tmp)) {
+				err = -errno;
+				elog("Worker thread exit eventfd read failed (ret %d): %d\n", ret, err);
+			} else {
+				vlog("Worker thread received exit signal (value %llu)\n", tmp);
+				err = 0;
+			}
+			goto cleanup;
+		} else {
+			elog("Unrecognized epoll event w/ FD %d, exiting...\n", evs[i].data.fd);
+			err = -EINVAL;
+			goto cleanup;
+		}
+	}
 
 cleanup:
+	vlog("Worker thread exiting...\n");
+
+	zclose(exit_fd);
 	zclose(setup_ctx->uds_fd);
 	zclose(run_ctx_memfd);
 	zclose(workdir_fd);
+	zclose(ep_fd);
 
 	if (err)
 		elog("Worker thread exited with ERROR %d.\n", err);
@@ -183,8 +230,8 @@ static int start_worker_thread(void)
 	vlog("Creating worker thread...\n");
 
 	/* Create eventfd()s for exit signaling */
-	exit_evfd = eventfd(0, EFD_CLOEXEC);
-	if (exit_evfd < 0) {
+	exit_fd = eventfd(0, EFD_CLOEXEC);
+	if (exit_fd < 0) {
 		err = -errno;
 		elog("Failed to create exit-command eventfd: %d\n", err);
 		goto err_out;
@@ -219,10 +266,7 @@ static int start_worker_thread(void)
 err_out:
 	if (stack && stack != MAP_FAILED)
 		(void)munmap(stack, WORKER_STACK_SIZE);
-	if (exit_evfd >= 0) {
-		(void)close(exit_evfd);
-		exit_evfd = -1;
-	}
+	zclose(exit_fd);
 	return err;
 }
 
@@ -239,14 +283,14 @@ static void stop_worker_thread(void)
 
 	vlog("Signaling worker thread to exit...\n");
 
-	if (exit_evfd < 0) {
+	if (exit_fd < 0) {
 		elog("No exit signalling eventfd, exiting.\n");
 		return;
 	}
 
 	/* Signal worker thread via eventfd */
 	tmp = 1;
-	ret = write(exit_evfd, &tmp, sizeof(tmp));
+	ret = write(exit_fd, &tmp, sizeof(tmp));
 	if (ret != sizeof(tmp)) {
 		err = -errno;
 		elog("Failed to write to eventfd: %d\n", err);

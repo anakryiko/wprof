@@ -121,7 +121,7 @@ void teardown_cuda_tracking(void)
 	for (int i = 0; i < env.tracee_cnt; i++) {
 		struct tracee_state *tracee = env.tracees[i];
 
-		int err = tracee_retract(tracee);
+		int err = 0; //tracee_retract(tracee);
 		if (err) {
 			eprintf("Ptrace retraction for PID %d (%s) returned error: %d\n",
 				env.tracee_pids[i], proc_name(env.tracee_pids[i]), err);

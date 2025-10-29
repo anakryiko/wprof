@@ -872,7 +872,14 @@ int tracee_handshake(struct tracee_state *tracee, int workdir_fd)
 	tracee->run_ctx = ctx_mem;
 
 	int tracee_fds[2] = {ctx_mem_fd, workdir_fd};
-	err = uds_send_fds(tracee->uds_local_fd, tracee_fds, ARRAY_SIZE(tracee_fds));
+	struct inj_msg msg = {
+		.kind = INJ_MSG_SETUP,
+		.setup = {
+			.fd_cnt = ARRAY_SIZE(tracee_fds),
+		},
+	};
+
+	err = uds_send_data(tracee->uds_local_fd, &msg, sizeof(msg), tracee_fds, ARRAY_SIZE(tracee_fds));
 	if (err) {
 		elog("Failed to send over FDs for handshake: %d\n", err);
 		goto cleanup;
