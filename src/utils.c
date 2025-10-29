@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdlib.h>
+#include <dirent.h>
 #include <unistd.h>
 #include <string.h>
 #include <fcntl.h>
@@ -21,6 +22,7 @@
 #include <sys/time.h>
 #include <sys/signal.h>
 #include <pthread.h>
+#include <unistd.h>
 
 #include "utils.h"
 
@@ -282,4 +284,32 @@ void set_ktime_off(u64 ktime_ns, u64 realtime_ns)
 u64 ktime_to_realtime_ns(u64 ts_ns)
 {
 	return ktime_off + ts_ns;
+}
+
+
+int delete_dir(const char *path)
+{
+	DIR *dir = opendir(path);
+
+	if (!dir)
+		return -errno;
+
+	struct dirent *entry;
+	char filepath[PATH_MAX];
+
+	while ((entry = readdir(dir)) != NULL) {
+		if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+			continue;
+
+		snprintf(filepath, sizeof(filepath), "%s/%s", path, entry->d_name);
+		(void)unlink(filepath);
+	}
+
+	closedir(dir);
+
+	int err = rmdir(path);
+	if (err)
+		return -errno;
+
+	return 0;
 }

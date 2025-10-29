@@ -6,7 +6,9 @@
 struct tracee_state;
 
 struct tracee_state *tracee_inject(int pid);
+int tracee_handshake(struct tracee_state *tracee, int workdir_fd);
 int tracee_retract(struct tracee_state *tracee);
 void tracee_free(struct tracee_state *tracee);
+
 
 #endif /* __INJECT_H_ */

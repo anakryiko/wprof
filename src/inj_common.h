@@ -26,7 +26,7 @@ struct inj_setup_ctx {
 };
 
 struct inj_run_ctx {
-	int parent_pid;
+	char dummy;
 };
 
 #endif /* __INJ_COMMON_H_ */
