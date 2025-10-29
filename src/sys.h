@@ -3,7 +3,6 @@
 #ifndef __SYS_H__
 #define __SYS_H__
 
-#include <errno.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -12,7 +11,9 @@ const char *sig_name(int sig);
 #ifndef MAX_UDS_FD_CNT
 #define MAX_UDS_FD_CNT 16
 #endif
-int uds_send_fds(int uds_fd, int *fds, int fd_cnt);
+int uds_send_data(int uds_fd, void *data, size_t data_len, int *fds, int fd_cnt);
+
+int delete_dir(const char *path);
 
 struct perf_event_attr;
 

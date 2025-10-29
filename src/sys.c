@@ -12,6 +12,7 @@
 #include <errno.h>
 #include <gelf.h>
 #include <libelf.h>
+#include <dirent.h>
 #include <sys/syscall.h>
 #include <sys/sysinfo.h>
 #include <sys/stat.h>
@@ -25,7 +26,6 @@
 
 #include "utils.h"
 #include "sys.h"
-#include "proc.h"
 
 static const char *signal_names[] = {
 	[0] = "!!!SIGZERO!!!",
@@ -176,32 +176,66 @@ cleanup:
 	return err;
 }
 
-int uds_send_fds(int uds_fd, int *fds, int fd_cnt)
+int uds_send_data(int uds_fd, void *data, size_t data_len, int *fds, int fd_cnt)
 {
+	if (fd_cnt < 0)
+		return -EINVAL;
 	if (fd_cnt > MAX_UDS_FD_CNT)
 		return -E2BIG;
 
 	struct msghdr msg = {};
-	int fds_sz = sizeof(*fds) * fd_cnt;
-	char buf[CMSG_SPACE(fds_sz)];
-	struct iovec io = { .iov_base = &fd_cnt, .iov_len = sizeof(fd_cnt) };
+	struct iovec io = { .iov_base = data, .iov_len = data_len };
 
 	msg.msg_iov = &io;
 	msg.msg_iovlen = 1;
-	msg.msg_control = buf;
-	msg.msg_controllen = sizeof(buf);
 
-	struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
-	cmsg->cmsg_level = SOL_SOCKET;
-	cmsg->cmsg_type = SCM_RIGHTS;
-	cmsg->cmsg_len = CMSG_LEN(fds_sz);
-	memcpy(CMSG_DATA(cmsg), fds, fds_sz);
+	if (fd_cnt > 0) {
+		int fds_sz = sizeof(*fds) * fd_cnt;
+		char fds_buf[CMSG_SPACE(fds_sz)];
+
+		msg.msg_control = fds_buf;
+		msg.msg_controllen = sizeof(fds_buf);
+
+		struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+		cmsg->cmsg_level = SOL_SOCKET;
+		cmsg->cmsg_type = SCM_RIGHTS;
+		cmsg->cmsg_len = CMSG_LEN(fds_sz);
+		memcpy(CMSG_DATA(cmsg), fds, fds_sz);
+	}
 
 	int sent = sendmsg(uds_fd, &msg, 0);
-	if (sent != sizeof(fd_cnt)) {
-		eprintf("Failed to send data over UDS, got %d (err %d), expected %d\n", sent, -errno, fds_sz);
+	if (sent != data_len) {
+		eprintf("Failed to send data over UDS, got %d (err %d), expected %zu\n",
+			sent, -errno, data_len);
 		return -errno;
 	}
+
+	return 0;
+}
+
+int delete_dir(const char *path)
+{
+	DIR *dir = opendir(path);
+
+	if (!dir)
+		return -errno;
+
+	struct dirent *entry;
+	char filepath[PATH_MAX];
+
+	while ((entry = readdir(dir)) != NULL) {
+		if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+			continue;
+
+		snprintf(filepath, sizeof(filepath), "%s/%s", path, entry->d_name);
+		(void)unlink(filepath);
+	}
+
+	closedir(dir);
+
+	int err = rmdir(path);
+	if (err)
+		return -errno;
 
 	return 0;
 }

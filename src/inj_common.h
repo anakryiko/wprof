@@ -29,4 +29,19 @@ struct inj_run_ctx {
 	char dummy;
 };
 
+enum inj_msg_kind {
+	__INJ_INVALID = 0,
+	INJ_MSG_SETUP = 1,
+};
+
+struct inj_msg {
+	enum inj_msg_kind kind;
+
+	union {
+		struct inj_msg_setup {
+			int fd_cnt;
+		} setup;
+	};
+};
+
 #endif /* __INJ_COMMON_H_ */
