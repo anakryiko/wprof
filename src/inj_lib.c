@@ -284,7 +284,7 @@ static void stop_worker_thread(void)
 	vlog("Signaling worker thread to exit...\n");
 
 	if (exit_fd < 0) {
-		elog("No exit signalling eventfd, exiting.\n");
+		elog("No exit signaling eventfd, exiting.\n");
 		return;
 	}
 

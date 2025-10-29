@@ -13,8 +13,13 @@
 #define LIBWPROFINJ_LOG_PATH_FMT "wprofinj-log.%d.%d.log"
 
 struct inj_setup_ctx {
-	int version; /* should be set to LIBWPROFINJ_VERSION */
+	/* Should be set to LIBWPROFINJ_VERSION */
+	int version;
+	/* The size of data+exec mmap injected for injection trampolining */
 	int mmap_sz;
+	/* handle returned by dlopen() for libwprofinj.so library */
+	long lib_handle;
+	/* PID of the original wprof injecting this libwprofinj.so */
 	int parent_pid;
 
 	int stderr_verbosity;
