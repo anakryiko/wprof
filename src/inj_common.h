@@ -27,7 +27,6 @@ struct inj_setup_ctx {
 
 	int uds_fd;
 	int uds_parent_fd;
-	int lib_mem_fd;
 };
 
 struct inj_run_ctx {
