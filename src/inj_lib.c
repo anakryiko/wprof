@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <stdlib.h>
 #include <errno.h>
 #include <dlfcn.h>
 #include <unistd.h>
@@ -21,6 +22,8 @@
 #include <linux/futex.h>
 
 #include "inj_common.h"
+#include "strset.h"
+#include "cuda_data.h"
 
 #define zclose(fd) do { if (fd >= 0) { close(fd); fd = -1; } } while (0)
 #define __printf(a, b)	__attribute__((format(printf, a, b)))
@@ -79,6 +82,7 @@ static int exit_fd = -1;
 static pid_t worker_tid; /* for clone() and futex() only */
 static int epoll_fd = -1;
 static int timer_fd = -1;
+static int workdir_fd = -1;
 
 static __u64 cuda_sess_start_ts, cuda_sess_end_ts;
 
@@ -131,6 +135,167 @@ static int epoll_del(int epoll_fd, int fd)
 	return 0;
 }
 
+#define CUDA_DUMP_BUF_SZ (256 * 1024)
+static FILE *cuda_dump;
+
+#define CUDA_DUMP_MAX_STRS_SZ (1024 * 1024 * 1024)
+struct strset *cuda_dump_strs;
+
+static void init_wcuda_header(struct wcuda_data_hdr *hdr)
+{
+	memset(hdr, 0, sizeof(*hdr));
+	memcpy(hdr->magic, "WCUDA", 6);
+	hdr->hdr_sz = sizeof(*hdr);
+	hdr->flags = 0;
+	hdr->version_major = WCUDA_DATA_MAJOR;
+	hdr->version_minor = WCUDA_DATA_MINOR;
+}
+
+static int init_wcuda_data(FILE *dump)
+{
+	int err;
+
+	err = fseek(dump, 0, SEEK_SET);
+	if (err) {
+		err = -errno;
+		elog("Failed to fseek(0) CUDA data dump: %d\n", err);
+		return err;
+	}
+
+	struct wcuda_data_hdr hdr;
+	init_wcuda_header(&hdr);
+	hdr.flags = WCUDA_DATA_FLAG_INCOMPLETE;
+
+	if (fwrite(&hdr, sizeof(hdr), 1, dump) != 1) {
+		err = -errno;
+		elog("Failed to fwrite() CUDA data dump header: %d\n", err);
+		return err;
+	}
+
+	fflush(dump);
+	fsync(fileno(dump));
+	return 0;
+}
+
+static int cuda_dump_setup(void)
+{
+	char dump_path[128];
+	int err = 0, dump_fd = -1;
+
+	snprintf(dump_path, sizeof(dump_path), LIBWPROFINJ_DUMP_PATH_FMT,
+		 setup_ctx->parent_pid, getpid());
+
+	cuda_dump_strs = strset__new(CUDA_DUMP_MAX_STRS_SZ, NULL, 0);
+
+	dump_fd = openat(workdir_fd, dump_path, O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+	if (dump_fd < 0) {
+		err = -errno;
+		elog("Failed to create CUDA data dump file '%s': %d\n", dump_path, err);
+		goto cleanup;
+	}
+
+	cuda_dump = fdopen(dump_fd, "w");
+	if (!cuda_dump) {
+		err = -errno;
+		elog("Failed to create FILE wrapper around dump FD for '%s': %d\n", dump_path, err);
+		goto cleanup;
+	}
+	setvbuf(cuda_dump, NULL, _IOFBF, CUDA_DUMP_BUF_SZ);
+
+	if ((err = init_wcuda_data(cuda_dump)) < 0) {
+		elog("Failed to init CUDA dump: %d\n", err);
+		goto cleanup;
+	}
+
+	return 0;
+
+cleanup:
+	strset__free(cuda_dump_strs);
+	cuda_dump_strs = NULL;
+	if (cuda_dump) { 
+		fclose(cuda_dump);
+		cuda_dump = NULL;
+	} else {
+		zclose(dump_fd);
+	}
+	return err;
+}
+
+static int cuda_dump_finalize(void)
+{
+	int err = 0;
+
+	fflush(cuda_dump);
+
+	long strs_off = ftell(cuda_dump);
+	if (strs_off < 0) {
+		err = -errno;
+		elog("Failed to get CUDA dump file position: %d\n", err);
+		return err;
+	}
+
+	const char *strs = strset__data(cuda_dump_strs);
+	size_t strs_sz = strset__data_size(cuda_dump_strs);
+
+	size_t written;
+	if ((written = fwrite(strs, 1, strs_sz, cuda_dump)) != strs_sz) {
+		err = -errno;
+		elog("Failed to write strings (ret %zu) to CUDA dump: %d\n", written, err);
+		return err;
+	}
+
+	fsync(fileno(cuda_dump));
+
+	struct wcuda_data_hdr hdr;
+	init_wcuda_header(&hdr);
+
+	hdr.sess_start_ns = cuda_sess_start_ts;
+	hdr.sess_end_ns = cuda_sess_end_ts;
+	hdr.events_off = 0;
+	hdr.events_sz = strs_off;
+	hdr.strs_off = strs_off;
+	hdr.strs_sz = strs_sz;
+	hdr.cfg.dummy = 0;
+
+	err = fseek(cuda_dump, 0, SEEK_SET);
+	if (err) {
+		err = -errno;
+		elog("Failed to fseek(0): %d\n", err);
+		return err;
+	}
+
+	if (fwrite(&hdr, sizeof(hdr), 1, cuda_dump) != 1) {
+		err = -errno;
+		elog("Failed to fwrite() CUDA dump header: %d\n", err);
+		return err;
+	}
+
+	fflush(cuda_dump);
+	fsync(fileno(cuda_dump));
+
+	return 0;
+}
+
+static int cuda_dump_kernel_event(const char *name, u64 start_ns, u64 end_ns)
+{
+	struct wcuda_event e = {
+		.sz = sizeof(e),
+		.kind = WCK_CUDA_KERNEL,
+		.cuda_kernel = {
+			.dur_ns = end_ns - start_ns,
+			.name_off = strset__add_str(cuda_dump_strs, name),
+		},
+	};
+
+	if (fwrite(&e, sizeof(e), 1, cuda_dump) != 1) {
+		int err = -errno;
+		elog("Failed to add CUDA dump event: %d\n", err);
+		return err;
+	}
+
+	return 0;
+}
+
 static int handle_msg(struct inj_msg *msg)
 {
 	int err = 0;
@@ -170,8 +335,20 @@ static int handle_msg(struct inj_msg *msg)
 			return err;
 		}
 
-		vlog("CUDA session timeout successfully set up %.3lfus from now.\n",
+		if ((err = cuda_dump_setup()) < 0) {
+			elog("Failed to setup CUDA data dump: %d\n:", err);
+			return err;
+		}
+
+		vlog("CUDA session timeout successfully set up with auto-stop %.3lfus from now.\n",
 		     (cuda_sess_end_ts - (double)now) / 1000.0);
+
+		if ((err = cuda_dump_kernel_event("test_cuda_kernel1",
+				cuda_sess_start_ts + (cuda_sess_end_ts - cuda_sess_start_ts) / 10,
+				cuda_sess_start_ts + 2 * (cuda_sess_end_ts - cuda_sess_start_ts) / 10)) < 0) {
+			elog("Failed to add CUDA kernel launch event to dump: %d\n", err);
+			return err;
+		}
 		break;
 	default:
 		elog("Unexpected message (kind %d)!\n", msg->kind);
@@ -180,10 +357,40 @@ static int handle_msg(struct inj_msg *msg)
 	return 0;
 }
 
+static int handle_session_end(void)
+{
+	int err = 0;
+
+	/* exit and timer events are racing each other, we finalize just once */
+	if (!cuda_dump)
+		return 0;
+
+	/* XXX: CUPTI flush/unsubscribe */
+
+	if ((err = cuda_dump_kernel_event(
+			"test_cuda_kernel2",
+			cuda_sess_start_ts + 8 * (cuda_sess_end_ts - cuda_sess_start_ts) / 10,
+			cuda_sess_start_ts + 9 * (cuda_sess_end_ts - cuda_sess_start_ts) / 10)) < 0) {
+		elog("Failed to add CUDA kernel launch event to dump: %d\n", err);
+		return err;
+	}
+
+	err = cuda_dump_finalize();
+	if (err) {
+		elog("Failed to finalize CUDA data dump: %d\n", err);
+		return err;
+	}
+
+	fclose(cuda_dump);
+	cuda_dump = NULL;
+
+	return 0;
+}
+
 static int worker_thread_func(void *arg)
 {
 	int ret, err = 0;
-	int run_ctx_memfd = -1, workdir_fd = -1;
+	int run_ctx_memfd = -1;
 
 	vlog("Worker thread started (TID %d, PID %d)\n", gettid(), getpid());
 
@@ -252,7 +459,6 @@ static int worker_thread_func(void *arg)
 		elog("Failed to create log file '%s': %d\n", log_path, err);
 		goto cleanup;
 	}
-	zclose(workdir_fd);
 
 	filelog = fdopen(log_fd, "w");
 	if (!filelog) {
@@ -313,9 +519,14 @@ event_loop:
 			}
 			break;
 		case EK_TIMER: {
-			__u64 expirations;
-
+			long long expirations;
 			(void)read(timer_fd, &expirations, sizeof(expirations));
+
+			err = handle_session_end();
+			if (err) {
+				elog("Failed to cleanly handle CUDA session end: %d\n", err);
+				goto cleanup;
+			}
 
 			vlog("CUDA session timer expired with %.3lfus delay after planned session end.\n",
 			     (ktime_now_ns() - cuda_sess_end_ts) / 1000.0);
@@ -323,14 +534,16 @@ event_loop:
 		}
 		case EK_EXIT:
 			long long unsigned tmp;
-			ret = read(exit_fd, &tmp, sizeof(tmp));
-			if (ret != sizeof(tmp)) {
-				err = -errno;
-				elog("Worker thread exit eventfd read failed (ret %d): %d\n", ret, err);
-			} else {
-				vlog("Worker thread received exit signal (value %llu)\n", tmp);
-				err = 0;
+			(void)read(exit_fd, &tmp, sizeof(tmp));
+
+			err = handle_session_end();
+			if (err) {
+				elog("Failed to cleanly handle CUDA session end: %d\n", err);
+				goto cleanup;
 			}
+
+			vlog("Worker thread received exit signal (value %llu)\n", tmp);
+			err = 0;
 			goto cleanup;
 		default:
 			elog("Unrecognized epoll event from FD %d, exiting...\n", evs[i].data.fd);
@@ -497,3 +710,42 @@ void libwprofinj_fini()
 	if (filelog)
 		fclose(filelog);
 }
+
+/*
+ * XXX: this is a hacky way to make sure strset from libbpf can be used
+ * without dragging in entire libbpf...
+ */
+void *libbpf_add_mem(void **data, size_t *cap_cnt, size_t elem_sz,
+		     size_t cur_cnt, size_t max_cnt, size_t add_cnt)
+{
+	size_t new_cnt;
+	void *new_data;
+
+	if (cur_cnt + add_cnt <= *cap_cnt)
+		return *data + cur_cnt * elem_sz;
+
+	/* requested more than the set limit */
+	if (cur_cnt + add_cnt > max_cnt)
+		return NULL;
+
+	new_cnt = *cap_cnt;
+	new_cnt += new_cnt / 4;		  /* expand by 25% */
+	if (new_cnt < 16)		  /* but at least 16 elements */
+		new_cnt = 16;
+	if (new_cnt > max_cnt)		  /* but not exceeding a set limit */
+		new_cnt = max_cnt;
+	if (new_cnt < cur_cnt + add_cnt)  /* also ensure we have enough memory */
+		new_cnt = cur_cnt + add_cnt;
+
+	new_data = realloc(*data, new_cnt * elem_sz);
+	if (!new_data)
+		return NULL;
+
+	/* zero out newly allocated portion of memory */
+	memset(new_data + (*cap_cnt) * elem_sz, 0, (new_cnt - *cap_cnt) * elem_sz);
+
+	*data = new_data;
+	*cap_cnt = new_cnt;
+	return new_data + cur_cnt * elem_sz;
+}
+

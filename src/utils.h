@@ -12,14 +12,8 @@
 #include <linux/perf_event.h>
 #include <sys/syscall.h>
 #include <unistd.h>
-#include "../libbpf/src/hashmap.h" /* internal to libbpf, yep */
-
-typedef unsigned long long u64;
-typedef signed long long s64;
-typedef unsigned int u32;
-typedef signed int s32;
-typedef unsigned short u16;
-typedef signed short s16;
+#include "hashmap.h" /* internal to libbpf, yep */
+#include "wprof_types.h"
 
 enum tristate { UNSET = -1, TRUE = 1, FALSE = 0 };
 
