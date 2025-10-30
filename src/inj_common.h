@@ -3,6 +3,9 @@
 #ifndef __INJ_COMMON_H_
 #define __INJ_COMMON_H_
 
+#include "wprof_types.h"
+#include "cuda_data.h"
+
 #ifndef MAX_UDS_FD_CNT
 #define MAX_UDS_FD_CNT 16
 #endif
@@ -11,6 +14,7 @@
 #define LIBWPROFINJ_VERSION 1
 
 #define LIBWPROFINJ_LOG_PATH_FMT "wprofinj-log.%d.%d.log"
+#define LIBWPROFINJ_DUMP_PATH_FMT "wprofinj-cuda.%d.%d.data"
 
 struct inj_setup_ctx {
 	/* Should be set to LIBWPROFINJ_VERSION */

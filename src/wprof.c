@@ -1525,7 +1525,7 @@ int main(int argc, char **argv)
 		struct worker_state *worker = &workers[i];
 
 		char dump_path[PATH_MAX];
-		snprintf(dump_path, sizeof(dump_path), "%s/rb-worker.%03d", workdir_name, i);
+		snprintf(dump_path, sizeof(dump_path), "%s/bpf-rb.%03d.data", workdir_name, i);
 		worker->dump_path = strdup(dump_path);
 		worker->dump = fopen(dump_path, "w+");
 		if (!worker->dump) {

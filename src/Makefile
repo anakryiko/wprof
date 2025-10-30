@@ -129,19 +129,25 @@ WPROF_SRCS := wprof.c utils.c env.c protobuf.c emit.c stacktrace.c				\
 	      pb_common.c pb_encode.c perfetto_trace.pb.c topology.c proc.c			\
 	      requests.c cuda.c inject.c sys.c elf_utils.c
 WPROF_HDRS := wprof.h utils.h env.h protobuf.h emit.h stacktrace.h data.h topology.h		\
-	      proc.h requests.h cuda.h inj_common.h inject.h sys.h elf_utils.h
+	      proc.h requests.h cuda.h inj_common.h inject.h sys.h elf_utils.h cuda_data.h 	\
+	      wprof_types.h
 
 # Build user space object files
 $(OUTPUT)/%.o: %.c $(OUTPUT)/wprof.skel.h $(WPROF_HDRS) | $(OUTPUT)
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(ALL_CFLAGS) $(INCLUDES) -c $(filter %.c,$^) -o $@
 
-$(OUTPUT)/inj_lib.o: ALL_CFLAGS += -fPIC
+$(OUTPUT)/inj_lib.o: ALL_CFLAGS += -fPIC -I../libbpf/src
+$(OUTPUT)/inj_strset.o: ALL_CFLAGS += -fPIC -I../libbpf/src
+$(OUTPUT)/inj_hashmap.o: ALL_CFLAGS += -fPIC -I../libbpf/src
 
 # Build injection shared library
-$(OUTPUT)/libwprofinj.so: $(OUTPUT)/inj_lib.o | $(OUTPUT)
+$(OUTPUT)/libwprofinj.so: $(OUTPUT)/inj_lib.o 							\
+			  $(OUTPUT)/inj_strset.o 						\
+			  $(OUTPUT)/inj_hashmap.o 						\
+			  | $(OUTPUT)
 	$(call msg,CC,$@)
-	$(Q)$(CC) $(ALL_CFLAGS) -shared $< -o $@
+	$(Q)$(CC) $(ALL_CFLAGS) -shared $(filter %.c %.a %.o,$^) -o $@
 
 $(OUTPUT)/libwprofinj_embed.o: $(OUTPUT)/libwprofinj.so
 	$(call msg,LD,$@)

@@ -3,7 +3,7 @@
 #ifndef __DATA_H_
 #define __DATA_H_
 
-#include "utils.h"
+#include "wprof_types.h"
 #include "wprof.h"
 
 #define WPROF_DATA_MAJOR 1
