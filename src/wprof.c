@@ -1301,6 +1301,7 @@ static int attach_bpf(struct bpf_state *st, struct worker_state *workers, int nu
 static int run_bpf(struct bpf_state *st)
 {
 	st->skel->bss->session_start_ts = env.sess_start_ts;
+	st->skel->bss->session_end_ts = env.sess_end_ts;
 
 	for (int i = 0; i < env.ringbuf_cnt; i++) {
 		int err = pthread_join(st->rb_threads[i], NULL);
