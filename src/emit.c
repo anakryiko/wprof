@@ -14,6 +14,7 @@
 #include "wprof.h"
 #include "env.h"
 #include "stacktrace.h"
+#include "cuda_data.h"
 
 enum task_run_state {
 	TASK_STATE_RUNNING,
@@ -162,6 +163,8 @@ enum track_kind {
 	TK_REQ = 5,		/* single request of given PID (by REQ_ID + PID) */
 	TK_REQ_THREAD = 6,	/* request-participating thread (by REQ_ID + TID) */
 
+	TK_GPU = 7, 	/* GPU device tracks */
+
 	TK_MULT = 10,
 };
 
@@ -171,7 +174,7 @@ enum track_special {
 	TKS_KTHREAD = 3,
 
 	TKS_REQUESTS = 4,
-	TKS_CUDA = 5,
+	TKS_GPUS = 5,
 };
 
 #define TRACK_UUID(kind, id) (((u64)(id) * TK_MULT) + (u64)kind)
@@ -180,7 +183,7 @@ enum track_special {
 #define TRACK_UUID_KWORKER	TRACK_UUID(TK_SPECIAL, TKS_KWORKER)
 #define TRACK_UUID_KTHREAD	TRACK_UUID(TK_SPECIAL, TKS_KTHREAD)
 #define TRACK_UUID_REQUESTS	TRACK_UUID(TK_SPECIAL, TKS_REQUESTS)
-#define TRACK_UUID_CUDA		TRACK_UUID(TK_SPECIAL, TKS_CUDA)
+#define TRACK_UUID_GPUS		TRACK_UUID(TK_SPECIAL, TKS_GPUS)
 
 #define TRACK_RANK_IDLE		-3
 #define TRACK_RANK_KWORKER	-2
@@ -381,6 +384,11 @@ static inline u64 trackid_req(u64 req_id, const struct wprof_task *t)
 static inline u64 trackid_process_reqs(const struct wprof_task *t)
 {
 	return TRACK_UUID(TK_PROCESS_REQS, t->pid);
+}
+
+static inline u64 trackid_gpu(int device_id)
+{
+	return TRACK_UUID(TK_GPU, device_id);
 }
 
 static const char *event_kind_str_map[] = {
@@ -1682,6 +1690,26 @@ static int process_req_task_event(struct worker_state *w, struct wprof_event *e,
 	return 0;
 }
 
+/* WCK_CUDA_KERNEL */
+static int process_cuda_kernel(struct worker_state *w, struct wprof_event *we, size_t size)
+{
+	if (!env.capture_cuda)
+		return 0;
+
+	const struct wcuda_event *e = (struct wcuda_event *)we;
+
+	const char *strs = (void *)w->dump_hdr + w->dump_hdr->hdr_sz + w->dump_hdr->strs_off;
+	const char *cuda_kern_name = strs + e->cuda_kernel.name_off;
+
+	emit_track_slice_start(e->ts, TRACK_UUID_GPUS, cuda_kern_name, "ONGPU");
+
+	emit_track_slice_end(e->ts + e->cuda_kernel.dur_ns, TRACK_UUID_GPUS,
+			     cuda_kern_name, "ONGPU") {
+		emit_kv_float("dur_us", "%.6lf", e->cuda_kernel.dur_ns / 1000.0);
+	}
+
+	return 0;
+}
 typedef int (*event_fn)(struct worker_state *w, struct wprof_event *e, size_t size);
 
 static event_fn ev_fns[] = {
@@ -1702,6 +1730,8 @@ static event_fn ev_fns[] = {
 	[EV_IPI_EXIT] = process_ipi_exit,
 	[EV_REQ_EVENT] = process_req_event,
 	[EV_REQ_TASK_EVENT] = process_req_task_event,
+
+	[WCK_CUDA_KERNEL] = process_cuda_kernel,
 };
 
 static int process_event(struct worker_state *w, struct wprof_event *e, size_t size)
@@ -1727,8 +1757,8 @@ int emit_trace(struct worker_state *w)
 	printf("Generating trace...\n");
 	if (env.capture_requests)
 		emit_track_descr(cur_stream, TRACK_UUID_REQUESTS, 0, "REQUESTS", 1000);
-	if (env.capture_requests)
-		emit_track_descr(cur_stream, TRACK_UUID_CUDA, 0, "CUDA", 2000);
+	if (env.capture_cuda)
+		emit_track_descr(cur_stream, TRACK_UUID_GPUS, 0, "GPUS", 2000);
 
 	if (env.requested_stack_traces) {
 		struct wprof_stacks_hdr *shdr = wprof_stacks_hdr(w->dump_hdr);

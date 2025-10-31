@@ -114,24 +114,6 @@ int cuda_trace_setup(int workdir_fd)
 	return 0;
 }
 
-void cuda_trace_teardown(void)
-{
-	for (int i = 0; i < env.tracee_cnt; i++) {
-		struct tracee_state *tracee = env.tracees[i];
-		const struct tracee_info *info = tracee_info(tracee);
-
-		int err = tracee_retract(tracee);
-		if (err) {
-			eprintf("Ptrace retraction for PID %d (%s) returned error: %d\n",
-				info->pid, info->name, err);
-		}
-		tracee_free(tracee);
-	}
-	free(env.tracees);
-	env.tracees = NULL;
-	env.tracee_cnt = 0;
-}
-
 int cuda_trace_activate(uint64_t sess_start_ts, uint64_t sess_end_ts)
 {
 	for (int i = 0; i < env.tracee_cnt; i++) {
@@ -156,3 +138,31 @@ int cuda_trace_activate(uint64_t sess_start_ts, uint64_t sess_end_ts)
 	return 0;
 }
 
+void cuda_trace_deactivate(void)
+{
+	if (env.tracees_deactivated)
+		return;
+
+	for (int i = 0; i < env.tracee_cnt; i++) {
+		struct tracee_state *tracee = env.tracees[i];
+		const struct tracee_info *info = tracee_info(tracee);
+
+		int err = tracee_retract(tracee);
+		if (err) {
+			eprintf("Ptrace retraction for PID %d (%s) returned error: %d\n",
+				info->pid, info->name, err);
+		}
+		tracee_free(tracee);
+	}
+
+	env.tracees_deactivated = true;
+}
+
+void cuda_trace_teardown(void)
+{
+	cuda_trace_deactivate();
+
+	free(env.tracees);
+	env.tracees = NULL;
+	env.tracee_cnt = 0;
+}

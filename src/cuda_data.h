@@ -28,13 +28,15 @@ struct wcuda_data_hdr {
 
 enum wcuda_event_kind {
 	WCK_INVALID = 0,
-	WCK_CUDA_KERNEL = 1,
+	/* Currently this needs to be non-overlapping with enum event_kind */
+	WCK_CUDA_KERNEL = 50,
 };
 
+/* intentionally kept compatible in the first 8 bytes with wprof_event */
 struct wcuda_event {
 	u16 sz;
-	u16 kind; /* enum wcuda_event_kind */
-	u32 flags;
+	u16 flags;
+	enum wcuda_event_kind kind;
 	u64 ts;
 
 	union {
