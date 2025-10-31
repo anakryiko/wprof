@@ -62,25 +62,25 @@ struct wprof_stats {
 };
 
 enum event_kind {
-	EV_INVALID,
+	EV_INVALID = 0,
 
-	EV_TIMER,
-	EV_SWITCH,
-	EV_WAKEUP_NEW,
-	EV_WAKEUP,
-	EV_WAKING,
-	EV_HARDIRQ_EXIT,
-	EV_SOFTIRQ_EXIT,
-	EV_WQ_END,
-	EV_FORK,
-	EV_EXEC,
-	EV_TASK_RENAME,
-	EV_TASK_EXIT,
-	EV_TASK_FREE,
-	EV_IPI_SEND,
-	EV_IPI_EXIT,
-	EV_REQ_EVENT,
-	EV_REQ_TASK_EVENT,
+	EV_TIMER = 1,
+	EV_SWITCH = 2,
+	EV_WAKEUP_NEW = 3,
+	EV_WAKEUP = 4,
+	EV_WAKING = 5,
+	EV_HARDIRQ_EXIT = 6,
+	EV_SOFTIRQ_EXIT = 7,
+	EV_WQ_END = 8,
+	EV_FORK = 9,
+	EV_EXEC = 10,
+	EV_TASK_RENAME = 11,
+	EV_TASK_EXIT = 12,
+	EV_TASK_FREE = 13,
+	EV_IPI_SEND = 14,
+	EV_IPI_EXIT = 15,
+	EV_REQ_EVENT = 16,
+	EV_REQ_TASK_EVENT = 17,
 };
 
 enum stack_trace_kind {
@@ -156,12 +156,13 @@ enum wprof_req_event_kind {
 };
 
 struct wprof_event {
-	u32 sz; /* fixed part size */
-	u32 flags;
+	u16 sz; /* fixed part size */
+	u16 flags;
 	enum event_kind kind;
+	u64 ts;
+
 	u32 cpu;
 	u32 numa_node;
-	u64 ts;
 	struct wprof_task task;
 
 	union {

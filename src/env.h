@@ -112,6 +112,7 @@ struct env {
 
 	struct tracee_state **tracees;
 	int tracee_cnt;
+	bool tracees_deactivated;
 };
 
 extern struct env env;

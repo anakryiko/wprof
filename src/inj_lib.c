@@ -185,7 +185,7 @@ static int cuda_dump_setup(void)
 	snprintf(dump_path, sizeof(dump_path), LIBWPROFINJ_DUMP_PATH_FMT,
 		 setup_ctx->parent_pid, getpid());
 
-	cuda_dump_strs = strset__new(CUDA_DUMP_MAX_STRS_SZ, NULL, 0);
+	cuda_dump_strs = strset__new(CUDA_DUMP_MAX_STRS_SZ, "", 1);
 
 	dump_fd = openat(workdir_fd, dump_path, O_RDWR | O_CREAT | O_CLOEXEC, 0644);
 	if (dump_fd < 0) {
@@ -252,8 +252,8 @@ static int cuda_dump_finalize(void)
 	hdr.sess_start_ns = cuda_sess_start_ts;
 	hdr.sess_end_ns = cuda_sess_end_ts;
 	hdr.events_off = 0;
-	hdr.events_sz = strs_off;
-	hdr.strs_off = strs_off;
+	hdr.events_sz = strs_off - sizeof(struct wcuda_data_hdr);
+	hdr.strs_off = strs_off - sizeof(struct wcuda_data_hdr);
 	hdr.strs_sz = strs_sz;
 	hdr.cfg.dummy = 0;
 
@@ -281,6 +281,7 @@ static int cuda_dump_kernel_event(const char *name, u64 start_ns, u64 end_ns)
 	struct wcuda_event e = {
 		.sz = sizeof(e),
 		.kind = WCK_CUDA_KERNEL,
+		.ts = start_ns,
 		.cuda_kernel = {
 			.dur_ns = end_ns - start_ns,
 			.name_off = strset__add_str(cuda_dump_strs, name),

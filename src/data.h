@@ -7,7 +7,7 @@
 #include "wprof.h"
 
 #define WPROF_DATA_MAJOR 1
-#define WPROF_DATA_MINOR 10
+#define WPROF_DATA_MINOR 11
 #define WPROF_DATA_FLAG_INCOMPLETE 0xffffffffffffffffULL
 
 struct wprof_data_cfg {
@@ -37,6 +37,7 @@ struct wprof_data_hdr {
 	int version_minor;
 	u64 events_off, events_sz, event_cnt;
 	u64 stacks_off, stacks_sz;
+	u64 strs_off, strs_sz;
 	struct wprof_data_cfg cfg;
 } __attribute__((aligned(8)));
 
