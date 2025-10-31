@@ -21,6 +21,7 @@
 #include <sys/timerfd.h>
 #include <linux/futex.h>
 
+#include "inj.h"
 #include "inj_common.h"
 #include "strset.h"
 #include "cuda_data.h"
@@ -35,8 +36,8 @@
 #define vlog(fmt, ...) do { log_printf(2, fmt, ##__VA_ARGS__); } while (0)
 #define dlog(fmt, ...) do { log_printf(3, fmt, ##__VA_ARGS__); } while (0)
 
-static struct inj_setup_ctx *setup_ctx;
-static struct inj_run_ctx *run_ctx;
+struct inj_setup_ctx *setup_ctx;
+struct inj_run_ctx *run_ctx;
 
 static FILE *filelog = NULL;
 static int filelog_verbosity = -1;
@@ -48,7 +49,7 @@ static int stderr_verbosity = -1;
 #endif /* DEBUG_LOG */
 
 __printf(2, 3)
-static void log_printf(int verbosity, const char *fmt, ...)
+void log_printf(int verbosity, const char *fmt, ...)
 {
 	va_list args;
 	int old_errno;
@@ -87,20 +88,6 @@ static int workdir_fd = -1;
 static __u64 cuda_sess_start_ts, cuda_sess_end_ts;
 
 static char msg_buf[UDS_MAX_MSG_LEN] __attribute__((aligned(8)));
-
-static inline uint64_t timespec_to_ns(struct timespec *ts)
-{
-	return ts->tv_sec * 1000000000ULL + ts->tv_nsec;
-}
-
-static inline __u64 ktime_now_ns()
-{
-	struct timespec t;
-
-	clock_gettime(CLOCK_MONOTONIC, &t);
-
-	return timespec_to_ns(&t);
-}
 
 enum epoll_kind {
 	EK_EXIT,
@@ -358,9 +345,26 @@ static int handle_msg(struct inj_msg *msg)
 	return 0;
 }
 
+__weak int init_cupti_activities(void)
+{
+	/*
+	 * Normally this function implementation will be resolved to the one
+	 * in inj_cupti.c, unless CUPTI headers were not available during
+	 * build time.
+	 */
+	elog("CUPTI functionality wasn't built into wprof!\n");
+	return -EOPNOTSUPP;
+}
+
+__weak void finalize_cupti_activities(void)
+{
+}
+
 static int handle_session_end(void)
 {
 	int err = 0;
+
+	finalize_cupti_activities();
 
 	/* exit and timer events are racing each other, we finalize just once */
 	if (!cuda_dump)
@@ -387,6 +391,7 @@ static int handle_session_end(void)
 
 	return 0;
 }
+
 
 static int worker_thread_func(void *arg)
 {
@@ -470,6 +475,10 @@ static int worker_thread_func(void *arg)
 	setlinebuf(filelog); /* line-buffered FILE for logging */
 
 	vlog("Log setup completed successfully! wprof PID is %d.\n", setup_ctx->parent_pid);
+
+	err = init_cupti_activities();
+	if (err)
+		goto cleanup;
 
 	epoll_fd = epoll_create1(EPOLL_CLOEXEC);
 	if (epoll_fd < 0) {
