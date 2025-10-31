@@ -207,9 +207,12 @@ struct pb_str {
 
 #define PB_INIT(field) .has_##field = true, .field
 
-#define PB_TRUST_SEQ_ID() \
+#define PB_SEQ_ID_THREADS 0x7
+#define PB_SEQ_ID_GENERIC 0x7
+
+#define PB_TRUST_SEQ_ID(id) \
 	.which_optional_trusted_packet_sequence_id = perfetto_protos_TracePacket_trusted_packet_sequence_id_tag, \
-	.optional_trusted_packet_sequence_id = { (0x42) }
+	.optional_trusted_packet_sequence_id = { (id) }
 
 #define PB_NONE ((pb_callback_t){})
 #define PB_ONEOF(field, _type) .which_##field = perfetto_protos_##_type##_tag, .field

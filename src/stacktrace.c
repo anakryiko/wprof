@@ -888,7 +888,7 @@ int generate_stack_traces(struct worker_state *w)
 	ssize_t pb_sz_before = file_size(w->trace);
 	TracePacket ev_pb = {
 		PB_INIT(timestamp) = 0,
-		PB_TRUST_SEQ_ID(),
+		PB_TRUST_SEQ_ID(PB_SEQ_ID_THREADS),
 		PB_INIT(interned_data) = {
 			.function_names = PB_STR_IIDS(&strace_iids.func_names),
 			.frames = PB_FRAMES(&strace_iids.frames),
