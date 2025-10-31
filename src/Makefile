@@ -36,6 +36,18 @@ ALL_CFLAGS := $(CFLAGS) $(EXTRA_CFLAGS) -fno-omit-frame-pointer				\
 	      -Wno-c23-extensions -Wno-sign-compare -Wno-format-truncation
 ALL_LDFLAGS := $(LDFLAGS) $(EXTRA_LDFLAGS) -lrt -ldl -lpthread -lm
 
+CUPTI_PATHS := /usr/local/cuda*/targets/*/include
+
+# Auto-detect CUPTI if not specified
+CUPTI_INCLUDE ?= $(shell								\
+	for p in $(CUPTI_PATHS); do 							\
+		[ -f "$$p/cupti_activity.h" ] && [ -f "$$p/cuda.h" ] && echo $$p;	\
+	 done | sort -Vr | head -n1)
+
+ifneq ($(CUPTI_INCLUDE),)
+ALL_CFLAGS += -DHAVE_CUPTI
+endif
+
 # Get Clang's default includes on this system. We'll explicitly add these dirs
 # to the includes list when compiling with `-target bpf` because otherwise some
 # architecture-specific dirs will be "missing" on some architectures/distros -
@@ -70,11 +82,6 @@ $(call allow-override,LD,$(CROSS_COMPILE)ld)
 
 .PHONY: all
 all: wprof sim
-
-.PHONY: clean
-clean:
-	$(call msg,CLEAN)
-	$(Q)rm -rf $(OUTPUT) wprof $(LIBBLAZESYM_SRC)/target
 
 $(OUTPUT) $(OUTPUT)/libbpf $(BPFTOOL_OUTPUT):
 	$(call msg,MKDIR,$@)
@@ -132,19 +139,24 @@ WPROF_HDRS := wprof.h utils.h env.h protobuf.h emit.h stacktrace.h data.h topolo
 	      proc.h requests.h cuda.h inj_common.h inject.h sys.h elf_utils.h cuda_data.h 	\
 	      wprof_types.h
 
+WPROFINJ_SRCS := inj_lib.c inj_strset.c inj_hashmap.c
+ifneq ($(CUPTI_INCLUDE),)
+WPROFINJ_SRCS += inj_cupti.c
+endif
+
+WPROFINJ_HDRS := inj_common.h inj.h
+
+$(patsubst %.c,$(OUTPUT)/%.o,$(WPROFINJ_SRCS)): \
+	ALL_CFLAGS += -fPIC -I../libbpf/src $(if $(CUPTI_INCLUDE),-I$(CUPTI_INCLUDE))
+
 # Build user space object files
-$(OUTPUT)/%.o: %.c $(OUTPUT)/wprof.skel.h $(WPROF_HDRS) | $(OUTPUT)
+$(OUTPUT)/%.o: %.c $(OUTPUT)/wprof.skel.h $(WPROF_HDRS) $(WPROFINJ_HDRS) | $(OUTPUT)
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(ALL_CFLAGS) $(INCLUDES) -c $(filter %.c,$^) -o $@
 
-$(OUTPUT)/inj_lib.o: ALL_CFLAGS += -fPIC -I../libbpf/src
-$(OUTPUT)/inj_strset.o: ALL_CFLAGS += -fPIC -I../libbpf/src
-$(OUTPUT)/inj_hashmap.o: ALL_CFLAGS += -fPIC -I../libbpf/src
-
 # Build injection shared library
-$(OUTPUT)/libwprofinj.so: $(OUTPUT)/inj_lib.o 							\
-			  $(OUTPUT)/inj_strset.o 						\
-			  $(OUTPUT)/inj_hashmap.o 						\
+$(OUTPUT)/libwprofinj.so: $(patsubst %.c,$(OUTPUT)/%.o,$(WPROFINJ_SRCS))			\
+			  $(WPROFINJ_HDRS)							\
 			  | $(OUTPUT)
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(ALL_CFLAGS) -shared $(filter %.c %.a %.o,$^) -o $@
@@ -167,6 +179,16 @@ wprof: wprof.h utils.h										\
 sim: $(OUTPUT)/sim.o | $(OUTPUT)
 	$(call msg,BINARY,$@)
 	$(Q)$(CC) $(ALL_CFLAGS) $(filter %.c %.a %.o,$^) $(ALL_LDFLAGS) -o $@
+
+.PHONY: clean
+clean:
+	$(call msg,CLEAN)
+	$(Q)rm -rf $(OUTPUT)/*.o wprof
+
+.PHONY: clean-all
+clean-all: clean
+	$(call msg,CLEAN-ALL)
+	$(Q)rm -rf $(OUTPUT) $(LIBBLAZESYM_SRC)/target
 
 # delete failed targets
 .DELETE_ON_ERROR:

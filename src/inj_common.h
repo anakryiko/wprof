@@ -34,7 +34,7 @@ struct inj_setup_ctx {
 };
 
 struct inj_run_ctx {
-	char dummy;
+	long cupti_dlhandle;
 };
 
 enum inj_msg_kind {
