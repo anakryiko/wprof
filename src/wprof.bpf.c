@@ -123,6 +123,7 @@ static int zero = 0;
 static struct task_state empty_task_state;
 
 u64 session_start_ts;
+u64 session_end_ts;
 
 /* sched-ext specific extensions */
 struct scx_task_ctx {
@@ -185,9 +186,14 @@ bool glob_match_comm(struct glob_str *glob, struct comm_str *comm)
 	return glob_match(glob->pat, sizeof(glob->pat), comm->str, sizeof(comm->str));
 }
 
-static bool should_trace_task(struct task_struct *tsk)
+static bool should_trace_task(struct task_struct *tsk, u64 now_ts)
 {
-	if (unlikely(!session_start_ts)) /* we are still starting */
+	if (unlikely(session_start_ts == 0)) /* we are still starting */
+		return false;
+
+	/* check if we are outside of session [start, end] time range */
+	if (unlikely((long)(now_ts - session_start_ts) < 0 ||
+		     (long)(now_ts - session_end_ts) > 0 ))
 		return false;
 
 	enum wprof_filt_mode mode = filt_mode;
@@ -455,18 +461,17 @@ static __always_inline bool init_wprof_event(struct wprof_event *e, u32 sz, enum
 SEC("?perf_event")
 int wprof_timer_tick(void *ctx)
 {
+	u64 now_ts = bpf_ktime_get_ns();
 	struct task_state *scur;
 	struct task_struct *cur = bpf_get_current_task_btf();
-	u64 now_ts;
 
-	if (!should_trace_task(cur))
+	if (!should_trace_task(cur, now_ts))
 		return false;
 
 	scur = task_state(cur->pid);
 	if (!scur)
 		return 0; /* shouldn't happen, unless we ran out of space */
 
-	now_ts = bpf_ktime_get_ns();
 
 	struct wprof_event *e;
 	struct bpf_dynptr *dptr;
@@ -494,21 +499,20 @@ int BPF_PROG(wprof_task_switch,
 	     struct task_struct *next,
 	     unsigned prev_state)
 {
+	u64 now_ts = bpf_ktime_get_ns();
 	struct task_state *sprev, *snext;
 	struct wprof_event *e;
-	u64 now_ts, waking_ts;
+	u64 waking_ts;
 	int cpu = bpf_get_smp_processor_id();
 	struct perf_counters counters;
 
-	if (!should_trace_task(prev) && !should_trace_task(next))
+	if (!should_trace_task(prev, now_ts) && !should_trace_task(next, now_ts))
 		return 0;
 
 	sprev = task_state(prev->pid);
 	snext = task_state(next->pid);
 	if (!sprev || !snext)
 		return 0;
-
-	now_ts = bpf_ktime_get_ns();
 
 	waking_ts = snext->waking_ts;
 
@@ -585,11 +589,11 @@ int BPF_PROG(wprof_task_switch,
 SEC("tp_btf/sched_waking")
 int BPF_PROG(wprof_task_waking, struct task_struct *p)
 {
+	u64 now_ts = bpf_ktime_get_ns();
 	struct task_state *s;
 	struct task_struct *task;
-	u64 now_ts;
 
-	if (!should_trace_task(p))
+	if (!should_trace_task(p, now_ts))
 		return 0;
 
 	s = task_state(p->pid);
@@ -599,7 +603,6 @@ int BPF_PROG(wprof_task_waking, struct task_struct *p)
 	if (s->waking_ts != 0)
 		return 0; /* there was an earlier wakeup */
 
-	now_ts = bpf_ktime_get_ns();
 	s->waking_ts = now_ts;
 	s->waking_flags = WF_WOKEN;
 	s->waker_cpu = bpf_get_smp_processor_id();
@@ -633,11 +636,11 @@ skip_emit:
 SEC("tp_btf/sched_wakeup_new")
 int BPF_PROG(wprof_task_wakeup_new, struct task_struct *p)
 {
+	u64 now_ts = bpf_ktime_get_ns();
 	struct task_struct *task;
 	struct task_state *s;
-	u64 now_ts;
 
-	if (!should_trace_task(p))
+	if (!should_trace_task(p, now_ts))
 		return 0;
 
 	s = task_state(p->pid);
@@ -646,8 +649,6 @@ int BPF_PROG(wprof_task_wakeup_new, struct task_struct *p)
 
 	if (s->waking_ts != 0)
 		goto skip_emit;
-
-	now_ts = bpf_ktime_get_ns();
 
 	s->waking_ts = now_ts;
 	s->waking_flags = WF_WOKEN_NEW;
@@ -684,12 +685,11 @@ SEC("?tp_btf/sched_wakeup")
 int BPF_PROG(wprof_task_wakeup, struct task_struct *p)
 {
 	struct wprof_event *e;
-	u64 now_ts;
+	u64 now_ts = bpf_ktime_get_ns();
 
-	if (!should_trace_task(p))
+	if (!should_trace_task(p, now_ts))
 		return 0;
 
-	now_ts = bpf_ktime_get_ns();
 	emit_task_event(e, EV_SZ(task), 0, EV_WAKEUP, now_ts, p);
 
 	return 0;
@@ -699,16 +699,14 @@ int BPF_PROG(wprof_task_wakeup, struct task_struct *p)
 SEC("tp_btf/task_rename")
 int BPF_PROG(wprof_task_rename, struct task_struct *task, const char *comm)
 {
+	u64 now_ts = bpf_ktime_get_ns();
 	struct wprof_event *e;
-	u64 now_ts;
 
-	if (!should_trace_task(task))
+	if (!should_trace_task(task, now_ts))
 		return 0;
 
 	if (task->flags & (PF_KTHREAD | PF_WQ_WORKER))
 		return 0;
-
-	now_ts = bpf_ktime_get_ns();
 
 	emit_task_event(e, EV_SZ(rename), 0, EV_TASK_RENAME, now_ts, task) {
 		bpf_probe_read_kernel_str(e->rename.new_comm, sizeof(e->rename.new_comm), comm);
@@ -721,13 +719,12 @@ int BPF_PROG(wprof_task_rename, struct task_struct *task, const char *comm)
 SEC("tp_btf/sched_process_fork")
 int BPF_PROG(wprof_task_fork, struct task_struct *parent, struct task_struct *child)
 {
+	u64 now_ts = bpf_ktime_get_ns();
 	struct wprof_event *e;
-	u64 now_ts;
 
-	if (!should_trace_task(parent) && !should_trace_task(child))
+	if (!should_trace_task(parent, now_ts) && !should_trace_task(child, now_ts))
 		return 0;
 
-	now_ts = bpf_ktime_get_ns();
 	emit_task_event(e, EV_SZ(fork), 0, EV_FORK, now_ts, parent) {
 		fill_task_info(child, &e->fork.child);
 	}
@@ -738,13 +735,12 @@ int BPF_PROG(wprof_task_fork, struct task_struct *parent, struct task_struct *ch
 SEC("tp_btf/sched_process_exec")
 int BPF_PROG(wprof_task_exec, struct task_struct *p, int old_pid, struct linux_binprm *bprm)
 {
+	u64 now_ts = bpf_ktime_get_ns();
 	struct wprof_event *e;
-	u64 now_ts;
 
-	if (!should_trace_task(p))
+	if (!should_trace_task(p, now_ts))
 		return 0;
 
-	now_ts = bpf_ktime_get_ns();
 	emit_task_event(e, EV_SZ(exec), 0, EV_EXEC, now_ts, p) {
 		e->exec.old_tid = old_pid;
 		bpf_probe_read_kernel_str(e->exec.filename, sizeof(e->exec.filename), bprm->filename);
@@ -756,17 +752,15 @@ int BPF_PROG(wprof_task_exec, struct task_struct *p, int old_pid, struct linux_b
 SEC("tp_btf/sched_process_exit")
 int BPF_PROG(wprof_task_exit, struct task_struct *p)
 {
+	u64 now_ts = bpf_ktime_get_ns();
 	struct task_state *s;
-	u64 now_ts;
 
-	if (!should_trace_task(p))
+	if (!should_trace_task(p, now_ts))
 		return 0;
 
 	s = task_state_peek(p->pid);
 	if (!s)
 		return 0;
-
-	now_ts = bpf_ktime_get_ns();
 	
 	struct wprof_event *e;
 	emit_task_event(e, EV_SZ(task), 0, EV_TASK_EXIT, now_ts, p);
@@ -779,23 +773,22 @@ int BPF_PROG(wprof_task_exit, struct task_struct *p)
 SEC("tp_btf/sched_process_free")
 int BPF_PROG(wprof_task_free, struct task_struct *p)
 {
+	u64 now_ts = bpf_ktime_get_ns();
 	struct wprof_event *e;
-	u64 now_ts;
 
-	if (!should_trace_task(p))
+	if (!should_trace_task(p, now_ts))
 		return 0;
 
-	now_ts = bpf_ktime_get_ns();
 	emit_task_event(e, EV_SZ(task), 0, EV_TASK_FREE, now_ts, p);
 
 	return 0;
 }
 
-static int handle_hardirq(struct task_struct *task, struct irqaction *action, int irq, bool start)
+static int handle_hardirq(u64 now_ts, struct task_struct *task,
+			  struct irqaction *action, int irq, bool start)
 {
 	struct task_state *s;
 	struct wprof_event *e;
-	u64 now_ts;
 	int cpu;
 	
 	s = task_state(task->pid);
@@ -803,7 +796,6 @@ static int handle_hardirq(struct task_struct *task, struct irqaction *action, in
 		return 0;
 
 	cpu = bpf_get_smp_processor_id();
-	now_ts = bpf_ktime_get_ns();
 	if (start) {
 		s->hardirq_ts = now_ts;
 		if (perf_ctr_cnt)
@@ -837,30 +829,31 @@ static int handle_hardirq(struct task_struct *task, struct irqaction *action, in
 SEC("tp_btf/irq_handler_entry")
 int BPF_PROG(wprof_hardirq_entry, int irq, struct irqaction *action)
 {
+	u64 now_ts = bpf_ktime_get_ns();
 	struct task_struct *task = bpf_get_current_task_btf();
 	
-	if (!should_trace_task(task))
+	if (!should_trace_task(task, now_ts))
 		return 0;
 
-	return handle_hardirq(task, action, irq, true /*start*/);
+	return handle_hardirq(now_ts, task, action, irq, true /*start*/);
 }
 
 SEC("tp_btf/irq_handler_exit")
 int BPF_PROG(wprof_hardirq_exit, int irq, struct irqaction *action, int ret)
 {
+	u64 now_ts = bpf_ktime_get_ns();
 	struct task_struct *task = bpf_get_current_task_btf();
 	
-	if (!should_trace_task(task))
+	if (!should_trace_task(task, now_ts))
 		return 0;
 
-	return handle_hardirq(task, action, irq, false /*!start*/);
+	return handle_hardirq(now_ts, task, action, irq, false /*!start*/);
 }
 
-static int handle_softirq(struct task_struct *task, int vec_nr, bool start)
+static int handle_softirq(u64 now_ts, struct task_struct *task, int vec_nr, bool start)
 {
 	struct task_state *s;
 	struct wprof_event *e;
-	u64 now_ts;
 	int cpu;
 	
 	s = task_state(task->pid);
@@ -868,7 +861,6 @@ static int handle_softirq(struct task_struct *task, int vec_nr, bool start)
 		return 0;
 
 	cpu = bpf_get_smp_processor_id();
-	now_ts = bpf_ktime_get_ns();
 	if (start) {
 		s->softirq_ts = now_ts;
 		if (perf_ctr_cnt)
@@ -900,23 +892,25 @@ static int handle_softirq(struct task_struct *task, int vec_nr, bool start)
 SEC("tp_btf/softirq_entry")
 int BPF_PROG(wprof_softirq_entry, int vec_nr)
 {
+	u64 now_ts = bpf_ktime_get_ns();
 	struct task_struct *task = bpf_get_current_task_btf();
 	
-	if (!should_trace_task(task))
+	if (!should_trace_task(task, now_ts))
 		return 0;
 
-	return handle_softirq(task, vec_nr, true /*start*/);
+	return handle_softirq(now_ts, task, vec_nr, true /*start*/);
 }
 
 SEC("tp_btf/softirq_exit")
 int BPF_PROG(wprof_softirq_exit, int vec_nr)
 {
+	u64 now_ts = bpf_ktime_get_ns();
 	struct task_struct *task = bpf_get_current_task_btf();
 	
-	if (!should_trace_task(task))
+	if (!should_trace_task(task, now_ts))
 		return 0;
 
-	return handle_softirq(task, vec_nr, false /*!start*/);
+	return handle_softirq(now_ts, task, vec_nr, false /*!start*/);
 }
 
 static __always_inline bool is_valid_wq_char(char c)
@@ -933,11 +927,10 @@ static __always_inline bool is_valid_wq_char(char c)
 	}
 }
 
-static int handle_workqueue(struct task_struct *task, struct work_struct *work, bool start)
+static int handle_workqueue(u64 now_ts, struct task_struct *task, struct work_struct *work, bool start)
 {
 	struct task_state *s;
 	struct wprof_event *e;
-	u64 now_ts;
 	int cpu, err;
 
 	s = task_state(task->pid);
@@ -945,7 +938,6 @@ static int handle_workqueue(struct task_struct *task, struct work_struct *work, 
 		return 0;
 
 	cpu = bpf_get_smp_processor_id();
-	now_ts = bpf_ktime_get_ns();
 	if (start) {
 		struct kthread *k = bpf_core_cast(task->worker_private, struct kthread);
 		struct worker *worker = bpf_core_cast(k->data, struct worker);
@@ -989,34 +981,36 @@ static int handle_workqueue(struct task_struct *task, struct work_struct *work, 
 SEC("tp_btf/workqueue_execute_start")
 int BPF_PROG(wprof_wq_exec_start, struct work_struct *work)
 {
+	u64 now_ts = bpf_ktime_get_ns();
 	struct task_struct *task = bpf_get_current_task_btf();
 	
-	if (!should_trace_task(task))
+	if (!should_trace_task(task, now_ts))
 		return 0;
 
-	return handle_workqueue(task, work, true /*start*/);
+	return handle_workqueue(now_ts, task, work, true /*start*/);
 }
 
 SEC("tp_btf/workqueue_execute_end")
 int BPF_PROG(wprof_wq_exec_end, struct work_struct *work /* , work_func_t function */)
 {
+	u64 now_ts = bpf_ktime_get_ns();
 	struct task_struct *task = bpf_get_current_task_btf();
 	
-	if (!should_trace_task(task))
+	if (!should_trace_task(task, now_ts))
 		return 0;
 
-	return handle_workqueue(task, work, false /*!start*/);
+	return handle_workqueue(now_ts, task, work, false /*!start*/);
 }
 
 #ifdef __TARGET_ARCH_x86
 
 static struct cpu_state all_cpus_state;
 
-static int handle_ipi_send(struct task_struct *task, enum wprof_ipi_kind ipi_kind, int target_cpu)
+static int handle_ipi_send(u64 now_ts, struct task_struct *task,
+			   enum wprof_ipi_kind ipi_kind, int target_cpu)
 {
 	struct cpu_state *s;
 	struct wprof_event *e;
-	u64 now_ts;
 	int cpu;
 
 	if (target_cpu >= 0) {
@@ -1027,7 +1021,6 @@ static int handle_ipi_send(struct task_struct *task, enum wprof_ipi_kind ipi_kin
 		s = &all_cpus_state;
 	}
 
-	now_ts = bpf_ktime_get_ns();
 	cpu = bpf_get_smp_processor_id();
 
 	s->ipi_send_ts = now_ts;
@@ -1046,43 +1039,41 @@ static int handle_ipi_send(struct task_struct *task, enum wprof_ipi_kind ipi_kin
 SEC("?tp_btf/ipi_send_cpu")
 int BPF_PROG(wprof_ipi_send_cpu, int cpu)
 {
-	struct task_struct *task;
+	u64 now_ts = bpf_ktime_get_ns();
+	struct task_struct *task = bpf_get_current_task_btf();
 
-	task = bpf_get_current_task_btf();
-	if (!should_trace_task(task))
+	if (!should_trace_task(task, now_ts))
 		return 0;
 
-	return handle_ipi_send(task, IPI_SINGLE, cpu);
+	return handle_ipi_send(now_ts, task, IPI_SINGLE, cpu);
 }
 
 SEC("?tp_btf/ipi_send_cpumask")
 int BPF_PROG(wprof_ipi_send_mask, struct cpumask *mask)
 {
-	struct task_struct *task;
+	u64 now_ts = bpf_ktime_get_ns();
+	struct task_struct *task = bpf_get_current_task_btf();
 
-	task = bpf_get_current_task_btf();
-	if (!should_trace_task(task))
+	if (!should_trace_task(task, now_ts))
 		return 0;
 
-	return handle_ipi_send(task, IPI_MULTI, -1);
+	return handle_ipi_send(now_ts, task, IPI_MULTI, -1);
 }
 
 #define RESCHEDULE_VECTOR		0xfd
 #define CALL_FUNCTION_VECTOR		0xfc
 #define CALL_FUNCTION_SINGLE_VECTOR	0xfb
 
-static int handle_ipi(struct task_struct *task, enum wprof_ipi_kind ipi_kind, bool start)
+static int handle_ipi(u64 now_ts, struct task_struct *task, enum wprof_ipi_kind ipi_kind, bool start)
 {
 	struct cpu_state *s;
 	struct wprof_event *e;
-	u64 now_ts;
 	int cpu;
 
 	s = bpf_map_lookup_elem(&cpu_states, &zero);
 	if (!s) /* can't happen */
 		return 0;
 
-	now_ts = bpf_ktime_get_ns();
 	cpu = bpf_get_smp_processor_id();
 	if (start) {
 		s->ipi_ts = now_ts;
@@ -1129,91 +1120,103 @@ static int handle_ipi(struct task_struct *task, enum wprof_ipi_kind ipi_kind, bo
 SEC("?tp_btf/call_function_entry")
 int BPF_PROG(wprof_ipi_multi_entry, int vector)
 {
+	u64 now_ts;
 	struct task_struct *task;
 
 	if (vector != CALL_FUNCTION_VECTOR)
 		return 0;
 
+	now_ts = bpf_ktime_get_ns();
 	task = bpf_get_current_task_btf();
-	if (!should_trace_task(task))
+	if (!should_trace_task(task, now_ts))
 		return 0;
 
-	return handle_ipi(task, IPI_MULTI, true /*start*/);
+	return handle_ipi(now_ts, task, IPI_MULTI, true /*start*/);
 }
 
 SEC("?tp_btf/call_function_exit")
 int BPF_PROG(wprof_ipi_multi_exit, int vector)
 {
+	u64 now_ts;
 	struct task_struct *task;
 
 	if (vector != CALL_FUNCTION_VECTOR)
 		return 0;
 
+	now_ts = bpf_ktime_get_ns();
 	task = bpf_get_current_task_btf();
-	if (!should_trace_task(task))
+	if (!should_trace_task(task, now_ts))
 		return 0;
 
-	return handle_ipi(task, IPI_MULTI, false /*!start*/);
+	return handle_ipi(now_ts, task, IPI_MULTI, false /*!start*/);
 }
 
 SEC("?tp_btf/call_function_single_entry")
 int BPF_PROG(wprof_ipi_single_entry, int vector)
 {
+	u64 now_ts;
 	struct task_struct *task;
 
 	if (vector != CALL_FUNCTION_SINGLE_VECTOR)
 		return 0;
 
+	now_ts = bpf_ktime_get_ns();
 	task = bpf_get_current_task_btf();
-	if (!should_trace_task(task))
+	if (!should_trace_task(task, now_ts))
 		return 0;
 
-	return handle_ipi(task, IPI_SINGLE, true /*start*/);
+	return handle_ipi(now_ts, task, IPI_SINGLE, true /*start*/);
 }
 
 SEC("?tp_btf/call_function_single_exit")
 int BPF_PROG(wprof_ipi_single_exit, int vector)
 {
+	u64 now_ts;
 	struct task_struct *task;
 
 	if (vector != CALL_FUNCTION_SINGLE_VECTOR)
 		return 0;
 
+	now_ts = bpf_ktime_get_ns();
 	task = bpf_get_current_task_btf();
-	if (!should_trace_task(task))
+	if (!should_trace_task(task, now_ts))
 		return 0;
 
-	return handle_ipi(task, IPI_SINGLE, false /*!start*/);
+	return handle_ipi(now_ts, task, IPI_SINGLE, false /*!start*/);
 }
 
 SEC("?tp_btf/reschedule_entry")
 int BPF_PROG(wprof_ipi_resched_entry, int vector)
 {
+	u64 now_ts;
 	struct task_struct *task;
 
 	if (vector != RESCHEDULE_VECTOR)
 		return 0;
 
+	now_ts = bpf_ktime_get_ns();
 	task = bpf_get_current_task_btf();
-	if (!should_trace_task(task))
+	if (!should_trace_task(task, now_ts))
 		return 0;
 
-	return handle_ipi(task, IPI_RESCHED, true /*start*/);
+	return handle_ipi(now_ts, task, IPI_RESCHED, true /*start*/);
 }
 
 SEC("?tp_btf/reschedule_exit")
 int BPF_PROG(wprof_ipi_resched_exit, int vector)
 {
+	u64 now_ts;
 	struct task_struct *task;
 
 	if (vector != RESCHEDULE_VECTOR)
 		return 0;
 
+	now_ts = bpf_ktime_get_ns();
 	task = bpf_get_current_task_btf();
-	if (!should_trace_task(task))
+	if (!should_trace_task(task, now_ts))
 		return 0;
 
-	return handle_ipi(task, IPI_RESCHED, false /*!start*/);
+	return handle_ipi(now_ts, task, IPI_RESCHED, false /*!start*/);
 }
 
 #endif /* __TARGET_ARCH_x86 */
@@ -1234,13 +1237,12 @@ static struct req_state empty_req_state;
 SEC("?usdt")
 int BPF_USDT(wprof_req_ctx, u64 req_id, const char *endpoint, enum wprof_req_event_kind event_kind)
 {
+	u64 now_ts = bpf_ktime_get_ns();
 	struct task_struct *task = bpf_get_current_task_btf();
 	struct req_state *s;
 
-	if (!should_trace_task(task))
+	if (!should_trace_task(task, now_ts))
 		return 0;
-
-	u64 now_ts = bpf_ktime_get_ns();
 
 	switch (event_kind) {
 	case REQ_BEGIN:
@@ -1288,12 +1290,11 @@ int BPF_USDT(wprof_req_task_enqueue,
 	     const char *thread_factory_pfx, u64 req_id, u64 enqueue_ts,
 	     u64 task_id)
 {
+	u64 now_ts = bpf_ktime_get_ns();
 	struct task_struct *task = bpf_get_current_task_btf();
 
-	if (!should_trace_task(task))
+	if (!should_trace_task(task, now_ts))
 		return 0;
-
-	u64 now_ts = bpf_ktime_get_ns();
 
 	struct wprof_event *e;
 	emit_task_event(e, EV_SZ(req_task), 0, EV_REQ_TASK_EVENT, now_ts, task) {
@@ -1314,12 +1315,11 @@ int BPF_USDT(wprof_req_task_dequeue,
 	     const char *thread_factory_pfx, u64 req_id, u64 enqueue_ts,
 	     u64 wait_time_ns, u64 task_id)
 {
+	u64 now_ts = bpf_ktime_get_ns();
 	struct task_struct *task = bpf_get_current_task_btf();
 
-	if (!should_trace_task(task))
+	if (!should_trace_task(task, now_ts))
 		return 0;
-
-	u64 now_ts = bpf_ktime_get_ns();
 
 	struct wprof_event *e;
 	emit_task_event(e, EV_SZ(req_task), 0, EV_REQ_TASK_EVENT, now_ts, task) {
@@ -1340,12 +1340,11 @@ int BPF_USDT(wprof_req_task_stats,
 	     const char *thread_factory_pfx, u64 req_id, u64 enqueue_ts,
 	     u64 wait_time_ns, u64 run_time_ns, u64 task_id)
 {
+	u64 now_ts = bpf_ktime_get_ns();
 	struct task_struct *task = bpf_get_current_task_btf();
 
-	if (!should_trace_task(task))
+	if (!should_trace_task(task, now_ts))
 		return 0;
-
-	u64 now_ts = bpf_ktime_get_ns();
 
 	struct wprof_event *e;
 	emit_task_event(e, EV_SZ(req_task), 0, EV_REQ_TASK_EVENT, now_ts, task) {
