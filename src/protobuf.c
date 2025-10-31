@@ -724,7 +724,7 @@ __unused static void emit_clock_snapshot(pb_ostream_t *stream)
 	};
 	struct pb_clock *clocks[] = { &boot_clock, &mono_clock, NULL };
 	TracePacket pb = {
-		PB_TRUST_SEQ_ID(),
+		PB_TRUST_SEQ_ID(PB_SEQ_ID_THREADS),
 		PB_ONEOF(data, TracePacket_clock_snapshot) = { .clock_snapshot = {
 			PB_INIT(primary_trace_clock) = perfetto_protos_BuiltinClock_BUILTIN_CLOCK_MONOTONIC,
 			.clocks = PB_CLOCK(clocks),
@@ -749,7 +749,7 @@ int init_pb_trace(pb_ostream_t *stream)
 	/* emit fake instant event to establish strict zero timestamp */
 	TracePacket ev_pb = {
 		PB_INIT(timestamp) = 0,
-		PB_TRUST_SEQ_ID(),
+		PB_TRUST_SEQ_ID(PB_SEQ_ID_THREADS),
 		PB_INIT(sequence_flags) = perfetto_protos_TracePacket_SequenceFlags_SEQ_INCREMENTAL_STATE_CLEARED,
 		PB_ONEOF(data, TracePacket_track_event) = { .track_event = {
 			PB_INIT(type) = perfetto_protos_TrackEvent_Type_TYPE_INSTANT,

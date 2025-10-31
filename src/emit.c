@@ -515,13 +515,20 @@ static const char *scope_str(enum instant_scope scope)
 	return scope_str_map[scope];
 }
 
+enum emit_flags {
+	EM_START = 0x01,
+	EM_END = 0x02,
+	EM_THREAD = 0x04, /* thread-associated */
+};
+
 __unused
 static struct emit_rec emit_instant_pre(u64 ts, __u64 track_uuid,
-					struct pb_str name, struct pb_str cat)
+					struct pb_str name, struct pb_str cat,
+					enum emit_flags flags)
 {
 	em.pb = (TracePacket) {
 		PB_INIT(timestamp) = ts - env.sess_start_ts,
-		PB_TRUST_SEQ_ID(),
+		PB_TRUST_SEQ_ID((flags & EM_THREAD) ? PB_SEQ_ID_THREADS : PB_SEQ_ID_GENERIC),
 		PB_ONEOF(data, TracePacket_track_event) = { .track_event = {
 			PB_INIT(track_uuid) = track_uuid,
 			PB_INIT(type) = perfetto_protos_TrackEvent_Type_TYPE_INSTANT,
@@ -539,31 +546,34 @@ static struct emit_rec emit_instant_pre(u64 ts, __u64 track_uuid,
 
 #define emit_instant(ts, t, name, cat)					\
 	for (struct emit_rec ___r __cleanup(emit_cleanup) =					\
-	     emit_instant_pre(ts, trackid_thread(t), __pb_str(name), __pb_str(cat));	\
+	     emit_instant_pre(ts, trackid_thread(t), __pb_str(name), __pb_str(cat), EM_THREAD);	\
 	     !___r.done; ___r.done = true)
 
 __unused
 static struct emit_rec emit_slice_point_pre(u64 ts, u64 track_uuid,
-					    struct pb_str name, struct pb_str cat, bool start)
+					    struct pb_str name, struct pb_str cat,
+					    enum emit_flags flags)
 {
 	em.pb = (TracePacket) {
 		PB_INIT(timestamp) = ts - env.sess_start_ts,
-		PB_TRUST_SEQ_ID(),
+		PB_TRUST_SEQ_ID((flags & EM_THREAD) ? PB_SEQ_ID_THREADS : PB_SEQ_ID_GENERIC),
 		PB_ONEOF(data, TracePacket_track_event) = { .track_event = {
 			PB_INIT(track_uuid) = track_uuid,
-			PB_INIT(type) = start ? perfetto_protos_TrackEvent_Type_TYPE_SLICE_BEGIN
-					      : perfetto_protos_TrackEvent_Type_TYPE_SLICE_END,
+			PB_INIT(type) = (flags & EM_END)
+				? perfetto_protos_TrackEvent_Type_TYPE_SLICE_END
+				: perfetto_protos_TrackEvent_Type_TYPE_SLICE_BEGIN,
 			.category_iids = cat.iid ? PB_STRING_IID(cat.iid) : PB_NONE,
 			.categories = cat.iid ? PB_NONE : PB_STRING(cat.s),
 			PB_NAME(TrackEvent, name_field, name.iid, name.s),
 			.debug_annotations = PB_ANNOTATIONS(&em.anns),
 		}},
 	};
+
 	/* allow explicitly not providing the name */
 	if (!name.iid && !name.s)
 		em.pb.data.track_event.which_name_field = 0;
 	/* end slice points don't need to repeat the name */
-	if (!start)
+	if (flags & EM_END)
 		em.pb.data.track_event.which_name_field = 0;
 	anns_reset(&em.anns);
 
@@ -586,27 +596,29 @@ static inline struct pb_str __pb_str_iidstr(struct pb_str str) { return str; }
 
 #define emit_slice_begin(ts, t, name, cat)							\
 	for (struct emit_rec ___r __cleanup(emit_cleanup) =					\
-	     emit_slice_point_pre(ts, trackid_thread(t), __pb_str(name), __pb_str(cat), true /*start*/);	\
+	     emit_slice_point_pre(ts, trackid_thread(t), __pb_str(name), __pb_str(cat), 	\
+				  EM_START | EM_THREAD);					\
 	     !___r.done; ___r.done = true)
 
 #define emit_slice_end(ts, t, name, cat)							\
 	for (struct emit_rec ___r __cleanup(emit_cleanup) =					\
-	     emit_slice_point_pre(ts, trackid_thread(t), __pb_str(name), __pb_str(cat), false /*!start*/);\
+	     emit_slice_point_pre(ts, trackid_thread(t), __pb_str(name), __pb_str(cat), 	\
+				  EM_END | EM_THREAD); 						\
 	     !___r.done; ___r.done = true)
 
 #define emit_track_slice_start(ts, track, name, cat)						\
 	for (struct emit_rec ___r __cleanup(emit_cleanup) =					\
-	     emit_slice_point_pre(ts, track, __pb_str(name), __pb_str(cat), true /*start*/);	\
+	     emit_slice_point_pre(ts, track, __pb_str(name), __pb_str(cat), EM_START);		\
 	     !___r.done; ___r.done = true)
 
 #define emit_track_slice_end(ts, track, name, cat)						\
 	for (struct emit_rec ___r __cleanup(emit_cleanup) =					\
-	     emit_slice_point_pre(ts, track, __pb_str(name), __pb_str(cat), false /*!start*/);	\
+	     emit_slice_point_pre(ts, track, __pb_str(name), __pb_str(cat), EM_END);		\
 	     !___r.done; ___r.done = true)
 
 #define emit_track_instant(ts, track, name, cat)						\
 	for (struct emit_rec ___r __cleanup(emit_cleanup) =					\
-	     emit_instant_pre(ts, track, __pb_str(name), __pb_str(cat));			\
+	     emit_instant_pre(ts, track, __pb_str(name), __pb_str(cat), 0);			\
 	     !___r.done; ___r.done = true)
 
 __unused
@@ -626,7 +638,7 @@ static void emit_stack_trace(u64 ts, const struct wprof_task *t, int stack_id)
 {
 	TracePacket pb = (TracePacket) {
 		PB_INIT(timestamp) = ts - env.sess_start_ts,
-		PB_TRUST_SEQ_ID(),
+		PB_TRUST_SEQ_ID(PB_SEQ_ID_THREADS),
 		PB_ONEOF(data, TracePacket_perf_sample) = { .perf_sample = {
 			PB_INIT(pid) = track_pid(t),
 			PB_INIT(tid) = track_tid(t),
@@ -650,7 +662,7 @@ static void emit_kind_track_descr(pb_ostream_t *stream, enum task_kind k)
 	int track_pid = kind_track_pid(k);
 
 	TracePacket desc_pb = {
-		PB_TRUST_SEQ_ID(),
+		PB_TRUST_SEQ_ID(PB_SEQ_ID_THREADS),
 		PB_ONEOF(data, TracePacket_track_descriptor) = { .track_descriptor = {
 			PB_INIT(uuid) = track_uuid,
 			PB_INIT(process) = {
@@ -669,7 +681,7 @@ static void emit_kind_track_descr(pb_ostream_t *stream, enum task_kind k)
 static void emit_track_descr(pb_ostream_t *stream, __u64 track_uuid, __u64 parent_track_uuid, const char *name, int rank)
 {
 	TracePacket desc = {
-		PB_TRUST_SEQ_ID(),
+		PB_TRUST_SEQ_ID(PB_SEQ_ID_GENERIC),
 		PB_ONEOF(data, TracePacket_track_descriptor) = { .track_descriptor = {
 			PB_INIT(uuid) = track_uuid,
 			PB_INIT(disallow_merging_with_system_tracks) = false,
@@ -690,7 +702,7 @@ static void emit_process_track_descr(pb_ostream_t *stream, const struct wprof_ta
 
 	pcomm = track_pcomm(t);
 	TracePacket proc_desc = {
-		PB_TRUST_SEQ_ID(),
+		PB_TRUST_SEQ_ID(PB_SEQ_ID_THREADS),
 		PB_ONEOF(data, TracePacket_track_descriptor) = { .track_descriptor = {
 			PB_INIT(uuid) = trackid_process(t),
 			PB_INIT(process) = {
@@ -707,7 +719,7 @@ static void emit_process_track_descr(pb_ostream_t *stream, const struct wprof_ta
 static void emit_thread_track_descr(pb_ostream_t *stream, const struct wprof_task *t, const char *comm)
 {
 	TracePacket thread_desc = {
-		PB_TRUST_SEQ_ID(),
+		PB_TRUST_SEQ_ID(PB_SEQ_ID_THREADS),
 		PB_ONEOF(data, TracePacket_track_descriptor) = { .track_descriptor = {
 			PB_INIT(uuid) = trackid_thread(t),
 			PB_INIT(thread) = {
@@ -905,7 +917,7 @@ static void flush_ftrace_bundle(struct worker_state *w, int cpu)
 		return;
 
 	TracePacket pb = {
-		PB_TRUST_SEQ_ID(),
+		PB_TRUST_SEQ_ID(PB_SEQ_ID_THREADS),
 		PB_ONEOF(data, TracePacket_ftrace_events) = { .ftrace_events = {
 			PB_INIT(cpu) = cpu,
 			.event = PB_FTRACE_EVENTS(buf),
