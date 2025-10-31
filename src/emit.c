@@ -44,14 +44,41 @@ struct task_state {
 static struct hashmap *tasks;
 static __thread pb_ostream_t *cur_stream;
 
-enum track_state_kind {
-	TSK_PROCESS_REQS,	/* process's requests track */
-	TSK_REQ, 		/* request overview (timeline) track */
-	TSK_REQ_THREAD, 	/* request participating thread track */
+enum track_kind {
+	TK_THREAD = 1,		/* thread track (by TID) */
+	TK_THREAD_IDLE = 2,     /* idle "thread" (by CPU) */
+	TK_PROCESS = 2,		/* process track (by PID) */
+	TK_SPECIAL = 3,		/* special and fake groups (idle, kthread, kworker, requests folder) */
+
+	TK_PROC_REQS = 4,	/* requests of given PID (by PID) */
+	TK_REQ = 5,		/* single request of given PID (by REQ_ID + PID) */
+	TK_REQ_THREAD = 6,	/* request-participating thread (by REQ_ID + TID) */
+
+	TK_CUDA_PROC = 7, 	/* CUDA-using process track (by PID) */
+	TK_CUDA_PROC_GPU = 8, 	/* CUDA-using process's GPU track (by PID + GPU ID) */
+
+	TK_MULT = 10,
 };
 
+enum track_special {
+	TKS_IDLE = 1,
+	TKS_KWORKER = 2,
+	TKS_KTHREAD = 3,
+
+	TKS_REQUESTS = 4,
+	TKS_CUDA = 5,
+};
+
+#define TRACK_UUID(kind, id) (((u64)(id) * TK_MULT) + (u64)kind)
+
+#define TRACK_UUID_IDLE		TRACK_UUID(TK_SPECIAL, TKS_IDLE)
+#define TRACK_UUID_KWORKER	TRACK_UUID(TK_SPECIAL, TKS_KWORKER)
+#define TRACK_UUID_KTHREAD	TRACK_UUID(TK_SPECIAL, TKS_KTHREAD)
+#define TRACK_UUID_REQUESTS	TRACK_UUID(TK_SPECIAL, TKS_REQUESTS)
+#define TRACK_UUID_CUDA		TRACK_UUID(TK_SPECIAL, TKS_CUDA)
+
 struct track_key {
-	enum track_state_kind kind;
+	enum track_kind kind;
 	u32 id1;
 	u64 id2;
 };
@@ -79,12 +106,12 @@ static inline bool track_equal_fn(long k1, long k2, void *ctx)
 
 static struct hashmap *tracks;
 
-static inline struct track_key track_key(enum track_state_kind kind, u32 id1, u64 id2)
+static inline struct track_key track_key(enum track_kind kind, u32 id1, u64 id2)
 {
 	return (struct track_key) { .kind = kind, .id1 = id1, .id2 = id2 };
 }
 
-static struct track_state *track_state_get_or_add(enum track_state_kind kind, u32 id1, u64 id2)
+static struct track_state *track_state_get_or_add(enum track_kind kind, u32 id1, u64 id2)
 {
 	struct track_key k = track_key(kind, id1, id2);
 	struct track_state *s;
@@ -101,7 +128,7 @@ static struct track_state *track_state_get_or_add(enum track_state_kind kind, u3
 	return ps;
 }
 
-static bool track_state_delete(enum track_state_kind kind, u32 id1, u64 id2)
+static bool track_state_delete(enum track_kind kind, u32 id1, u64 id2)
 {
 	struct track_key k = track_key(kind, id1, id2);
 	struct track_key *old_k;
@@ -230,37 +257,6 @@ enum task_kind {
 	TASK_KWORKER,
 	TASK_KTHREAD,
 };
-
-enum track_kind {
-	TK_THREAD = 1,		/* thread track (by TID) */
-	TK_THREAD_IDLE = 2,     /* idle "thread" (by CPU) */
-	TK_PROCESS = 2,		/* process track (by PID) */
-	TK_SPECIAL = 3,		/* special and fake groups (idle, kthread, kworker, requests folder) */
-	TK_PROCESS_REQS = 4,	/* requests of given PID (by PID) */
-	TK_REQ = 5,		/* single request of given PID (by REQ_ID + PID) */
-	TK_REQ_THREAD = 6,	/* request-participating thread (by REQ_ID + TID) */
-
-	TK_GPU = 7, 	/* GPU device tracks */
-
-	TK_MULT = 10,
-};
-
-enum track_special {
-	TKS_IDLE = 1,
-	TKS_KWORKER = 2,
-	TKS_KTHREAD = 3,
-
-	TKS_REQUESTS = 4,
-	TKS_GPUS = 5,
-};
-
-#define TRACK_UUID(kind, id) (((u64)(id) * TK_MULT) + (u64)kind)
-
-#define TRACK_UUID_IDLE		TRACK_UUID(TK_SPECIAL, TKS_IDLE)
-#define TRACK_UUID_KWORKER	TRACK_UUID(TK_SPECIAL, TKS_KWORKER)
-#define TRACK_UUID_KTHREAD	TRACK_UUID(TK_SPECIAL, TKS_KTHREAD)
-#define TRACK_UUID_REQUESTS	TRACK_UUID(TK_SPECIAL, TKS_REQUESTS)
-#define TRACK_UUID_GPUS		TRACK_UUID(TK_SPECIAL, TKS_GPUS)
 
 #define TRACK_RANK_IDLE		-3
 #define TRACK_RANK_KWORKER	-2
@@ -460,12 +456,17 @@ static inline u64 trackid_req(u64 req_id, const struct wprof_task *t)
 
 static inline u64 trackid_process_reqs(const struct wprof_task *t)
 {
-	return TRACK_UUID(TK_PROCESS_REQS, t->pid);
+	return TRACK_UUID(TK_PROC_REQS, t->pid);
 }
 
-static inline u64 trackid_gpu(int device_id)
+static inline u64 trackid_cuda_proc(int pid)
 {
-	return TRACK_UUID(TK_GPU, device_id);
+	return TRACK_UUID(TK_PROC_REQS, pid);
+}
+
+static inline u64 trackid_cuda_proc_gpu(int pid, int dev_id)
+{
+	return TRACK_UUID(TK_PROC_REQS, pid | ((u64)dev_id << 32));
 }
 
 static const char *event_kind_str_map[] = {
@@ -1582,7 +1583,7 @@ static int process_ipi_exit(struct worker_state *w, struct wprof_event *e, size_
 
 static u64 ensure_process_reqs_track(const struct wprof_task *t)
 {
-	struct track_state *s = track_state_get_or_add(TSK_PROCESS_REQS, t->pid, 0);
+	struct track_state *s = track_state_get_or_add(TK_PROC_REQS, t->pid, 0);
 	u64 track_uuid = trackid_process_reqs(t);
 
 	if (!s->exists) {
@@ -1595,7 +1596,7 @@ static u64 ensure_process_reqs_track(const struct wprof_task *t)
 
 static u64 ensure_req_track(const struct wprof_task *t, u64 req_id, const char *req_name)
 {
-	struct track_state *s = track_state_get_or_add(TSK_REQ, t->pid, req_id);
+	struct track_state *s = track_state_get_or_add(TK_REQ, t->pid, req_id);
 	u64 track_uuid = trackid_req(req_id, t);
 
 	if (!s->exists) {
@@ -1608,7 +1609,7 @@ static u64 ensure_req_track(const struct wprof_task *t, u64 req_id, const char *
 
 static u64 ensure_req_thread_track(const struct wprof_task *t, u64 req_id, const char *req_name)
 {
-	struct track_state *s = track_state_get_or_add(TSK_REQ_THREAD, t->tid, req_id);
+	struct track_state *s = track_state_get_or_add(TK_REQ_THREAD, t->tid, req_id);
 	u64 track_uuid = trackid_req_thread(req_id, t);
 
 	if (!s->exists) {
@@ -1621,8 +1622,8 @@ static u64 ensure_req_thread_track(const struct wprof_task *t, u64 req_id, const
 
 static void clear_req_tracks(const struct wprof_task *t, u64 req_id)
 {
-	track_state_delete(TSK_REQ, t->pid, req_id);
-	track_state_delete(TSK_REQ_THREAD, t->tid, req_id);
+	track_state_delete(TK_REQ, t->pid, req_id);
+	track_state_delete(TK_REQ_THREAD, t->tid, req_id);
 }
 
 /* EV_REQ_EVENT */
@@ -1800,17 +1801,31 @@ static int process_req_task_event(struct worker_state *w, struct wprof_event *e,
 	return 0;
 }
 
-/*
-static int emit_gpu_tracks(int dev_id, int pid, const char *proc_name)
+static u64 ensure_cuda_proc_track(int pid, const char *proc_name)
 {
-	emit_track_descr(cur_stream, parent_uuid, TRACK_UUID_REQUESTS,
-			 sfmt("%s %u", e->task.pcomm, e->task.pid), 0);
-	emit_track_descr(cur_stream, req_track_uuid, parent_uuid,
-			 sfmt("REQ (%llu)", e->req_task.req_id), 0);
-	emit_track_descr(cur_stream, track_uuid, req_track_uuid,
-			 sfmt("%s %u", e->task.comm, e->task.tid), 0);
+	struct track_state *s = track_state_get_or_add(TK_CUDA_PROC, pid, 0);
+	u64 track_uuid = trackid_cuda_proc(pid);
+
+	if (!s->exists) {
+		emit_track_descr(cur_stream, track_uuid, TRACK_UUID_CUDA,
+				 sfmt("%s %u (CUDA)", proc_name, pid), 0);
+		s->exists = true;
+	}
+	return track_uuid;
 }
-*/
+
+static u64 ensure_cuda_proc_gpu_track(int pid, int gpu_id)
+{
+	struct track_state *s = track_state_get_or_add(TK_CUDA_PROC_GPU, pid, gpu_id);
+	u64 track_uuid = trackid_cuda_proc_gpu(pid, gpu_id);
+
+	if (!s->exists) {
+		emit_track_descr(cur_stream, track_uuid, trackid_cuda_proc(pid),
+				 sfmt("GPU #%d", gpu_id), 0);
+		s->exists = true;
+	}
+	return track_uuid;
+}
 
 /* WCK_CUDA_KERNEL */
 static int process_cuda_kernel(struct worker_state *w, struct wprof_event *we, size_t size)
@@ -1819,13 +1834,15 @@ static int process_cuda_kernel(struct worker_state *w, struct wprof_event *we, s
 		return 0;
 
 	const struct wcuda_event *e = (struct wcuda_event *)we;
-
 	const char *strs = (void *)w->dump_hdr + w->dump_hdr->hdr_sz + w->dump_hdr->strs_off;
 	const char *cuda_kern_name = strs + e->cuda_kernel.name_off;
 
-	emit_track_slice_start(e->ts, TRACK_UUID_GPUS, cuda_kern_name, "ONGPU");
+	ensure_cuda_proc_track(123 /* XXX: USE REAL PID */, "FAKE CUDA PROCESS");
+	u64 track_uuid = ensure_cuda_proc_gpu_track(123, 7);
 
-	emit_track_slice_end(e->ts + e->cuda_kernel.dur_ns, TRACK_UUID_GPUS,
+	emit_track_slice_start(e->ts, track_uuid, cuda_kern_name, "ONGPU");
+
+	emit_track_slice_end(e->ts + e->cuda_kernel.dur_ns, track_uuid,
 			     cuda_kern_name, "ONGPU") {
 		emit_kv_float("dur_us", "%.6lf", e->cuda_kernel.dur_ns / 1000.0);
 	}
@@ -1880,7 +1897,7 @@ int emit_trace(struct worker_state *w)
 	if (env.capture_requests)
 		emit_track_descr(cur_stream, TRACK_UUID_REQUESTS, 0, "REQUESTS", 1000);
 	if (env.capture_cuda)
-		emit_track_descr(cur_stream, TRACK_UUID_GPUS, 0, "GPUS", 2000);
+		emit_track_descr(cur_stream, TRACK_UUID_CUDA, 0, "CUDA", 2000);
 
 	if (env.requested_stack_traces) {
 		struct wprof_stacks_hdr *shdr = wprof_stacks_hdr(w->dump_hdr);
