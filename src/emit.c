@@ -9,6 +9,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "hashmap.h"
 #include "utils.h"
 #include "protobuf.h"
 #include "wprof.h"
@@ -43,10 +44,86 @@ struct task_state {
 static struct hashmap *tasks;
 static __thread pb_ostream_t *cur_stream;
 
+enum track_state_kind {
+	TSK_PROCESS_REQS,	/* process's requests track */
+	TSK_REQ, 		/* request overview (timeline) track */
+	TSK_REQ_THREAD, 	/* request participating thread track */
+};
+
+struct track_key {
+	enum track_state_kind kind;
+	u32 id1;
+	u64 id2;
+};
+
+struct track_state {
+	bool exists;
+};
+
+static inline size_t track_hash_fn(long key, void *ctx)
+{
+	struct track_key *p = (void *)key;
+
+	return hash_combine(((u64)p->kind << 32) | p->id1, p->id2);
+}
+
+static inline bool track_equal_fn(long k1, long k2, void *ctx)
+{
+	struct track_key *p1 = (void *)k1;
+	struct track_key *p2 = (void *)k2;
+
+	return p1->kind == p2->kind &&
+	       p1->id1 == p2->id1 &&
+	       p1->id2 == p2->id2;
+}
+
+static struct hashmap *tracks;
+
+static inline struct track_key track_key(enum track_state_kind kind, u32 id1, u64 id2)
+{
+	return (struct track_key) { .kind = kind, .id1 = id1, .id2 = id2 };
+}
+
+static struct track_state *track_state_get_or_add(enum track_state_kind kind, u32 id1, u64 id2)
+{
+	struct track_key k = track_key(kind, id1, id2);
+	struct track_state *s;
+
+	if (hashmap__find(tracks, &k, &s))
+		return s;
+
+	struct track_key *pk = calloc(1, sizeof(struct track_key));
+	struct track_state *ps = calloc(1, sizeof(struct track_state));
+
+	*pk = k;
+	hashmap__add(tracks, pk, ps);
+
+	return ps;
+}
+
+static bool track_state_delete(enum track_state_kind kind, u32 id1, u64 id2)
+{
+	struct track_key k = track_key(kind, id1, id2);
+	struct track_key *old_k;
+	struct track_state *old_s;
+
+	if (hashmap__delete(tracks, &k, &old_k, &old_s)) {
+		free(old_k);
+		free(old_s);
+		return true;
+	}
+
+	return false;
+}
+
 int init_emit(struct worker_state *w)
 {
 	tasks = hashmap__new(hash_identity_fn, hash_equal_fn, NULL);
 	if (!tasks)
+		return -ENOMEM;
+
+	tracks = hashmap__new(track_hash_fn, track_equal_fn, NULL);
+	if (!tracks)
 		return -ENOMEM;
 
 	cur_stream = &w->stream;
@@ -1503,6 +1580,51 @@ static int process_ipi_exit(struct worker_state *w, struct wprof_event *e, size_
 	return 0;
 }
 
+static u64 ensure_process_reqs_track(const struct wprof_task *t)
+{
+	struct track_state *s = track_state_get_or_add(TSK_PROCESS_REQS, t->pid, 0);
+	u64 track_uuid = trackid_process_reqs(t);
+
+	if (!s->exists) {
+		emit_track_descr(cur_stream, track_uuid, TRACK_UUID_REQUESTS,
+				 sfmt("%s %u", t->pcomm, t->pid), 0);
+		s->exists = true;
+	}
+	return track_uuid;
+}
+
+static u64 ensure_req_track(const struct wprof_task *t, u64 req_id, const char *req_name)
+{
+	struct track_state *s = track_state_get_or_add(TSK_REQ, t->pid, req_id);
+	u64 track_uuid = trackid_req(req_id, t);
+
+	if (!s->exists) {
+		emit_track_descr(cur_stream, track_uuid, trackid_process_reqs(t),
+				 sfmt("REQ:%s (%llu)", req_name, req_id), 0);
+		s->exists = true;
+	}
+	return track_uuid;
+}
+
+static u64 ensure_req_thread_track(const struct wprof_task *t, u64 req_id, const char *req_name)
+{
+	struct track_state *s = track_state_get_or_add(TSK_REQ_THREAD, t->tid, req_id);
+	u64 track_uuid = trackid_req_thread(req_id, t);
+
+	if (!s->exists) {
+		emit_track_descr(cur_stream, track_uuid, trackid_req(req_id, t),
+				 sfmt("%s %u", t->comm, t->tid), 0);
+		s->exists = true;
+	}
+	return track_uuid;
+}
+
+static void clear_req_tracks(const struct wprof_task *t, u64 req_id)
+{
+	track_state_delete(TSK_REQ, t->pid, req_id);
+	track_state_delete(TSK_REQ_THREAD, t->tid, req_id);
+}
+
 /* EV_REQ_EVENT */
 static int process_req_event(struct worker_state *w, struct wprof_event *e, size_t size)
 {
@@ -1515,19 +1637,16 @@ static int process_req_event(struct worker_state *w, struct wprof_event *e, size
 	struct task_state *st = task_state(w, t);
 
 	u64 req_id = e->req.req_id;
-	u64 parent_uuid = trackid_process_reqs(t);
-	u64 req_track_uuid = trackid_req(req_id, t);
-	u64 track_uuid = trackid_req_thread(req_id, t);
+	const char *req_name = e->req.req_name;
 
-	pb_iid req_name_iid = emit_intern_str(w, e->req.req_name);
+	ensure_process_reqs_track(&e->task);
+	u64 req_track_uuid = ensure_req_track(&e->task, req_id, req_name);
+	u64 track_uuid = ensure_req_thread_track(&e->task, req_id, req_name);
+
+	pb_iid req_name_iid = emit_intern_str(w, req_name);
 
 	switch (e->req.req_event) {
 	case REQ_BEGIN:
-		emit_track_descr(cur_stream, parent_uuid, TRACK_UUID_REQUESTS,
-				 sfmt("%s %u", e->task.pcomm, e->task.pid), 0);
-		emit_track_descr(cur_stream, req_track_uuid, parent_uuid,
-				 sfmt("REQ:%s (%llu)", e->req.req_name, e->req.req_id), 0);
-
 		emit_track_slice_start(e->ts, req_track_uuid,
 				       iid_str(req_name_iid, e->req.req_name),
 				       IID_CAT_REQUEST) {
@@ -1547,9 +1666,6 @@ static int process_req_event(struct worker_state *w, struct wprof_event *e, size
 		st->req_id = e->req.req_id;
 		break;
 	case REQ_SET:
-		emit_track_descr(cur_stream, track_uuid, req_track_uuid,
-				 sfmt("%s %u", e->task.comm, e->task.tid), 0);
-
 		emit_track_slice_start(e->ts, track_uuid,
 				       iid_str(st->name_iid, st->comm),
 				       IID_CAT_REQUEST_THREAD) {
@@ -1614,6 +1730,8 @@ static int process_req_event(struct worker_state *w, struct wprof_event *e, size
 		}
 
 		st->req_id = 0;
+
+		clear_req_tracks(&e->task, req_id);
 		break;
 	default:
 		eprintf("UNHANDLED REQ EVENT %d\n", e->req.req_event);
@@ -1631,19 +1749,11 @@ static int process_req_task_event(struct worker_state *w, struct wprof_event *e,
 	if (!should_trace_task(&e->task))
 		return 0;
 
-	const struct wprof_task *t = &e->task;
+	u64 req_id = e->req.req_id;
+	const char *req_name = e->req.req_name;
 
-	u64 req_id = e->req_task.req_id;
-	u64 parent_uuid = trackid_process_reqs(t);
-	u64 req_track_uuid = trackid_req(req_id, t);
-	u64 track_uuid = trackid_req_thread(req_id, t);
-
-	emit_track_descr(cur_stream, parent_uuid, TRACK_UUID_REQUESTS,
-			 sfmt("%s %u", e->task.pcomm, e->task.pid), 0);
-	emit_track_descr(cur_stream, req_track_uuid, parent_uuid,
-			 sfmt("REQ (%llu)", e->req_task.req_id), 0);
-	emit_track_descr(cur_stream, track_uuid, req_track_uuid,
-			 sfmt("%s %u", e->task.comm, e->task.tid), 0);
+	ensure_process_reqs_track(&e->task);
+	u64 track_uuid = ensure_req_thread_track(&e->task, req_id, req_name);
 
 	switch (e->req_task.req_task_event) {
 	case REQ_TASK_ENQUEUE:
@@ -1689,6 +1799,18 @@ static int process_req_task_event(struct worker_state *w, struct wprof_event *e,
 
 	return 0;
 }
+
+/*
+static int emit_gpu_tracks(int dev_id, int pid, const char *proc_name)
+{
+	emit_track_descr(cur_stream, parent_uuid, TRACK_UUID_REQUESTS,
+			 sfmt("%s %u", e->task.pcomm, e->task.pid), 0);
+	emit_track_descr(cur_stream, req_track_uuid, parent_uuid,
+			 sfmt("REQ (%llu)", e->req_task.req_id), 0);
+	emit_track_descr(cur_stream, track_uuid, req_track_uuid,
+			 sfmt("%s %u", e->task.comm, e->task.tid), 0);
+}
+*/
 
 /* WCK_CUDA_KERNEL */
 static int process_cuda_kernel(struct worker_state *w, struct wprof_event *we, size_t size)
