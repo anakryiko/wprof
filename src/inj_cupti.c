@@ -12,6 +12,7 @@
 
 #include <cupti.h>
 
+#include "strset.h"
 #include "inj.h"
 #include "inj_common.h"
 #include "cuda_data.h"
@@ -22,6 +23,7 @@ static CUptiResult (*cupti_activity_register_callbacks)(CUpti_BuffersCallbackReq
 static CUptiResult (*cupti_activity_flush_all)(uint32_t flag);
 static CUptiResult (*cupti_activity_get_next_record)(uint8_t *buffer, size_t validBufferSizeBytes, CUpti_Activity **record);
 static CUptiResult (*cupti_activity_get_num_dropped_records)(CUcontext context, uint32_t streamId, size_t *dropped);
+static CUptiResult (*cupti_get_timestamp)(u64 *timestamp);
 static CUptiResult (*cupti_get_result_string)(CUptiResult result, const char **str);
 
 static struct {
@@ -34,6 +36,7 @@ static struct {
 	{&cupti_activity_flush_all, "cuptiActivityFlushAll"},
 	{&cupti_activity_get_next_record, "cuptiActivityGetNextRecord"},
 	{&cupti_activity_get_num_dropped_records, "cuptiActivityGetNumDroppedRecords"},
+	{&cupti_get_timestamp, "cuptiGetTimestamp"},
 	{&cupti_get_result_string, "cuptiGetResultString"},
 };
 
@@ -44,6 +47,42 @@ static const char *cupti_errstr(CUptiResult res)
 	cupti_get_result_string(res, &errstr);
 
 	return errstr ?: "???";
+}
+
+static u64 gpu_time_now_ns(void)
+{
+	u64 timestamp;
+	cupti_get_timestamp(&timestamp);
+	return timestamp;
+}
+
+static u64 gpu_to_cpu_time_delta_ns;
+
+static void calibrate_gpu_clocks(void)
+{
+	u64 best_gap = UINT64_MAX;
+	u64 best_gpu_ts = 0;
+	u64 best_cpu_ts = 0;
+
+	for (int i = 0; i < 100; i++) {
+		u64 cpu_ts1 = ktime_now_ns();
+		u64 gpu_ts = gpu_time_now_ns();
+		u64 cpu_ts2 = ktime_now_ns();
+
+		u64 gap = cpu_ts2 - cpu_ts1;
+		if (gap < best_gap) {
+			best_gap = gap;
+			best_gpu_ts = gpu_ts;
+			best_cpu_ts = (cpu_ts1 + cpu_ts2) / 2;
+		}
+	}
+
+	gpu_to_cpu_time_delta_ns = best_cpu_ts - best_gpu_ts;
+}
+
+static u64 gpu_to_cpu_time_ns(u64 gpu_ts)
+{
+	return gpu_ts + gpu_to_cpu_time_delta_ns;
 }
 
 static void CUPTIAPI buffer_requested(uint8_t **buffer, size_t *size, size_t *max_num_records)
@@ -73,11 +112,32 @@ static int handle_cupti_record(CUpti_Activity *rec)
 	switch (rec->kind) {
 	case CUPTI_ACTIVITY_KIND_KERNEL:
 	case CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL: {
-		CUpti_ActivityKernel4 *kernel = (CUpti_ActivityKernel4 *)rec;
+		CUpti_ActivityKernel4 *r = (CUpti_ActivityKernel4 *)rec;
 		vlog("  Kernel: %s (duration: %llu ns)\n",
-		       kernel->name ? kernel->name : "<unknown>",
-		       (unsigned long long)(kernel->end - kernel->start));
-		break;
+			r->name ? r->name : "<unknown>",
+			(unsigned long long)(r->end - r->start));
+
+		struct wcuda_event e = {
+			.sz = sizeof(e),
+			.kind = WCK_CUDA_KERNEL,
+			.ts = gpu_to_cpu_time_ns(r->start),
+			.cuda_kernel = {
+				.end_ts = gpu_to_cpu_time_ns(r->end),
+				.name_off = strset__add_str(cuda_dump_strs, r->name),
+				.corr_id = r->correlationId,
+				.device_id = r->deviceId,
+				.stream_id = r->streamId,
+				.ctx_id = r->contextId,
+				.grid_x = r->gridX,
+				.grid_y = r->gridY,
+				.grid_z = r->gridZ,
+				.block_x = r->blockX,
+				.block_y = r->blockY,
+				.block_z = r->blockZ,
+			},
+		};
+
+		return cuda_dump_event(&e);
 	}
 	case CUPTI_ACTIVITY_KIND_MEMCPY: {
 		CUpti_ActivityMemcpy *memcpy = (CUpti_ActivityMemcpy *)rec;
@@ -213,16 +273,25 @@ static const char *cupti_act_kind_str(CUpti_ActivityKind kind)
 
 void finalize_cupti_activities(void);
 
-/* Initialize CUPTI activity subscription */
+/* Initialize CUPTI activity setup */
 int init_cupti_activities(void)
 {
-	CUptiResult ret;
-	int err = 0;
-
 	if (!cupti_lazy_init()) {
 		elog("Failed to find and resolve CUPTI library!\n");
 		return -ESRCH;
 	}
+
+	calibrate_gpu_clocks();
+
+	vlog("CUPTI setup successfully initialized.\n");
+
+	return 0;
+}
+
+int start_cupti_activities(void)
+{
+	CUptiResult ret;
+	int err = 0;
 
 	vlog("Initializing CUPTI activity subscription...\n");
 
