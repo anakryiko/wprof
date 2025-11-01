@@ -41,7 +41,7 @@ struct wcuda_event {
 
 	union {
 		struct wcuda_cuda_kernel {
-			u64 dur_ns;
+			u64 end_ts;
 			u32 name_off;
 			u32 corr_id;
 			u32 device_id;

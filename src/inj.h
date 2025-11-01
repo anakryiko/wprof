@@ -29,6 +29,7 @@
 
 extern struct inj_setup_ctx *setup_ctx;
 extern struct inj_run_ctx *run_ctx;
+extern struct strset *cuda_dump_strs;
 
 __printf(2, 3)
 void log_printf(int verbosity, const char *fmt, ...);
@@ -46,5 +47,7 @@ static inline u64 ktime_now_ns()
 
 	return timespec_to_ns(&t);
 }
+
+int cuda_dump_event(struct wcuda_event *e);
 
 #endif /* __INJ_H_ */

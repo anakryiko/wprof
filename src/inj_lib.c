@@ -128,6 +128,17 @@ static FILE *cuda_dump;
 #define CUDA_DUMP_MAX_STRS_SZ (1024 * 1024 * 1024)
 struct strset *cuda_dump_strs;
 
+int cuda_dump_event(struct wcuda_event *e)
+{
+	if (fwrite(e, sizeof(*e), 1, cuda_dump) != 1) {
+		int err = -errno;
+		elog("Failed to fwrite() CUDA event: %d\n", err);
+		return err;
+	}
+
+	return 0;
+}
+
 static void init_wcuda_header(struct wcuda_data_hdr *hdr)
 {
 	memset(hdr, 0, sizeof(*hdr));
@@ -263,25 +274,24 @@ static int cuda_dump_finalize(void)
 	return 0;
 }
 
-static int cuda_dump_kernel_event(const char *name, u64 start_ns, u64 end_ns)
+__weak int init_cupti_activities(void)
 {
-	struct wcuda_event e = {
-		.sz = sizeof(e),
-		.kind = WCK_CUDA_KERNEL,
-		.ts = start_ns,
-		.cuda_kernel = {
-			.dur_ns = end_ns - start_ns,
-			.name_off = strset__add_str(cuda_dump_strs, name),
-		},
-	};
+	/*
+	 * Normally this function implementation will be resolved to the one
+	 * in inj_cupti.c, unless CUPTI headers were not available during
+	 * build time.
+	 */
+	elog("CUPTI functionality wasn't built into wprof!\n");
+	return -EOPNOTSUPP;
+}
 
-	if (fwrite(&e, sizeof(e), 1, cuda_dump) != 1) {
-		int err = -errno;
-		elog("Failed to add CUDA dump event: %d\n", err);
-		return err;
-	}
+__weak int start_cupti_activities(void)
+{
+	return -EOPNOTSUPP;
+}
 
-	return 0;
+__weak void finalize_cupti_activities(void)
+{
 }
 
 static int handle_msg(struct inj_msg *msg)
@@ -328,36 +338,20 @@ static int handle_msg(struct inj_msg *msg)
 			return err;
 		}
 
+		if ((err = start_cupti_activities()) < 0) {
+			elog("Failed to start CUDA activity tracing: %d\n:", err);
+			return err;
+		}
+
 		vlog("CUDA session timeout successfully set up with auto-stop %.3lfus from now.\n",
 		     (cuda_sess_end_ts - (double)now) / 1000.0);
 
-		if ((err = cuda_dump_kernel_event("test_cuda_kernel1",
-				cuda_sess_start_ts + (cuda_sess_end_ts - cuda_sess_start_ts) / 10,
-				cuda_sess_start_ts + 2 * (cuda_sess_end_ts - cuda_sess_start_ts) / 10)) < 0) {
-			elog("Failed to add CUDA kernel launch event to dump: %d\n", err);
-			return err;
-		}
 		break;
 	default:
 		elog("Unexpected message (kind %d)!\n", msg->kind);
 		return -EINVAL;
 	}
 	return 0;
-}
-
-__weak int init_cupti_activities(void)
-{
-	/*
-	 * Normally this function implementation will be resolved to the one
-	 * in inj_cupti.c, unless CUPTI headers were not available during
-	 * build time.
-	 */
-	elog("CUPTI functionality wasn't built into wprof!\n");
-	return -EOPNOTSUPP;
-}
-
-__weak void finalize_cupti_activities(void)
-{
 }
 
 static int handle_session_end(void)
@@ -369,16 +363,6 @@ static int handle_session_end(void)
 	/* exit and timer events are racing each other, we finalize just once */
 	if (!cuda_dump)
 		return 0;
-
-	/* XXX: CUPTI flush/unsubscribe */
-
-	if ((err = cuda_dump_kernel_event(
-			"test_cuda_kernel2",
-			cuda_sess_start_ts + 8 * (cuda_sess_end_ts - cuda_sess_start_ts) / 10,
-			cuda_sess_start_ts + 9 * (cuda_sess_end_ts - cuda_sess_start_ts) / 10)) < 0) {
-		elog("Failed to add CUDA kernel launch event to dump: %d\n", err);
-		return err;
-	}
 
 	err = cuda_dump_finalize();
 	if (err) {

@@ -1854,9 +1854,11 @@ static int process_cuda_kernel(struct worker_state *w, struct wprof_event *we, s
 
 	emit_track_slice_start(e->ts, track_uuid, cuda_kern_name, "ONGPU");
 
-	emit_track_slice_end(e->ts + e->cuda_kernel.dur_ns, track_uuid,
+	emit_track_slice_end(e->cuda_kernel.end_ts, track_uuid,
 			     cuda_kern_name, "ONGPU") {
-		emit_kv_float("dur_us", "%.6lf", e->cuda_kernel.dur_ns / 1000.0);
+		emit_kv_int("correlation_id", e->cuda_kernel.corr_id);
+		emit_kv_int("device_id", e->cuda_kernel.device_id);
+		emit_kv_int("stream_id", e->cuda_kernel.stream_id);
 	}
 
 	return 0;
