@@ -143,9 +143,9 @@ struct vma_info *vma_iter_next(struct vma_iter *it)
 		query.size = sizeof(query);
 		query.query_flags = PROCMAP_QUERY_COVERING_OR_NEXT_VMA;
 		if (it->query_flags & VMA_QUERY_FILE_BACKED_VMA)
-			it->query_flags |= PROCMAP_QUERY_FILE_BACKED_VMA;
+			query.query_flags |= PROCMAP_QUERY_FILE_BACKED_VMA;
 		if (it->query_flags & VMA_QUERY_VMA_EXECUTABLE)
-			it->query_flags |= PROCMAP_QUERY_VMA_EXECUTABLE;
+			query.query_flags |= PROCMAP_QUERY_VMA_EXECUTABLE;
 		query.query_addr = it->addr;
 		query.vma_name_addr = (__u64)it->path_buf;
 		query.vma_name_size = sizeof(it->path_buf);
@@ -188,6 +188,7 @@ again:
 		char mode[8];
 		int ret;
 
+		it->path_buf[0] = '\0';
 		ret = fscanf(it->file, "%llx-%llx %s %llx %x:%x %lld%[^\n]",
 			     &it->vma.vma_start, &it->vma.vma_end, mode, &it->vma.vma_offset,
 			     &it->vma.dev_major, &it->vma.dev_minor, &it->vma.inode, it->path_buf);
@@ -200,6 +201,9 @@ again:
 			errno = -err;
 			return NULL;
 		}
+
+		if ((it->query_flags & PROCMAP_QUERY_FILE_BACKED_VMA) && it->vma.inode == 0)
+			goto again;
 
 		it->vma.vma_flags = 0;
 		if (mode[0] == 'r')
