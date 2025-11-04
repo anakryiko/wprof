@@ -461,12 +461,12 @@ static inline u64 trackid_process_reqs(const struct wprof_task *t)
 
 static inline u64 trackid_cuda_proc(int pid)
 {
-	return TRACK_UUID(TK_PROC_REQS, pid);
+	return TRACK_UUID(TK_CUDA_PROC, pid);
 }
 
 static inline u64 trackid_cuda_proc_gpu(int pid, int dev_id)
 {
-	return TRACK_UUID(TK_PROC_REQS, pid | ((u64)dev_id << 32));
+	return TRACK_UUID(TK_CUDA_PROC_GPU, pid | ((u64)dev_id << 32));
 }
 
 static const char *event_kind_str_map[] = {
@@ -1840,25 +1840,73 @@ static u64 ensure_cuda_proc_gpu_track(int pid, int gpu_id)
 }
 
 /* WCK_CUDA_KERNEL */
-static int process_cuda_kernel(struct worker_state *w, struct wprof_event *we, size_t size)
+static int process_cuda_kernel(struct worker_state *w, struct wprof_event *e, size_t size)
 {
 	if (!env.capture_cuda)
 		return 0;
 
-	const struct wcuda_event *e = (struct wcuda_event *)we;
+	const struct wcuda_cuda_kernel *cu = (void *)e + offsetof(struct wprof_event, __wprof_data);
 	const char *strs = (void *)w->dump_hdr + w->dump_hdr->hdr_sz + w->dump_hdr->strs_off;
-	const char *cuda_kern_name = strs + e->cuda_kernel.name_off;
+	const char *cuda_kern_name = strs + cu->name_off;
 
-	ensure_cuda_proc_track(123 /* XXX: USE REAL PID */, "FAKE CUDA PROCESS");
-	u64 track_uuid = ensure_cuda_proc_gpu_track(123, 7);
+	ensure_cuda_proc_track(e->task.pid, e->task.pcomm);
+	u64 track_uuid = ensure_cuda_proc_gpu_track(e->task.pid, cu->device_id);
 
-	emit_track_slice_start(e->ts, track_uuid, cuda_kern_name, "ONGPU");
+	emit_track_slice_start(e->ts, track_uuid, cuda_kern_name, "GPU_KERNEL");
 
-	emit_track_slice_end(e->cuda_kernel.end_ts, track_uuid,
-			     cuda_kern_name, "ONGPU") {
-		emit_kv_int("correlation_id", e->cuda_kernel.corr_id);
-		emit_kv_int("device_id", e->cuda_kernel.device_id);
-		emit_kv_int("stream_id", e->cuda_kernel.stream_id);
+	emit_track_slice_end(cu->end_ts, track_uuid, cuda_kern_name, "GPU_KERNEL") {
+		emit_kv_int("correlation_id", cu->corr_id);
+		emit_kv_int("device_id", cu->device_id);
+		emit_kv_int("stream_id", cu->stream_id);
+		emit_kv_int("block_x", cu->block_x);
+		emit_kv_int("block_y", cu->block_y);
+		emit_kv_int("block_z", cu->block_z);
+		emit_kv_int("grid_x", cu->grid_x);
+		emit_kv_int("grid_y", cu->grid_y);
+		emit_kv_int("grid_z", cu->grid_z);
+	}
+
+	return 0;
+}
+
+static const char* cuda_memcpy_kind_str(uint8_t kind) {
+	static const char* const table[] = {
+		[0] = "???",
+		[1 /*CUPTI_ACTIVITY_MEMCPY_KIND_HTOD*/] = "HtoD",
+		[2 /*CUPTI_ACTIVITY_MEMCPY_KIND_DTOH*/] = "DtoH",
+		[3 /*CUPTI_ACTIVITY_MEMCPY_KIND_HTOA*/] = "HtoA",
+		[4 /*CUPTI_ACTIVITY_MEMCPY_KIND_ATOH*/] = "AtoH",
+		[5 /*CUPTI_ACTIVITY_MEMCPY_KIND_ATOA*/] = "AtoA",
+		[6 /*CUPTI_ACTIVITY_MEMCPY_KIND_ATOD*/] = "AtoD",
+		[7 /*CUPTI_ACTIVITY_MEMCPY_KIND_DTOA*/] = "DtoA",
+		[8 /*CUPTI_ACTIVITY_MEMCPY_KIND_DTOD*/] = "DtoD",
+		[9 /*CUPTI_ACTIVITY_MEMCPY_KIND_HTOH*/] = "HtoH",
+		[10/*CUPTI_ACTIVITY_MEMCPY_KIND_PTOP*/] = "PtoP",
+	};
+	const size_t table_size = sizeof(table) / sizeof(table[0]);
+	return (kind < table_size && table[kind]) ? table[kind] : "???";
+}
+
+/* WCK_CUDA_MEMCPY */
+static int process_cuda_memcpy(struct worker_state *w, struct wprof_event *e, size_t size)
+{
+	if (!env.capture_cuda)
+		return 0;
+
+	const struct wcuda_cuda_memcpy *cu = (void *)e + offsetof(struct wprof_event, __wprof_data);
+
+	ensure_cuda_proc_track(e->task.pid, e->task.pcomm);
+	u64 track_uuid = ensure_cuda_proc_gpu_track(e->task.pid, cu->device_id);
+
+	emit_track_slice_start(e->ts, track_uuid, "memcpy", "GPU_MEMCPY");
+
+	emit_track_slice_end(cu->end_ts, track_uuid, "memcpy", "GPU_MEMCPY") {
+		emit_kv_int("byte_cnt", cu->byte_cnt);
+		emit_kv_str("kind", cuda_memcpy_kind_str(cu->copy_kind));
+
+		emit_kv_int("correlation_id", cu->corr_id);
+		emit_kv_int("device_id", cu->device_id);
+		emit_kv_int("stream_id", cu->stream_id);
 	}
 
 	return 0;
@@ -1885,6 +1933,7 @@ static event_fn ev_fns[] = {
 	[EV_REQ_TASK_EVENT] = process_req_task_event,
 
 	[WCK_CUDA_KERNEL] = process_cuda_kernel,
+	[WCK_CUDA_MEMCPY] = process_cuda_memcpy,
 };
 
 static int process_event(struct worker_state *w, struct wprof_event *e, size_t size)

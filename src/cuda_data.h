@@ -30,6 +30,7 @@ enum wcuda_event_kind {
 	WCK_INVALID = 0,
 	/* Currently this needs to be non-overlapping with enum event_kind */
 	WCK_CUDA_KERNEL = 50,
+	WCK_CUDA_MEMCPY = 51,
 };
 
 /* intentionally kept compatible in the first 8 bytes with wprof_event */
@@ -39,6 +40,7 @@ struct wcuda_event {
 	enum wcuda_event_kind kind;
 	u64 ts;
 
+	char __wcuda_data[0]; /* marker field */
 	union {
 		struct wcuda_cuda_kernel {
 			u64 end_ts;
@@ -50,6 +52,17 @@ struct wcuda_event {
 			u32 grid_x, grid_y, grid_z;
 			u32 block_x, block_y, block_z;
 		} cuda_kernel;
+		struct wcuda_cuda_memcpy {
+			u64 end_ts;
+			u64 byte_cnt;
+			u32 corr_id;
+			u32 device_id;
+			u32 ctx_id;
+			u32 stream_id;
+			u8 copy_kind;
+			u8 src_kind;
+			u8 dst_kind;
+		} cuda_memcpy;
 	};
 };
 

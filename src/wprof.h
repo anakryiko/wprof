@@ -165,6 +165,8 @@ struct wprof_event {
 	u32 numa_node;
 	struct wprof_task task;
 
+	char __wprof_data[0]; /* marker field */
+
 	union {
 		struct wprof_switch {
 			struct wprof_task next;

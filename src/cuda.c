@@ -133,7 +133,13 @@ int cuda_trace_activate(uint64_t sess_start_ts, uint64_t sess_end_ts)
 				info->pid, info->name, err);
 			continue;
 		}
+	}
 
+	for (int i = 0; i < env.tracee_cnt; i++) {
+		struct tracee_state *tracee = env.tracees[i];
+		const struct tracee_info *info = tracee_info(tracee);
+
+		vprintf("Tracee #%d: PID %d NAME %s.\n", i, info->pid, info->name);
 	}
 	return 0;
 }

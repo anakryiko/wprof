@@ -163,12 +163,14 @@ static int init_wprof_data(FILE *dump)
 	return 0;
 }
 
-static int wcuda_remap_strs(struct wcuda_event *e, const char *strs, struct strset *strs_new)
+static int wcuda_remap_strs(struct wcuda_event *e, enum wcuda_event_kind kind,
+			    const char *strs, struct strset *strs_new)
 {
-	switch (e->kind) {
+	switch (kind) {
+	case WCK_CUDA_MEMCPY:
+		break;
 	case WCK_CUDA_KERNEL:
 		e->cuda_kernel.name_off = strset__add_str(strs_new, strs + e->cuda_kernel.name_off);
-	;
 		break;
 	case WCK_INVALID:
 		eprintf("Unrecognized wprof CUDA event kind %d!\n", e->kind);
@@ -259,8 +261,8 @@ static int merge_wprof_data(int workdir_fd, struct worker_state *workers)
 		int dump_fd = openat(workdir_fd, path, O_RDWR | O_CLOEXEC);
 		if (dump_fd < 0) {
 			err = -errno;
-			eprintf("Failed to open CUDA data dump for tracee PID %d (%s) at '%s': %d\n",
-				info->pid, info->name, path, err);
+			eprintf("Failed to open CUDA data dump for tracee #%d PID %d (%s) at '%s': %d\n",
+				i, info->pid, info->name, path, err);
 			return err;
 		}
 
@@ -314,7 +316,7 @@ static int merge_wprof_data(int workdir_fd, struct worker_state *workers)
 		if (widx < 0) /* we are done */
 			break;
 
-		char data_buf[sizeof(size_t) + sizeof(struct wcuda_event)];
+		char data_buf[sizeof(size_t) + max(sizeof(struct wprof_event), sizeof(struct wcuda_event))];
 		const void *data;
 		size_t data_sz;
 
@@ -331,17 +333,27 @@ static int merge_wprof_data(int workdir_fd, struct worker_state *workers)
 		} else {
 			int cidx = widx - env.ringbuf_cnt;
 			struct wcuda_event_record *r = wcuda_recs[cidx];
+			const struct tracee_info *info = tracee_info(env.tracees[cidx]);
 
-			event_cnt += 1;
-			events_sz += r->e->sz;
+			const size_t wcuda_data_off = offsetof(struct wcuda_event, __wcuda_data);
+			const size_t wprof_data_off = offsetof(struct wprof_event, __wprof_data);
 
 			/* prepare wcuda event with 8 byte length prefix */
-			data_sz = r->e->sz;
+			data_sz = r->e->sz + wprof_data_off - wcuda_data_off;
 			memcpy(data_buf, &data_sz, sizeof(data_sz));
-			struct wcuda_event *e = (void *)data_buf + sizeof(size_t);
-			memcpy(e, r->e, r->e->sz);
 
-			err = wcuda_remap_strs(e, wcudas[cidx].strs, wcuda_strs);
+			event_cnt += 1;
+			events_sz += data_sz;
+
+			/*
+			 * Copy CUDA-specific parts over wprof_event layout,
+			 * skipping common fields and task-identification data
+			 */
+
+			void *wcuda_payload = (void *)data_buf + sizeof(size_t) + wprof_data_off;
+			memcpy(wcuda_payload, (void *)r->e + wcuda_data_off, r->e->sz - wcuda_data_off);
+			struct wcuda_event *e = wcuda_payload - wcuda_data_off;
+			err = wcuda_remap_strs(e, r->e->kind, wcudas[cidx].strs, wcuda_strs);
 			if (err) {
 				struct tracee_state *tracee = env.tracees[cidx];
 				const struct tracee_info *info = tracee_info(tracee);
@@ -350,8 +362,22 @@ static int merge_wprof_data(int workdir_fd, struct worker_state *workers)
 				return err;
 			}
 
+			struct wprof_event *w = (void *)data_buf + sizeof(size_t);
+			w->sz = data_sz;
+			w->flags = 0;
+			w->kind = (int)r->e->kind;
+			w->ts = r->e->ts;
+
+			w->cpu = 0;
+			w->numa_node = 0;
+			w->task.flags = 0;
+			w->task.tid = 0;
+			w->task.comm[0] = '\0';
+			w->task.pid = info->pid;
+			snprintf(w->task.pcomm, sizeof(w->task.pcomm), "%s", info->name);
+
 			data = data_buf;
-			data_sz = r->e->sz + sizeof(size_t);
+			data_sz = r->e->sz + sizeof(size_t) + wprof_data_off - wcuda_data_off;
 
 			wcuda_recs[cidx] = wcuda_event_iter_next(&wcudas[cidx].iter);
 		}
