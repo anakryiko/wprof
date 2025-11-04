@@ -152,7 +152,6 @@ void cuda_trace_deactivate(void)
 			eprintf("Ptrace retraction for PID %d (%s) returned error: %d\n",
 				info->pid, info->name, err);
 		}
-		tracee_free(tracee);
 	}
 
 	env.tracees_deactivated = true;
