@@ -370,6 +370,8 @@ static int ptrace_intercept(const struct tracee_state *tracee, struct user_regs_
 
 	/* XXX: arm64 will need something else */
 	regs->rip -= 2; /* adjust for syscall replay, syscall instruction is 2 bytes */
+	regs->rax = regs->orig_rax;
+	regs->orig_rax = -1;
 	return 0;
 
 err_detach:
