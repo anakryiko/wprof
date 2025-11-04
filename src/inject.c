@@ -111,12 +111,14 @@ void __attribute__((naked)) inj_call(void)
 #endif
 }
 
-static int find_libc(const struct tracee_state *tracee, long *out_start_addr, long *out_end_addr, char *path_buf, size_t path_buf_sz)
+static int find_libc(const struct tracee_state *tracee,
+		     long *out_start_addr, long *out_end_addr, long *out_offset,
+		     char *path_buf, size_t path_buf_sz)
 {
 	long base_addr = 0;
 	struct vma_info *vma;
 
-	wprof_for_each(vma, vma, tracee->pid, VMA_QUERY_FILE_BACKED_VMA) {
+	wprof_for_each(vma, vma, tracee->pid, VMA_QUERY_VMA_EXECUTABLE | VMA_QUERY_FILE_BACKED_VMA) {
 		if (vma->vma_name[0] != '/')
 			continue; /* special file, ignore */
 
@@ -132,6 +134,8 @@ static int find_libc(const struct tracee_state *tracee, long *out_start_addr, lo
 				*out_start_addr = vma->vma_start;
 			if (out_end_addr)
 				*out_end_addr = vma->vma_end;
+			if (out_offset)
+				*out_offset = vma->vma_offset;
 			if (path_buf)
 				snprintf(path_buf, path_buf_sz, "%s", vma->vma_name);
 
@@ -471,8 +475,8 @@ struct tracee_state *tracee_inject(int pid)
 	 * Find dlopen(), dlclose(), dlsym() addresses (on tracee side)
 	 */
 	char libc_path[PATH_MAX];
-	long libc_start = 0, libc_end = 0;
-	err = find_libc(tracee, &libc_start, &libc_end, libc_path, sizeof(libc_path));
+	long libc_start = 0, libc_end = 0, libc_fileoff = 0;
+	err = find_libc(tracee, &libc_start, &libc_end, &libc_fileoff, libc_path, sizeof(libc_path));
 	if (err) {
 		elog("Failed to find libc address: %d\n", -errno);
 		goto cleanup;
@@ -491,12 +495,12 @@ struct tracee_state *tracee_inject(int pid)
 	long dlclose_tracee_off = sym_addrs[1];
 	long dlsym_tracee_off = sym_addrs[2];
 
-	tracee->dlopen_addr = libc_start + dlopen_tracee_off;
-	tracee->dlclose_addr = libc_start + dlclose_tracee_off;
-	tracee->dlsym_addr = libc_start + dlsym_tracee_off;
+	tracee->dlopen_addr = libc_start - libc_fileoff + dlopen_tracee_off;
+	tracee->dlclose_addr = libc_start - libc_fileoff + dlclose_tracee_off;
+	tracee->dlsym_addr = libc_start - libc_fileoff + dlsym_tracee_off;
 
-	dlog("Remote libc found at '%s' base 0x%lx (dlopen off %lx -> %lx, dlclose off %lx -> %lx, dlsym off %lx -> %lx)\n",
-	     libc_path, libc_start,
+	dlog("Remote libc found at '%s' base 0x%lx fileoff 0x%lx (dlopen off %lx -> %lx, dlclose off %lx -> %lx, dlsym off %lx -> %lx)\n",
+	     libc_path, libc_start, libc_fileoff,
 	     dlopen_tracee_off, tracee->dlopen_addr,
 	     dlclose_tracee_off, tracee->dlclose_addr,
 	     dlsym_tracee_off, tracee->dlsym_addr);
