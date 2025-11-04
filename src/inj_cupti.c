@@ -207,28 +207,6 @@ static void CUPTIAPI buffer_completed(CUcontext ctx, uint32_t stream_id, uint8_t
 static bool cupti_ok = false;
 static void *cupti_handle = NULL;
 
-static void *dyn_resolve_sym(const char *sym_name)
-{
-	void *sym;
-
-	if (cupti_handle) {
-		sym = dlsym(cupti_handle, sym_name);
-		if (sym) {
-			vlog("Found '%s' at %p in shared lib.\n", sym_name, sym);
-			return sym;
-		}
-	}
-
-	sym = dlsym(RTLD_DEFAULT, sym_name);
-	if (sym) {
-		vlog("Found '%s' at %p in global symbols table.\n", sym_name, sym);
-		return sym;
-	}
-
-	elog("Failed to resolve '%s()'!\n", sym_name);
-	return NULL;
-}
-
 static bool cupti_lazy_init(void)
 {
 	cupti_handle = dlopen("libcupti.so", RTLD_NOLOAD | RTLD_LAZY);
@@ -244,7 +222,7 @@ static bool cupti_lazy_init(void)
 	for (int i = 0; i < ARRAY_SIZE(cupti_resolve_syms); i++) {
 		const char *sym_name = cupti_resolve_syms[i].sym_name;
 		void **sym_pptr = (void **)cupti_resolve_syms[i].sym_pptr;
-		*sym_pptr = dyn_resolve_sym(sym_name);
+		*sym_pptr = dyn_resolve_sym(sym_name, cupti_handle);
 		if (!*sym_pptr)
 			return false;
 	}

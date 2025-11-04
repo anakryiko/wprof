@@ -34,6 +34,8 @@ extern struct strset *cuda_dump_strs;
 __printf(2, 3)
 void log_printf(int verbosity, const char *fmt, ...);
 
+void *dyn_resolve_sym(const char *sym_name, void *dlopen_handle);
+
 static inline uint64_t timespec_to_ns(struct timespec *ts)
 {
 	return ts->tv_sec * 1000000000ULL + ts->tv_nsec;

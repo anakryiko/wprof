@@ -74,8 +74,37 @@ void log_printf(int verbosity, const char *fmt, ...)
 	errno = old_errno;
 }
 
+void *dyn_resolve_sym(const char *sym_name, void *dlopen_handle)
+{
+	void *sym;
+
+	if (dlopen_handle) {
+		sym = dlsym(dlopen_handle, sym_name);
+		if (sym) {
+			vlog("Found '%s' at %p in shared lib.\n", sym_name, sym);
+			return sym;
+		}
+	}
+
+	sym = dlsym(RTLD_DEFAULT, sym_name);
+	if (sym) {
+		vlog("Found '%s' at %p in global symbols table.\n", sym_name, sym);
+		return sym;
+	}
+
+	elog("Failed to resolve '%s()'!\n", sym_name);
+	return NULL;
+}
+
 #define WORKER_STACK_SIZE (256 * 1024)
 #define UDS_MAX_MSG_LEN 1024
+
+typedef unsigned long int pthread_t;
+
+static int (*pthread_create)(pthread_t *thread, const void *attr, typeof(void *(void *)) *start_routine, void *arg);
+static int (*pthread_join)(pthread_t thread, void **retval);
+static bool use_pthread;
+static pthread_t worker_pthread;
 
 static pid_t inj_tid = -1;
 static void *stack = NULL;
@@ -567,6 +596,11 @@ cleanup:
 	return err;
 }
 
+static void *worker_pthread_func(void *arg)
+{
+	return (void *)(long)worker_thread_func(arg);
+}
+
 static int start_worker_thread(void)
 {
 	int err;
@@ -581,32 +615,49 @@ static int start_worker_thread(void)
 		goto err_out;
 	}
 
-	/* Allocate stack for the worker thread */
-	stack = mmap(NULL, WORKER_STACK_SIZE, PROT_READ | PROT_WRITE,
-		     MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
-	if (stack == MAP_FAILED) {
-		err = -errno;
-		elog("Failed to allocate worker stack: %d\n", err);
-		goto err_out;
-	}
+	pthread_create = dyn_resolve_sym("pthread_create", NULL);
+	pthread_join = dyn_resolve_sym("pthread_join", NULL);
+	use_pthread = pthread_create && pthread_join;
 
-	/* Now finally create a thread */
-	inj_tid = clone(worker_thread_func, stack + WORKER_STACK_SIZE /* top-of-stack */,
-			CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_SYSVSEM |
-			CLONE_THREAD |
-			CLONE_CHILD_SETTID | CLONE_CHILD_CLEARTID /* ! IMPORTANT ! */,
-			NULL, /* arg */
-			NULL, /* parent_tid */
-			NULL, /* tls */
-			&worker_tid); /* child_tid for SETTID/CLEARTID */
-	if (inj_tid < 0) {
-		err = -errno;
-		elog("Failed to clone() worker thread: %d\n", err);
-		goto err_out;
-	}
+	vlog("Using %s to manage worker thread!\n", use_pthread ? "libpthread" : "clone() syscall");
 
-	log("Worker thread created successfully (TID %d, PID %d)\n", inj_tid, getpid());
-	return 0;
+	if (use_pthread) {
+		err = pthread_create(&worker_pthread, NULL, worker_pthread_func, NULL);
+		if (err) {
+			elog("Failed to create worker thread using libpthread: %d (errno %d)!\n", err, errno);
+			goto err_out;
+		}
+
+		log("Worker thread created successfully using libpthread (PID %d)\n", getpid());
+		return 0;
+	} else {
+		/* Allocate stack for the worker thread */
+		stack = mmap(NULL, WORKER_STACK_SIZE, PROT_READ | PROT_WRITE,
+			     MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
+		if (stack == MAP_FAILED) {
+			err = -errno;
+			elog("Failed to allocate worker stack: %d\n", err);
+			goto err_out;
+		}
+
+		/* Now finally create a thread */
+		inj_tid = clone(worker_thread_func, stack + WORKER_STACK_SIZE /* top-of-stack */,
+				CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_SYSVSEM |
+				CLONE_THREAD |
+				CLONE_CHILD_SETTID | CLONE_CHILD_CLEARTID /* ! IMPORTANT ! */,
+				NULL, /* arg */
+				NULL, /* parent_tid */
+				NULL, /* tls */
+				&worker_tid); /* child_tid for SETTID/CLEARTID */
+		if (inj_tid < 0) {
+			err = -errno;
+			elog("Failed to clone() worker thread: %d\n", err);
+			goto err_out;
+		}
+
+		log("Worker thread created successfully (TID %d, PID %d)\n", inj_tid, getpid());
+		return 0;
+	}
 err_out:
 	if (stack && stack != MAP_FAILED)
 		(void)munmap(stack, WORKER_STACK_SIZE);
@@ -620,7 +671,7 @@ static void stop_worker_thread(void)
 	int err = 0, ret;
 	long long unsigned tmp;
 
-	if (inj_tid < 0) {
+	if ((use_pthread && worker_pthread == 0) || (!use_pthread && inj_tid < 0)) {
 		elog("No worker thread to stop...\n");
 		return;
 	}
@@ -642,18 +693,28 @@ static void stop_worker_thread(void)
 
 	vlog("Waiting for worker thread to exit...\n");
 
-	/* wait for worker thread to exit fully */
-	while (*(volatile pid_t *)&worker_tid == inj_tid)
-		syscall(SYS_futex, &worker_tid, FUTEX_WAIT, inj_tid, NULL, NULL, 0);
+	if (use_pthread) {
+		void *worker_retval;
 
-	/* now it's safe to munmap() thread's stack */
-	if (stack) {
-		(void)munmap(stack, WORKER_STACK_SIZE);
-		stack = NULL;
+		ret = pthread_join(worker_pthread, &worker_retval);
+		if (ret)
+			elog("pthread_join() returned error: %d (errno %d)\n", ret, errno);
+
+	} else {
+		/* wait for worker thread to exit fully */
+		while (*(volatile pid_t *)&worker_tid == inj_tid)
+			syscall(SYS_futex, &worker_tid, FUTEX_WAIT, inj_tid, NULL, NULL, 0);
+
+		/* now it's safe to munmap() thread's stack */
+		if (stack) {
+			(void)munmap(stack, WORKER_STACK_SIZE);
+			stack = NULL;
+		}
 	}
 
 	vlog("Worker thread teardown is complete.\n");
 	inj_tid = -1;
+	worker_pthread = 0;
 }
 
 __attribute__((constructor))
