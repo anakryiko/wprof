@@ -285,8 +285,19 @@ static int __ptrace_wait(const struct tracee_state *tracee, int signal, bool ptr
 			return 0;
 		}
 
-		dlog("PASS-THROUGH SIGNAL %d (%s) (status %x) BACK TO PID %d\n",
-		     WSTOPSIG(status), sig_name(WSTOPSIG(status)), status, tracee->pid);
+		{
+			struct user_regs_struct regs;
+			siginfo_t siginfo;
+
+			ptrace_get_regs(tracee, &regs);
+			ptrace(PTRACE_GETSIGINFO, tracee->pid, 0, &siginfo);
+
+			dlog("PASS-THROUGH SIGNAL %d (%s) (status %x, RIP %llx, addr %p, code %d) BACK TO PID %d\n",
+			     WSTOPSIG(status), sig_name(WSTOPSIG(status)), status,
+			     regs.rip, siginfo.si_addr, siginfo.si_code,
+			     tracee->pid);
+		}
+
 pass_through:
 		err = ptrace_op(tracee, PTRACE_CONT, WSTOPSIG(status));
 		if (err)
