@@ -215,7 +215,9 @@ again:
 		if (mode[3] == 's')
 			it->vma.vma_flags |= PROCMAP_QUERY_VMA_SHARED;
 
-		int perm_query = it->query_flags & PROCMAP_QUERY_VMA_FLAGS;
+		int perm_query = 0;
+		if (it->query_flags & VMA_QUERY_VMA_EXECUTABLE)
+			perm_query |= PROCMAP_QUERY_VMA_EXECUTABLE;
 		if (perm_query && (it->vma.vma_flags & perm_query) != perm_query)
 			goto again;
 
