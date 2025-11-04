@@ -87,7 +87,7 @@ static u64 gpu_to_cpu_time_ns(u64 gpu_ts)
 
 static void CUPTIAPI buffer_requested(uint8_t **buffer, size_t *size, size_t *max_num_records)
 {
-	const size_t cupti_buf_sz = 512 * 1024;
+	const size_t cupti_buf_sz = 2 * 1024 * 1024;
 	uint8_t *buf = (uint8_t *)malloc(cupti_buf_sz);
 
 	if (!buf) {
@@ -113,9 +113,11 @@ static int handle_cupti_record(CUpti_Activity *rec)
 	case CUPTI_ACTIVITY_KIND_KERNEL:
 	case CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL: {
 		CUpti_ActivityKernel4 *r = (CUpti_ActivityKernel4 *)rec;
+		/*
 		vlog("  Kernel: %s (duration: %llu ns)\n",
 			r->name ? r->name : "<unknown>",
 			(unsigned long long)(r->end - r->start));
+		*/
 
 		struct wcuda_event e = {
 			.sz = sizeof(e),
@@ -136,15 +138,32 @@ static int handle_cupti_record(CUpti_Activity *rec)
 				.block_z = r->blockZ,
 			},
 		};
-
 		return cuda_dump_event(&e);
 	}
 	case CUPTI_ACTIVITY_KIND_MEMCPY: {
-		CUpti_ActivityMemcpy *memcpy = (CUpti_ActivityMemcpy *)rec;
+		CUpti_ActivityMemcpy *r = (CUpti_ActivityMemcpy *)rec;
+		/*
 		vlog("  Memcpy: %llu bytes (duration: %llu ns)\n",
 		       (unsigned long long)memcpy->bytes,
 		       (unsigned long long)(memcpy->end - memcpy->start));
-		break;
+		*/
+		struct wcuda_event e = {
+			.sz = sizeof(e),
+			.kind = WCK_CUDA_MEMCPY,
+			.ts = gpu_to_cpu_time_ns(r->start),
+			.cuda_memcpy = {
+				.end_ts = gpu_to_cpu_time_ns(r->end),
+				.byte_cnt = r->bytes,
+				.copy_kind = r->copyKind,
+				.src_kind = r->srcKind,
+				.dst_kind = r->dstKind,
+				.corr_id = r->correlationId,
+				.device_id = r->deviceId,
+				.stream_id = r->streamId,
+				.ctx_id = r->contextId,
+			},
+		};
+		return cuda_dump_event(&e);
 	}
 	default:
 		vlog("  Activity kind: %d\n", rec->kind);
