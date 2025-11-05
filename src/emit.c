@@ -56,6 +56,7 @@ enum track_kind {
 
 	TK_CUDA_PROC = 7, 	/* CUDA-using process track (by PID) */
 	TK_CUDA_PROC_GPU = 8, 	/* CUDA-using process's GPU track (by PID + GPU ID) */
+	TK_CUDA_PROC_STREAM = 9,/* CUDA-using process's GPU stream track (by PID + CUDA stream ID) */
 
 	TK_MULT = 10,
 };
@@ -464,9 +465,14 @@ static inline u64 trackid_cuda_proc(int pid)
 	return TRACK_UUID(TK_CUDA_PROC, pid);
 }
 
-static inline u64 trackid_cuda_proc_gpu(int pid, int dev_id)
+static inline u64 trackid_cuda_proc_gpu(int pid, u32 dev_id)
 {
 	return TRACK_UUID(TK_CUDA_PROC_GPU, pid | ((u64)dev_id << 32));
+}
+
+static inline u64 trackid_cuda_proc_stream(int pid, u32 stream_id)
+{
+	return TRACK_UUID(TK_CUDA_PROC_STREAM, pid | ((u64)stream_id << 32));
 }
 
 static const char *event_kind_str_map[] = {
@@ -1820,20 +1826,33 @@ static u64 ensure_cuda_proc_track(int pid, const char *proc_name)
 
 	if (!s->exists) {
 		emit_track_descr(cur_stream, track_uuid, TRACK_UUID_CUDA,
-				 sfmt("%s %u (CUDA)", proc_name, pid), 0);
+				 sfmt("%s %d (CUDA)", proc_name, pid), 0);
 		s->exists = true;
 	}
 	return track_uuid;
 }
 
-static u64 ensure_cuda_proc_gpu_track(int pid, int gpu_id)
+static u64 ensure_cuda_proc_gpu_track(int pid, u32 gpu_id)
 {
 	struct track_state *s = track_state_get_or_add(TK_CUDA_PROC_GPU, pid, gpu_id);
 	u64 track_uuid = trackid_cuda_proc_gpu(pid, gpu_id);
 
 	if (!s->exists) {
 		emit_track_descr(cur_stream, track_uuid, trackid_cuda_proc(pid),
-				 sfmt("GPU #%d", gpu_id), 0);
+				 sfmt("GPU #%u", gpu_id), 0);
+		s->exists = true;
+	}
+	return track_uuid;
+}
+
+static u64 ensure_cuda_proc_stream_track(int pid, u32 gpu_id, u32 stream_id)
+{
+	struct track_state *s = track_state_get_or_add(TK_CUDA_PROC_STREAM, pid, stream_id);
+	u64 track_uuid = trackid_cuda_proc_stream(pid, stream_id);
+
+	if (!s->exists) {
+		emit_track_descr(cur_stream, track_uuid, trackid_cuda_proc_gpu(pid, gpu_id),
+				 sfmt("Stream #%u", stream_id), 0);
 		s->exists = true;
 	}
 	return track_uuid;
@@ -1850,7 +1869,8 @@ static int process_cuda_kernel(struct worker_state *w, struct wprof_event *e, si
 	const char *cuda_kern_name = strs + cu->name_off;
 
 	ensure_cuda_proc_track(e->task.pid, e->task.pcomm);
-	u64 track_uuid = ensure_cuda_proc_gpu_track(e->task.pid, cu->device_id);
+	ensure_cuda_proc_gpu_track(e->task.pid, cu->device_id);
+	u64 track_uuid = ensure_cuda_proc_stream_track(e->task.pid, cu->device_id, cu->stream_id);
 
 	emit_track_slice_start(e->ts, track_uuid, cuda_kern_name, "GPU_KERNEL");
 
@@ -1896,7 +1916,8 @@ static int process_cuda_memcpy(struct worker_state *w, struct wprof_event *e, si
 	const struct wcuda_cuda_memcpy *cu = (void *)e + offsetof(struct wprof_event, __wprof_data);
 
 	ensure_cuda_proc_track(e->task.pid, e->task.pcomm);
-	u64 track_uuid = ensure_cuda_proc_gpu_track(e->task.pid, cu->device_id);
+	ensure_cuda_proc_gpu_track(e->task.pid, cu->device_id);
+	u64 track_uuid = ensure_cuda_proc_stream_track(e->task.pid, cu->device_id, cu->stream_id);
 
 	emit_track_slice_start(e->ts, track_uuid, "memcpy", "GPU_MEMCPY");
 
