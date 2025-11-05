@@ -13,9 +13,6 @@
 #define LIBWPROFINJ_SETUP_SYM __libwprof_inj_setup
 #define LIBWPROFINJ_VERSION 1
 
-#define LIBWPROFINJ_LOG_PATH_FMT "wprofinj-log.%d.%d.log"
-#define LIBWPROFINJ_DUMP_PATH_FMT "wprofinj-cuda.%d.%d.data"
-
 struct inj_setup_ctx {
 	/* Should be set to LIBWPROFINJ_VERSION */
 	int version;

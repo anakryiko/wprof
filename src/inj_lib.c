@@ -113,7 +113,7 @@ static int exit_fd = -1;
 static pid_t worker_tid; /* for clone() and futex() only */
 static int epoll_fd = -1;
 static int timer_fd = -1;
-static int workdir_fd = -1;
+static int log_fd = -1;
 
 static __u64 cuda_sess_start_ts, cuda_sess_end_ts;
 
@@ -205,27 +205,16 @@ static int init_wcuda_data(FILE *dump)
 	return 0;
 }
 
-static int cuda_dump_setup(void)
+static int cuda_dump_setup(int dump_fd)
 {
-	char dump_path[128];
-	int err = 0, dump_fd = -1;
-
-	snprintf(dump_path, sizeof(dump_path), LIBWPROFINJ_DUMP_PATH_FMT,
-		 setup_ctx->parent_pid, getpid());
+	int err = 0;
 
 	cuda_dump_strs = strset__new(CUDA_DUMP_MAX_STRS_SZ, "", 1);
-
-	dump_fd = openat(workdir_fd, dump_path, O_RDWR | O_CREAT | O_CLOEXEC, 0644);
-	if (dump_fd < 0) {
-		err = -errno;
-		elog("Failed to create CUDA data dump file '%s': %d\n", dump_path, err);
-		goto cleanup;
-	}
 
 	cuda_dump = fdopen(dump_fd, "w");
 	if (!cuda_dump) {
 		err = -errno;
-		elog("Failed to create FILE wrapper around dump FD for '%s': %d\n", dump_path, err);
+		elog("Failed to create FILE wrapper around dump FD %d: %d\n", dump_fd, err);
 		goto cleanup;
 	}
 	setvbuf(cuda_dump, NULL, _IOFBF, CUDA_DUMP_BUF_SZ);
@@ -324,13 +313,19 @@ __weak void finalize_cupti_activities(void)
 {
 }
 
-static int handle_msg(struct inj_msg *msg)
+static int handle_msg(struct inj_msg *msg, int *fds, int fd_cnt)
 {
 	int err = 0;
 
 	switch (msg->kind) {
-	case INJ_MSG_CUDA_SESSION:
+	case INJ_MSG_CUDA_SESSION: {
 		__u64 now = ktime_now_ns();
+
+		if (fd_cnt != 1) {
+			err = -EPROTO;
+			elog("Received CUDA_SESSION command, but not log_fd!\n");
+			return err;
+		}
 
 		cuda_sess_start_ts = msg->cuda_session.session_start_ns;
 		cuda_sess_end_ts = msg->cuda_session.session_end_ns;
@@ -363,7 +358,8 @@ static int handle_msg(struct inj_msg *msg)
 			return err;
 		}
 
-		if ((err = cuda_dump_setup()) < 0) {
+		int dump_fd = fds[0];
+		if ((err = cuda_dump_setup(dump_fd)) < 0) {
 			elog("Failed to setup CUDA data dump: %d\n:", err);
 			return err;
 		}
@@ -377,6 +373,7 @@ static int handle_msg(struct inj_msg *msg)
 		     (cuda_sess_end_ts - (double)now) / 1000.0);
 
 		break;
+	}
 	default:
 		elog("Unexpected message (kind %d)!\n", msg->kind);
 		return -EINVAL;
@@ -412,11 +409,12 @@ static int worker_thread_func(void *arg)
 	int ret, err = 0;
 	int run_ctx_memfd = -1;
 
-	vlog("Worker thread started (TID %d, PID %d)\n", gettid(), getpid());
+	vlog("Worker thread started (TID %d, PID %d, REAL PID %d)\n",
+	     gettid(), getpid(), setup_ctx->tracee_pid);
 
-	int fds[MAX_UDS_FD_CNT] = { [0 ... MAX_UDS_FD_CNT - 1] = -1};
+	int *fds = NULL, fd_cnt = 0;
 	struct iovec io = { .iov_base = msg_buf, .iov_len = sizeof(msg_buf) };
-	char buf[CMSG_SPACE(sizeof(fds))];
+	char buf[CMSG_SPACE(sizeof(int) * MAX_UDS_FD_CNT)];
 	struct msghdr msg = {
 		.msg_iov = &io,
 		.msg_iovlen = 1,
@@ -456,9 +454,9 @@ static int worker_thread_func(void *arg)
 	}
 
 	struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
-	memcpy(fds, CMSG_DATA(cmsg), sizeof(*fds) * exp_fd_cnt);
+	fds = (int *)CMSG_DATA(cmsg);
 	run_ctx_memfd = fds[0];
-	workdir_fd = fds[1];
+	log_fd = fds[1];
 
 	/* fd[0] is memfd for run context */
 	run_ctx = mmap(NULL, sizeof(struct inj_run_ctx), PROT_READ | PROT_WRITE, MAP_SHARED, run_ctx_memfd, 0);
@@ -469,21 +467,11 @@ static int worker_thread_func(void *arg)
 	}
 	zclose(run_ctx_memfd);
 
-	/* fd[1] is directory FD for working dir */
-	char log_path[64];
-	snprintf(log_path, sizeof(log_path), LIBWPROFINJ_LOG_PATH_FMT,
-		 setup_ctx->parent_pid, getpid());
-	int log_fd = openat(workdir_fd, log_path, O_WRONLY | O_CREAT | O_CLOEXEC, 0644);
-	if (log_fd < 0) {
-		err = -errno;
-		elog("Failed to create log file '%s': %d\n", log_path, err);
-		goto cleanup;
-	}
-
+	/* fd[1] is log file FD */
 	filelog = fdopen(log_fd, "w");
 	if (!filelog) {
 		err = -errno;
-		elog("Failed to create FILE wrapper around log file '%s': %d\n", log_path, err);
+		elog("Failed to create FILE wrapper around log FD %d: %d\n", log_fd, err);
 		goto cleanup;
 	}
 	setlinebuf(filelog); /* line-buffered FILE for logging */
@@ -535,9 +523,34 @@ event_loop:
 				goto cleanup;
 			}
 
+			fds = NULL;
+			fd_cnt = 0;
+			if (msg.msg_controllen > 0) {
+				struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+
+				if (cmsg->cmsg_level != SOL_SOCKET ||
+				    cmsg->cmsg_type != SCM_RIGHTS) {
+					err = -EPROTO;
+					elog("UDS recvmsg() returned unexpected cmsghdr type, exiting!\n");
+					goto cleanup;
+				}
+
+				int fds_sz = cmsg->cmsg_len - CMSG_LEN(0);
+				if (fds_sz > sizeof(fds) || fds_sz % sizeof(int) != 0) {
+					err = -EPROTO;
+					elog("UDS recvmsg() returned unexpected cmsghdr FDs payload (size %d), exiting!\n", fds_sz);
+					goto cleanup;
+				}
+
+				fds = (int *)CMSG_DATA(cmsg);
+				fd_cnt = fds_sz / sizeof(int);
+			}
+
 			struct inj_msg *m = (void *)msg_buf;
-			err = handle_msg(m);
+			err = handle_msg(m, fds, fd_cnt);
 			if (err) {
+				for (int i = 0; i < fd_cnt; i++)
+					close(fds[i]);
 				elog("Failure while handling message (kind %d): %d, exiting!\n", m->kind, err);
 				goto cleanup;
 			}
@@ -585,7 +598,8 @@ cleanup:
 	zclose(run_ctx_memfd);
 	if (run_ctx && run_ctx != MAP_FAILED)
 		munmap(run_ctx, sizeof(struct inj_run_ctx));
-	zclose(workdir_fd);
+	if (!filelog)
+		zclose(log_fd);
 	zclose(epoll_fd);
 	zclose(timer_fd);
 

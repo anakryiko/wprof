@@ -5,6 +5,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <linux/fs.h>
+#include <fcntl.h>
 
 #include "cuda.h"
 #include "proc.h"
@@ -13,18 +14,37 @@
 #include "inj_common.h"
 #include "inject.h"
 
-static void add_tracee(int tracee_pid, struct tracee_state *tracee)
+#define LIBWPROFINJ_LOG_PATH_FMT "wprofinj-log.%d.%d.log"
+#define LIBWPROFINJ_DUMP_PATH_FMT "wprofinj-cuda.%d.%d.data"
+
+static struct cuda_tracee *add_cuda_tracee(struct tracee_state *tracee)
 {
-	env.tracees = realloc(env.tracees, (env.tracee_cnt + 1) * sizeof(*env.tracees));
-	env.tracees[env.tracee_cnt] = tracee;
-	env.tracee_cnt++;
+	const struct tracee_info *info = tracee_info(tracee);
+	struct cuda_tracee *cuda;
+
+	env.cudas = realloc(env.cudas, (env.cuda_cnt + 1) * sizeof(*env.cudas));
+
+	cuda = &env.cudas[env.cuda_cnt];
+	memset(cuda, 0, sizeof(*cuda));
+
+	cuda->pid = info->pid;
+	cuda->proc_name = info->name;
+	cuda->uds_fd = info->uds_fd;
+	cuda->tracee = tracee;
+
+	cuda->log_fd = -1;
+	cuda->dump_fd = -1;
+
+	env.cuda_cnt++;
+
+	return cuda;
 }
 
 static int discover_pid_cuda_binaries(int pid, int workdir_fd)
 {
 	struct vma_info *vma;
 	bool has_cuda = false, has_cupti = false;
-	int err = 0;
+	int err = 0, log_fd = -1;
 
 	wprof_for_each(vma, vma, pid, VMA_QUERY_VMA_EXECUTABLE | VMA_QUERY_FILE_BACKED_VMA) {
 		if (vma->vma_name[0] != '/')
@@ -55,23 +75,40 @@ static int discover_pid_cuda_binaries(int pid, int workdir_fd)
 	if (env.verbose)
 		printf("PID %d (%s) has CUPTI!\n", pid, proc_name(pid));
 
+	char log_path[128];
+	snprintf(log_path, sizeof(log_path), LIBWPROFINJ_LOG_PATH_FMT, getpid(), pid);
+
+	log_fd = openat(workdir_fd, log_path, O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+	if (log_fd < 0) {
+		err = -errno;
+		eprintf("Failed to create CUDA tracee %d (%s) log file at '%s': %d\n",
+			pid, proc_name(pid), log_path, err);
+		return -errno;
+	}
+
 	struct tracee_state *tracee = tracee_inject(pid);
 	if (!tracee) {
 		err = -errno;
+		close(log_fd);
 		eprintf("PTRACE injection failed for PID %d (%s): %d\n", pid, proc_name(pid), err);
 		return -errno;
 	}
 
-	err = tracee_handshake(tracee, workdir_fd);
+	err = tracee_handshake(tracee, log_fd);
 	if (err) {
 		eprintf("Injection handshake failed with PID %d (%s): %d\n", pid, proc_name(pid), err);
 		goto err_retract;
 	}
 
-	add_tracee(pid, tracee);
+	struct cuda_tracee *cuda = add_cuda_tracee(tracee);
+
+	cuda->log_fd = log_fd;
+	cuda->log_path = strdup(log_path);
+
 	return 0;
 
 err_retract:
+	close(log_fd);
 	int rerr = tracee_retract(tracee);
 	if (rerr) {
 		eprintf("PTRACE retraction failed for PID %d (%s): %d\n", pid, proc_name(pid), rerr);
@@ -114,11 +151,21 @@ int cuda_trace_setup(int workdir_fd)
 	return 0;
 }
 
-int cuda_trace_activate(uint64_t sess_start_ts, uint64_t sess_end_ts)
+int cuda_trace_activate(int workdir_fd, uint64_t sess_start_ts, uint64_t sess_end_ts)
 {
-	for (int i = 0; i < env.tracee_cnt; i++) {
-		struct tracee_state *tracee = env.tracees[i];
-		const struct tracee_info *info = tracee_info(tracee);
+	for (int i = 0; i < env.cuda_cnt; i++) {
+		struct cuda_tracee *cuda = &env.cudas[i];
+
+		char dump_path[128];
+		snprintf(dump_path, sizeof(dump_path), LIBWPROFINJ_DUMP_PATH_FMT, getpid(), cuda->pid);
+
+		int dump_fd = openat(workdir_fd, dump_path, O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+		if (dump_fd < 0) {
+			int err = -errno;
+			eprintf("Failed to create CUDA tracee %d (%s) dump file at '%s': %d\n",
+				cuda->pid, cuda->proc_name, dump_path, err);
+			return -errno;
+		}
 
 		struct inj_msg msg = {
 			.kind = INJ_MSG_CUDA_SESSION,
@@ -127,47 +174,58 @@ int cuda_trace_activate(uint64_t sess_start_ts, uint64_t sess_end_ts)
 				.session_end_ns = sess_end_ts,
 			},
 		};
-		int err = uds_send_data(info->uds_fd, &msg, sizeof(msg), NULL, 0);
+		int err = uds_send_data(cuda->uds_fd, &msg, sizeof(msg), &dump_fd, 1);
 		if (err < 0) {
 			eprintf("Failed to start CUDA trace session for tracee (%d, %s): %d\n",
-				info->pid, info->name, err);
+				cuda->pid, cuda->proc_name, err);
+			close(dump_fd);
 			continue;
 		}
+
+		cuda->dump_fd = dump_fd;
+		cuda->dump_path = strdup(dump_path);
 	}
 
-	for (int i = 0; i < env.tracee_cnt; i++) {
-		struct tracee_state *tracee = env.tracees[i];
-		const struct tracee_info *info = tracee_info(tracee);
+	for (int i = 0; i < env.cuda_cnt; i++) {
+		struct cuda_tracee *cuda = &env.cudas[i];
 
-		vprintf("Tracee #%d: PID %d NAME %s.\n", i, info->pid, info->name);
+		vprintf("Tracee #%d: PID %d NAME %s LOG %s DUMP %s.\n",
+			i, cuda->pid, cuda->proc_name, cuda->log_path, cuda->dump_path);
 	}
 	return 0;
 }
 
 void cuda_trace_deactivate(void)
 {
-	if (env.tracees_deactivated)
+	if (env.cudas_deactivated)
 		return;
 
-	for (int i = 0; i < env.tracee_cnt; i++) {
-		struct tracee_state *tracee = env.tracees[i];
-		const struct tracee_info *info = tracee_info(tracee);
+	for (int i = 0; i < env.cuda_cnt; i++) {
+		struct cuda_tracee *cuda = &env.cudas[i];
 
-		int err = tracee_retract(tracee);
+		int err = tracee_retract(cuda->tracee);
 		if (err) {
 			eprintf("Ptrace retraction for PID %d (%s) returned error: %d\n",
-				info->pid, info->name, err);
+				cuda->pid, cuda->proc_name, err);
 		}
 	}
 
-	env.tracees_deactivated = true;
+	env.cudas_deactivated = true;
 }
 
 void cuda_trace_teardown(void)
 {
 	cuda_trace_deactivate();
 
-	free(env.tracees);
-	env.tracees = NULL;
-	env.tracee_cnt = 0;
+	for (int i = 0; i < env.cuda_cnt; i++) {
+		struct cuda_tracee *cuda = &env.cudas[i];
+
+		zclose(cuda->uds_fd);
+		zclose(cuda->dump_fd);
+		zclose(cuda->log_fd);
+	}
+
+	free(env.cudas);
+	env.cudas = NULL;
+	env.cuda_cnt = 0;
 }

@@ -245,41 +245,27 @@ static int merge_wprof_data(int workdir_fd, struct worker_state *workers)
 		struct wcuda_event_iter iter;
 		struct wcuda_data_hdr *dump_hdr;
 		size_t dump_sz;
-		char *dump_path;
 		const char *strs;
-	} *wcudas = calloc(env.tracee_cnt, sizeof(*wcudas));
-	struct wcuda_event_record **wcuda_recs = calloc(env.tracee_cnt, sizeof(*wcuda_recs));
+	} *wcudas = calloc(env.cuda_cnt, sizeof(*wcudas));
+	struct wcuda_event_record **wcuda_recs = calloc(env.cuda_cnt, sizeof(*wcuda_recs));
 	struct strset *wcuda_strs = strset__new(UINT_MAX, "", 1);
-	for (int i = 0; i < env.tracee_cnt; i++) {
-		struct tracee_state *tracee = env.tracees[i];
-		const struct tracee_info *info = tracee_info(tracee);
-
-		char path[PATH_MAX];
-		snprintf(path, sizeof(path), LIBWPROFINJ_DUMP_PATH_FMT, getpid(), info->pid);
-		wcudas[i].dump_path = strdup(path);
-
-		int dump_fd = openat(workdir_fd, path, O_RDWR | O_CLOEXEC);
-		if (dump_fd < 0) {
-			err = -errno;
-			eprintf("Failed to open CUDA data dump for tracee #%d PID %d (%s) at '%s': %d\n",
-				i, info->pid, info->name, path, err);
-			return err;
-		}
+	for (int i = 0; i < env.cuda_cnt; i++) {
+		struct cuda_tracee *cuda = &env.cudas[i];
 
 		struct stat st;
-		if (fstat(dump_fd, &st) < 0) {
+		if (fstat(cuda->dump_fd, &st) < 0) {
 			err = -errno;
 			eprintf("Failed to fstat() CUDA data dump for tracee PID %d (%s) at '%s': %d\n",
-				info->pid, info->name, path, err);
+				cuda->pid, cuda->proc_name, cuda->dump_path, err);
 			return err;
 		}
 
 		wcudas[i].dump_sz = st.st_size;
-		wcudas[i].dump_hdr = mmap(NULL, wcudas[i].dump_sz, PROT_READ | PROT_WRITE, MAP_SHARED, dump_fd, 0);
+		wcudas[i].dump_hdr = mmap(NULL, wcudas[i].dump_sz, PROT_READ | PROT_WRITE, MAP_SHARED, cuda->dump_fd, 0);
 		if (wcudas[i].dump_hdr == MAP_FAILED) {
 			err = -errno;
 			eprintf("Failed to mmap() CUDA data dump for tracee PID %d (%s) at '%s': %d\n",
-				info->pid, info->name, path, err);
+				cuda->pid, cuda->proc_name, cuda->dump_path, err);
 			return err;
 		}
 
@@ -302,7 +288,7 @@ static int merge_wprof_data(int workdir_fd, struct worker_state *workers)
 				ts = r->e->ts;
 			}
 		}
-		for (int i = 0; i < env.tracee_cnt; i++) {
+		for (int i = 0; i < env.cuda_cnt; i++) {
 			struct wcuda_event_record *r = wcuda_recs[i];
 			if (!r)
 				continue;
@@ -333,7 +319,7 @@ static int merge_wprof_data(int workdir_fd, struct worker_state *workers)
 		} else {
 			int cidx = widx - env.ringbuf_cnt;
 			struct wcuda_event_record *r = wcuda_recs[cidx];
-			const struct tracee_info *info = tracee_info(env.tracees[cidx]);
+			struct cuda_tracee *cuda = &env.cudas[cidx];
 
 			const size_t wcuda_data_off = offsetof(struct wcuda_event, __wcuda_data);
 			const size_t wprof_data_off = offsetof(struct wprof_event, __wprof_data);
@@ -355,10 +341,8 @@ static int merge_wprof_data(int workdir_fd, struct worker_state *workers)
 			struct wcuda_event *e = wcuda_payload - wcuda_data_off;
 			err = wcuda_remap_strs(e, r->e->kind, wcudas[cidx].strs, wcuda_strs);
 			if (err) {
-				struct tracee_state *tracee = env.tracees[cidx];
-				const struct tracee_info *info = tracee_info(tracee);
 				eprintf("Failed to remap strings for CUDA dump event tracee PID %d (%s) at '%s': %d\n",
-					info->pid, info->name, wcudas[cidx].dump_path, err);
+					cuda->pid, cuda->proc_name, cuda->dump_path, err);
 				return err;
 			}
 
@@ -373,8 +357,8 @@ static int merge_wprof_data(int workdir_fd, struct worker_state *workers)
 			w->task.flags = 0;
 			w->task.tid = 0;
 			w->task.comm[0] = '\0';
-			w->task.pid = info->pid;
-			snprintf(w->task.pcomm, sizeof(w->task.pcomm), "%s", info->name);
+			w->task.pid = cuda->pid;
+			snprintf(w->task.pcomm, sizeof(w->task.pcomm), "%s", cuda->proc_name);
 
 			data = data_buf;
 			data_sz = r->e->sz + sizeof(size_t) + wprof_data_off - wcuda_data_off;
@@ -390,9 +374,9 @@ static int merge_wprof_data(int workdir_fd, struct worker_state *workers)
 					widx, workers[widx].dump_path, err);
 			} else {
 				int cidx = widx - env.ringbuf_cnt;
-				const struct tracee_info *info = tracee_info(env.tracees[cidx]);
+				struct cuda_tracee *cuda = &env.cudas[cidx];
 				eprintf("Failed to fwrite() event from CUDA tracee PID %d (%s): %d\n",
-					info->pid, info->name, err);
+					cuda->pid, cuda->proc_name, err);
 			}
 			return err;
 		}
@@ -412,15 +396,20 @@ static int merge_wprof_data(int workdir_fd, struct worker_state *workers)
 		w->dump_mem = NULL;
 		w->dump_hdr = NULL;
 	}
-	for (int i = 0; i < env.tracee_cnt; i++) {
+	for (int i = 0; i < env.cuda_cnt; i++) {
+		struct cuda_tracee *cuda = &env.cudas[i];
 		struct wcuda_state *w = &wcudas[i];
+
 		munmap(w->dump_hdr, w->dump_sz);
 		if (!env.keep_workdir)
-			unlink(w->dump_path);
+			unlink(cuda->dump_path);
 
-		free(w->dump_path);
+		free(cuda->dump_path);
+		cuda->dump_path = NULL;
+
+		zclose(cuda->dump_fd);
+
 		w->dump_hdr = NULL;
-		w->dump_path = NULL;
 		w->dump_sz = 0;
 	}
 
@@ -1757,8 +1746,9 @@ int main(int argc, char **argv)
 	env.sess_end_ts = env.ktime_start_ns + env.duration_ns;
 
 	/* XXX: synchronize BPF and CUDA collection better */
-	if (env.tracee_cnt > 0) {
-		err = cuda_trace_activate(env.sess_start_ts, env.sess_end_ts);
+	if (env.cuda_cnt > 0) {
+		printf("Preparing CUDA tracees...\n");
+		err = cuda_trace_activate(workdir_fd, env.sess_start_ts, env.sess_end_ts);
 		if (err) {
 			eprintf("Failed to active CUDA tracing sessions: %d\n", err);
 			goto cleanup;
@@ -1774,7 +1764,7 @@ int main(int argc, char **argv)
 	printf("Stopping...\n");
 	detach_bpf(&bpf_state, num_cpus);
 
-	if (env.tracee_cnt > 0) {
+	if (env.cuda_cnt > 0) {
 		printf("Retracting CUDA trace injections...\n");
 		cuda_trace_deactivate();
 	}
@@ -1851,7 +1841,7 @@ skip_data_collection:
 			file_sz / (1024.0 * 1024.0), env.trace_path);
 	}
 cleanup:
-	if (env.tracee_cnt > 0)
+	if (env.cuda_cnt > 0)
 		cuda_trace_teardown();
 	cleanup_workers(workers, worker_cnt);
 	detach_bpf(&bpf_state, num_cpus);
