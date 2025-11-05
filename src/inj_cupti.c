@@ -300,6 +300,8 @@ int start_cupti_activities(void)
 		return -EPROTO;
 	}
 
+	vlog("CUPTI activity callbacks registered.\n");
+
 	/* Subscribe to various activity kinds */
 	for (int i = 0; i < ARRAY_SIZE(cupti_act_kinds); i++) {
 		CUpti_ActivityKind kind = cupti_act_kinds[i];
