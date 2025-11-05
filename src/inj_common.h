@@ -42,12 +42,20 @@ enum inj_msg_kind {
 	INJ_MSG_CUDA_SESSION = 2,
 };
 
+static inline const char *inj_msg_str(enum inj_msg_kind kind)
+{
+	switch (kind) {
+	case INJ_MSG_SETUP: return "SETUP";
+	case INJ_MSG_CUDA_SESSION: return "CUDA_SESSION";
+	default: return "???";
+	}
+}
+
 struct inj_msg {
 	enum inj_msg_kind kind;
 
 	union {
 		struct inj_msg_setup {
-			int fd_cnt;
 		} setup;
 		struct inj_msg_cuda_session {
 			long long session_start_ns;

@@ -973,11 +973,8 @@ int tracee_handshake(struct tracee_state *tracee, int log_fd)
 	int tracee_fds[2] = {ctx_mem_fd, log_fd};
 	struct inj_msg msg = {
 		.kind = INJ_MSG_SETUP,
-		.setup = {
-			.fd_cnt = ARRAY_SIZE(tracee_fds),
-		},
+		.setup = {},
 	};
-
 	err = uds_send_data(tracee->uds_local_fd, &msg, sizeof(msg), tracee_fds, ARRAY_SIZE(tracee_fds));
 	if (err) {
 		elog("Failed to send over FDs for handshake: %d\n", err);

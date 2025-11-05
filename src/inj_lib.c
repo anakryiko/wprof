@@ -318,6 +318,44 @@ static int handle_msg(struct inj_msg *msg, int *fds, int fd_cnt)
 	int err = 0;
 
 	switch (msg->kind) {
+	case INJ_MSG_SETUP: {
+		const int exp_fd_cnt = 2;
+		if (fd_cnt != exp_fd_cnt) {
+			elog("Unexpected number of FDs received for INJ_MSG_SETUP message (got %d, expected %d)\n",
+			     fd_cnt, exp_fd_cnt);
+			return -EPROTO;
+		}
+
+		int run_ctx_memfd = fds[0];
+		int log_fd = fds[1];
+
+		/* fd[0] is memfd for run context */
+		run_ctx = mmap(NULL, sizeof(struct inj_run_ctx), PROT_READ | PROT_WRITE, MAP_SHARED,
+			       run_ctx_memfd, 0);
+		if (run_ctx == MAP_FAILED) {
+			err = -errno;
+			elog("Failed to mmap() provided run_ctx: %d\n", err);
+			return err;
+		}
+
+		/* fd[1] is log file FD */
+		filelog = fdopen(log_fd, "w");
+		if (!filelog) {
+			err = -errno;
+			elog("Failed to create FILE wrapper around log FD %d: %d\n", log_fd, err);
+			return err;
+		}
+		setlinebuf(filelog); /* line-buffered FILE for logging */
+
+		vlog("Log setup completed successfully! wprof PID is %d.\n", setup_ctx->parent_pid);
+
+		err = init_cupti_activities();
+		if (err)
+			return err;
+
+		zclose(run_ctx_memfd);
+		break;
+	}
 	case INJ_MSG_CUDA_SESSION: {
 		__u64 now = ktime_now_ns();
 
@@ -403,7 +441,6 @@ static int handle_session_end(void)
 	return 0;
 }
 
-
 static int worker_thread_func(void *arg)
 {
 	int ret, err = 0;
@@ -411,76 +448,6 @@ static int worker_thread_func(void *arg)
 
 	vlog("Worker thread started (TID %d, PID %d, REAL PID %d)\n",
 	     gettid(), getpid(), setup_ctx->tracee_pid);
-
-	int *fds = NULL, fd_cnt = 0;
-	struct iovec io = { .iov_base = msg_buf, .iov_len = sizeof(msg_buf) };
-	char buf[CMSG_SPACE(sizeof(int) * MAX_UDS_FD_CNT)];
-	struct msghdr msg = {
-		.msg_iov = &io,
-		.msg_iovlen = 1,
-		.msg_control = buf,
-		.msg_controllen = sizeof(buf),
-	};
-
-	ret = recvmsg(setup_ctx->uds_fd, &msg, 0);
-	if (ret < 0) {
-		err = -errno;
-		elog("UDS recvmsg() error (ret %d): %d\n", ret, err);
-		goto cleanup;
-	} else if (ret == 0) {
-		err = -EFAULT;
-		elog("UDS recvmsg() returned ZERO, meaning tracer process died, cleaning up...\n");
-		goto cleanup;
-	} else if (ret != sizeof(struct inj_msg)) {
-		err = -EPROTO;
-		elog("UDS recvmsg() returned unexpected setup msg size %d (expecting %zd). Exiting!\n",
-		     ret, sizeof(struct inj_msg));
-		goto cleanup;
-	}
-
-	struct inj_msg *setup_msg = (void *)msg_buf;
-	if (setup_msg->kind != INJ_MSG_SETUP) {
-		err = -EFAULT;
-		elog("Unexpected UDS message (kind %d) received, bailing...\n", setup_msg->kind);
-		goto cleanup;
-	}
-
-	const int exp_fd_cnt = 2;
-	if (setup_msg->setup.fd_cnt != exp_fd_cnt) {
-		err = -E2BIG;
-		elog("Unexpected number of FDs received for INJ_MSG_SETUP message (got %d, expected %d)\n",
-		     setup_msg->setup.fd_cnt, exp_fd_cnt);
-		goto cleanup;
-	}
-
-	struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
-	fds = (int *)CMSG_DATA(cmsg);
-	run_ctx_memfd = fds[0];
-	log_fd = fds[1];
-
-	/* fd[0] is memfd for run context */
-	run_ctx = mmap(NULL, sizeof(struct inj_run_ctx), PROT_READ | PROT_WRITE, MAP_SHARED, run_ctx_memfd, 0);
-	if (run_ctx == MAP_FAILED) {
-		err = -errno;
-		elog("Failed to mmap() provided run_ctx: %d\n", err);
-		goto cleanup;
-	}
-	zclose(run_ctx_memfd);
-
-	/* fd[1] is log file FD */
-	filelog = fdopen(log_fd, "w");
-	if (!filelog) {
-		err = -errno;
-		elog("Failed to create FILE wrapper around log FD %d: %d\n", log_fd, err);
-		goto cleanup;
-	}
-	setlinebuf(filelog); /* line-buffered FILE for logging */
-
-	vlog("Log setup completed successfully! wprof PID is %d.\n", setup_ctx->parent_pid);
-
-	err = init_cupti_activities();
-	if (err)
-		goto cleanup;
 
 	epoll_fd = epoll_create1(EPOLL_CLOEXEC);
 	if (epoll_fd < 0) {
@@ -494,7 +461,17 @@ static int worker_thread_func(void *arg)
 	if ((err = epoll_add(epoll_fd, setup_ctx->uds_fd, EPOLLIN, EK_UDS)) < 0)
 		goto cleanup;
 
-	vlog("Waiting for exit or incoming commands...\n");
+	vlog("Waiting commands or exit signal...\n");
+
+	int *fds = NULL, fd_cnt = 0;
+	struct iovec io = { .iov_base = msg_buf, .iov_len = sizeof(msg_buf) };
+	char buf[CMSG_SPACE(sizeof(int) * MAX_UDS_FD_CNT)];
+	struct msghdr msg = {
+		.msg_iov = &io,
+		.msg_iovlen = 1,
+		.msg_control = buf,
+		.msg_controllen = sizeof(buf),
+	};
 
 event_loop:
 	struct epoll_event evs[8];
@@ -547,6 +524,10 @@ event_loop:
 			}
 
 			struct inj_msg *m = (void *)msg_buf;
+
+			vlog("Received UDS message kind %d (%s) with %d FD%s.\n",
+			     m->kind, inj_msg_str(m->kind), fd_cnt, fd_cnt > 1 ? "s" : "");
+
 			err = handle_msg(m, fds, fd_cnt);
 			if (err) {
 				for (int i = 0; i < fd_cnt; i++)
