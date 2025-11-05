@@ -697,11 +697,14 @@ static void stop_worker_thread(void)
 	if (use_pthread) {
 		void *worker_retval;
 
+		vlog("Waiting for pthread_join() to return...\n");
 		ret = pthread_join(worker_pthread, &worker_retval);
 		if (ret)
 			elog("pthread_join() returned error: %d (errno %d)\n", ret, errno);
 
 	} else {
+		vlog("Waiting for futex_wait() to return...\n");
+
 		/* wait for worker thread to exit fully */
 		while (*(volatile pid_t *)&worker_tid == inj_tid)
 			syscall(SYS_futex, &worker_tid, FUTEX_WAIT, inj_tid, NULL, NULL, 0);
