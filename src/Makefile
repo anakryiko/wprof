@@ -5,6 +5,11 @@ CARGO ?= $(shell which cargo)
 DEBUG ?=
 BLAZESYM_DEBUG ?=
 
+# for installation
+DESTDIR ?=
+prefix ?= /usr/local
+bindir ?= $(prefix)/bin
+
 LIBBPF_SRC := $(abspath ../libbpf/src)
 BPFTOOL_SRC := $(abspath ../bpftool/src)
 LIBBPF_OBJ := $(abspath $(OUTPUT)/libbpf.a)
@@ -144,3 +149,7 @@ sim: $(OUTPUT)/sim.o | $(OUTPUT)
 
 # keep intermediate (.skel.h, .bpf.o, etc) targets
 .SECONDARY:
+
+install: wprof
+	mkdir -p $(DESTDIR)$(bindir)
+	cp -p wprof $(DESTDIR)$(bindir)/
