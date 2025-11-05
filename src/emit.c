@@ -1641,7 +1641,7 @@ static void clear_req_tracks(const struct wprof_task *t, u64 req_id)
 /* EV_REQ_EVENT */
 static int process_req_event(struct worker_state *w, struct wprof_event *e, size_t size)
 {
-	if (!env.capture_requests)
+	if (env.capture_requests != TRUE)
 		return 0;
 	if (!should_trace_task(&e->task))
 		return 0;
@@ -1757,7 +1757,7 @@ static int process_req_event(struct worker_state *w, struct wprof_event *e, size
 /* EV_REQ_TASK_EVENT */
 static int process_req_task_event(struct worker_state *w, struct wprof_event *e, size_t size)
 {
-	if (!env.capture_req_experimental)
+	if (env.capture_req_experimental != TRUE)
 		return 0;
 	if (!should_trace_task(&e->task))
 		return 0;
@@ -1842,7 +1842,7 @@ static u64 ensure_cuda_proc_gpu_track(int pid, int gpu_id)
 /* WCK_CUDA_KERNEL */
 static int process_cuda_kernel(struct worker_state *w, struct wprof_event *e, size_t size)
 {
-	if (!env.capture_cuda)
+	if (env.capture_cuda != TRUE)
 		return 0;
 
 	const struct wcuda_cuda_kernel *cu = (void *)e + offsetof(struct wprof_event, __wprof_data);
@@ -1890,7 +1890,7 @@ static const char* cuda_memcpy_kind_str(uint8_t kind) {
 /* WCK_CUDA_MEMCPY */
 static int process_cuda_memcpy(struct worker_state *w, struct wprof_event *e, size_t size)
 {
-	if (!env.capture_cuda)
+	if (env.capture_cuda != TRUE)
 		return 0;
 
 	const struct wcuda_cuda_memcpy *cu = (void *)e + offsetof(struct wprof_event, __wprof_data);
