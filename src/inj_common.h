@@ -25,6 +25,8 @@ struct inj_setup_ctx {
 	long lib_handle;
 	/* PID of the original wprof injecting this libwprofinj.so */
 	int parent_pid;
+	/* Real (non-namespaces) PID of tracee process */
+	int tracee_pid;
 
 	int stderr_verbosity;
 	int filelog_verbosity;

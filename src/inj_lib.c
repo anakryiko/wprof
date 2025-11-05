@@ -59,7 +59,8 @@ void log_printf(int verbosity, const char *fmt, ...)
 	if (verbosity <= stderr_verbosity) {
 		/* append "WPROFINJ: " prefix for stderr-based log messages */
 		char final_fmt[1024];
-		snprintf(final_fmt, sizeof(final_fmt), "WPROFINJ: %s", fmt);
+		snprintf(final_fmt, sizeof(final_fmt), "WPROFINJ(%d): %s",
+			 setup_ctx ? setup_ctx->tracee_pid : getpid(), fmt);
 
 		va_start(args, fmt);
 		vfprintf(stderr, final_fmt, args);

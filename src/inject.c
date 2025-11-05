@@ -723,6 +723,7 @@ struct tracee_state *tracee_inject(int pid)
 		.mmap_sz = tracee->data_mmap_sz + tracee->exec_mmap_sz,
 		.lib_handle = tracee->dlopen_handle,
 		.parent_pid = getpid(),
+		.tracee_pid = pid,
 		.stderr_verbosity = 3, /* debug level */
 		.filelog_verbosity = 3, /* debug level */
 		.uds_fd = uds_remote_fds[1],
