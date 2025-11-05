@@ -7,6 +7,7 @@
 #include "protobuf.h"
 #include "wprof.h"
 #include "data.h"
+#include "cuda.h"
 
 #define DEFAULT_RINGBUF_SZ (8 * 1024 * 1024)
 #define DEFAULT_TASK_STATE_SZ (32 * 1024)
@@ -110,9 +111,9 @@ struct env {
 	int cuda_pid_cnt;
 	bool cuda_global_discovery;
 
-	struct tracee_state **tracees;
-	int tracee_cnt;
-	bool tracees_deactivated;
+	struct cuda_tracee *cudas;
+	int cuda_cnt;
+	bool cudas_deactivated;
 };
 
 extern struct env env;
