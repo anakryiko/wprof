@@ -31,6 +31,7 @@ static struct cuda_tracee *add_cuda_tracee(struct tracee_state *tracee)
 	cuda->proc_name = info->name;
 	cuda->uds_fd = info->uds_fd;
 	cuda->tracee = tracee;
+	cuda->ctx = info->run_ctx;
 
 	cuda->log_fd = -1;
 	cuda->dump_fd = -1;
@@ -151,7 +152,7 @@ int cuda_trace_setup(int workdir_fd)
 	return 0;
 }
 
-int cuda_trace_activate(int workdir_fd, uint64_t sess_start_ts, uint64_t sess_end_ts)
+int cuda_trace_prepare(int workdir_fd, long sess_timeout_ms)
 {
 	for (int i = 0; i < env.cuda_cnt; i++) {
 		struct cuda_tracee *cuda = &env.cudas[i];
@@ -170,8 +171,7 @@ int cuda_trace_activate(int workdir_fd, uint64_t sess_start_ts, uint64_t sess_en
 		struct inj_msg msg = {
 			.kind = INJ_MSG_CUDA_SESSION,
 			.cuda_session = {
-				.session_start_ns = sess_start_ts,
-				.session_end_ns = sess_end_ts,
+				.session_timeout_ms = sess_timeout_ms,
 			},
 		};
 		int err = uds_send_data(cuda->uds_fd, &msg, sizeof(msg), &dump_fd, 1);
@@ -189,9 +189,35 @@ int cuda_trace_activate(int workdir_fd, uint64_t sess_start_ts, uint64_t sess_en
 	for (int i = 0; i < env.cuda_cnt; i++) {
 		struct cuda_tracee *cuda = &env.cudas[i];
 
-		vprintf("Tracee #%d: PID %d NAME %s LOG %s DUMP %s.\n",
+		vprintf("Tracee #%d: PID %d NAME %s LOG %s DUMP %s\n",
 			i, cuda->pid, cuda->proc_name, cuda->log_path, cuda->dump_path);
 	}
+
+	vprintf("Waiting for CUDA tracees to be ready...\n");
+
+	for (int i = 0; i < env.cuda_cnt; i++) {
+		struct cuda_tracee *cuda = &env.cudas[i];
+
+		while (!cuda->ctx->cupti_ready)
+			usleep(10000);
+
+		vprintf("Tracee #%d (PID %d NAME %s) is READY!\n", i, cuda->pid, cuda->proc_name);
+	}
+
+	return 0;
+}
+
+int cuda_trace_activate(long sess_start_ts, long sess_end_ts)
+{
+	vprintf("Activating CUDA tracees for session time range [%ld, %ld].\n",
+		sess_end_ts, sess_start_ts);
+	for (int i = 0; i < env.cuda_cnt; i++) {
+		struct cuda_tracee *cuda = &env.cudas[i];
+
+		cuda->ctx->sess_end_ts = sess_end_ts;
+		cuda->ctx->sess_start_ts = sess_start_ts;
+	}
+
 	return 0;
 }
 
@@ -207,7 +233,10 @@ void cuda_trace_deactivate(void)
 		if (err) {
 			eprintf("Ptrace retraction for PID %d (%s) returned error: %d\n",
 				cuda->pid, cuda->proc_name, err);
+			continue;
 		}
+
+		cuda->dump_ok = true;
 	}
 
 	env.cudas_deactivated = true;

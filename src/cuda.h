@@ -3,9 +3,11 @@
 #ifndef __CUDA_H_
 #define __CUDA_H_
 
+#include <stdbool.h>
 #include <stdint.h>
 
 struct tracee_state;
+struct inj_run_ctx;
 
 struct cuda_tracee {
 	int pid;
@@ -17,13 +19,16 @@ struct cuda_tracee {
 
 	int dump_fd;
 	char *dump_path;
+	bool dump_ok;
 
 	struct tracee_state *tracee;
+	struct inj_run_ctx *ctx;
 };
 
 int cuda_trace_setup(int workdir_fd);
 void cuda_trace_teardown(void);
-int cuda_trace_activate(int workdir_fd, uint64_t sess_start_ts, uint64_t sess_end_ts);
+int cuda_trace_prepare(int workdir_fd, long sess_timeout_ms);
+int cuda_trace_activate(long sess_start_ts, long sess_end_ts);
 void cuda_trace_deactivate(void);
 
 #endif /* __CUDA_H_ */

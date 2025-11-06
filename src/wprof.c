@@ -252,6 +252,12 @@ static int merge_wprof_data(int workdir_fd, struct worker_state *workers)
 	for (int i = 0; i < env.cuda_cnt; i++) {
 		struct cuda_tracee *cuda = &env.cudas[i];
 
+		if (!cuda->dump_ok) {
+			eprintf("Skipping CUDA tracing data from tracee PID %d (%s) as it didn't shut down cleanly...\n",
+				cuda->pid, cuda->proc_name);
+			continue;
+		}
+
 		struct stat st;
 		if (fstat(cuda->dump_fd, &st) < 0) {
 			err = -errno;
@@ -400,7 +406,9 @@ static int merge_wprof_data(int workdir_fd, struct worker_state *workers)
 		struct cuda_tracee *cuda = &env.cudas[i];
 		struct wcuda_state *w = &wcudas[i];
 
-		munmap(w->dump_hdr, w->dump_sz);
+		if (w->dump_hdr)
+			munmap(w->dump_hdr, w->dump_sz);
+
 		if (!env.keep_workdir)
 			unlink(cuda->dump_path);
 
@@ -1728,13 +1736,14 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	signal(SIGALRM, sig_timer);
-	timer_ival.it_value.tv_sec = env.duration_ns / 1000000000;
-	timer_ival.it_value.tv_usec = env.duration_ns / 1000 % 1000000;
-	err = setitimer(ITIMER_REAL, &timer_ival, NULL);
-	if (err < 0) {
-		eprintf("Failed to setup run duration timeout timer: %d\n", err);
-		goto cleanup;
+	if (env.cuda_cnt > 0) {
+		printf("Preparing CUDA tracees...\n");
+		/* give 2 seconds extra time for auto-timeout within tracee */
+		err = cuda_trace_prepare(workdir_fd, env.duration_ns / 1000000 + 2000);
+		if (err) {
+			eprintf("Failed to active CUDA tracing sessions: %d\n", err);
+			goto cleanup;
+		}
 	}
 
 	printf("Running...\n");
@@ -1745,14 +1754,22 @@ int main(int argc, char **argv)
 	env.sess_start_ts = env.ktime_start_ns;
 	env.sess_end_ts = env.ktime_start_ns + env.duration_ns;
 
-	/* XXX: synchronize BPF and CUDA collection better */
 	if (env.cuda_cnt > 0) {
-		printf("Preparing CUDA tracees...\n");
-		err = cuda_trace_activate(workdir_fd, env.sess_start_ts, env.sess_end_ts);
+		printf("Activating CUDA tracees...\n");
+		err = cuda_trace_activate(env.sess_start_ts, env.sess_end_ts);
 		if (err) {
 			eprintf("Failed to active CUDA tracing sessions: %d\n", err);
 			goto cleanup;
 		}
+	}
+
+	signal(SIGALRM, sig_timer);
+	timer_ival.it_value.tv_sec = env.duration_ns / 1000000000;
+	timer_ival.it_value.tv_usec = env.duration_ns / 1000 % 1000000;
+	err = setitimer(ITIMER_REAL, &timer_ival, NULL);
+	if (err < 0) {
+		eprintf("Failed to setup run duration timeout timer: %d\n", err);
+		goto cleanup;
 	}
 
 	err = run_bpf(&bpf_state);

@@ -3,10 +3,12 @@
 #ifndef __INJECT_H_
 #define __INJECT_H_
 
+#include "inj_common.h"
 struct tracee_info {
 	int pid;
 	const char *name;
 	int uds_fd;
+	struct inj_run_ctx *run_ctx;
 };
 
 struct tracee_state;

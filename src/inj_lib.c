@@ -115,8 +115,6 @@ static int epoll_fd = -1;
 static int timer_fd = -1;
 static int log_fd = -1;
 
-static __u64 cuda_sess_start_ts, cuda_sess_end_ts;
-
 static char msg_buf[UDS_MAX_MSG_LEN] __attribute__((aligned(8)));
 
 enum epoll_kind {
@@ -266,8 +264,8 @@ static int cuda_dump_finalize(void)
 	struct wcuda_data_hdr hdr;
 	init_wcuda_header(&hdr);
 
-	hdr.sess_start_ns = cuda_sess_start_ts;
-	hdr.sess_end_ns = cuda_sess_end_ts;
+	hdr.sess_start_ns = run_ctx->sess_start_ts;
+	hdr.sess_end_ns = run_ctx->sess_end_ts;
 	hdr.events_off = 0;
 	hdr.events_sz = strs_off - sizeof(struct wcuda_data_hdr);
 	hdr.strs_off = strs_off - sizeof(struct wcuda_data_hdr);
@@ -357,44 +355,14 @@ static int handle_msg(struct inj_msg *msg, int *fds, int fd_cnt)
 		break;
 	}
 	case INJ_MSG_CUDA_SESSION: {
-		__u64 now = ktime_now_ns();
-
 		if (fd_cnt != 1) {
 			err = -EPROTO;
 			elog("Received CUDA_SESSION command, but not log_fd!\n");
 			return err;
 		}
 
-		cuda_sess_start_ts = msg->cuda_session.session_start_ns;
-		cuda_sess_end_ts = msg->cuda_session.session_end_ns;
-
-		vlog("CUDA session request received (start delay %.3lfus, end delay %.3lfus)\n",
-			(cuda_sess_start_ts - (double)now) / 1000.0,
-			(cuda_sess_end_ts - (double)now) / 1000.0);
-
-		timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
-		if (timer_fd < 0) {
-			err = -errno;
-			elog("Failed to create timerfd: %d\n", err);
-			return err;
-		}
-
-		struct itimerspec spec = {
-			.it_value = {
-				.tv_sec = cuda_sess_end_ts / 1000000000,
-				.tv_nsec = cuda_sess_end_ts % 1000000000,
-			},
-		};
-		if (timerfd_settime(timer_fd, TFD_TIMER_ABSTIME, &spec, NULL) < 0) {
-			err = -errno;
-			elog("Failed to timerfd_settime(): %d\n", err);
-			return err;
-		}
-
-		if ((err = epoll_add(epoll_fd, timer_fd, EPOLLIN, EK_TIMER)) < 0) {
-			elog("Failed to add timerfd into epoll: %d\n", err);
-			return err;
-		}
+		long sess_timeout_ms = msg->cuda_session.session_timeout_ms;
+		vlog("Setting up CUDA session (timeout %ldms)...\n", sess_timeout_ms);
 
 		int dump_fd = fds[0];
 		if ((err = cuda_dump_setup(dump_fd)) < 0) {
@@ -407,8 +375,34 @@ static int handle_msg(struct inj_msg *msg, int *fds, int fd_cnt)
 			return err;
 		}
 
-		vlog("CUDA session timeout successfully set up with auto-stop %.3lfus from now.\n",
-		     (cuda_sess_end_ts - (double)now) / 1000.0);
+		run_ctx->cupti_ready = true;
+
+		timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+		if (timer_fd < 0) {
+			err = -errno;
+			elog("Failed to create timerfd: %d\n", err);
+			return err;
+		}
+
+		struct itimerspec spec = {
+			.it_value = {
+				.tv_sec = sess_timeout_ms / 1000,
+				.tv_nsec = sess_timeout_ms % 1000 * 1000000,
+			},
+		};
+		if (timerfd_settime(timer_fd, 0, &spec, NULL) < 0) {
+			err = -errno;
+			elog("Failed to timerfd_settime(): %d\n", err);
+			return err;
+		}
+
+		if ((err = epoll_add(epoll_fd, timer_fd, EPOLLIN, EK_TIMER)) < 0) {
+			elog("Failed to add timerfd into epoll: %d\n", err);
+			return err;
+		}
+
+
+		vlog("CUDA session timeout successfully set up %3ldms from now.\n", sess_timeout_ms);
 
 		break;
 	}
@@ -547,7 +541,7 @@ event_loop:
 			}
 
 			vlog("CUDA session timer expired with %.3lfus delay after planned session end.\n",
-			     (ktime_now_ns() - cuda_sess_end_ts) / 1000.0);
+			     (ktime_now_ns() - run_ctx->sess_end_ts) / 1000.0);
 			break;
 		}
 		case EK_EXIT:

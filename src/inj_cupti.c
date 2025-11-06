@@ -107,6 +107,17 @@ static void CUPTIAPI buffer_requested(uint8_t **buffer, size_t *size, size_t *ma
 
 }
 
+static bool rec_within_session(u64 rec_start_ts, u64 rec_end_ts, u64 sess_start_ts, u64 sess_end_ts)
+{
+	if (sess_start_ts == 0)
+		return false;
+	if ((long)(rec_end_ts - sess_start_ts) < 0)
+		return false;
+	if ((long)(rec_start_ts - sess_end_ts) > 0)
+		return false;
+	return true;
+}
+
 static int handle_cupti_record(CUpti_Activity *rec)
 {
 	switch (rec->kind) {
@@ -119,12 +130,17 @@ static int handle_cupti_record(CUpti_Activity *rec)
 			(unsigned long long)(r->end - r->start));
 		*/
 
+		u64 start_ts = gpu_to_cpu_time_ns(r->start);
+		u64 end_ts = gpu_to_cpu_time_ns(r->end);
+		if (!rec_within_session(start_ts, end_ts, run_ctx->sess_start_ts, run_ctx->sess_end_ts))
+			return 0;
+
 		struct wcuda_event e = {
 			.sz = sizeof(e),
 			.kind = WCK_CUDA_KERNEL,
-			.ts = gpu_to_cpu_time_ns(r->start),
+			.ts = start_ts,
 			.cuda_kernel = {
-				.end_ts = gpu_to_cpu_time_ns(r->end),
+				.end_ts = end_ts,
 				.name_off = strset__add_str(cuda_dump_strs, r->name),
 				.corr_id = r->correlationId,
 				.device_id = r->deviceId,
@@ -147,12 +163,18 @@ static int handle_cupti_record(CUpti_Activity *rec)
 		       (unsigned long long)memcpy->bytes,
 		       (unsigned long long)(memcpy->end - memcpy->start));
 		*/
+
+		u64 start_ts = gpu_to_cpu_time_ns(r->start);
+		u64 end_ts = gpu_to_cpu_time_ns(r->end);
+		if (!rec_within_session(start_ts, end_ts, run_ctx->sess_start_ts, run_ctx->sess_end_ts))
+			return 0;
+
 		struct wcuda_event e = {
 			.sz = sizeof(e),
 			.kind = WCK_CUDA_MEMCPY,
-			.ts = gpu_to_cpu_time_ns(r->start),
+			.ts = start_ts,
 			.cuda_memcpy = {
-				.end_ts = gpu_to_cpu_time_ns(r->end),
+				.end_ts = end_ts,
 				.byte_cnt = r->bytes,
 				.copy_kind = r->copyKind,
 				.src_kind = r->srcKind,
@@ -183,7 +205,7 @@ static void CUPTIAPI buffer_completed(CUcontext ctx, uint32_t stream_id, uint8_t
 
 	vlog("CUPTI activity buffer completed (sz %zu, valid_sz %zu)\n", buf_sz, data_sz);
 
-	if (data_sz == 0) {
+	if (data_sz == 0 || run_ctx->sess_start_ts == 0) {
 		free(buf);
 		return;
 	}
@@ -199,6 +221,7 @@ static void CUPTIAPI buffer_completed(CUcontext ctx, uint32_t stream_id, uint8_t
 			     status, cupti_errstr(status));
 			break;
 		}
+
 
 		int err = handle_cupti_record(rec);
 		if (err) {
