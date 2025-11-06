@@ -221,6 +221,32 @@ int cuda_trace_activate(long sess_start_ts, long sess_end_ts)
 	return 0;
 }
 
+static void dump_tracee_log(struct cuda_tracee *cuda)
+{
+	vprintf("Tracee PID %d (%s) LOG (%s) DUMP:\n"
+		"==============================================================================\n",
+		cuda->pid, cuda->proc_name, cuda->log_path);
+
+	lseek(cuda->log_fd, 0, SEEK_SET); /* just in case */
+
+	FILE *f = fdopen(cuda->log_fd, "r");
+	if (!f) {
+		int err = -errno;
+		eprintf("Failed to create FILE wrapper around tracee log FD: %d\n", err);
+		return;
+	}
+
+	char buf[4096];
+	while (fgets(buf, sizeof(buf), f)) {
+		vprintf("    %s", buf);
+	}
+
+	vprintf("==============================================================================\n");
+
+	fclose(f);
+	cuda->log_fd = -1;
+}
+
 void cuda_trace_deactivate(void)
 {
 	if (env.cudas_deactivated)
@@ -233,10 +259,12 @@ void cuda_trace_deactivate(void)
 		if (err) {
 			eprintf("Ptrace retraction for PID %d (%s) returned error: %d\n",
 				cuda->pid, cuda->proc_name, err);
-			continue;
+		} else {
+			cuda->dump_ok = true;
 		}
 
-		cuda->dump_ok = true;
+		if (env.log_set & LOG_TRACEE)
+			dump_tracee_log(cuda);
 	}
 
 	env.cudas_deactivated = true;
