@@ -209,8 +209,6 @@ int cuda_trace_prepare(int workdir_fd, long sess_timeout_ms)
 
 int cuda_trace_activate(long sess_start_ts, long sess_end_ts)
 {
-	vprintf("Activating CUDA tracees for session time range [%ld, %ld].\n",
-		sess_end_ts, sess_start_ts);
 	for (int i = 0; i < env.cuda_cnt; i++) {
 		struct cuda_tracee *cuda = &env.cudas[i];
 
