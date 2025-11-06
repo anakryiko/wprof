@@ -969,6 +969,7 @@ int tracee_handshake(struct tracee_state *tracee, int log_fd)
 		goto cleanup;
 	}
 	tracee->run_ctx = ctx_mem;
+	tracee->info.run_ctx = ctx_mem;
 
 	int tracee_fds[2] = {ctx_mem_fd, log_fd};
 	struct inj_msg msg = {

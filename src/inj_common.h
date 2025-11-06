@@ -34,6 +34,9 @@ struct inj_setup_ctx {
 
 struct inj_run_ctx {
 	long cupti_dlhandle;
+	bool cupti_ready;
+	long sess_start_ts;
+	long sess_end_ts;
 };
 
 enum inj_msg_kind {
@@ -58,8 +61,7 @@ struct inj_msg {
 		struct inj_msg_setup {
 		} setup;
 		struct inj_msg_cuda_session {
-			long long session_start_ns;
-			long long session_end_ns;
+			long session_timeout_ms;
 		} cuda_session;
 	};
 };
