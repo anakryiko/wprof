@@ -19,6 +19,7 @@
 #include <sys/wait.h>
 #include <sys/syscall.h>
 #include <sys/timerfd.h>
+#include <sys/prctl.h>
 #include <linux/futex.h>
 
 #include "inj.h"
@@ -443,6 +444,9 @@ static int worker_thread_func(void *arg)
 	vlog("Worker thread started (TID %d, PID %d, REAL PID %d)\n",
 	     gettid(), getpid(), setup_ctx->tracee_pid);
 
+	/* let's self-identify for easier observability and debugging */
+	(void)prctl(PR_SET_NAME, "wprofinj", 0, 0, 0);
+
 	epoll_fd = epoll_create1(EPOLL_CLOEXEC);
 	if (epoll_fd < 0) {
 		err = -errno;
@@ -540,8 +544,8 @@ event_loop:
 				goto cleanup;
 			}
 
-			vlog("CUDA session timer expired with %.3lfus delay after planned session end.\n",
-			     (ktime_now_ns() - run_ctx->sess_end_ts) / 1000.0);
+			vlog("CUDA session timer expired with %.3lfms delay after planned session end.\n",
+			     (ktime_now_ns() - run_ctx->sess_end_ts) / 1000000.0);
 			break;
 		}
 		case EK_EXIT:
