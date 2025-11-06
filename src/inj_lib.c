@@ -20,6 +20,7 @@
 #include <sys/syscall.h>
 #include <sys/timerfd.h>
 #include <sys/prctl.h>
+#include <sys/time.h>
 #include <linux/futex.h>
 
 #include "inj.h"
@@ -40,7 +41,7 @@
 struct inj_setup_ctx *setup_ctx;
 struct inj_run_ctx *run_ctx;
 
-static FILE *filelog = NULL;
+static int log_fd = -1;
 static int filelog_verbosity = -1;
 
 #if DEBUG_LOG
@@ -49,29 +50,48 @@ static int stderr_verbosity = 3;
 static int stderr_verbosity = -1;
 #endif /* DEBUG_LOG */
 
+static void write_all(int fd, void *buf, size_t sz)
+{
+	ssize_t done = 0, len;
+
+	while (done < sz) {
+		len = write(fd, buf + done, sz - done);
+		if (len < 0)
+			return;
+		done += len;
+	}
+}
+
 __printf(2, 3)
 void log_printf(int verbosity, const char *fmt, ...)
 {
 	va_list args;
 	int old_errno;
 
+	if (verbosity > stderr_verbosity && (log_fd < 0 || verbosity > filelog_verbosity))
+		return;
+
 	old_errno = errno;
 
-	if (verbosity <= stderr_verbosity) {
-		/* append "WPROFINJ: " prefix for stderr-based log messages */
-		char final_fmt[1024];
-		snprintf(final_fmt, sizeof(final_fmt), "WPROFINJ(%d): %s",
-			 setup_ctx ? setup_ctx->tracee_pid : getpid(), fmt);
+	struct timeval tv;
+	struct tm *tm;
+	char buf[4096];
+	size_t len;
 
-		va_start(args, fmt);
-		vfprintf(stderr, final_fmt, args);
-		va_end(args);
-	}
-	if (filelog && verbosity <= filelog_verbosity) {
-		va_start(args, fmt);
-		vfprintf(filelog, fmt, args);
-		va_end(args);
-	}
+	gettimeofday(&tv, NULL);
+	tm = localtime(&tv.tv_sec);
+	len = snprintf(buf, sizeof(buf), "WPROFINJ(%d) %02d:%02d:%02d.%06ld: ",
+		       setup_ctx ? setup_ctx->tracee_pid : getpid(),
+		       tm->tm_hour, tm->tm_min, tm->tm_sec, tv.tv_usec);
+
+	va_start(args, fmt);
+	len += vsnprintf(buf + len, sizeof(buf) - len, fmt, args);
+	va_end(args);
+
+	if (verbosity <= stderr_verbosity)
+		write_all(STDERR_FILENO, buf, len);
+	if (log_fd >= 0 && verbosity <= filelog_verbosity)
+		write_all(log_fd, buf, len);
 
 	errno = old_errno;
 }
@@ -152,7 +172,6 @@ static int exit_fd = -1;
 static pid_t worker_tid; /* for clone() and futex() only */
 static int epoll_fd = -1;
 static int timer_fd = -1;
-static int log_fd = -1;
 
 static char msg_buf[UDS_MAX_MSG_LEN] __attribute__((aligned(8)));
 
@@ -364,7 +383,7 @@ static int handle_msg(struct inj_msg *msg, int *fds, int fd_cnt)
 		}
 
 		int run_ctx_memfd = fds[0];
-		int log_fd = fds[1];
+		log_fd = fds[1];
 
 		/* fd[0] is memfd for run context */
 		run_ctx = mmap(NULL, sizeof(struct inj_run_ctx), PROT_READ | PROT_WRITE, MAP_SHARED,
@@ -374,15 +393,6 @@ static int handle_msg(struct inj_msg *msg, int *fds, int fd_cnt)
 			elog("Failed to mmap() provided run_ctx: %d\n", err);
 			return err;
 		}
-
-		/* fd[1] is log file FD */
-		filelog = fdopen(log_fd, "w");
-		if (!filelog) {
-			err = -errno;
-			elog("Failed to create FILE wrapper around log FD %d: %d\n", log_fd, err);
-			return err;
-		}
-		setlinebuf(filelog); /* line-buffered FILE for logging */
 
 		vlog("Log setup completed successfully! wprof PID is %d. wprofinj TID %d PID %d REAL PID %d\n",
 		     setup_ctx->parent_pid, gettid(), getpid(), setup_ctx->tracee_pid);
@@ -616,8 +626,6 @@ cleanup:
 	zclose(run_ctx_memfd);
 	if (run_ctx && run_ctx != MAP_FAILED)
 		munmap(run_ctx, sizeof(struct inj_run_ctx));
-	if (!filelog)
-		zclose(log_fd);
 	zclose(epoll_fd);
 	zclose(timer_fd);
 
@@ -798,7 +806,6 @@ void libwprofinj_fini()
 
 	vlog("======= DESTRUCTOR FINISHED ======\n");
 
-	if (filelog)
-		fclose(filelog);
+	zclose(log_fd);
 }
 
