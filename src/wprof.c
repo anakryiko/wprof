@@ -1456,6 +1456,8 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
+	vprintf("wprof v%s (PID %d) started!\n", WPROF_VERSION, getpid());
+
 	num_cpus = libbpf_num_possible_cpus();
 	if (num_cpus <= 0) {
 		eprintf("Failed to get the number of processors\n");

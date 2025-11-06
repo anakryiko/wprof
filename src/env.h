@@ -9,6 +9,8 @@
 #include "data.h"
 #include "cuda.h"
 
+#define WPROF_VERSION "0.1"
+
 #define DEFAULT_RINGBUF_SZ (8 * 1024 * 1024)
 #define DEFAULT_TASK_STATE_SZ (32 * 1024)
 
