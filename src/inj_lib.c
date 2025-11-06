@@ -45,7 +45,7 @@ static int filelog_verbosity = -1;
 
 #if DEBUG_LOG
 static int stderr_verbosity = 3;
-#else /* DEBUG_LOG */
+#else /* !DEBUG_LOG */
 static int stderr_verbosity = -1;
 #endif /* DEBUG_LOG */
 
@@ -346,7 +346,8 @@ static int handle_msg(struct inj_msg *msg, int *fds, int fd_cnt)
 		}
 		setlinebuf(filelog); /* line-buffered FILE for logging */
 
-		vlog("Log setup completed successfully! wprof PID is %d.\n", setup_ctx->parent_pid);
+		vlog("Log setup completed successfully! wprof PID is %d. wprofinj TID %d PID %d REAL PID %d\n",
+		     setup_ctx->parent_pid, gettid(), getpid(), setup_ctx->tracee_pid);
 
 		err = init_cupti_activities();
 		if (err)
@@ -757,7 +758,7 @@ void libwprofinj_fini()
 
 	stop_worker_thread();
 
-	vlog("======= DESTRUCTOR FINISHED ======\n");
+	//vlog("======= DESTRUCTOR FINISHED ======\n");
 
 	if (filelog)
 		fclose(filelog);
