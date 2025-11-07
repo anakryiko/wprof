@@ -53,6 +53,26 @@ enum waking_reason {
 enum waking_reason wreason_enum(enum waking_flags flags);
 const char *wreason_str(enum waking_flags flags);
 
+/* numeric values match CUPTI_ACTIVITY_MEMCPY_KIND_xxx definitions */
+enum cuda_memcpy_kind {
+	CUDA_MEMCPY_UNKN = 0,
+
+	CUDA_MEMCPY_HTOD = 1,
+	CUDA_MEMCPY_DTOH = 2,
+	CUDA_MEMCPY_HTOA = 3,
+	CUDA_MEMCPY_ATOH = 4,
+	CUDA_MEMCPY_ATOA = 5,
+	CUDA_MEMCPY_ATOD = 6,
+	CUDA_MEMCPY_DTOA = 7,
+	CUDA_MEMCPY_DTOD = 8,
+	CUDA_MEMCPY_HTOH = 9,
+	CUDA_MEMCPY_PTOP = 10,
+
+	NR_CUDA_MEMCPY_KIND,
+};
+
+const char *cuda_memcpy_kind_str(enum cuda_memcpy_kind);
+
 enum pb_static_iid {
 	IID_NONE = 0,
 
@@ -91,6 +111,8 @@ enum pb_static_iid {
 		IID_CAT_REQUEST_TASK_ENQUEUE,			/* REQUEST_TASK_ENQUEUE */
 		IID_CAT_REQUEST_TASK_DEQUEUE,			/* REQUEST_TASK_DEQUEUE */
 		IID_CAT_REQUEST_TASK_COMPLETE,			/* REQUEST_TASK_COMPLETE */
+		IID_CAT_GPU_KERNEL, 				/* GPU_KERNEL */
+		IID_CAT_GPU_MEMCPY, 				/* GPU_MEMCPY */
 	CAT_END_IID,
 
 	NAME_START_IID, __NAME_RESET_IID = NAME_START_IID - 1,
@@ -127,6 +149,8 @@ enum pb_static_iid {
 		IID_NAME_REQUEST_TASK_ENQUEUE,			/* REQUEST_TASK_ENQUEUE */
 		IID_NAME_REQUEST_TASK_DEQUEUE,			/* REQUEST_TASK_DEQUEUE */
 		IID_NAME_REQUEST_TASK_COMPLETE,			/* REQUEST_TASK_COMPLETE */
+		IID_NAME_CUDA_MEMCPY,				/* cudaMemcpy:... */
+		IID_NAME_CUDA_MEMCPY_LAST = IID_NAME_CUDA_MEMCPY + NR_CUDA_MEMCPY_KIND - 1,
 	NAME_END_IID,
 
 	ANNK_START_IID, __ANNK_RESET_IID = ANNK_START_IID - 1,
@@ -180,6 +204,17 @@ enum pb_static_iid {
 		IID_ANNK_SCX_DSQ_ID,				/* scx_dsq_id */
 		IID_ANNK_REQ_TASK_ID,				/* task_id */
 		IID_ANNK_REQ_WAIT_TIME_NS,			/* wait_time_ns */
+		IID_ANNK_CUDA_CORRELATION_ID,			/* correlation_id */
+		IID_ANNK_CUDA_DEVICE_ID,			/* device_id */
+		IID_ANNK_CUDA_STREAM_ID,			/* stream_id */
+		IID_ANNK_CUDA_BLOCK_X,				/* block_x */
+		IID_ANNK_CUDA_BLOCK_Y,				/* block_y */
+		IID_ANNK_CUDA_BLOCK_Z,				/* block_z */
+		IID_ANNK_CUDA_GRID_X,				/* grid_x */
+		IID_ANNK_CUDA_GRID_Y,				/* grid_y */
+		IID_ANNK_CUDA_GRID_Z,				/* grid_z */
+		IID_ANNK_CUDA_KIND,				/* kind */
+		IID_ANNK_CUDA_BYTE_CNT, 			/* byte_cnt */
 	ANNK_END_IID,
 
 	ANNV_START_IID, __ANNV_RESET_IID = ANNV_START_IID - 1,
@@ -189,6 +224,8 @@ enum pb_static_iid {
 		IID_ANNV_WAKING_REASON_LAST = IID_ANNV_WAKING_REASON + NR_WREASON - 1,
 		IID_ANNV_OFFCPU_BLOCKED,			/* blocked */
 		IID_ANNV_OFFCPU_PREEMPTED,			/* preempted */
+		IID_ANNV_CUDA_MEMCPY_KIND,			/* DtoH, HtoD, etc. */
+		IID_ANNV_CUDA_MEMCPY_KIND_LAST = IID_ANNV_CUDA_MEMCPY_KIND + NR_CUDA_MEMCPY_KIND - 1,
 	ANNV_END_IID,
 
 	IID_FIXED_LAST_ID,
