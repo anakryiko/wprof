@@ -127,6 +127,11 @@ static void sig_term(int sig)
 	signal(SIGTERM, SIG_DFL);
 }
 
+static void sig_pipe(int sig)
+{
+	eprintf("!!! Got unexpected SIGPIPE!\n");
+}
+
 static void init_data_header(struct wprof_data_hdr *hdr)
 {
 	memset(hdr, 0, sizeof(*hdr));
@@ -1467,6 +1472,7 @@ int main(int argc, char **argv)
 
 	signal(SIGINT, sig_term);
 	signal(SIGTERM, sig_term);
+	signal(SIGPIPE, sig_pipe);
 
 	if (env.ringbuf_cnt == 0) {
 		if (env.replay) {
