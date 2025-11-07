@@ -9,17 +9,44 @@
 struct tracee_state;
 struct inj_run_ctx;
 
+enum cuda_tracee_state {
+	TRACEE_UNINIT,
+	TRACEE_INJECTED,
+	TRACEE_PENDING,
+	TRACEE_ACTIVE,
+	TRACEE_INACTIVE,
+	TRACEE_SETUP_TIMEOUT,
+	TRACEE_SHUTDOWN_TIMEOUT,
+	TRACEE_FAILED,
+};
+
+static inline const char *cuda_tracee_state_str(enum cuda_tracee_state state)
+{
+	switch (state) {
+	case TRACEE_UNINIT: return "UNINIT";
+	case TRACEE_INJECTED: return "INJECTED";
+	case TRACEE_PENDING: return "PENDING";
+	case TRACEE_ACTIVE: return "ACTIVE";
+	case TRACEE_INACTIVE: return "INACTIVE";
+	case TRACEE_SETUP_TIMEOUT: return "SETUP_TIMEOUT";
+	case TRACEE_SHUTDOWN_TIMEOUT: return "SHUTDOWN_TIMEOUT";
+	case TRACEE_FAILED: return "FAILED";
+	default: return "???";
+	}
+}
+
 struct cuda_tracee {
 	int pid;
 	const char *proc_name;
 	int uds_fd;
+
+	enum cuda_tracee_state state;
 
 	int log_fd;
 	char *log_path;
 
 	int dump_fd;
 	char *dump_path;
-	bool dump_ok;
 
 	struct tracee_state *tracee;
 	struct inj_run_ctx *ctx;

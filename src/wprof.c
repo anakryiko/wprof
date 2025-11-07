@@ -252,9 +252,9 @@ static int merge_wprof_data(int workdir_fd, struct worker_state *workers)
 	for (int i = 0; i < env.cuda_cnt; i++) {
 		struct cuda_tracee *cuda = &env.cudas[i];
 
-		if (!cuda->dump_ok) {
-			eprintf("Skipping CUDA tracing data from tracee PID %d (%s) as it didn't shut down cleanly...\n",
-				cuda->pid, cuda->proc_name);
+		if (cuda->state != TRACEE_INACTIVE) {
+			eprintf("Skipping CUDA tracing data from tracee #%d (PID %d, %s, %s) as it had problems...\n",
+				i, cuda->pid, cuda->proc_name, cuda_tracee_state_str(cuda->state));
 			continue;
 		}
 

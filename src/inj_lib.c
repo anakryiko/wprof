@@ -624,8 +624,6 @@ cleanup:
 	zclose(exit_fd);
 	zclose(setup_ctx->uds_fd);
 	zclose(run_ctx_memfd);
-	if (run_ctx && run_ctx != MAP_FAILED)
-		munmap(run_ctx, sizeof(struct inj_run_ctx));
 	zclose(epoll_fd);
 	zclose(timer_fd);
 
@@ -633,6 +631,11 @@ cleanup:
 		elog("Worker thread exited with ERROR %d.\n", err);
 	else
 		vlog("Worker thread exited successfully.\n");
+
+	if (run_ctx && run_ctx != MAP_FAILED) {
+		run_ctx->worker_thread_done = true;
+		munmap(run_ctx, sizeof(struct inj_run_ctx));
+	}
 
 	return err;
 }
@@ -805,7 +808,5 @@ void libwprofinj_fini()
 	stop_worker_thread();
 
 	vlog("======= DESTRUCTOR FINISHED ======\n");
-
-	zclose(log_fd);
 }
 
