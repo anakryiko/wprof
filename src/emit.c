@@ -1119,8 +1119,8 @@ skip_prev_task:
 		next_st->compound_delay_ns = e->ts - e->swtch.waking_ts;
 		next_st->compound_chain_len = 1;
 
-		next_st->compound_delay_ns += waker_st->compound_delay_ns;
-		next_st->compound_chain_len += waker_st->compound_chain_len;
+		next_st->compound_delay_ns += waker_st ? waker_st->compound_delay_ns : 0;
+		next_st->compound_chain_len += waker_st ? waker_st->compound_chain_len : 0;
 	}
 
 	if (is_ts_in_range(e->swtch.waking_ts)/* && e->swtch.waker_cpu != e->cpu*/) {
