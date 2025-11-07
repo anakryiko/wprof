@@ -16,8 +16,9 @@ enum cuda_tracee_state {
 	TRACEE_ACTIVE,
 	TRACEE_INACTIVE,
 	TRACEE_SETUP_TIMEOUT,
+	TRACEE_SETUP_FAILED,
 	TRACEE_SHUTDOWN_TIMEOUT,
-	TRACEE_FAILED,
+	TRACEE_SHUTDOWN_FAILED,
 };
 
 static inline const char *cuda_tracee_state_str(enum cuda_tracee_state state)
@@ -29,8 +30,9 @@ static inline const char *cuda_tracee_state_str(enum cuda_tracee_state state)
 	case TRACEE_ACTIVE: return "ACTIVE";
 	case TRACEE_INACTIVE: return "INACTIVE";
 	case TRACEE_SETUP_TIMEOUT: return "SETUP_TIMEOUT";
+	case TRACEE_SETUP_FAILED: return "SETUP_FAILED";
 	case TRACEE_SHUTDOWN_TIMEOUT: return "SHUTDOWN_TIMEOUT";
-	case TRACEE_FAILED: return "FAILED";
+	case TRACEE_SHUTDOWN_FAILED: return "SHUTDOWN_FAILED";
 	default: return "???";
 	}
 }

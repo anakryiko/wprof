@@ -44,6 +44,7 @@ enum inj_msg_kind {
 	__INJ_INVALID = 0,
 	INJ_MSG_SETUP = 1,
 	INJ_MSG_CUDA_SESSION = 2,
+	INJ_MSG_SHUTDOWN = 3,
 };
 
 static inline const char *inj_msg_str(enum inj_msg_kind kind)
@@ -51,6 +52,7 @@ static inline const char *inj_msg_str(enum inj_msg_kind kind)
 	switch (kind) {
 	case INJ_MSG_SETUP: return "SETUP";
 	case INJ_MSG_CUDA_SESSION: return "CUDA_SESSION";
+	case INJ_MSG_SHUTDOWN: return "SHUTDOWN";
 	default: return "???";
 	}
 }
@@ -64,6 +66,8 @@ struct inj_msg {
 		struct inj_msg_cuda_session {
 			long session_timeout_ms;
 		} cuda_session;
+		struct inj_msg_shutdown {
+		} shutdown;
 	};
 };
 
