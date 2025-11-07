@@ -32,7 +32,7 @@
 #define __printf(a, b)	__attribute__((format(printf, a, b)))
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
 
-#define DEBUG_LOG 1
+#define DEBUG_LOG 0
 #define elog(fmt, ...) do { log_printf(0, fmt, ##__VA_ARGS__); } while (0)
 #define log(fmt, ...) do { log_printf(1, fmt, ##__VA_ARGS__); } while (0)
 #define vlog(fmt, ...) do { log_printf(2, fmt, ##__VA_ARGS__); } while (0)

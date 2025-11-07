@@ -21,7 +21,6 @@
 #define __weak __attribute__((weak))
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
 
-#define DEBUG_LOG 1
 #define elog(fmt, ...) do { log_printf(0, fmt, ##__VA_ARGS__); } while (0)
 #define log(fmt, ...) do { log_printf(1, fmt, ##__VA_ARGS__); } while (0)
 #define vlog(fmt, ...) do { log_printf(2, fmt, ##__VA_ARGS__); } while (0)
