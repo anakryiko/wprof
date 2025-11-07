@@ -183,7 +183,7 @@ int cuda_trace_prepare(int workdir_fd, long sess_timeout_ms)
 			eprintf("Failed to start CUDA trace session for tracee (%d, %s): %d\n",
 				cuda->pid, cuda->proc_name, err);
 			close(dump_fd);
-			cuda->state = TRACEE_FAILED;
+			cuda->state = TRACEE_SETUP_FAILED;
 			continue;
 		}
 
@@ -279,7 +279,22 @@ void cuda_trace_deactivate(void)
 
 		vprintf("Signaling tracee #%d PID %d (%s) to exit...\n", i, cuda->pid, cuda->proc_name);
 
+		struct inj_msg msg = {
+			.kind = INJ_MSG_SHUTDOWN,
+			.shutdown = { },
+		};
+		int err = uds_send_data(cuda->uds_fd, &msg, sizeof(msg), NULL, 0);
+
+		/* regardless of outcome, close UDS fd */
 		zclose(cuda->uds_fd);
+
+		if (err < 0) {
+			eprintf("Failed to send SHUTDOWN command cleanly to tracee #%d (PID %d, %s): %d\n",
+				i, cuda->pid, cuda->proc_name, err);
+			if (cuda->state == TRACEE_ACTIVE)
+				cuda->state = TRACEE_SHUTDOWN_FAILED;
+			continue;
+		}
 	}
 
 	vprintf("Waiting for CUDA tracees to shut down...\n");

@@ -369,6 +369,28 @@ __weak void finalize_cupti_activities(void)
 {
 }
 
+static int handle_session_end(void)
+{
+	int err = 0;
+
+	finalize_cupti_activities();
+
+	/* exit and timer events are racing each other, we finalize just once */
+	if (!cuda_dump)
+		return 0;
+
+	err = cuda_dump_finalize();
+	if (err) {
+		elog("Failed to finalize CUDA data dump: %d\n", err);
+		return err;
+	}
+
+	fclose(cuda_dump);
+	cuda_dump = NULL;
+
+	return 0;
+}
+
 static int handle_msg(struct inj_msg *msg, int *fds, int fd_cnt)
 {
 	int err = 0;
@@ -456,32 +478,21 @@ static int handle_msg(struct inj_msg *msg, int *fds, int fd_cnt)
 
 		break;
 	}
+	case INJ_MSG_SHUTDOWN:
+		vlog("Shutdown command received, cleaning up...\n");
+
+		err = handle_session_end();
+		if (err) {
+			elog("Failed to cleanly handle CUDA session end: %d\n", err);
+			return err;
+		}
+
+		vlog("Shutdown completed successfully.\n");
+		return -ESHUTDOWN;
 	default:
 		elog("Unexpected message (kind %d)!\n", msg->kind);
 		return -EINVAL;
 	}
-	return 0;
-}
-
-static int handle_session_end(void)
-{
-	int err = 0;
-
-	finalize_cupti_activities();
-
-	/* exit and timer events are racing each other, we finalize just once */
-	if (!cuda_dump)
-		return 0;
-
-	err = cuda_dump_finalize();
-	if (err) {
-		elog("Failed to finalize CUDA data dump: %d\n", err);
-		return err;
-	}
-
-	fclose(cuda_dump);
-	cuda_dump = NULL;
-
 	return 0;
 }
 
@@ -537,8 +548,15 @@ event_loop:
 				elog("UDS recvmsg() error (ret %d): %d\n", ret, err);
 				goto cleanup;
 			} else if (ret == 0) {
-				err = -EFAULT;
 				elog("UDS recvmsg() returned ZERO, meaning tracer process died, cleaning up...\n");
+
+				/* we still make sure that we clean up CUPTI stuff */
+				err = handle_session_end();
+				if (err)
+					elog("Failed to cleanly handle CUDA session end: %d\n", err);
+
+				err = -EFAULT;
+
 				goto cleanup;
 			} else if (ret != sizeof(struct inj_msg)) {
 				err = -EPROTO;
@@ -576,6 +594,10 @@ event_loop:
 			     m->kind, inj_msg_str(m->kind), fd_cnt, fd_cnt > 1 ? "s" : "");
 
 			err = handle_msg(m, fds, fd_cnt);
+			if (err == -ESHUTDOWN) {
+				err = 0;
+				goto cleanup;
+			}
 			if (err) {
 				for (int i = 0; i < fd_cnt; i++)
 					close(fds[i]);
