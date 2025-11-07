@@ -28,6 +28,9 @@
 #include "strset.h"
 #include "cuda_data.h"
 
+#define WPROFINJ_THREAD_NAME "wprofinj"
+#define WPROFINJ_CUPTI_THREAD_NAME "wprofinj-cupti"
+
 #define zclose(fd) do { if (fd >= 0) { close(fd); fd = -1; } } while (0)
 #define __printf(a, b)	__attribute__((format(printf, a, b)))
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
@@ -442,10 +445,22 @@ static int handle_msg(struct inj_msg *msg, int *fds, int fd_cnt)
 			return err;
 		}
 
+		/*
+		 * Temporarily set name to CUPTIO-specific variant as CUPTI might create more
+		 * pthreads and will inherit current thread name. This will lead to confusion due
+		 * to multiple "wprofinj" threads. Renaming to "wprofinj-cupti" (and then back to
+		 * "wprofinj" once we are done with CUPTI initialization) we make sure that we can
+		 * distinguish our own thread and CUPTI-owned ones
+		 */
+		(void)prctl(PR_SET_NAME, WPROFINJ_CUPTI_THREAD_NAME, 0, 0, 0);
+
 		if ((err = start_cupti_activities()) < 0) {
 			elog("Failed to start CUDA activity tracing: %d\n:", err);
 			return err;
 		}
+
+		/* restore original "wprofinj" name now */
+		(void)prctl(PR_SET_NAME, WPROFINJ_THREAD_NAME, 0, 0, 0);
 
 		run_ctx->cupti_ready = true;
 
@@ -505,7 +520,7 @@ static int worker_thread_func(void *arg)
 	     gettid(), getpid(), setup_ctx->tracee_pid);
 
 	/* let's self-identify for easier observability and debugging */
-	(void)prctl(PR_SET_NAME, "wprofinj", 0, 0, 0);
+	(void)prctl(PR_SET_NAME, WPROFINJ_THREAD_NAME, 0, 0, 0);
 
 	epoll_fd = epoll_create1(EPOLL_CLOEXEC);
 	if (epoll_fd < 0) {
