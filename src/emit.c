@@ -1893,40 +1893,25 @@ static int process_cuda_kernel(struct worker_state *w, struct wprof_event *e, si
 
 	const char *strs = (void *)w->dump_hdr + w->dump_hdr->hdr_sz + w->dump_hdr->strs_off;
 	const char *cuda_kern_name = strs + cu->name_off;
+	pb_iid name_iid = emit_intern_str(w, cuda_kern_name);
 
-	emit_track_slice_start(clamp_ts(e->ts), track_uuid, cuda_kern_name, "GPU_KERNEL");
+	emit_track_slice_start(clamp_ts(e->ts), track_uuid,
+			       iid_str(name_iid, cuda_kern_name), IID_CAT_GPU_KERNEL);
 
-	emit_track_slice_end(clamp_ts(cu->end_ts), track_uuid, cuda_kern_name, "GPU_KERNEL") {
-		emit_kv_int("correlation_id", cu->corr_id);
-		emit_kv_int("device_id", cu->device_id);
-		emit_kv_int("stream_id", cu->stream_id);
-		emit_kv_int("block_x", cu->block_x);
-		emit_kv_int("block_y", cu->block_y);
-		emit_kv_int("block_z", cu->block_z);
-		emit_kv_int("grid_x", cu->grid_x);
-		emit_kv_int("grid_y", cu->grid_y);
-		emit_kv_int("grid_z", cu->grid_z);
+	emit_track_slice_end(clamp_ts(cu->end_ts), track_uuid,
+			     iid_str(name_iid, cuda_kern_name), IID_CAT_GPU_KERNEL) {
+		emit_kv_int(IID_ANNK_CUDA_CORRELATION_ID, cu->corr_id);
+		emit_kv_int(IID_ANNK_CUDA_DEVICE_ID, cu->device_id);
+		emit_kv_int(IID_ANNK_CUDA_STREAM_ID, cu->stream_id);
+		emit_kv_int(IID_ANNK_CUDA_BLOCK_X, cu->block_x);
+		emit_kv_int(IID_ANNK_CUDA_BLOCK_Y, cu->block_y);
+		emit_kv_int(IID_ANNK_CUDA_BLOCK_Z, cu->block_z);
+		emit_kv_int(IID_ANNK_CUDA_GRID_X, cu->grid_x);
+		emit_kv_int(IID_ANNK_CUDA_GRID_Y, cu->grid_y);
+		emit_kv_int(IID_ANNK_CUDA_GRID_Z, cu->grid_z);
 	}
 
 	return 0;
-}
-
-static const char* cuda_memcpy_kind_str(uint8_t kind) {
-	static const char* const table[] = {
-		[0] = "???",
-		[1 /*CUPTI_ACTIVITY_MEMCPY_KIND_HTOD*/] = "HtoD",
-		[2 /*CUPTI_ACTIVITY_MEMCPY_KIND_DTOH*/] = "DtoH",
-		[3 /*CUPTI_ACTIVITY_MEMCPY_KIND_HTOA*/] = "HtoA",
-		[4 /*CUPTI_ACTIVITY_MEMCPY_KIND_ATOH*/] = "AtoH",
-		[5 /*CUPTI_ACTIVITY_MEMCPY_KIND_ATOA*/] = "AtoA",
-		[6 /*CUPTI_ACTIVITY_MEMCPY_KIND_ATOD*/] = "AtoD",
-		[7 /*CUPTI_ACTIVITY_MEMCPY_KIND_DTOA*/] = "DtoA",
-		[8 /*CUPTI_ACTIVITY_MEMCPY_KIND_DTOD*/] = "DtoD",
-		[9 /*CUPTI_ACTIVITY_MEMCPY_KIND_HTOH*/] = "HtoH",
-		[10/*CUPTI_ACTIVITY_MEMCPY_KIND_PTOP*/] = "PtoP",
-	};
-	const size_t table_size = sizeof(table) / sizeof(table[0]);
-	return (kind < table_size && table[kind]) ? table[kind] : "???";
 }
 
 /* WCK_CUDA_MEMCPY */
@@ -1944,15 +1929,25 @@ static int process_cuda_memcpy(struct worker_state *w, struct wprof_event *e, si
 	ensure_cuda_proc_gpu_track(e->task.pid, cu->device_id);
 	u64 track_uuid = ensure_cuda_proc_stream_track(e->task.pid, cu->device_id, cu->stream_id);
 
-	emit_track_slice_start(clamp_ts(e->ts), track_uuid, "memcpy", "GPU_MEMCPY");
+	pb_iid name_iid, kind_iid;
+	if (cu->copy_kind >= CUDA_MEMCPY_UNKN && cu->copy_kind < NR_CUDA_MEMCPY_KIND) {
+		name_iid = IID_NAME_CUDA_MEMCPY + cu->copy_kind;
+		kind_iid = IID_ANNV_CUDA_MEMCPY_KIND + cu->copy_kind;
+	} else {
+		name_iid = IID_NONE;
+		kind_iid = IID_NONE;
+	}
 
-	emit_track_slice_end(clamp_ts(cu->end_ts), track_uuid, "memcpy", "GPU_MEMCPY") {
-		emit_kv_int("byte_cnt", cu->byte_cnt);
-		emit_kv_str("kind", cuda_memcpy_kind_str(cu->copy_kind));
+	struct pb_str name = iid_str(name_iid, sfmt("%s:%s", "cudaMemcpy", cuda_memcpy_kind_str(cu->copy_kind)));
+	emit_track_slice_start(clamp_ts(e->ts), track_uuid, name, IID_CAT_GPU_MEMCPY);
 
-		emit_kv_int("correlation_id", cu->corr_id);
-		emit_kv_int("device_id", cu->device_id);
-		emit_kv_int("stream_id", cu->stream_id);
+	emit_track_slice_end(clamp_ts(cu->end_ts), track_uuid, name, IID_CAT_GPU_MEMCPY) {
+		emit_kv_int(IID_ANNK_CUDA_BYTE_CNT, cu->byte_cnt);
+		emit_kv_str(IID_ANNK_CUDA_KIND, iid_str(kind_iid, cuda_memcpy_kind_str(cu->copy_kind)));
+
+		emit_kv_int(IID_ANNK_CUDA_CORRELATION_ID, cu->corr_id);
+		emit_kv_int(IID_ANNK_CUDA_DEVICE_ID, cu->device_id);
+		emit_kv_int(IID_ANNK_CUDA_STREAM_ID, cu->stream_id);
 	}
 
 	return 0;
