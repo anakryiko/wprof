@@ -77,7 +77,7 @@ extern enum log_subset env_log_set;
 #define vprintf(fmt, ...) do {									\
 	if (env_verbose) {									\
 		int _errno = errno;								\
-		fprintf(stdout, fmt, ##__VA_ARGS__);						\
+		fprintf(stderr, fmt, ##__VA_ARGS__);						\
 		errno = _errno;									\
 	}											\
 } while (0);
@@ -91,7 +91,7 @@ extern enum log_subset env_log_set;
 #define dprintf(_level, fmt, ...) do {								\
 	if (env_debug_level >= _level) {							\
 		int _errno = errno;								\
-		fprintf(stdout, fmt, ##__VA_ARGS__);						\
+		fprintf(stderr, fmt, ##__VA_ARGS__);						\
 		errno = _errno;									\
 	}											\
 } while (0);
