@@ -35,6 +35,7 @@ struct inj_setup_ctx {
 struct inj_run_ctx {
 	long cupti_dlhandle;
 	bool cupti_ready;
+	bool worker_thread_done;
 	long sess_start_ts;
 	long sess_end_ts;
 };
