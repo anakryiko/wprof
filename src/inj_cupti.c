@@ -247,7 +247,6 @@ static bool cupti_lazy_init(void)
 {
 	cupti_handle = dlopen("libcupti.so", RTLD_NOLOAD | RTLD_LAZY);
 	if (cupti_handle) {
-		run_ctx->cupti_dlhandle = (long)cupti_handle;
 		vlog("Found libcupti.so (handle %lx)!\n", (long)cupti_handle);
 	} else {
 		/* call dlerror() regardless to clear error */
@@ -375,6 +374,16 @@ void finalize_cupti_activities(void)
 	}
 
 	vlog("CUPTI activity API finalized.\n");
+
+	if (cupti_handle) {
+		vlog("Performing dlclose(libcupti.so) to not leak its handle...\n");
+		int err = dlclose(cupti_handle);
+		if (err)
+			vlog("dlclose(libcupti.so) FAILED: %d\n", -errno);
+		else
+			vlog("dlclose(libcupti.so) finished successfully.\n");
+		cupti_handle = NULL;
+	}
 
 	cupti_init = false;
 }
