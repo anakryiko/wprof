@@ -203,7 +203,7 @@ int uds_send_data(int uds_fd, void *data, size_t data_len, int *fds, int fd_cnt)
 		memcpy(CMSG_DATA(cmsg), fds, fds_sz);
 	}
 
-	int sent = sendmsg(uds_fd, &msg, 0);
+	int sent = sendmsg(uds_fd, &msg, MSG_NOSIGNAL);
 	if (sent != data_len) {
 		eprintf("Failed to send data over UDS, got %d (err %d), expected %zu\n",
 			sent, -errno, data_len);
