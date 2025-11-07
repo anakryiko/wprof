@@ -85,11 +85,18 @@ static u64 gpu_to_cpu_time_ns(u64 gpu_ts)
 	return gpu_ts + gpu_to_cpu_time_delta_ns;
 }
 
+static bool cupti_init = false;
+static void *cupti_handle = NULL;
+static bool cupti_alive = false;
+
 static void CUPTIAPI buffer_requested(uint8_t **buffer, size_t *size, size_t *max_num_records)
 {
 	const size_t cupti_buf_sz = 2 * 1024 * 1024;
-	uint8_t *buf = (uint8_t *)malloc(cupti_buf_sz);
+	uint8_t *buf;
 
+	cupti_alive = true;
+
+	buf = (uint8_t *)malloc(cupti_buf_sz);
 	if (!buf) {
 		*buffer = NULL;
 		*size = 0;
@@ -124,11 +131,6 @@ static int handle_cupti_record(CUpti_Activity *rec)
 	case CUPTI_ACTIVITY_KIND_KERNEL:
 	case CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL: {
 		CUpti_ActivityKernel4 *r = (CUpti_ActivityKernel4 *)rec;
-		/*
-		vlog("  Kernel: %s (duration: %llu ns)\n",
-			r->name ? r->name : "<unknown>",
-			(unsigned long long)(r->end - r->start));
-		*/
 
 		u64 start_ts = gpu_to_cpu_time_ns(r->start);
 		u64 end_ts = gpu_to_cpu_time_ns(r->end);
@@ -158,11 +160,6 @@ static int handle_cupti_record(CUpti_Activity *rec)
 	}
 	case CUPTI_ACTIVITY_KIND_MEMCPY: {
 		CUpti_ActivityMemcpy *r = (CUpti_ActivityMemcpy *)rec;
-		/*
-		vlog("  Memcpy: %llu bytes (duration: %llu ns)\n",
-		       (unsigned long long)memcpy->bytes,
-		       (unsigned long long)(memcpy->end - memcpy->start));
-		*/
 
 		u64 start_ts = gpu_to_cpu_time_ns(r->start);
 		u64 end_ts = gpu_to_cpu_time_ns(r->end);
@@ -246,9 +243,6 @@ static void CUPTIAPI buffer_completed(CUcontext ctx, uint32_t stream_id, uint8_t
 	     rec_cnt, err_cnt, drop_cnt);
 }
 
-static bool cupti_ok = false;
-static void *cupti_handle = NULL;
-
 static bool cupti_lazy_init(void)
 {
 	cupti_handle = dlopen("libcupti.so", RTLD_NOLOAD | RTLD_LAZY);
@@ -269,7 +263,7 @@ static bool cupti_lazy_init(void)
 			return false;
 	}
 
-	cupti_ok = true;
+	cupti_init = true;
 	return true;
 }
 
@@ -351,22 +345,36 @@ cleanup:
 /* Finalize CUPTI and flush any remaining activity records */
 void finalize_cupti_activities(void)
 {
-	if (!cupti_ok)
+	if (!cupti_init)
 		return;
 
-	vlog("Flushing CUPTI activity buffers...\n");
+	if (cupti_alive) {
+		vlog("Flushing CUPTI activity buffers...\n");
+		/* drain buffers forcefully to avoid getting our callbacks called */
+		(void)cupti_activity_flush_all(CUPTI_ACTIVITY_FLAG_FLUSH_FORCED);
+	} else {
+		vlog("Skipping CUPTI activity flush as CUPTI doesn't seem to be active!\n");
+	}
 
 	/* deactivate any activity we might have activated */
 	for (int i = 0; i < ARRAY_SIZE(cupti_act_kinds); i++) {
 		CUpti_ActivityKind kind = cupti_act_kinds[i];
 
+		vlog("Disabling CUPTI activity %s...\n", cupti_act_kind_str(kind));
 		(void)cupti_activity_disable(kind);
 	}
 
-	/* drain buffers forcefully to avoid getting our callbacks called */
-	(void)cupti_activity_flush_all(CUPTI_ACTIVITY_FLAG_FLUSH_FORCED);
+	/*
+	 * Make sure any remaining accummulated records between last flush and
+	 * disabling activities are drained and recorded properly
+	 */
+	if (cupti_alive) {
+		vlog("Flushing CUPTI activity buffers again...\n");
+		/* drain buffers forcefully to avoid getting our callbacks called */
+		(void)cupti_activity_flush_all(CUPTI_ACTIVITY_FLAG_FLUSH_FORCED);
+	}
 
 	vlog("CUPTI activity API finalized.\n");
 
-	cupti_ok = false;
+	cupti_init = false;
 }
