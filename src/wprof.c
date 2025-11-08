@@ -598,10 +598,13 @@ static void print_exit_summary(struct worker_state *workers, int worker_cnt, str
 	int err;
 	u64 rb_handled_cnt = 0, rb_ignored_cnt = 0;
 	u64 rb_handled_sz = 0, rb_ignored_sz = 0;
-	struct wprof_stats stats_by_cpu[num_cpus] = {};
-	struct wprof_stats stats_by_rb[env.ringbuf_cnt] = {};
+	struct wprof_stats stats_by_cpu[num_cpus];
+	struct wprof_stats stats_by_rb[env.ringbuf_cnt];
 	struct wprof_stats s = {};
 	double dur_s = env.duration_ns / 1000000000.0;
+
+	memset(&stats_by_cpu, 0, sizeof(stats_by_cpu));
+	memset(&stats_by_rb, 0, sizeof(stats_by_rb));
 
 	if (!skel)
 		goto skip_prog_stats;

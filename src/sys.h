@@ -34,4 +34,13 @@ static inline int sys_pidfd_getfd(int pid, int targetfd, unsigned int flags)
 	return syscall(SYS_pidfd_getfd, pid, targetfd, flags);
 }
 
+#ifndef MFD_CLOEXEC
+#define MFD_CLOEXEC 1U
+#endif
+
+static inline int sys_memfd_create(const char *name, unsigned int flags)
+{
+	return syscall(SYS_memfd_create, name, flags);
+}
+
 #endif /* __SYS_H__ */
