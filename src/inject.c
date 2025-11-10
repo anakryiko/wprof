@@ -404,7 +404,17 @@ static int ptrace_intercept(const struct tracee_state *tracee, struct user_regs_
 		goto err_detach;
 #elif defined(__aarch64__)
 	regs->pc -= 4;
-	/* XXX: cancel pending syscall with explicit NT_ARM_SYSTEM_CALL */
+	/* On ARM64 we need to cancel pending syscall with explicit NT_ARM_SYSTEM_CALL */
+	int syscall_nr = -1;
+	struct iovec iov = {
+		.iov_base = &syscall_nr,
+		.iov_len = sizeof(syscall_nr),
+	};
+	if (ptrace(PTRACE_SETREGSET, tracee->pid, NT_ARM_SYSTEM_CALL, &iov) < 0) {
+		err = -errno;
+		dlog("ptrace(PTRACE_SETREGSET, NT_ARM_SYSTEM_CALL, nr=%d) failed: %d\n", syscall_nr, err);
+		goto err_detach;
+	}
 #else
 #error "Unsupported architecture"
 #endif
