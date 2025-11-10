@@ -804,7 +804,7 @@ static void stop_worker_thread(void)
 __attribute__((constructor))
 void libwprofinj_init()
 {
-    vlog("======= CONSTRUCTOR ======\n");
+	vlog("======= CONSTRUCTOR ======\n");
 }
 
 struct inj_setup_ctx *LIBWPROFINJ_SETUP_SYM(struct inj_setup_ctx *ctx)
