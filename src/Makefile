@@ -36,6 +36,10 @@ ALL_CFLAGS := $(CFLAGS) $(EXTRA_CFLAGS) -fno-omit-frame-pointer				\
 	      -Wno-c23-extensions -Wno-sign-compare -Wno-format-truncation
 ALL_LDFLAGS := $(LDFLAGS) $(EXTRA_LDFLAGS) -lrt -ldl -lpthread -lm
 
+# We seem to need the following packages (on CentOS) to get all necessary headers:
+#   - cuda-nvcc-<version>;
+#   - cuda-cudart-devel-<version>;
+#   - cuda-cupti-<version>
 CUPTI_PATHS := /usr/local/cuda*/targets/*/include
 
 # Auto-detect CUPTI if not specified
@@ -46,6 +50,8 @@ CUPTI_INCLUDE ?= $(shell								\
 
 ifneq ($(CUPTI_INCLUDE),)
 ALL_CFLAGS += -DHAVE_CUPTI
+else
+$(warning "WARNING! CUDA tracing won't be compiled due to missing CUPTI headers, check CUPTI_INCLUDE!")
 endif
 
 # Get Clang's default includes on this system. We'll explicitly add these dirs
@@ -183,7 +189,7 @@ sim: $(OUTPUT)/sim.o | $(OUTPUT)
 .PHONY: clean
 clean:
 	$(call msg,CLEAN)
-	$(Q)rm -rf $(OUTPUT)/*.o wprof
+	$(Q)rm -rf $(OUTPUT)/*.o $(OUTPUT)/libwprofinj.* wprof
 
 .PHONY: clean-all
 clean-all: clean
