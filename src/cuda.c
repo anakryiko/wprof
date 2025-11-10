@@ -44,8 +44,9 @@ static struct cuda_tracee *add_cuda_tracee(struct tracee_state *tracee)
 	return cuda;
 }
 
-static int discover_pid_cuda_binaries(int pid, int workdir_fd)
+static int discover_pid_cuda_binaries(int pid, int workdir_fd, bool force)
 {
+	char log_path[128];
 	struct vma_info *vma;
 	bool has_cuda = false, has_cupti = false;
 	int err = 0, log_fd = -1;
@@ -68,18 +69,28 @@ static int discover_pid_cuda_binaries(int pid, int workdir_fd)
 		return -errno;
 	}
 
-	if (!has_cuda && !has_cupti)
+	if (!has_cuda && !has_cupti) {
+		if (force) {
+			vprintf("PID %d (%s) has no CUDA or CUPTI, but continuing nevertheless...\n", pid, proc_name(pid));
+			goto force_continue;
+		}
 		return 0;
+	}
 
 	if (has_cuda && !has_cupti) {
-		eprintf("PID %d (%s) has CUDA, but no CUPTI, skipping...\n", pid, proc_name(pid));
+		if (force) {
+			vprintf("PID %d (%s) has CUDA, but no CUPTI, but continuing nevertheless...\n", pid, proc_name(pid));
+			goto force_continue;
+		} else {
+			eprintf("PID %d (%s) has CUDA, but no CUPTI, skipping...\n", pid, proc_name(pid));
+		}
 		return 0;
 	}
 
 	if (env.verbose)
 		printf("PID %d (%s) has CUPTI!\n", pid, proc_name(pid));
 
-	char log_path[128];
+force_continue:
 	snprintf(log_path, sizeof(log_path), LIBWPROFINJ_LOG_PATH_FMT, getpid(), pid);
 
 	log_fd = openat(workdir_fd, log_path, O_RDWR | O_CREAT | O_CLOEXEC, 0644);
@@ -132,7 +143,7 @@ int cuda_trace_setup(int workdir_fd)
 
 		wprof_for_each(proc, pidp) {
 			pid = *pidp;
-			err = discover_pid_cuda_binaries(pid, workdir_fd);
+			err = discover_pid_cuda_binaries(pid, workdir_fd, false);
 			if (err) {
 				eprintf("Failed to check if PID %d uses CUDA+CUPTI: %d (skipping...)\n", pid, err);
 				continue;
@@ -143,10 +154,10 @@ int cuda_trace_setup(int workdir_fd)
 		return 0;
 	}
 
-	for (int i = 0; i < env.req_pid_cnt; i++) {
-		int pid = env.req_pids[i];
+	for (int i = 0; i < env.cuda_pid_cnt; i++) {
+		int pid = env.cuda_pids[i];
 
-		err = discover_pid_cuda_binaries(pid, workdir_fd);
+		err = discover_pid_cuda_binaries(pid, workdir_fd, true);
 		if (err) {
 			eprintf("Failed to check if PID %d uses CUDA+CUPTI: %d (skipping...)\n", pid, err);
 			continue;
