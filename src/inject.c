@@ -229,16 +229,6 @@ static int ptrace_set_regs(const struct tracee_state *tracee, const struct user_
 	return 0;
 }
 
-static int ptrace_set_options(const struct tracee_state *tracee, int options)
-{
-	if (ptrace(PTRACE_SETOPTIONS, tracee->pid, NULL, options) < 0) {
-		dlog("ptrace(PTRACE_SETOPTIONS, opts %x) failed: %d\n", options, -errno);
-		return -errno;
-	}
-	ddlog("PTRACE_SET_OPTIONS(%x)\n", options);
-	return 0;
-}
-
 static int ptrace_op(const struct tracee_state *tracee, enum __ptrace_request op, long data)
 {
 	const char *op_name;
@@ -350,17 +340,6 @@ static int ptrace_wait_syscall(const struct tracee_state *tracee)
 	return __ptrace_wait(tracee, SIGTRAP | 0x80, false /* !PTRACE_EVENT_STOP */, 0);
 }
 
-static int ptrace_restart_syscall(const struct tracee_state *tracee)
-{
-	int err = 0;
-
-	err = err ?: ptrace_set_regs(tracee, &tracee->orig_regs);
-	err = err ?: ptrace_op(tracee, PTRACE_SYSCALL, 0);
-	err = err ?: ptrace_wait_syscall(tracee);
-
-	return err;
-}
-
 static int ptrace_exec_syscall(const struct tracee_state *tracee,
 			       const struct user_regs_struct *pre_regs,
 			       long *res)
@@ -370,11 +349,12 @@ static int ptrace_exec_syscall(const struct tracee_state *tracee,
 
 	err = err ?: ptrace_set_regs(tracee, pre_regs);
 	err = err ?: ptrace_op(tracee, PTRACE_SYSCALL, 0);
-	err = err ?: ptrace_wait_syscall(tracee);
+	err = err ?: ptrace_wait_syscall(tracee); /* syscall-enter-stop */
+	err = err ?: ptrace_op(tracee, PTRACE_SYSCALL, 0);
+	err = err ?: ptrace_wait_syscall(tracee); /* syscall-exit-stop */
 	err = err ?: ptrace_get_regs(tracee, &post_regs);
-	err = err ?: ptrace_restart_syscall(tracee);
 
-	if (err == 0) {
+	if (err == 0 && res) {
 #if defined(__x86_64__)
 		*res = post_regs.rax;
 #elif defined(__aarch64__)
@@ -390,11 +370,12 @@ static int ptrace_exec_syscall(const struct tracee_state *tracee,
 static int ptrace_intercept(const struct tracee_state *tracee, struct user_regs_struct *regs)
 {
 	int err = 0;
+
 	/*
 	 * Attach to tracee
 	 */
 	dlog("Seizing...\n");
-	if ((err = ptrace_op(tracee, PTRACE_SEIZE, 0)) < 0)
+	if ((err = ptrace_op(tracee, PTRACE_SEIZE, PTRACE_O_TRACESYSGOOD)) < 0)
 		return err;
 
 	if ((err = ptrace_op(tracee, PTRACE_INTERRUPT, 0)) < 0)
@@ -405,8 +386,6 @@ static int ptrace_intercept(const struct tracee_state *tracee, struct user_regs_
 	 * Take over next syscall
 	 */
 	dlog("Resuming until syscall...\n");
-	if ((err = ptrace_set_options(tracee, PTRACE_O_TRACESYSGOOD)) < 0)
-		goto err_detach;
 	if ((err = ptrace_op(tracee, PTRACE_SYSCALL, 0)) < 0)
 		goto err_detach;
 	if ((err = ptrace_wait_syscall(tracee)) < 0)
@@ -416,16 +395,34 @@ static int ptrace_intercept(const struct tracee_state *tracee, struct user_regs_
 		goto err_detach;
 
 #if defined(__x86_64__)
-	/* XXX: arm64 will need something else */
 	regs->rip -= 2; /* adjust for syscall replay, syscall instruction is 2 bytes */
 	regs->rax = regs->orig_rax;
 	regs->orig_rax = -1;
+
+	/* cancel pending syscall with that orig_rax == -1 */
+	if ((err = ptrace_set_regs(tracee, regs)) < 0)
+		goto err_detach;
 #elif defined(__aarch64__)
 	regs->pc -= 4;
+	/* XXX: cancel pending syscall with explicit NT_ARM_SYSTEM_CALL */
 #else
 #error "Unsupported architecture"
 #endif
 
+	/*
+	 * Now that we "cancelled" original syscall proceed to
+	 * syscall-exit-stop, so that all subsequent operations start from
+	 * clean slate
+	 */
+	if ((err = ptrace_op(tracee, PTRACE_SYSCALL, 0)) < 0)
+		goto err_detach;
+	if ((err = ptrace_wait_syscall(tracee)) < 0)
+		goto err_detach;
+
+	/*
+	 * Now we are in syscall-exit-stop, we can replay/restart syscall or
+	 * proceed with user space code execution
+	 */
 	return 0;
 
 err_detach:
@@ -441,7 +438,7 @@ err_detach:
 #if defined(__x86_64__)
 
 /* function call convention */
-#define ___regs_set_func_args0(_r)                   (_r)->orig_rax = -1;
+#define ___regs_set_func_args0(_r)
 #define ___regs_set_func_args1(_r, a)                (_r)->rdi = a; ___regs_set_func_args0(_r)
 #define ___regs_set_func_args2(_r, a, b)             (_r)->rsi = b; ___regs_set_func_args1(_r, a)
 #define ___regs_set_func_args3(_r, a, b, c)          (_r)->rdx = c; ___regs_set_func_args2(_r, a, b)
@@ -450,7 +447,7 @@ err_detach:
 #define ___regs_set_func_args6(_r, a, b, c, d, e, f) (_r)->r9  = f; ___regs_set_func_args5(_r, a, b, c, d, e)
 
 /* system call convention */
-#define ___regs_set_sys_args0(_r, nr)                   (_r)->orig_rax = nr;
+#define ___regs_set_sys_args0(_r, nr)                   (_r)->rax = nr;
 #define ___regs_set_sys_args1(_r, nr, a)                (_r)->rdi = a; ___regs_set_sys_args0(_r, nr)
 #define ___regs_set_sys_args2(_r, nr, a, b)             (_r)->rsi = b; ___regs_set_sys_args1(_r, nr, a)
 #define ___regs_set_sys_args3(_r, nr, a, b, c)          (_r)->rdx = c; ___regs_set_sys_args2(_r, nr, a, b)
@@ -497,7 +494,7 @@ err_detach:
 #define ___regs_set_func_args(regs, args...)  ___apply(___regs_set_func_args, ___narg(args))(regs, ##args)
 #define ___regs_set_sys_args(regs, nr, args...)  ___apply(___regs_set_sys_args, ___narg(args))(regs, nr, ##args)
 
-static int tracee_exec_func(const struct tracee_state *tracee, long func_addr, struct user_regs_struct *regs, long *res)
+static int ptrace_exec_user_call(const struct tracee_state *tracee, long func_addr, struct user_regs_struct *regs, long *res)
 {
 	long inj_trap_addr = tracee->exec_mmap_addr + __inj_trap - __inj_call;
 	int err;
@@ -530,7 +527,7 @@ static int tracee_dlclose(const struct tracee_state *tracee, long dl_handle)
 	/* int dlclose(void *handle); */
 	regs = tracee->orig_regs;
 	___regs_set_func_args(&regs, dl_handle);
-	if ((err = tracee_exec_func(tracee, tracee->dlclose_addr, &regs, &dlclose_res)) < 0)
+	if ((err = ptrace_exec_user_call(tracee, tracee->dlclose_addr, &regs, &dlclose_res)) < 0)
 		return err;
 
 	if (dlclose_res != 0) {
@@ -761,7 +758,7 @@ struct tracee_state *tracee_inject(int pid)
 	/* void *dlopen(const char *path, int flags); */
 	regs = tracee->orig_regs;
 	___regs_set_func_args(&regs, tracee->data_mmap_addr, RTLD_NOW | RTLD_LOCAL);
-	if ((err = tracee_exec_func(tracee, tracee->dlopen_addr, &regs, &tracee->dlopen_handle)) < 0)
+	if ((err = ptrace_exec_user_call(tracee, tracee->dlopen_addr, &regs, &tracee->dlopen_handle)) < 0)
 		goto cleanup;
 	if (tracee->dlopen_handle == 0) {
 		elog("Failed to dlopen() injection library!\n");
@@ -778,7 +775,7 @@ struct tracee_state *tracee_inject(int pid)
 	/* void *dlsym(void *restrict handle, const char *restrict symbol); */
 	regs = tracee->orig_regs;
 	___regs_set_func_args(&regs, tracee->dlopen_handle, tracee->data_mmap_addr);
-	if ((err = tracee_exec_func(tracee, tracee->dlsym_addr, &regs, &tracee->inj_setup_addr)) < 0)
+	if ((err = ptrace_exec_user_call(tracee, tracee->dlsym_addr, &regs, &tracee->inj_setup_addr)) < 0)
 		goto cleanup;
 	if (tracee->inj_setup_addr == 0) {
 		elog("Failed to find '%s' using dlsym()...\n", LIBWPROFINJ_SETUP_SYM_NAME);
@@ -806,7 +803,7 @@ struct tracee_state *tracee_inject(int pid)
 	long inj_setup_res;
 	regs = tracee->orig_regs;
 	___regs_set_func_args(&regs, tracee->data_mmap_addr);
-	if ((err = tracee_exec_func(tracee, tracee->inj_setup_addr, &regs, &inj_setup_res)) < 0)
+	if ((err = ptrace_exec_user_call(tracee, tracee->inj_setup_addr, &regs, &inj_setup_res)) < 0)
 		goto cleanup;
 	if (inj_setup_res != tracee->data_mmap_addr) {
 		elog("Injection init call %s() failed (result %lx), bailing!\n",
@@ -820,12 +817,12 @@ struct tracee_state *tracee_inject(int pid)
 	 * Prepare for execution of the original intercepted syscall
 	 */
 	dlog("Replaying original syscall and detaching tracee...\n");
-	if ((err = ptrace_restart_syscall(tracee)) < 0)
-		goto cleanup;
 	ptrace_state = PTRACE_STATE_ATTACHED;
-	if ((err = ptrace_op(tracee, PTRACE_DETACH, 0)) < 0)
+	if ((err = ptrace_exec_syscall(tracee, &tracee->orig_regs, NULL)) < 0)
 		goto cleanup;
 	ptrace_state = PTRACE_STATE_DETACHED;
+	if ((err = ptrace_op(tracee, PTRACE_DETACH, 0)) < 0)
+		goto cleanup;
 
 	u64 ptrace_injected_ts = ktime_now_ns();
 
@@ -854,7 +851,7 @@ cleanup:
 	switch (ptrace_state) {
 	case PTRACE_STATE_PENDING_SYSCALL:
 		dlog("Trying to restore & replay the original syscall...\n");
-		(void)ptrace_restart_syscall(tracee);
+		(void)ptrace_exec_syscall(tracee, &tracee->orig_regs, NULL);
 		/* fallthrough */
 	case PTRACE_STATE_ATTACHED:
 		dlog("Trying to detach tracee...\n");
@@ -893,12 +890,6 @@ int tracee_retract(struct tracee_state *tracee)
 		goto cleanup;
 
 	u64 ptrace_dlclosed_ts = ktime_now_ns();
-
-	/* We will execute a series of syscalls now, prepare for that. */
-	if ((err = ptrace_restart_syscall(tracee)) < 0)
-		goto cleanup;
-
-	ptrace_state = PTRACE_STATE_ATTACHED;
 
 	/*
 	 * Inject munmap() syscall
@@ -944,9 +935,12 @@ int tracee_retract(struct tracee_state *tracee)
 	 * Prepare for execution of the original intercepted syscall
 	 */
 	dlog("Replaying original syscall and detaching tracee...\n");
-	if ((err = ptrace_op(tracee, PTRACE_DETACH, 0)) < 0)
+	ptrace_state = PTRACE_STATE_ATTACHED;
+	if ((err = ptrace_exec_syscall(tracee, &tracee->orig_regs, NULL)) < 0)
 		goto cleanup;
 	ptrace_state = PTRACE_STATE_DETACHED;
+	if ((err = ptrace_op(tracee, PTRACE_DETACH, 0)) < 0)
+		goto cleanup;
 
 	u64 ptrace_retracted_ts = ktime_now_ns();
 
@@ -977,7 +971,7 @@ cleanup:
 	switch (ptrace_state) {
 	case PTRACE_STATE_PENDING_SYSCALL:
 		dlog("Trying to restore & replay the original syscall...\n");
-		(void)ptrace_restart_syscall(tracee);
+		(void)ptrace_exec_syscall(tracee, &tracee->orig_regs, NULL);
 		/* fallthrough */
 	case PTRACE_STATE_ATTACHED:
 		dlog("Trying to detach tracee...\n");
