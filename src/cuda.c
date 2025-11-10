@@ -304,6 +304,10 @@ void cuda_trace_deactivate(void)
 				i, cuda->pid, cuda->proc_name, err);
 			if (cuda->state == TRACEE_ACTIVE)
 				cuda->state = TRACEE_SHUTDOWN_FAILED;
+
+			if (env_log_set & LOG_TRACEE)
+				dump_tracee_log(cuda);
+
 			continue;
 		}
 	}
