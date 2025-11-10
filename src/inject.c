@@ -67,7 +67,6 @@ const struct tracee_info *tracee_info(const struct tracee_state *tracee)
 
 enum ptrace_state {
 	PTRACE_STATE_DETACHED,
-	PTRACE_STATE_ATTACHED,
 	PTRACE_STATE_PENDING_SYSCALL,
 };
 
@@ -437,6 +436,27 @@ static int ptrace_intercept(const struct tracee_state *tracee, struct user_regs_
 
 err_detach:
 	(void)ptrace_op(tracee, PTRACE_DETACH, 0);
+	return err;
+}
+
+static int ptrace_replay(const struct tracee_state *tracee)
+{
+	int err = 0;
+
+	err = err ?: ptrace_set_regs(tracee, &tracee->orig_regs);
+	err = err ?: ptrace_op(tracee, PTRACE_SYSCALL, 0);
+	err = err ?: ptrace_wait_syscall(tracee); /* syscall-enter-stop */
+
+	/*
+	 * Don't wait for the original syscall to return. This might never
+	 * happen (long sleep() or long blocking read()). Just detach
+	 * from syscall-enter-stop step and let kernel complete
+	 * the syscall successfully.
+	 */
+
+	int detach_err = ptrace_op(tracee, PTRACE_DETACH, 0);
+	err = err ?: detach_err;
+
 	return err;
 }
 
@@ -827,11 +847,8 @@ struct tracee_state *tracee_inject(int pid)
 	 * Prepare for execution of the original intercepted syscall
 	 */
 	dlog("Replaying original syscall and detaching tracee...\n");
-	ptrace_state = PTRACE_STATE_ATTACHED;
-	if ((err = ptrace_exec_syscall(tracee, &tracee->orig_regs, NULL)) < 0)
-		goto cleanup;
 	ptrace_state = PTRACE_STATE_DETACHED;
-	if ((err = ptrace_op(tracee, PTRACE_DETACH, 0)) < 0)
+	if ((err = ptrace_replay(tracee)) < 0)
 		goto cleanup;
 
 	u64 ptrace_injected_ts = ktime_now_ns();
@@ -858,16 +875,9 @@ struct tracee_state *tracee_inject(int pid)
 	return tracee;
 
 cleanup:
-	switch (ptrace_state) {
-	case PTRACE_STATE_PENDING_SYSCALL:
+	if (ptrace_state == PTRACE_STATE_PENDING_SYSCALL) {
 		dlog("Trying to restore & replay the original syscall...\n");
-		(void)ptrace_exec_syscall(tracee, &tracee->orig_regs, NULL);
-		/* fallthrough */
-	case PTRACE_STATE_ATTACHED:
-		dlog("Trying to detach tracee...\n");
-		(void)ptrace_op(tracee, PTRACE_DETACH, 0);
-		break;
-	default:
+		(void)ptrace_replay(tracee);
 	}
 	zclose(pid_fd);
 	zclose(memfd_local_fd);
@@ -945,11 +955,8 @@ int tracee_retract(struct tracee_state *tracee)
 	 * Prepare for execution of the original intercepted syscall
 	 */
 	dlog("Replaying original syscall and detaching tracee...\n");
-	ptrace_state = PTRACE_STATE_ATTACHED;
-	if ((err = ptrace_exec_syscall(tracee, &tracee->orig_regs, NULL)) < 0)
-		goto cleanup;
 	ptrace_state = PTRACE_STATE_DETACHED;
-	if ((err = ptrace_op(tracee, PTRACE_DETACH, 0)) < 0)
+	if ((err = ptrace_replay(tracee)) < 0)
 		goto cleanup;
 
 	u64 ptrace_retracted_ts = ktime_now_ns();
@@ -978,16 +985,9 @@ int tracee_retract(struct tracee_state *tracee)
 
 	return 0;
 cleanup:
-	switch (ptrace_state) {
-	case PTRACE_STATE_PENDING_SYSCALL:
+	if (ptrace_state == PTRACE_STATE_PENDING_SYSCALL) {
 		dlog("Trying to restore & replay the original syscall...\n");
 		(void)ptrace_exec_syscall(tracee, &tracee->orig_regs, NULL);
-		/* fallthrough */
-	case PTRACE_STATE_ATTACHED:
-		dlog("Trying to detach tracee...\n");
-		(void)ptrace_op(tracee, PTRACE_DETACH, 0);
-		break;
-	default:
 	}
 
 	zclose(tracee->uds_local_fd);
