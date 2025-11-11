@@ -23,11 +23,31 @@ jobs:
             target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
 
+          - arch: amd64-cuda
+            file_str: x86-64
+            target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            cuda: true
+
+          - arch: arm64-cuda
+            file_str: aarch64
+            target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            cuda: true
     steps:
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y cargo llvm libelf-dev zlib1g-dev libzstd-dev
+
+      - name: Install CUDA Toolkit
+        if: matrix.cuda
+        run: |
+          # Install CUDA Toolkit with CUPTI headers from Ubuntu repos
+          sudo apt-get update
+          sudo apt-get install -y nvidia-cuda-toolkit
+          # Verify CUPTI headers are present
+          find /usr -name "cupti_activity.h" -o -name "cuda.h" 2>/dev/null | head -5
 
       - name: Checkout wprof code
         uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4.1.0
@@ -39,6 +59,18 @@ jobs:
         working-directory: 'wprof'
         run: |
           make -j$(nproc) -C src V=1
+
+      - name: Verify CUPTI support was compiled
+        if: matrix.cuda
+        working-directory: 'wprof/src'
+        run: |
+          # Check that CUPTI object files were compiled
+          test -f .output/inj_cupti.o
+          test -f .output/cupti_driver_cbid_map.gen.o
+          test -f .output/cupti_runtime_cbid_map.gen.o
+          # Verify version string reports CUDA support
+          ./wprof --version | tee /dev/stderr | grep -q " (with CUDA support)"
+          echo "✓ CUPTI support successfully compiled"
 
       - name: Test wprof binary
         working-directory: 'wprof/src'
@@ -54,14 +86,16 @@ jobs:
       - name: Clean up
         working-directory: 'wprof'
         run: |
-          make -C src clean
+          make -C src clean-all
 
       - name: Build static wprof
+        if: ${{ !matrix.cuda }}
         working-directory: 'wprof'
         run: |
-          make STATIC=1 -j$(nproc) -C src V=1
+          make -j$(nproc) -C src V=1 STATIC=1
 
-      - name: Test wprof binary
+      - name: Test static wprof binary
+        if: ${{ !matrix.cuda }}
         working-directory: 'wprof/src'
         run: |
           file ./wprof | \
