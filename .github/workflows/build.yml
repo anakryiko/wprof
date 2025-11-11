@@ -8,37 +8,56 @@ concurrency:
 
 jobs:
   build:
-    name: Build (${{ matrix.arch }}${{ matrix.cuda && ', CUDA' || '' }})
+    name: Build & Test (${{ matrix.arch }}${{ matrix.cuda && ', CUDA' || '' }}, ${{ matrix.static && 'static' || 'dynamic' }})
     runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
         include:
+          # Dynamic builds
           - arch: amd64
             file_str: x86-64
             target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
+            static: false
 
           - arch: arm64
             file_str: aarch64
             target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
+            static: false
 
           - arch: amd64
             cuda: true
             file_str: x86-64
             target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
+            static: false
 
           - arch: arm64
             cuda: true
             file_str: aarch64
             target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
+            static: false
+
+          # Static builds (no CUDA support for static)
+          - arch: amd64
+            file_str: x86-64
+            target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            static: true
+
+          - arch: arm64
+            file_str: aarch64
+            target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            static: true
+
     steps:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cargo llvm libelf-dev zlib1g-dev libzstd-dev
+          sudo apt-get install -y cargo llvm libelf-dev zlib1g-dev libzstd-dev protobuf-compiler
 
       - name: Install CUDA Toolkit
         if: matrix.cuda
@@ -67,61 +86,91 @@ jobs:
       - name: Build wprof
         working-directory: 'wprof'
         run: |
-          make -j$(nproc) -C src V=1 CUPTI_INCLUDE="$CUPTI_INCLUDE_DIR"
+          make -j$(nproc) -C src V=1 CUPTI_INCLUDE="$CUPTI_INCLUDE_DIR" ${{ matrix.static && 'STATIC=1' || '' }}
 
       - name: Test CUPTI support compilation
         if: matrix.cuda
         working-directory: 'wprof/src'
         run: |
           # Check that CUPTI object files were compiled
-          test -f .output/inj_cupti.o || echo "✗ Failed: inj_cupti.o not found"
-          test -f .output/cupti_driver_cbid_map.gen.o || echo "✗ Failed: cupti_driver_cbid_map.gen.o not found"
-          test -f .output/cupti_runtime_cbid_map.gen.o || echo "✗ Failed: cupti_runtime_cbid_map.gen.o not found"
+          test -f .output/inj_cupti.o || { echo "✗ Failed: inj_cupti.o not found"; exit 1; }
+          test -f .output/cupti_driver_cbid_map.gen.o || { echo "✗ Failed: cupti_driver_cbid_map.gen.o not found"; exit 1; }
+          test -f .output/cupti_runtime_cbid_map.gen.o || { echo "✗ Failed: cupti_runtime_cbid_map.gen.o not found"; exit 1; }
           # Verify version string reports CUDA support
-          ./wprof --version | tee /dev/stderr | grep -q " (with CUDA support)" || echo "✗ Failed: CUDA support not detected in version string"
+          ./wprof --version | tee /dev/stderr | grep -q " (with CUDA support)" || { echo "✗ Failed: CUDA support not detected in version string"; exit 1; }
           echo "✓ CUPTI support successfully compiled"
 
       - name: Test wprof binary
         working-directory: 'wprof/src'
         run: |
-          file ./wprof | tee /dev/stderr | grep -q "${{ matrix.file_str }}" || echo "✗ Failed: Wrong architecture (expected ${{ matrix.file_str }})"
-          file ./wprof | tee /dev/stderr | grep -q "dynamically linked" || echo "✗ Failed: Binary not dynamically linked"
-          ./wprof --usage | tee /dev/stderr |  grep -q "Usage" || echo "✗ Failed: --usage flag check"
-          ldd ./wprof 2>&1 | tee /dev/stderr | grep -q "libc.so" || echo "✗ Failed: libc.so not found in dependencies"
+          file ./wprof | tee /dev/stderr | grep -q "${{ matrix.file_str }}" || { echo "✗ Failed: Wrong architecture (expected ${{ matrix.file_str }})"; exit 1; }
+          if [ "${{ matrix.static }}" = "true" ]; then
+            file ./wprof | tee /dev/stderr | grep -q "statically linked" || { echo "✗ Failed: Binary not statically linked"; exit 1; }
+            ldd ./wprof 2>&1 | tee /dev/stderr | grep -q 'not a dynamic executable' || { echo "✗ Failed: Binary has dynamic dependencies (should be static)"; exit 1; }
+          else
+            file ./wprof | tee /dev/stderr | grep -q "dynamically linked" || { echo "✗ Failed: Binary not dynamically linked"; exit 1; }
+            ldd ./wprof 2>&1 | tee /dev/stderr | grep -q "libc.so" || { echo "✗ Failed: libc.so not found in dependencies"; exit 1; }
+          fi
+          ./wprof --usage | tee /dev/stderr | grep -q "Usage" || { echo "✗ Failed: --usage flag check"; exit 1; }
           echo "✓ All wprof binary tests passed"
 
-      - name: Upload dynamic binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: wprof-${{ matrix.arch }}${{ matrix.cuda && '-cuda' || '' }}-dynamic
-          path: wprof/src/wprof
-          retention-days: 1
-
-      - name: Clean up
-        working-directory: 'wprof'
-        run: |
-          make -C src clean-all || echo "✗ Failed to clean build artifacts"
-
-      - name: Build static wprof
-        if: ${{ !matrix.cuda }}
-        working-directory: 'wprof'
-        run: |
-          make -j$(nproc) -C src V=1 STATIC=1 || echo "✗ Failed to build static wprof"
-
-      - name: Test static wprof binary
-        if: ${{ !matrix.cuda }}
+      - name: Run sample trace
         working-directory: 'wprof/src'
         run: |
-          file ./wprof | tee /dev/stderr | grep -q "${{ matrix.file_str }}" || echo "✗ Failed: Wrong architecture (expected ${{ matrix.file_str }})"
-          file ./wprof | tee /dev/stderr | grep -q "statically linked" || echo "✗ Failed: Binary not statically linked"
-          ./wprof --usage | tee /dev/stderr |  grep -q "Usage" || echo "✗ Failed: --usage flag check"
-          ldd ./wprof 2>&1 | tee /dev/stderr | grep -q 'not a dynamic executable' || echo "✗ Failed: Binary has dynamic dependencies (should be static)"
-          echo "✓ All static wprof binary tests passed"
+          # Run wprof for 500ms to capture a short trace
+          if [ "${{ matrix.cuda }}" = "true" ]; then
+            sudo ./wprof -d500 -T trace.pb -D wprof.data -f cuda --log=inject --log=tracee -vv || { echo "✗ Failed: wprof trace capture (w/ CUDA) failed"; exit 1; }
+          else
+            sudo ./wprof -d500 -T trace.pb -D wprof.data || { echo "✗ Failed: wprof trace capture failed"; exit 1; }
+          fi
+          # Validate binary dump with replay mode
+          ./wprof -R -I -D wprof.data || { echo "✗ Failed: wprof.data validation failed"; exit 1; }
+          if [ "${{ matrix.cuda }}" = "true" ]; then
+            ./wprof -R -I -D wprof.data | grep -q "CUDA:.*YES" || { echo "✗ Failed: CUDA not detected in trace"; exit 1; }
+          fi
+          # Validate Perfetto trace and count packets
+          PACKET_COUNT=$(protoc --decode=perfetto.protos.Trace perfetto_trace.proto < trace.pb 2>/dev/null | grep -c "packet {" || echo "0")
+          TRACE_SIZE=$(ls -lh trace.pb | awk '{print $5}')
+          DATA_SIZE=$(ls -lh wprof.data | awk '{print $5}')
+          echo "trace.pb: $TRACE_SIZE, $PACKET_COUNT packets"
+          echo "wprof.data: $DATA_SIZE"
+          test "$PACKET_COUNT" -gt 1 || { echo "✗ Failed: trace.pb has insufficient packets (expected >1, got $PACKET_COUNT)"; exit 1; }
+          echo "✓ Sample trace completed successfully"
 
-      - name: Upload static binary
-        if: ${{ !matrix.cuda }}
+      - name: Run trace with stack traces
+        working-directory: 'wprof/src'
+        run: |
+          # Run wprof with stack traces for 500ms
+          if [ "${{ matrix.cuda }}" = "true" ]; then
+            sudo ./wprof -d500 -T trace-stacks.pb -D wprof-stacks.data -S -f cuda --log=inject --log=tracee -vv || { echo "✗ Failed: wprof trace with stacks (w/ CUDA) failed"; exit 1; }
+          else
+            sudo ./wprof -d500 -T trace-stacks.pb -D wprof-stacks.data -S || { echo "✗ Failed: wprof trace with stacks failed"; exit 1; }
+          fi
+          # Validate binary dump with replay mode
+          ./wprof -R -I -D wprof-stacks.data || { echo "✗ Failed: wprof-stacks.data validation failed"; exit 1; }
+          if [ "${{ matrix.cuda }}" = "true" ]; then
+            ./wprof -R -I -D wprof-stacks.data | grep -q "CUDA:.*YES" || { echo "✗ Failed: CUDA not detected in trace"; exit 1; }
+          fi
+          # Validate stack traces were captured
+          ./wprof -R -I -D wprof-stacks.data | grep -q "Stack traces:.*[1-9]" || { echo "✗ Failed: No stack traces captured"; exit 1; }
+          # Validate Perfetto trace and count packets
+          PACKET_COUNT=$(protoc --decode=perfetto.protos.Trace perfetto_trace.proto < trace-stacks.pb 2>/dev/null | grep -c "packet {" || echo "0")
+          TRACE_SIZE=$(ls -lh trace-stacks.pb | awk '{print $5}')
+          DATA_SIZE=$(ls -lh wprof-stacks.data | awk '{print $5}')
+          echo "trace-stacks.pb: $TRACE_SIZE, $PACKET_COUNT packets"
+          echo "wprof-stacks.data: $DATA_SIZE"
+          test "$PACKET_COUNT" -gt 1 || { echo "✗ Failed: trace-stacks.pb has insufficient packets (expected >1, got $PACKET_COUNT)"; exit 1; }
+          echo "✓ Stack trace test completed successfully"
+
+      - name: Upload artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: wprof-${{ matrix.arch }}-static
-          path: wprof/src/wprof
+          name: wprof-${{ matrix.arch }}${{ matrix.cuda && '-cuda' || '' }}-${{ matrix.static && 'static' || 'dynamic' }}
+          path: |
+            wprof/src/wprof
+            wprof/src/trace.pb
+            wprof/src/wprof.data
+            wprof/src/trace-stacks.pb
+            wprof/src/wprof-stacks.data
           retention-days: 1
