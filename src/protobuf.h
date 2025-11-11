@@ -111,8 +111,9 @@ enum pb_static_iid {
 		IID_CAT_REQUEST_TASK_ENQUEUE,			/* REQUEST_TASK_ENQUEUE */
 		IID_CAT_REQUEST_TASK_DEQUEUE,			/* REQUEST_TASK_DEQUEUE */
 		IID_CAT_REQUEST_TASK_COMPLETE,			/* REQUEST_TASK_COMPLETE */
-		IID_CAT_GPU_KERNEL, 				/* GPU_KERNEL */
-		IID_CAT_GPU_MEMCPY, 				/* GPU_MEMCPY */
+		IID_CAT_CUDA_KERNEL, 				/* CUDA_KERNEL */
+		IID_CAT_CUDA_MEMCPY, 				/* CUDA_MEMCPY */
+		IID_CAT_CUDA_API, 				/* CUDA_API */
 	CAT_END_IID,
 
 	NAME_START_IID, __NAME_RESET_IID = NAME_START_IID - 1,
@@ -204,7 +205,6 @@ enum pb_static_iid {
 		IID_ANNK_SCX_DSQ_ID,				/* scx_dsq_id */
 		IID_ANNK_REQ_TASK_ID,				/* task_id */
 		IID_ANNK_REQ_WAIT_TIME_NS,			/* wait_time_ns */
-		IID_ANNK_CUDA_CORRELATION_ID,			/* correlation_id */
 		IID_ANNK_CUDA_DEVICE_ID,			/* device_id */
 		IID_ANNK_CUDA_STREAM_ID,			/* stream_id */
 		IID_ANNK_CUDA_BLOCK_X,				/* block_x */

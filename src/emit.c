@@ -1896,11 +1896,7 @@ static int process_cuda_kernel(struct worker_state *w, struct wprof_event *e, si
 	pb_iid name_iid = emit_intern_str(w, cuda_kern_name);
 
 	emit_track_slice_start(clamp_ts(e->ts), track_uuid,
-			       iid_str(name_iid, cuda_kern_name), IID_CAT_GPU_KERNEL);
-
-	emit_track_slice_end(clamp_ts(cu->end_ts), track_uuid,
-			     iid_str(name_iid, cuda_kern_name), IID_CAT_GPU_KERNEL) {
-		emit_kv_int(IID_ANNK_CUDA_CORRELATION_ID, cu->corr_id);
+			       iid_str(name_iid, cuda_kern_name), IID_CAT_CUDA_KERNEL) {
 		emit_kv_int(IID_ANNK_CUDA_DEVICE_ID, cu->device_id);
 		emit_kv_int(IID_ANNK_CUDA_STREAM_ID, cu->stream_id);
 		emit_kv_int(IID_ANNK_CUDA_BLOCK_X, cu->block_x);
@@ -1909,7 +1905,12 @@ static int process_cuda_kernel(struct worker_state *w, struct wprof_event *e, si
 		emit_kv_int(IID_ANNK_CUDA_GRID_X, cu->grid_x);
 		emit_kv_int(IID_ANNK_CUDA_GRID_Y, cu->grid_y);
 		emit_kv_int(IID_ANNK_CUDA_GRID_Z, cu->grid_z);
+
+		emit_flow_id(((u64)e->task.pid << 32) | cu->corr_id);
 	}
+
+	emit_track_slice_end(clamp_ts(cu->end_ts), track_uuid,
+			     iid_str(name_iid, cuda_kern_name), IID_CAT_CUDA_KERNEL);
 
 	return 0;
 }
@@ -1939,16 +1940,77 @@ static int process_cuda_memcpy(struct worker_state *w, struct wprof_event *e, si
 	}
 
 	struct pb_str name = iid_str(name_iid, sfmt("%s:%s", "cudaMemcpy", cuda_memcpy_kind_str(cu->copy_kind)));
-	emit_track_slice_start(clamp_ts(e->ts), track_uuid, name, IID_CAT_GPU_MEMCPY);
-
-	emit_track_slice_end(clamp_ts(cu->end_ts), track_uuid, name, IID_CAT_GPU_MEMCPY) {
+	emit_track_slice_start(clamp_ts(e->ts), track_uuid, name, IID_CAT_CUDA_MEMCPY) {
 		emit_kv_int(IID_ANNK_CUDA_BYTE_CNT, cu->byte_cnt);
 		emit_kv_str(IID_ANNK_CUDA_KIND, iid_str(kind_iid, cuda_memcpy_kind_str(cu->copy_kind)));
 
-		emit_kv_int(IID_ANNK_CUDA_CORRELATION_ID, cu->corr_id);
 		emit_kv_int(IID_ANNK_CUDA_DEVICE_ID, cu->device_id);
 		emit_kv_int(IID_ANNK_CUDA_STREAM_ID, cu->stream_id);
+
+		emit_flow_id(((u64)e->task.pid << 32) | cu->corr_id);
 	}
+
+	emit_track_slice_end(clamp_ts(cu->end_ts), track_uuid, name, IID_CAT_CUDA_MEMCPY);
+
+	return 0;
+}
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Warray-bounds"
+__weak const char *cupti_driver_cbid_str_map[1];
+__weak int cupti_driver_cbid_str_map_sz = ARRAY_SIZE(cupti_driver_cbid_str_map);
+
+__weak const char *cupti_runtime_cbid_str_map[1];
+__weak int cupti_runtime_cbid_str_map_sz = ARRAY_SIZE(cupti_runtime_cbid_str_map);
+
+static const char *cuda_driver_cbid_str(int cbid)
+{
+	if (cbid <= 0 || cbid >= cupti_driver_cbid_str_map_sz)
+		return "???";
+
+	const char *s = cupti_driver_cbid_str_map[cbid];
+	return s ?: "???";
+}
+
+static const char *cuda_runtime_cbid_str(int cbid)
+{
+	if (cbid <= 0 || cbid >= cupti_runtime_cbid_str_map_sz)
+		return "???";
+
+	const char *s = cupti_runtime_cbid_str_map[cbid];
+	return s ?: "???";
+}
+#pragma GCC diagnostic pop
+
+/* WCK_CUDA_API */
+static int process_cuda_api(struct worker_state *w, struct wprof_event *e, size_t size)
+{
+	if (env.capture_cuda != TRUE)
+		return 0;
+
+	const struct wcuda_cuda_api *cu = (void *)e + offsetof(struct wprof_event, __wprof_data);
+
+	if (!is_time_range_in_session(e->ts, cu->end_ts))
+		return 0;
+
+	u64 track_uuid = TRACK_UUID(TK_THREAD, cu->tid);
+
+	const char *name;
+	switch (cu->kind) {
+	case WCUDA_CUDA_API_DRIVER: name = cuda_driver_cbid_str(cu->cbid); break;
+	case WCUDA_CUDA_API_RUNTIME: name = cuda_runtime_cbid_str(cu->cbid); break;
+	default: name = "???"; break;
+	}
+
+	pb_iid name_iid = emit_intern_str(w, name);
+
+	emit_track_slice_start(clamp_ts(e->ts), track_uuid,
+			       iid_str(name_iid, name), IID_CAT_CUDA_API) {
+		emit_flow_id(((u64)e->task.pid << 32) | cu->corr_id);
+	}
+
+	emit_track_slice_end(clamp_ts(cu->end_ts), track_uuid,
+			     iid_str(name_iid, name), IID_CAT_CUDA_API);
 
 	return 0;
 }
@@ -1975,6 +2037,7 @@ static event_fn ev_fns[] = {
 
 	[WCK_CUDA_KERNEL] = process_cuda_kernel,
 	[WCK_CUDA_MEMCPY] = process_cuda_memcpy,
+	[WCK_CUDA_API] = process_cuda_api,
 };
 
 static int process_event(struct worker_state *w, struct wprof_event *e, size_t size)

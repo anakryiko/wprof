@@ -37,6 +37,7 @@ static inline bool is_false_or_unset(enum tristate tri)
 #define max(x, y) ((x) > (y) ? (x) : (y))
 #endif
 #define __unused __attribute__((unused))
+#define __weak __attribute__((weak))
 #define __cleanup(fn) __attribute__((cleanup(fn)))
 
 #define zclose(fd) do { if (fd >= 0) { close(fd); fd = -1; } } while (0)

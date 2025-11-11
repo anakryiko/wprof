@@ -2,6 +2,7 @@
 /wprof
 /sim
 /*.pb
+/*.gen.c
 /dump.txt
 /wprof.data
 /wprof.data.*

@@ -2,6 +2,7 @@
 OUTPUT := .output
 CLANG ?= clang
 CARGO ?= $(shell which cargo)
+AWK ?= awk
 DEBUG ?=
 BLAZESYM_DEBUG ?=
 
@@ -42,12 +43,6 @@ CUPTI_INCLUDE ?= $(shell								\
 	for p in $(CUPTI_PATHS); do 							\
 		[ -f "$$p/cupti_activity.h" ] && [ -f "$$p/cuda.h" ] && echo $$p;	\
 	 done | sort -Vr | head -n1)
-
-ifneq ($(CUPTI_INCLUDE),)
-ALL_CFLAGS += -DHAVE_CUPTI
-else
-$(warning "WARNING! CUDA tracing won't be compiled due to missing CUPTI headers, check CUPTI_INCLUDE!")
-endif
 
 # Get Clang's default includes on this system. We'll explicitly add these dirs
 # to the includes list when compiling with `-target bpf` because otherwise some
@@ -147,6 +142,23 @@ endif
 
 WPROFINJ_HDRS := inj_common.h inj.h
 
+ifneq ($(CUPTI_INCLUDE),)
+ALL_CFLAGS += -DHAVE_CUPTI
+
+WPROF_SRCS += cupti_driver_cbid_map.gen.c cupti_runtime_cbid_map.gen.c
+
+cupti_driver_cbid_map.gen.c: $(CUPTI_INCLUDE)/cupti_driver_cbid.h gen_cupti_driver_cbid.awk | $(OUTPUT)
+	$(call msg,GEN,$@)
+	$(Q)$(AWK) -f gen_cupti_driver_cbid.awk <$(CUPTI_INCLUDE)/cupti_driver_cbid.h >$@
+
+cupti_runtime_cbid_map.gen.c: $(CUPTI_INCLUDE)/cupti_runtime_cbid.h gen_cupti_runtime_cbid.awk | $(OUTPUT)
+	$(call msg,GEN,$@)
+	$(Q)$(AWK) -f gen_cupti_runtime_cbid.awk <$(CUPTI_INCLUDE)/cupti_runtime_cbid.h >$@
+
+else
+$(warning "WARNING! CUDA tracing won't be compiled due to missing CUPTI headers, check CUPTI_INCLUDE!")
+endif
+
 $(patsubst %.c,$(OUTPUT)/%.o,$(WPROFINJ_SRCS)): \
 	ALL_CFLAGS += -fPIC -I../libbpf/src $(if $(CUPTI_INCLUDE),-I$(CUPTI_INCLUDE))
 
@@ -184,7 +196,7 @@ sim: $(OUTPUT)/sim.o | $(OUTPUT)
 .PHONY: clean
 clean:
 	$(call msg,CLEAN)
-	$(Q)rm -rf $(OUTPUT)/*.o $(OUTPUT)/libwprofinj.* wprof
+	$(Q)rm -rf $(OUTPUT)/*.o $(OUTPUT)/libwprofinj.* cupti_*.gen.c wprof
 
 .PHONY: clean-all
 clean-all: clean
