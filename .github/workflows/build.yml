@@ -8,7 +8,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build
+    name: Build (${{ matrix.arch }}${{ matrix.cuda && ', CUDA' || '' }})
     runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
@@ -90,6 +90,13 @@ jobs:
           ldd ./wprof 2>&1 | tee /dev/stderr | grep -q "libc.so" || echo "✗ Failed: libc.so not found in dependencies"
           echo "✓ All wprof binary tests passed"
 
+      - name: Upload dynamic binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: wprof-${{ matrix.arch }}${{ matrix.cuda && '-cuda' || '' }}-dynamic
+          path: wprof/src/wprof
+          retention-days: 1
+
       - name: Clean up
         working-directory: 'wprof'
         run: |
@@ -110,3 +117,11 @@ jobs:
           ./wprof --usage | tee /dev/stderr |  grep -q "Usage" || echo "✗ Failed: --usage flag check"
           ldd ./wprof 2>&1 | tee /dev/stderr | grep -q 'not a dynamic executable' || echo "✗ Failed: Binary has dynamic dependencies (should be static)"
           echo "✓ All static wprof binary tests passed"
+
+      - name: Upload static binary
+        if: ${{ !matrix.cuda }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: wprof-${{ matrix.arch }}-static
+          path: wprof/src/wprof
+          retention-days: 1
