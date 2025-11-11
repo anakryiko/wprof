@@ -177,6 +177,8 @@ static int wcuda_remap_strs(struct wcuda_event *e, enum wcuda_event_kind kind,
 	case WCK_CUDA_KERNEL:
 		e->cuda_kernel.name_off = strset__add_str(strs_new, strs + e->cuda_kernel.name_off);
 		break;
+	case WCK_CUDA_API:
+		break;
 	case WCK_INVALID:
 		eprintf("Unrecognized wprof CUDA event kind %d!\n", e->kind);
 		return -EINVAL;

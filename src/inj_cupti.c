@@ -25,6 +25,8 @@ static CUptiResult (*cupti_activity_get_next_record)(uint8_t *buffer, size_t val
 static CUptiResult (*cupti_activity_get_num_dropped_records)(CUcontext context, uint32_t streamId, size_t *dropped);
 static CUptiResult (*cupti_get_timestamp)(u64 *timestamp);
 static CUptiResult (*cupti_get_result_string)(CUptiResult result, const char **str);
+static CUptiResult (*cupti_get_thread_id_type)(CUpti_ActivityThreadIdType *type);
+static CUptiResult (*cupti_set_thread_id_type)(CUpti_ActivityThreadIdType type);
 
 static struct {
 	void *sym_pptr;
@@ -38,6 +40,8 @@ static struct {
 	{&cupti_activity_get_num_dropped_records, "cuptiActivityGetNumDroppedRecords"},
 	{&cupti_get_timestamp, "cuptiGetTimestamp"},
 	{&cupti_get_result_string, "cuptiGetResultString"},
+	{&cupti_get_thread_id_type, "cuptiGetThreadIdType"},
+	{&cupti_set_thread_id_type, "cuptiSetThreadIdType"},
 };
 
 static const char *cupti_errstr(CUptiResult res)
@@ -88,6 +92,7 @@ static u64 gpu_to_cpu_time_ns(u64 gpu_ts)
 static bool cupti_init = false;
 static void *cupti_handle = NULL;
 static bool cupti_alive = false;
+static CUpti_ActivityThreadIdType cupti_old_thread_id_type = -1;
 
 static void CUPTIAPI buffer_requested(uint8_t **buffer, size_t *size, size_t *max_num_records)
 {
@@ -184,6 +189,36 @@ static int handle_cupti_record(CUpti_Activity *rec)
 		};
 		return cuda_dump_event(&e);
 	}
+	case CUPTI_ACTIVITY_KIND_DRIVER:
+	case CUPTI_ACTIVITY_KIND_RUNTIME: {
+		CUpti_ActivityAPI *r = (CUpti_ActivityAPI *)rec;
+
+		u64 start_ts = gpu_to_cpu_time_ns(r->start);
+		u64 end_ts = gpu_to_cpu_time_ns(r->end);
+		if (!rec_within_session(start_ts, end_ts, run_ctx->sess_start_ts, run_ctx->sess_end_ts))
+			return 0;
+
+		enum wcuda_cuda_api_kind kind;
+		if (rec->kind == CUPTI_ACTIVITY_KIND_DRIVER)
+			kind = WCUDA_CUDA_API_DRIVER;
+		else
+			kind = WCUDA_CUDA_API_RUNTIME;
+
+		struct wcuda_event e = {
+			.sz = sizeof(e),
+			.kind = WCK_CUDA_API,
+			.ts = start_ts,
+			.cuda_api = {
+				.end_ts = end_ts,
+				.kind = kind,
+				.corr_id = r->correlationId,
+				.tid = r->threadId,
+				.cbid = r->cbid,
+				.ret_val = r->returnValue,
+			},
+		};
+		return cuda_dump_event(&e);
+	}
 	default:
 		vlog("  Activity kind: %d\n", rec->kind);
 		break;
@@ -191,6 +226,9 @@ static int handle_cupti_record(CUpti_Activity *rec)
 
 	return 0;
 }
+
+enum CUpti_driver_api_trace_cbid_enum driver_cbids;
+enum CUpti_runtime_api_trace_cbid_enum runtime_cbids;
 
 static void CUPTIAPI buffer_completed(CUcontext ctx, uint32_t stream_id, uint8_t *buf,
 				      size_t buf_sz, size_t data_sz)
@@ -269,11 +307,15 @@ static bool cupti_lazy_init(void)
 static CUpti_ActivityKind cupti_act_kinds[] = {
 	CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL,
 	CUPTI_ACTIVITY_KIND_MEMCPY,
+	CUPTI_ACTIVITY_KIND_DRIVER,
+	CUPTI_ACTIVITY_KIND_RUNTIME,
 };
 
 static const char *cupti_act_kind_strs[] = {
 	[CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL] = "CONCURRENT_KERNEL",
 	[CUPTI_ACTIVITY_KIND_MEMCPY] = "MEMCPY",
+	[CUPTI_ACTIVITY_KIND_DRIVER] = "DRIVER",
+	[CUPTI_ACTIVITY_KIND_RUNTIME] = "RUNTIME",
 };
 
 static const char *cupti_act_kind_str(CUpti_ActivityKind kind)
@@ -308,11 +350,25 @@ int start_cupti_activities(void)
 
 	vlog("Initializing CUPTI activity subscription...\n");
 
+	ret = cupti_get_thread_id_type(&cupti_old_thread_id_type);
+	if (ret != CUPTI_SUCCESS) {
+		elog("Failed to get current thread ID type: %d (%s)!\n", ret, cupti_errstr(ret));
+		return -EPROTO;
+	}
+
+	/* ask CUPTI to give use real thread ID, not pthread_self() garbage */
+	ret = cupti_set_thread_id_type(CUPTI_ACTIVITY_THREAD_ID_TYPE_SYSTEM);
+	if (ret != CUPTI_SUCCESS) {
+		elog("Failed to set current thread ID type to system one: %d (%s)!\n", ret, cupti_errstr(ret));
+		return -EPROTO;
+	}
+
 	/* Register callbacks for activity buffer management */
 	ret = cupti_activity_register_callbacks(buffer_requested, buffer_completed);
 	if (ret != CUPTI_SUCCESS) {
 		elog("Failed to register CUPTI activity callbacks: %d (%s)!\n",
 		     ret, cupti_errstr(ret));
+		cupti_set_thread_id_type(cupti_old_thread_id_type);
 		return -EPROTO;
 	}
 
@@ -372,6 +428,9 @@ void finalize_cupti_activities(void)
 		/* drain buffers forcefully to avoid getting our callbacks called */
 		(void)cupti_activity_flush_all(CUPTI_ACTIVITY_FLAG_FLUSH_FORCED);
 	}
+
+	if (cupti_old_thread_id_type != -1)
+		(void)cupti_set_thread_id_type(cupti_old_thread_id_type);
 
 	vlog("CUPTI activity API finalized.\n");
 
