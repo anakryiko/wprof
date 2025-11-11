@@ -1523,7 +1523,7 @@ int main(int argc, char **argv)
 
 			printf("Replay info:\n");
 			printf("============\n");
-			printf("Data version: %u.%u\n", dump_hdr->version_major, dump_hdr->version_minor);
+			printf("%-*s%u.%u\n", w, "Data version:", dump_hdr->version_major, dump_hdr->version_minor);
 			printf("%-*s%.3lfs (%.3lfms)\n", w, "Duration:",
 			       cfg->duration_ns / 1000000000.0, cfg->duration_ns / 1000000.0);
 			printf("%-*s%llu (%.3lfMBs)\n", w, "Events:",
