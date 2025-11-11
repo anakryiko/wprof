@@ -86,7 +86,7 @@ $(call allow-override,CC,$(CROSS_COMPILE)cc)
 $(call allow-override,LD,$(CROSS_COMPILE)ld)
 
 .PHONY: all
-all: wprof sim
+all: wprof
 
 $(OUTPUT) $(OUTPUT)/libbpf $(BPFTOOL_OUTPUT):
 	$(call msg,MKDIR,$@)
@@ -190,10 +190,6 @@ wprof: $(WPROF_HDRS) $(WPROF_OBJS)								\
 		$(LIBBPF_OBJ) $(LIBBLAZESYM_OBJ) | $(OUTPUT)
 	$(call msg,BINARY,$@)
 	$(Q)$(CC) $(ALL_CFLAGS) $(filter %.c %.a %.o,$^) $(ALL_LDFLAGS) $(if $(STATIC),--static) -lelf -lz -lzstd -o $@
-
-sim: $(OUTPUT)/sim.o | $(OUTPUT)
-	$(call msg,BINARY,$@)
-	$(Q)$(CC) $(ALL_CFLAGS) $(filter %.c %.a %.o,$^) $(ALL_LDFLAGS) -o $@
 
 .PHONY: clean
 clean:
