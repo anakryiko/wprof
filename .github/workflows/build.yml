@@ -59,8 +59,7 @@ jobs:
       - name: Build static wprof
         working-directory: 'wprof'
         run: |
-          # LDFLAGS here would also apply to bpftool which fails to build with static
-          make EXTRA_CFLAGS=--static -j$(nproc) -C src V=1
+          make STATIC=1 -j$(nproc) -C src V=1
 
       - name: Test wprof binary
         working-directory: 'wprof/src'
