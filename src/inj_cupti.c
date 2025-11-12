@@ -219,6 +219,53 @@ static int handle_cupti_record(CUpti_Activity *rec)
 		};
 		return cuda_dump_event(&e);
 	}
+	case CUPTI_ACTIVITY_KIND_MEMSET: {
+		CUpti_ActivityMemset *r = (CUpti_ActivityMemset *)rec;
+
+		u64 start_ts = gpu_to_cpu_time_ns(r->start);
+		u64 end_ts = gpu_to_cpu_time_ns(r->end);
+		if (!rec_within_session(start_ts, end_ts, run_ctx->sess_start_ts, run_ctx->sess_end_ts))
+			return 0;
+
+		struct wcuda_event e = {
+			.sz = sizeof(e),
+			.kind = WCK_CUDA_MEMSET,
+			.ts = start_ts,
+			.cuda_memset = {
+				.end_ts = end_ts,
+				.byte_cnt = r->bytes,
+				.corr_id = r->correlationId,
+				.device_id = r->deviceId,
+				.stream_id = r->streamId,
+				.value = r->value,
+				.mem_kind = r->memoryKind,
+			},
+		};
+		return cuda_dump_event(&e);
+	}
+	case CUPTI_ACTIVITY_KIND_SYNCHRONIZATION: {
+		CUpti_ActivitySynchronization *r = (CUpti_ActivitySynchronization *)rec;
+
+		u64 start_ts = gpu_to_cpu_time_ns(r->start);
+		u64 end_ts = gpu_to_cpu_time_ns(r->end);
+		if (!rec_within_session(start_ts, end_ts, run_ctx->sess_start_ts, run_ctx->sess_end_ts))
+			return 0;
+
+		struct wcuda_event e = {
+			.sz = sizeof(e),
+			.kind = WCK_CUDA_SYNC,
+			.ts = start_ts,
+			.cuda_sync = {
+				.end_ts = end_ts,
+				.corr_id = r->correlationId,
+				.stream_id = r->streamId,
+				.ctx_id = r->contextId,
+				.event_id = r->cudaEventId,
+				.sync_type = r->type,
+			},
+		};
+		return cuda_dump_event(&e);
+	}
 	default:
 		vlog("  Activity kind: %d\n", rec->kind);
 		break;
@@ -309,6 +356,8 @@ static CUpti_ActivityKind cupti_act_kinds[] = {
 	CUPTI_ACTIVITY_KIND_MEMCPY,
 	CUPTI_ACTIVITY_KIND_DRIVER,
 	CUPTI_ACTIVITY_KIND_RUNTIME,
+	CUPTI_ACTIVITY_KIND_MEMSET,
+	CUPTI_ACTIVITY_KIND_SYNCHRONIZATION,
 };
 
 static const char *cupti_act_kind_strs[] = {
@@ -316,6 +365,8 @@ static const char *cupti_act_kind_strs[] = {
 	[CUPTI_ACTIVITY_KIND_MEMCPY] = "MEMCPY",
 	[CUPTI_ACTIVITY_KIND_DRIVER] = "DRIVER",
 	[CUPTI_ACTIVITY_KIND_RUNTIME] = "RUNTIME",
+	[CUPTI_ACTIVITY_KIND_MEMSET] = "MEMSET",
+	[CUPTI_ACTIVITY_KIND_SYNCHRONIZATION] = "SYNCHRONIZATION",
 };
 
 static const char *cupti_act_kind_str(CUpti_ActivityKind kind)
