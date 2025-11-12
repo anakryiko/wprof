@@ -19,6 +19,7 @@
 #define zclose(fd) do { if (fd >= 0) { close(fd); fd = -1; } } while (0)
 #define __printf(a, b) __attribute__((format(printf, a, b)))
 #define __weak __attribute__((weak))
+#define __aligned(N) __attribute__((aligned(N)))
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
 
 #define elog(fmt, ...) do { log_printf(0, fmt, ##__VA_ARGS__); } while (0)
@@ -49,6 +50,17 @@ static inline u64 ktime_now_ns()
 	return timespec_to_ns(&t);
 }
 
+static inline void atomic_store(long *p, long v)
+{
+	__atomic_store_n(p, v, __ATOMIC_SEQ_CST);
+}
+
+static inline long atomic_load(long *p)
+{
+	return __atomic_load_n(p, __ATOMIC_SEQ_CST);
+}
+
 int cuda_dump_event(struct wcuda_event *e);
+int cuda_dump_finalize(void);
 
 #endif /* __INJ_H_ */
