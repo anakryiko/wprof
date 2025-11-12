@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <time.h>
+#include <sched.h>
 
 #include <cupti.h>
 
@@ -91,15 +92,23 @@ static u64 gpu_to_cpu_time_ns(u64 gpu_ts)
 
 static bool cupti_init = false;
 static void *cupti_handle = NULL;
-static bool cupti_alive = false;
-static CUpti_ActivityThreadIdType cupti_old_thread_id_type = -1;
+static CUpti_ActivityThreadIdType cupti_old_thread_id_type = CUPTI_ACTIVITY_THREAD_ID_TYPE_SYSTEM;
+
+static long cupti_shutting_down __aligned(64);
+static long cupti_live = false;
+static long cupti_processing __aligned(64);
 
 static void CUPTIAPI buffer_requested(uint8_t **buffer, size_t *size, size_t *max_num_records)
 {
 	const size_t cupti_buf_sz = 2 * 1024 * 1024;
 	uint8_t *buf;
 
-	cupti_alive = true;
+	if (atomic_load(&cupti_shutting_down)) {
+		*buffer = NULL;
+		*size = 0;
+		*max_num_records = 0;
+		return;
+	}
 
 	buf = (uint8_t *)malloc(cupti_buf_sz);
 	if (!buf) {
@@ -110,6 +119,8 @@ static void CUPTIAPI buffer_requested(uint8_t **buffer, size_t *size, size_t *ma
 		elog("Failed to allocate CUPTI activity buffer!\n");
 		return;
 	}
+
+	atomic_store(&cupti_live, true); /* mark that CUPTI is alive and has our buffer */
 
 	vlog("CUPTI activity buffer allocated (%zu bytes)\n", cupti_buf_sz);
 
@@ -299,6 +310,13 @@ static void CUPTIAPI buffer_completed(CUcontext ctx, uint32_t stream_id, uint8_t
 		return;
 	}
 
+	atomic_store(&cupti_processing, 1);
+	if (atomic_load(&cupti_shutting_down)) {
+		free(buf);
+		atomic_store(&cupti_processing, 0);
+		return;
+	}
+
 	CUpti_Activity *rec = NULL;
 	while (true) {
 
@@ -333,6 +351,8 @@ static void CUPTIAPI buffer_completed(CUcontext ctx, uint32_t stream_id, uint8_t
 
 	vlog("Processed %zu CUPTI activity records (%zu errors, %zu dropped).\n",
 	     rec_cnt, err_cnt, drop_cnt);
+
+	atomic_store(&cupti_processing, 0);
 }
 
 static bool cupti_lazy_init(void)
@@ -462,7 +482,16 @@ void finalize_cupti_activities(void)
 	if (!cupti_init)
 		return;
 
-	if (cupti_alive) {
+	atomic_store(&cupti_shutting_down, 1);
+	while (atomic_load(&cupti_processing) != 0)
+		sched_yield();
+
+	int err = cuda_dump_finalize();
+	if (err) /* not much we can do about that, but report it loudly */
+		elog("!!! CUDA dump finalization returned error: %d\n", err);
+
+	bool live = atomic_load(&cupti_live);
+	if (live) {
 		vlog("Flushing CUPTI activity buffers...\n");
 		/* drain buffers forcefully to avoid getting our callbacks called */
 		(void)cupti_activity_flush_all(CUPTI_ACTIVITY_FLAG_FLUSH_FORCED);
@@ -480,15 +509,15 @@ void finalize_cupti_activities(void)
 
 	/*
 	 * Make sure any remaining accummulated records between last flush and
-	 * disabling activities are drained and recorded properly
+	 * disabling activities are drained and buffers are freed properly
 	 */
-	if (cupti_alive) {
+	if (live) {
 		vlog("Flushing CUPTI activity buffers again...\n");
 		/* drain buffers forcefully to avoid getting our callbacks called */
 		(void)cupti_activity_flush_all(CUPTI_ACTIVITY_FLAG_FLUSH_FORCED);
 	}
 
-	if (cupti_old_thread_id_type != -1)
+	if (cupti_old_thread_id_type != CUPTI_ACTIVITY_THREAD_ID_TYPE_SYSTEM)
 		(void)cupti_set_thread_id_type(cupti_old_thread_id_type);
 
 	vlog("CUPTI activity API finalized.\n");

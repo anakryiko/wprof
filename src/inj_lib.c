@@ -297,9 +297,12 @@ cleanup:
 	return err;
 }
 
-static int cuda_dump_finalize(void)
+int cuda_dump_finalize(void)
 {
 	int err = 0;
+
+	if (!cuda_dump)
+		return 0;
 
 	fflush(cuda_dump);
 
@@ -349,6 +352,9 @@ static int cuda_dump_finalize(void)
 	fflush(cuda_dump);
 	fsync(fileno(cuda_dump));
 
+	fclose(cuda_dump);
+	cuda_dump = NULL;
+
 	return 0;
 }
 
@@ -387,9 +393,6 @@ static int handle_session_end(void)
 		elog("Failed to finalize CUDA data dump: %d\n", err);
 		return err;
 	}
-
-	fclose(cuda_dump);
-	cuda_dump = NULL;
 
 	return 0;
 }

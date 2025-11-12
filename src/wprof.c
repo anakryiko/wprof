@@ -261,7 +261,12 @@ static int merge_wprof_data(int workdir_fd, struct worker_state *workers)
 	for (int i = 0; i < env.cuda_cnt; i++) {
 		struct cuda_tracee *cuda = &env.cudas[i];
 
-		if (cuda->state != TRACEE_INACTIVE) {
+		if (cuda->state == TRACEE_INACTIVE) {
+			/* expected clean shutdown case */
+		} else if (cuda->state == TRACEE_SHUTDOWN_TIMEOUT) {
+			eprintf("Tracee tracee #%d (PID %d, %s) timed out its shutdown, but we'll try to collect its data nevertheless!..\n",
+				i, cuda->pid, cuda->proc_name);
+		} else {
 			eprintf("Skipping CUDA tracing data from tracee #%d (PID %d, %s, %s) as it had problems...\n",
 				i, cuda->pid, cuda->proc_name, cuda_tracee_state_str(cuda->state));
 			continue;
@@ -272,7 +277,7 @@ static int merge_wprof_data(int workdir_fd, struct worker_state *workers)
 			err = -errno;
 			eprintf("Failed to fstat() CUDA data dump for tracee PID %d (%s) at '%s': %d\n",
 				cuda->pid, cuda->proc_name, cuda->dump_path, err);
-			return err;
+			continue;
 		}
 
 		wcudas[i].dump_sz = st.st_size;
@@ -281,7 +286,7 @@ static int merge_wprof_data(int workdir_fd, struct worker_state *workers)
 			err = -errno;
 			eprintf("Failed to mmap() CUDA data dump for tracee PID %d (%s) at '%s': %d\n",
 				cuda->pid, cuda->proc_name, cuda->dump_path, err);
-			return err;
+			continue;
 		}
 
 		wcudas[i].strs = (void *)wcudas[i].dump_hdr + wcudas[i].dump_hdr->hdr_sz + wcudas[i].dump_hdr->strs_off;
