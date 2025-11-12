@@ -95,6 +95,39 @@ const char* cuda_memcpy_kind_str(enum cuda_memcpy_kind kind)
 	return cuda_memcpy_kind_str_map[CUDA_MEMCPY_UNKN];
 }
 
+static const char *cuda_memory_kind_str_map[] = {
+	[0] = "???",			/* CUPTI_ACTIVITY_MEMORY_KIND_UNKNOWN */
+	[1] = "pageable",		/* CUPTI_ACTIVITY_MEMORY_KIND_PAGEABLE */
+	[2] = "pinned",			/* CUPTI_ACTIVITY_MEMORY_KIND_PINNED */
+	[3] = "device",			/* CUPTI_ACTIVITY_MEMORY_KIND_DEVICE */
+	[4] = "array",			/* CUPTI_ACTIVITY_MEMORY_KIND_ARRAY */
+	[5] = "managed",		/* CUPTI_ACTIVITY_MEMORY_KIND_MANAGED */
+	[6] = "device_static",		/* CUPTI_ACTIVITY_MEMORY_KIND_DEVICE_STATIC */
+	[7] = "managed_static",		/* CUPTI_ACTIVITY_MEMORY_KIND_MANAGED_STATIC */
+};
+
+const char *cuda_memory_kind_str(int kind)
+{
+	if (kind > 0 && kind < ARRAY_SIZE(cuda_memory_kind_str_map))
+		return cuda_memory_kind_str_map[kind];
+	return cuda_memory_kind_str_map[0];
+}
+
+static const char *cuda_sync_type_str_map[] = {
+	[0] = "???",			/* CUPTI_ACTIVITY_SYNCHRONIZATION_TYPE_UNKNOWN */
+	[1] = "event_sync",		/* CUPTI_ACTIVITY_SYNCHRONIZATION_TYPE_EVENT_SYNCHRONIZE */
+	[2] = "stream_wait_event",	/* CUPTI_ACTIVITY_SYNCHRONIZATION_TYPE_STREAM_WAIT_EVENT */
+	[3] = "stream_sync",		/* CUPTI_ACTIVITY_SYNCHRONIZATION_TYPE_STREAM_SYNCHRONIZE */
+	[4] = "context_sync",		/* CUPTI_ACTIVITY_SYNCHRONIZATION_TYPE_CONTEXT_SYNCHRONIZE */
+};
+
+const char *cuda_sync_type_str(int type)
+{
+	if (type > 0 && type < ARRAY_SIZE(cuda_sync_type_str_map))
+		return cuda_sync_type_str_map[type];
+	return cuda_sync_type_str_map[0];
+}
+
 /*
  * PROTOBUF UTILS
  */
@@ -136,6 +169,8 @@ static const char *pb_static_strs[] = {
 	[IID_CAT_CUDA_KERNEL] = "CUDA_KERNEL",
 	[IID_CAT_CUDA_MEMCPY] = "CUDA_MEMCPY",
 	[IID_CAT_CUDA_API] = "CUDA_API",
+	[IID_CAT_CUDA_MEMSET] = "CUDA_MEMSET",
+	[IID_CAT_CUDA_SYNC] = "CUDA_SYNC",
 
 	[IID_NAME_TIMER] = "TIMER",
 	[IID_NAME_EXEC] = "EXEC",
@@ -193,6 +228,19 @@ static const char *pb_static_strs[] = {
 	[IID_NAME_CUDA_MEMCPY + CUDA_MEMCPY_DTOD] = "memcpy:DtoD",
 	[IID_NAME_CUDA_MEMCPY + CUDA_MEMCPY_HTOH] = "memcpy:HtoH",
 	[IID_NAME_CUDA_MEMCPY + CUDA_MEMCPY_PTOP] = "memcpy:PtoP",
+	[IID_NAME_CUDA_MEMSET + CUDA_MEM_UNKN] = "memset:???",
+	[IID_NAME_CUDA_MEMSET + CUDA_MEM_PAGEABLE] = "memset:pageable",
+	[IID_NAME_CUDA_MEMSET + CUDA_MEM_PINNED] = "memset:pinned",
+	[IID_NAME_CUDA_MEMSET + CUDA_MEM_DEVICE] = "memset:device",
+	[IID_NAME_CUDA_MEMSET + CUDA_MEM_ARRAY] = "memset:array",
+	[IID_NAME_CUDA_MEMSET + CUDA_MEM_MANAGED] = "memset:managed",
+	[IID_NAME_CUDA_MEMSET + CUDA_MEM_DEVICE_STATIC] = "memset:device_static",
+	[IID_NAME_CUDA_MEMSET + CUDA_MEM_MANAGED_STATIC] = "memset:managed_static",
+	[IID_NAME_CUDA_SYNC + CUDA_SYNC_UNKN] = "sync:???",
+	[IID_NAME_CUDA_SYNC + CUDA_SYNC_EVENT_SYNC] = "sync:event_sync",
+	[IID_NAME_CUDA_SYNC + CUDA_SYNC_STREAM_WAIT_EVENT] = "sync:stream_wait_event",
+	[IID_NAME_CUDA_SYNC + CUDA_SYNC_STREAM_SYNC] = "sync:stream_sync",
+	[IID_NAME_CUDA_SYNC + CUDA_SYNC_CONTEXT_SYNC] = "sync:context_sync",
 
 	[IID_ANNK_CPU] = "cpu",
 	[IID_ANNK_NUMA_NODE] = "numa_node",
@@ -254,6 +302,10 @@ static const char *pb_static_strs[] = {
 	[IID_ANNK_CUDA_GRID_Z] = "grid_z",
 	[IID_ANNK_CUDA_KIND] = "kind",
 	[IID_ANNK_CUDA_BYTE_CNT] = "byte_cnt",
+	[IID_ANNK_CUDA_SRC_KIND] = "src_kind",
+	[IID_ANNK_CUDA_DST_KIND] = "dst_kind",
+	[IID_ANNK_CUDA_CONTEXT_ID] = "context_id",
+	[IID_ANNK_CUDA_EVENT_ID] = "event_id",
 
 	[IID_ANNV_SOFTIRQ_ACTION + HI_SOFTIRQ] = "hi",
 	[IID_ANNV_SOFTIRQ_ACTION + TIMER_SOFTIRQ] = "timer",
@@ -283,6 +335,21 @@ static const char *pb_static_strs[] = {
 	[IID_ANNV_CUDA_MEMCPY_KIND + CUDA_MEMCPY_DTOD] = "DtoD",
 	[IID_ANNV_CUDA_MEMCPY_KIND + CUDA_MEMCPY_HTOH] = "HtoH",
 	[IID_ANNV_CUDA_MEMCPY_KIND + CUDA_MEMCPY_PTOP] = "PtoP",
+
+	[IID_ANNV_CUDA_MEMORY_KIND + CUDA_MEM_UNKN] = "???",
+	[IID_ANNV_CUDA_MEMORY_KIND + CUDA_MEM_PAGEABLE] = "pageable",
+	[IID_ANNV_CUDA_MEMORY_KIND + CUDA_MEM_PINNED] = "pinned",
+	[IID_ANNV_CUDA_MEMORY_KIND + CUDA_MEM_DEVICE] = "device",
+	[IID_ANNV_CUDA_MEMORY_KIND + CUDA_MEM_ARRAY] = "array",
+	[IID_ANNV_CUDA_MEMORY_KIND + CUDA_MEM_MANAGED] = "managed",
+	[IID_ANNV_CUDA_MEMORY_KIND + CUDA_MEM_DEVICE_STATIC] = "device_static",
+	[IID_ANNV_CUDA_MEMORY_KIND + CUDA_MEM_MANAGED_STATIC] = "managed_static",
+
+	[IID_ANNV_CUDA_SYNC_TYPE + CUDA_SYNC_UNKN] = "???",
+	[IID_ANNV_CUDA_SYNC_TYPE + CUDA_SYNC_EVENT_SYNC] = "event_sync",
+	[IID_ANNV_CUDA_SYNC_TYPE + CUDA_SYNC_STREAM_WAIT_EVENT] = "stream_wait_event",
+	[IID_ANNV_CUDA_SYNC_TYPE + CUDA_SYNC_STREAM_SYNC] = "stream_sync",
+	[IID_ANNV_CUDA_SYNC_TYPE + CUDA_SYNC_CONTEXT_SYNC] = "context_sync",
 
 	[IID_ANNV_OFFCPU_BLOCKED] = "blocked",
 	[IID_ANNV_OFFCPU_PREEMPTED] = "preempted",

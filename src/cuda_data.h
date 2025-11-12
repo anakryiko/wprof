@@ -31,7 +31,9 @@ enum wcuda_event_kind {
 	/* Currently this needs to be non-overlapping with enum event_kind */
 	WCK_CUDA_KERNEL = 50,
 	WCK_CUDA_MEMCPY = 51,
-	WCK_CUDA_API = 52,
+	WCK_CUDA_MEMSET = 52,
+	WCK_CUDA_SYNC = 53,
+	WCK_CUDA_API = 54,
 };
 
 enum wcuda_cuda_api_kind {
@@ -78,6 +80,23 @@ struct wcuda_event {
 			u32 tid;
 			u32 ret_val;
 		} cuda_api;
+		struct wcuda_cuda_memset {
+			u64 end_ts;
+			u64 byte_cnt;
+			u32 corr_id;
+			u32 device_id;
+			u32 stream_id;
+			u32 value;
+			u8 mem_kind;
+		} cuda_memset;
+		struct wcuda_cuda_sync {
+			u64 end_ts;
+			u32 corr_id;
+			u32 stream_id;
+			u32 ctx_id;
+			u32 event_id;
+			u8 sync_type;
+		} cuda_sync;
 	};
 };
 

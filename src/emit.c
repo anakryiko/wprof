@@ -1939,10 +1939,18 @@ static int process_cuda_memcpy(struct worker_state *w, struct wprof_event *e, si
 		kind_iid = IID_NONE;
 	}
 
-	struct pb_str name = iid_str(name_iid, sfmt("%s:%s", "cudaMemcpy", cuda_memcpy_kind_str(cu->copy_kind)));
+	const char *copy_kind_str = cuda_memcpy_kind_str(cu->copy_kind);
+	struct pb_str name = iid_str(name_iid, sfmt("%s:%s", "memcpy", copy_kind_str));
 	emit_track_slice_start(clamp_ts(e->ts), track_uuid, name, IID_CAT_CUDA_MEMCPY) {
 		emit_kv_int(IID_ANNK_CUDA_BYTE_CNT, cu->byte_cnt);
-		emit_kv_str(IID_ANNK_CUDA_KIND, iid_str(kind_iid, cuda_memcpy_kind_str(cu->copy_kind)));
+		emit_kv_str(IID_ANNK_CUDA_KIND, iid_str(kind_iid, copy_kind_str));
+
+		pb_iid src_kind_iid = cu->src_kind >= CUDA_MEM_UNKN && cu->src_kind < NR_CUDA_MEMORY_KIND
+			? IID_ANNV_CUDA_MEMORY_KIND + cu->src_kind : IID_NONE;
+		pb_iid dst_kind_iid = cu->dst_kind >= CUDA_MEM_UNKN && cu->dst_kind < NR_CUDA_MEMORY_KIND
+			? IID_ANNV_CUDA_MEMORY_KIND + cu->dst_kind : IID_NONE;
+		emit_kv_str(IID_ANNK_CUDA_SRC_KIND, iid_str(src_kind_iid, cuda_memory_kind_str(cu->src_kind)));
+		emit_kv_str(IID_ANNK_CUDA_DST_KIND, iid_str(dst_kind_iid, cuda_memory_kind_str(cu->dst_kind)));
 
 		emit_kv_int(IID_ANNK_CUDA_DEVICE_ID, cu->device_id);
 		emit_kv_int(IID_ANNK_CUDA_STREAM_ID, cu->stream_id);
@@ -1951,6 +1959,84 @@ static int process_cuda_memcpy(struct worker_state *w, struct wprof_event *e, si
 	}
 
 	emit_track_slice_end(clamp_ts(cu->end_ts), track_uuid, name, IID_CAT_CUDA_MEMCPY);
+
+	return 0;
+}
+
+/* WCK_CUDA_MEMSET */
+static int process_cuda_memset(struct worker_state *w, struct wprof_event *e, size_t size)
+{
+	if (env.capture_cuda != TRUE)
+		return 0;
+
+	const struct wcuda_cuda_memset *cu = (void *)e + offsetof(struct wprof_event, __wprof_data);
+
+	if (!is_time_range_in_session(e->ts, cu->end_ts))
+		return 0;
+
+	ensure_cuda_proc_track(e->task.pid, e->task.pcomm);
+	ensure_cuda_proc_gpu_track(e->task.pid, cu->device_id);
+	u64 track_uuid = ensure_cuda_proc_stream_track(e->task.pid, cu->device_id, cu->stream_id);
+
+	pb_iid name_iid, kind_iid;
+	if (cu->mem_kind >= CUDA_MEM_UNKN && cu->mem_kind < NR_CUDA_MEMORY_KIND) {
+		name_iid = IID_NAME_CUDA_MEMSET + cu->mem_kind;
+		kind_iid = IID_ANNV_CUDA_MEMORY_KIND + cu->mem_kind;
+	} else {
+		name_iid = IID_NONE;
+		kind_iid = IID_NONE;
+	}
+	const char *mem_kind_str = cuda_memory_kind_str(cu->mem_kind);
+	struct pb_str name = iid_str(name_iid, sfmt("%s:%s", "memset", mem_kind_str));
+	emit_track_slice_start(clamp_ts(e->ts), track_uuid, name, IID_CAT_CUDA_MEMSET) {
+		emit_kv_int(IID_ANNK_CUDA_BYTE_CNT, cu->byte_cnt);
+		emit_kv_str(IID_ANNK_CUDA_KIND, iid_str(kind_iid, mem_kind_str));
+		emit_kv_int(IID_ANNK_CUDA_DEVICE_ID, cu->device_id);
+		emit_kv_int(IID_ANNK_CUDA_STREAM_ID, cu->stream_id);
+
+		emit_flow_id(((u64)e->task.pid << 32) | cu->corr_id);
+	}
+
+	emit_track_slice_end(clamp_ts(cu->end_ts), track_uuid, name, IID_CAT_CUDA_MEMSET);
+
+	return 0;
+}
+
+/* WCK_CUDA_SYNC */
+static int process_cuda_sync(struct worker_state *w, struct wprof_event *e, size_t size)
+{
+	if (env.capture_cuda != TRUE)
+		return 0;
+
+	const struct wcuda_cuda_sync *cu = (void *)e + offsetof(struct wprof_event, __wprof_data);
+
+	if (!is_time_range_in_session(e->ts, cu->end_ts))
+		return 0;
+
+	ensure_cuda_proc_track(e->task.pid, e->task.pcomm);
+	u64 track_uuid = ensure_cuda_proc_stream_track(e->task.pid, 0, cu->stream_id);
+
+	pb_iid name_iid, kind_iid;
+	if (cu->sync_type >= CUDA_SYNC_UNKN && cu->sync_type < NR_CUDA_SYNC_TYPE) {
+		name_iid = IID_NAME_CUDA_SYNC + cu->sync_type;
+		kind_iid = IID_ANNV_CUDA_SYNC_TYPE + cu->sync_type;
+	} else {
+		name_iid = IID_NONE;
+		kind_iid = IID_NONE;
+	}
+
+	const char *sync_type_str = cuda_sync_type_str(cu->sync_type);
+	struct pb_str name = iid_str(name_iid, sfmt("%s:%s", "sync", sync_type_str));
+	emit_track_slice_start(clamp_ts(e->ts), track_uuid, name, IID_CAT_CUDA_SYNC) {
+		emit_kv_str(IID_ANNK_CUDA_KIND, iid_str(kind_iid, sync_type_str));
+		emit_kv_int(IID_ANNK_CUDA_STREAM_ID, cu->stream_id);
+		emit_kv_int(IID_ANNK_CUDA_CONTEXT_ID, cu->ctx_id);
+		emit_kv_int(IID_ANNK_CUDA_EVENT_ID, cu->event_id);
+
+		emit_flow_id(((u64)e->task.pid << 32) | cu->corr_id);
+	}
+
+	emit_track_slice_end(clamp_ts(cu->end_ts), track_uuid, name, IID_CAT_CUDA_SYNC);
 
 	return 0;
 }
@@ -2014,6 +2100,7 @@ static int process_cuda_api(struct worker_state *w, struct wprof_event *e, size_
 
 	return 0;
 }
+
 typedef int (*event_fn)(struct worker_state *w, struct wprof_event *e, size_t size);
 
 static event_fn ev_fns[] = {
@@ -2037,6 +2124,8 @@ static event_fn ev_fns[] = {
 
 	[WCK_CUDA_KERNEL] = process_cuda_kernel,
 	[WCK_CUDA_MEMCPY] = process_cuda_memcpy,
+	[WCK_CUDA_MEMSET] = process_cuda_memset,
+	[WCK_CUDA_SYNC] = process_cuda_sync,
 	[WCK_CUDA_API] = process_cuda_api,
 };
 
