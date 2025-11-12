@@ -482,14 +482,6 @@ void finalize_cupti_activities(void)
 	if (!cupti_init)
 		return;
 
-	atomic_store(&cupti_shutting_down, 1);
-	while (atomic_load(&cupti_processing) != 0)
-		sched_yield();
-
-	int err = cuda_dump_finalize();
-	if (err) /* not much we can do about that, but report it loudly */
-		elog("!!! CUDA dump finalization returned error: %d\n", err);
-
 	bool live = atomic_load(&cupti_live);
 	if (live) {
 		vlog("Flushing CUPTI activity buffers...\n");
@@ -498,6 +490,14 @@ void finalize_cupti_activities(void)
 	} else {
 		vlog("Skipping CUPTI activity flush as CUPTI doesn't seem to be active!\n");
 	}
+
+	atomic_store(&cupti_shutting_down, 1);
+	while (atomic_load(&cupti_processing) != 0)
+		sched_yield();
+
+	int err = cuda_dump_finalize();
+	if (err) /* not much we can do about that, but report it loudly */
+		elog("!!! CUDA dump finalization returned error: %d\n", err);
 
 	/* deactivate any activity we might have activated */
 	for (int i = 0; i < ARRAY_SIZE(cupti_act_kinds); i++) {
