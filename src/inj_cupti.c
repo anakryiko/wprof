@@ -236,6 +236,7 @@ static int handle_cupti_record(CUpti_Activity *rec)
 				.byte_cnt = r->bytes,
 				.corr_id = r->correlationId,
 				.device_id = r->deviceId,
+				.ctx_id = r->contextId,
 				.stream_id = r->streamId,
 				.value = r->value,
 				.mem_kind = r->memoryKind,
@@ -266,6 +267,12 @@ static int handle_cupti_record(CUpti_Activity *rec)
 		};
 		return cuda_dump_event(&e);
 	}
+	case CUPTI_ACTIVITY_KIND_CUDA_EVENT:
+		/*
+		 * XXX: event is a means to connect GPU-side sync scope with CPU-side sync API call,
+		 * but it has no time stamp, so hard to integrate into wprof right now
+		 */
+		break;
 	default:
 		vlog("  Activity kind: %d\n", rec->kind);
 		break;
@@ -367,6 +374,7 @@ static const char *cupti_act_kind_strs[] = {
 	[CUPTI_ACTIVITY_KIND_RUNTIME] = "RUNTIME",
 	[CUPTI_ACTIVITY_KIND_MEMSET] = "MEMSET",
 	[CUPTI_ACTIVITY_KIND_SYNCHRONIZATION] = "SYNCHRONIZATION",
+	[CUPTI_ACTIVITY_KIND_CUDA_EVENT] = "EVENT",
 };
 
 static const char *cupti_act_kind_str(CUpti_ActivityKind kind)

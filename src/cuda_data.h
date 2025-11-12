@@ -85,6 +85,7 @@ struct wcuda_event {
 			u64 byte_cnt;
 			u32 corr_id;
 			u32 device_id;
+			u32 ctx_id;
 			u32 stream_id;
 			u32 value;
 			u8 mem_kind;
