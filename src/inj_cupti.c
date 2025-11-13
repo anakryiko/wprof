@@ -98,7 +98,7 @@ static long cupti_shutting_down __aligned(64);
 static long cupti_live = false;
 static long cupti_processing __aligned(64);
 
-static uint8_t discard_buf[4096];
+static uint8_t discard_buf[256 * 1024];
 
 static void CUPTIAPI buffer_requested(uint8_t **buffer, size_t *size, size_t *max_num_records)
 {
@@ -296,6 +296,13 @@ static int handle_cupti_record(CUpti_Activity *rec)
 enum CUpti_driver_api_trace_cbid_enum driver_cbids;
 enum CUpti_runtime_api_trace_cbid_enum runtime_cbids;
 
+static void consume_activity_buf(void *buf)
+{
+	if (buf == discard_buf)
+		return;
+	free(buf);
+}
+
 static void CUPTIAPI buffer_completed(CUcontext ctx, uint32_t stream_id, uint8_t *buf,
 				      size_t buf_sz, size_t data_sz)
 {
@@ -307,13 +314,13 @@ static void CUPTIAPI buffer_completed(CUcontext ctx, uint32_t stream_id, uint8_t
 	vlog("CUPTI activity buffer completed (sz %zu, valid_sz %zu)\n", buf_sz, data_sz);
 
 	if (data_sz == 0 || run_ctx->sess_start_ts == 0) {
-		free(buf);
+		consume_activity_buf(buf);
 		return;
 	}
 
 	atomic_store(&cupti_processing, 1);
 	if (atomic_load(&cupti_shutting_down)) {
-		free(buf);
+		consume_activity_buf(buf);
 		atomic_store(&cupti_processing, 0);
 		return;
 	}
@@ -348,7 +355,7 @@ static void CUPTIAPI buffer_completed(CUcontext ctx, uint32_t stream_id, uint8_t
 		elog("!!! CUPTI Activity API dropped %zu records!\n", drop_cnt);
 	}
 
-	free(buf);
+	consume_activity_buf(buf);
 
 	vlog("Processed %zu CUPTI activity records (%zu errors, %zu dropped).\n",
 	     rec_cnt, err_cnt, drop_cnt);
