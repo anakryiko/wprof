@@ -435,11 +435,16 @@ int start_cupti_activities(void)
 		return -EPROTO;
 	}
 
-	/* ask CUPTI to give use real thread ID, not pthread_self() garbage */
-	ret = cupti_set_thread_id_type(CUPTI_ACTIVITY_THREAD_ID_TYPE_SYSTEM);
-	if (ret != CUPTI_SUCCESS) {
-		elog("Failed to set current thread ID type to system one: %d (%s)!\n", ret, cupti_errstr(ret));
-		return -EPROTO;
+	if (cupti_old_thread_id_type != CUPTI_ACTIVITY_THREAD_ID_TYPE_SYSTEM) {
+		/*
+		 * Ask CUPTI to give use real (though may be namespaced) thread ID,
+		 * not pthread_self() garbage
+		 */
+		ret = cupti_set_thread_id_type(CUPTI_ACTIVITY_THREAD_ID_TYPE_SYSTEM);
+		if (ret != CUPTI_SUCCESS) {
+			elog("Failed to set current thread ID type to system one: %d (%s)!\n", ret, cupti_errstr(ret));
+			return -EPROTO;
+		}
 	}
 
 	/* Register callbacks for activity buffer management */
