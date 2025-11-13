@@ -98,24 +98,25 @@ static long cupti_shutting_down __aligned(64);
 static long cupti_live = false;
 static long cupti_processing __aligned(64);
 
+static uint8_t discard_buf[4096];
+
 static void CUPTIAPI buffer_requested(uint8_t **buffer, size_t *size, size_t *max_num_records)
 {
 	const size_t cupti_buf_sz = 2 * 1024 * 1024;
 	uint8_t *buf;
 
 	if (atomic_load(&cupti_shutting_down)) {
-		*buffer = NULL;
-		*size = 0;
+		*buffer = discard_buf;
+		*size = sizeof(discard_buf);
 		*max_num_records = 0;
 		return;
 	}
 
 	buf = (uint8_t *)malloc(cupti_buf_sz);
 	if (!buf) {
-		*buffer = NULL;
-		*size = 0;
+		*buffer = discard_buf;
+		*size = sizeof(discard_buf);
 		*max_num_records = 0;
-
 		elog("Failed to allocate CUPTI activity buffer!\n");
 		return;
 	}
@@ -127,7 +128,6 @@ static void CUPTIAPI buffer_requested(uint8_t **buffer, size_t *size, size_t *ma
 	*buffer = buf;
 	*size = cupti_buf_sz;
 	*max_num_records = 0; /* no limit on number of records */
-
 }
 
 static bool rec_within_session(u64 rec_start_ts, u64 rec_end_ts, u64 sess_start_ts, u64 sess_end_ts)
