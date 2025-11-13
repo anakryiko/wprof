@@ -189,8 +189,76 @@ static int wcuda_remap_strs(struct wcuda_event *e, enum wcuda_event_kind kind,
 	return 0;
 }
 
+struct tid_cache_value {
+	int host_tid;
+	char thread_name[16];
+};
+
+static int wcuda_fill_task_info(struct wprof_event *w, struct wcuda_event *e,
+				int pid, const char *proc_name, struct hashmap *tid_cache)
+{
+	w->cpu = 0;
+	w->numa_node = 0;
+	w->task.flags = 0;
+
+	w->task.pid = pid;
+	snprintf(w->task.pcomm, sizeof(w->task.pcomm), "%s", proc_name);
+
+	w->task.tid = 0;
+	w->task.comm[0] = '\0';
+
+	/*
+	 * For CUDA API events, resolve namespaced TID to host-level TID.
+	 * Also fill out thread name, while at it.
+	 */
+	if (e->kind != WCK_CUDA_API)
+		return 0;
+
+	long key = ((u64)pid << 32) | (u32)e->cuda_api.tid;
+	struct tid_cache_value *ti = NULL;
+
+	if (hashmap__find(tid_cache, key, &ti)) {
+		w->task.tid = ti->host_tid;
+		snprintf(w->task.comm, sizeof(w->task.comm), "%s", ti->thread_name);
+		return 0;
+	}
+
+	ti = calloc(1, sizeof(*ti));
+
+	if (pid == e->cuda_api.pid) {
+		/* no namespacing, no need to resolve TID */
+		ti->host_tid = e->cuda_api.tid;
+	} else  {
+		ti->host_tid = host_tid_by_ns_tid(pid, e->cuda_api.tid);
+		if (ti->host_tid < 0) {
+			eprintf("FAILED to resolve host-level TID by namespaced TID %d (PID %d, %s): %d\n",
+				e->cuda_api.tid, pid, proc_name, ti->host_tid);
+			/* negative cache this TID so we don't do expensive look ups again */
+			ti->host_tid = 0;
+			ti->thread_name[0] = '\0';
+			goto cache;
+		}
+	}
+
+	(void)thread_name_by_tid(pid, ti->host_tid, ti->thread_name, sizeof(ti->thread_name));
+
+	if (pid != e->cuda_api.pid) {
+		vprintf("TRANSLATED NAMESPACED TID %d -> HOST TID %d (PID %d %s,%s)\n",
+			e->cuda_api.tid, ti->host_tid, pid, ti->thread_name, proc_name);
+	}
+
+cache:
+	hashmap__add(tid_cache, key, ti);
+
+	w->task.tid = ti->host_tid;
+	snprintf(w->task.comm, sizeof(w->task.comm), "%s", ti->thread_name);
+
+	return 0;
+}
+
 static int merge_wprof_data(int workdir_fd, struct worker_state *workers)
 {
+	struct hashmap *tid_cache = hashmap__new(hash_identity_fn, hash_equal_fn, NULL);
 	int err;
 
 	/* Init data dump header placeholder */
@@ -372,13 +440,12 @@ static int merge_wprof_data(int workdir_fd, struct worker_state *workers)
 			w->kind = (int)r->e->kind;
 			w->ts = r->e->ts;
 
-			w->cpu = 0;
-			w->numa_node = 0;
-			w->task.flags = 0;
-			w->task.tid = 0;
-			w->task.comm[0] = '\0';
-			w->task.pid = cuda->pid;
-			snprintf(w->task.pcomm, sizeof(w->task.pcomm), "%s", cuda->proc_name);
+			err = wcuda_fill_task_info(w, r->e, cuda->pid, cuda->proc_name, tid_cache);
+			if (err) {
+				eprintf("Failed to fill out CUDA event task info for tracee PID %d (%s) at '%s': %d\n",
+					cuda->pid, cuda->proc_name, cuda->dump_path, err);
+				return err;
+			}
 
 			data = data_buf;
 			data_sz = r->e->sz + sizeof(size_t) + wprof_data_off - wcuda_data_off;
@@ -433,6 +500,15 @@ static int merge_wprof_data(int workdir_fd, struct worker_state *workers)
 
 		w->dump_hdr = NULL;
 		w->dump_sz = 0;
+	}
+
+	if (tid_cache) {
+		size_t bkt;
+		struct hashmap_entry *entry;
+
+		hashmap__for_each_entry(tid_cache, entry, bkt)
+			free(entry->pvalue);
+		hashmap__free(tid_cache);
 	}
 
 	long strs_off = ftell(data_dump);

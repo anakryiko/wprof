@@ -78,6 +78,7 @@ struct wcuda_event {
 			u32 corr_id;
 			u32 cbid;
 			u32 tid;
+			u32 pid;
 			u32 ret_val;
 		} cuda_api;
 		struct wcuda_cuda_memset {

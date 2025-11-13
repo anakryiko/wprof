@@ -223,6 +223,7 @@ static int handle_cupti_record(CUpti_Activity *rec)
 				.end_ts = end_ts,
 				.kind = kind,
 				.corr_id = r->correlationId,
+				.pid = r->processId,
 				.tid = r->threadId,
 				.cbid = r->cbid,
 				.ret_val = r->returnValue,

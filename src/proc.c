@@ -4,6 +4,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <linux/fs.h>
+#include <unistd.h>
 #include <sys/types.h>
 #include <sys/ioctl.h>
 #include <dirent.h>
@@ -31,6 +32,88 @@ int proc_name_by_pid(int pid, char *buf, size_t buf_sz)
 	}
 
 	fclose(fp);
+	return -ESRCH;
+}
+
+int thread_name_by_tid(int pid, int tid, char *buf, size_t buf_sz)
+{
+	char path[64];
+	snprintf(path, sizeof(path), "/proc/%d/task/%d/comm", pid, tid);
+
+	FILE *fp = fopen(path, "re");
+	if (!fp) {
+		snprintf(buf, buf_sz, "???");
+		return -errno;
+	}
+
+	if (fgets(buf, buf_sz, fp)) {
+		char *endline = strchr(buf, '\n');
+		if (endline)
+			*endline = '\0';
+		fclose(fp);
+		return 0;
+	}
+
+	fclose(fp);
+	return -ESRCH;
+}
+
+int host_tid_by_ns_tid(int host_pid, int ns_tid)
+{
+	char line[512], path[64];
+	DIR *task_dir = NULL;
+	struct dirent *entry;
+
+	/* quickly check if there is actually no namespacing */
+	snprintf(path, sizeof(path), "/proc/%d/task/%d", host_pid, ns_tid);
+	if (access(path, F_OK) == 0)
+		return ns_tid;
+
+	snprintf(path, sizeof(path), "/proc/%d/task", host_pid);
+	task_dir = opendir(path);
+	if (!task_dir)
+		return -errno;
+
+	bool found = false;
+	while (!found && (entry = readdir(task_dir))) {
+		int tid, n;
+
+		if (sscanf(entry->d_name, "%d%n", &tid, &n) != 1 || entry->d_name[n] != '\0')
+			continue;
+
+		snprintf(path, sizeof(path), "/proc/%d/task/%d/status", host_pid, tid);
+		FILE *fp = fopen(path, "re");
+		if (!fp)
+			continue;
+
+		while (fgets(line, sizeof(line), fp)) {
+			if (strncmp(line, "NSpid:", 6) != 0)
+				continue;
+			/*
+			 * NSpid line format: "NSpid:\t<host_tid>\t<ns1_tid>\t...\t<ns2_tid>"
+			 * The last entry is the TID in the innermost namespace.
+			 */
+			char *s = strrchr(line, '\t');
+			if (!s)
+				continue;
+			s++; /* skip '\t' */
+
+			int v, n;
+			if (sscanf(s, "%d%n", &v, &n) != 1 || s[n] != '\n')
+				continue;
+
+			if (v == ns_tid) {
+				fclose(fp);
+				closedir(task_dir);
+				return tid;
+			}
+			break; /* stop at NSpid: line */
+		}
+
+		fclose(fp);
+	}
+	closedir(task_dir);
+
 	return -ESRCH;
 }
 

@@ -2114,14 +2114,12 @@ static int process_cuda_api(struct worker_state *w, struct wprof_event *e, size_
 	if (!is_time_range_in_session(e->ts, cu->end_ts))
 		return 0;
 
-	/*
-	 * XXX: THIS IS NOT GREAT. We don't have thread name, so we cannot create proper thread
-	 * descriptor event. For now, just drop all the cuda API events until we do get a proper
-	 * task state
-	 */
-	if (!hashmap__find(tasks, cu->tid, NULL))
+	/* check if we failed to resolve TID at data capture time */
+	if (e->task.tid == 0)
 		return 0;
-	u64 track_uuid = TRACK_UUID(TK_THREAD, cu->tid);
+
+	(void)task_state(w, &e->task);
+	u64 track_uuid = TRACK_UUID(TK_THREAD, e->task.tid);
 
 	const char *name;
 	switch (cu->kind) {
