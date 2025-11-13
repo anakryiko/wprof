@@ -10,12 +10,21 @@
 #include "utils.h"
 
 int proc_name_by_pid(int pid, char *buf, size_t buf_sz);
+int thread_name_by_tid(int pid, int tid, char *buf, size_t buf_sz);
+int host_tid_by_ns_tid(int host_pid, int ns_tid);
 
 static inline const char *proc_name(int pid)
 {
 	static __thread char comm[64];
 
 	return proc_name_by_pid(pid, comm, sizeof(comm)) < 0 ? "???" : comm;
+}
+
+static inline const char *thread_name(int pid, int tid)
+{
+	static __thread char comm[64];
+
+	return thread_name_by_tid(pid, tid, comm, sizeof(comm)) < 0 ? "???" : comm;
 }
 
 struct proc_iter {
