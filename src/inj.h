@@ -50,15 +50,10 @@ static inline u64 ktime_now_ns()
 	return timespec_to_ns(&t);
 }
 
-static inline void atomic_store(long *p, long v)
-{
-	__atomic_store_n(p, v, __ATOMIC_SEQ_CST);
-}
-
-static inline long atomic_load(long *p)
-{
-	return __atomic_load_n(p, __ATOMIC_SEQ_CST);
-}
+#define atomic_add(p, v) __atomic_add_fetch((p), (v), __ATOMIC_RELAXED)
+#define atomic_store(p, v) __atomic_store_n((p), (v), __ATOMIC_SEQ_CST)
+#define atomic_load(p) __atomic_load_n((p), __ATOMIC_SEQ_CST)
+#define atomic_xchg(p, v) __atomic_exchange_n((p), v, __ATOMIC_SEQ_CST)
 
 int cuda_dump_event(struct wcuda_event *e);
 int cuda_dump_finalize(void);
