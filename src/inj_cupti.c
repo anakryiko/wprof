@@ -12,6 +12,8 @@
 #include <sched.h>
 
 #include <cupti.h>
+#include <cupti_activity.h>
+#include <cupti_callbacks.h>
 
 #include "strset.h"
 #include "inj.h"
@@ -29,6 +31,11 @@ static CUptiResult (*cupti_get_result_string)(CUptiResult result, const char **s
 static CUptiResult (*cupti_get_thread_id_type)(CUpti_ActivityThreadIdType *type);
 static CUptiResult (*cupti_set_thread_id_type)(CUpti_ActivityThreadIdType type);
 
+static CUptiResult (*cupti_subscribe)(CUpti_SubscriberHandle *subscriber, CUpti_CallbackFunc callback, void *userdata);
+static CUptiResult (*cupti_unsubscribe)(CUpti_SubscriberHandle subscriber);
+static CUptiResult (*cupti_enable_domain)(uint32_t enable, CUpti_SubscriberHandle subscriber, CUpti_CallbackDomain domain);
+static CUptiResult (*cupti_finalize)(void);
+
 static struct {
 	void *sym_pptr;
 	const char *sym_name;
@@ -43,7 +50,30 @@ static struct {
 	{&cupti_get_result_string, "cuptiGetResultString"},
 	{&cupti_get_thread_id_type, "cuptiGetThreadIdType"},
 	{&cupti_set_thread_id_type, "cuptiSetThreadIdType"},
+	{&cupti_subscribe, "cuptiSubscribe"},
+	{&cupti_unsubscribe, "cuptiUnsubscribe"},
+	{&cupti_enable_domain, "cuptiEnableDomain"},
+	{&cupti_finalize, "cuptiFinalize"},
 };
+
+enum cupti_phase {
+	CUPTI_UNINIT, /* we haven't initialized yet */
+	CUPTI_INITIALIZED, /* libcupti.so loaded and symbols resolved */
+	CUPTI_SUBSCR, /* we have initialized and subscribed */
+	CUPTI_DRAINING, /* shutting down, but still passing through records */
+	CUPTI_DRAINED, /* discard anything */
+};
+
+static void *cupti_handle = NULL;
+static CUpti_ActivityThreadIdType cupti_old_thread_id_type = CUPTI_ACTIVITY_THREAD_ID_TYPE_SYSTEM;
+static CUpti_SubscriberHandle cupti_subscr = NULL;
+
+static enum cupti_phase cupti_phase = CUPTI_UNINIT;
+static long cupti_alloc_buf_cnt = 0;
+
+static long cupti_processing __aligned(64);
+
+static uint8_t discard_buf[256 * 1024];
 
 static const char *cupti_errstr(CUptiResult res)
 {
@@ -90,25 +120,19 @@ static u64 gpu_to_cpu_time_ns(u64 gpu_ts)
 	return gpu_ts + gpu_to_cpu_time_delta_ns;
 }
 
-static bool cupti_init = false;
-static void *cupti_handle = NULL;
-static CUpti_ActivityThreadIdType cupti_old_thread_id_type = CUPTI_ACTIVITY_THREAD_ID_TYPE_SYSTEM;
-
-static long cupti_shutting_down __aligned(64);
-static long cupti_live = false;
-static long cupti_processing __aligned(64);
-
-static uint8_t discard_buf[256 * 1024];
-
 static void CUPTIAPI buffer_requested(uint8_t **buffer, size_t *size, size_t *max_num_records)
 {
 	const size_t cupti_buf_sz = 2 * 1024 * 1024;
 	uint8_t *buf;
 
-	if (atomic_load(&cupti_shutting_down)) {
+	atomic_add(&cupti_alloc_buf_cnt, 1);
+
+	if (atomic_load(&cupti_phase) >= CUPTI_DRAINING) {
 		*buffer = discard_buf;
 		*size = sizeof(discard_buf);
 		*max_num_records = 0;
+		vlog("Giving DISCARD BUFFER (%p, %zu bytes) to CUPTI, we are DRAINING!..\n",
+		     discard_buf, sizeof(discard_buf));
 		return;
 	}
 
@@ -117,13 +141,11 @@ static void CUPTIAPI buffer_requested(uint8_t **buffer, size_t *size, size_t *ma
 		*buffer = discard_buf;
 		*size = sizeof(discard_buf);
 		*max_num_records = 0;
-		elog("Failed to allocate CUPTI activity buffer!\n");
+		elog("FAILED to allocate CUPTI activity buffer!\n");
 		return;
 	}
 
-	atomic_store(&cupti_live, true); /* mark that CUPTI is alive and has our buffer */
-
-	vlog("CUPTI activity buffer allocated (%zu bytes)\n", cupti_buf_sz);
+	vlog("CUPTI activity buffer allocated (%p, %zu bytes)\n", buf, cupti_buf_sz);
 
 	*buffer = buf;
 	*size = cupti_buf_sz;
@@ -311,15 +333,12 @@ static void CUPTIAPI buffer_completed(CUcontext ctx, uint32_t stream_id, uint8_t
 	size_t drop_cnt = 0;
 	size_t rec_cnt = 0;
 
-	vlog("CUPTI activity buffer completed (sz %zu, valid_sz %zu)\n", buf_sz, data_sz);
-
-	if (data_sz == 0 || run_ctx->sess_start_ts == 0) {
-		consume_activity_buf(buf);
-		return;
-	}
+	vlog("CUPTI activity buffer completed (%p, sz %zu, data_sz %zu)\n", buf, buf_sz, data_sz);
 
 	atomic_store(&cupti_processing, 1);
-	if (atomic_load(&cupti_shutting_down)) {
+
+	enum cupti_phase phase = atomic_load(&cupti_phase);
+	if (phase >= CUPTI_DRAINED || data_sz == 0 || run_ctx->sess_start_ts == 0) {
 		consume_activity_buf(buf);
 		atomic_store(&cupti_processing, 0);
 		return;
@@ -327,7 +346,6 @@ static void CUPTIAPI buffer_completed(CUcontext ctx, uint32_t stream_id, uint8_t
 
 	CUpti_Activity *rec = NULL;
 	while (true) {
-
 		status = cupti_activity_get_next_record(buf, data_sz, &rec);
 		if (status == CUPTI_ERROR_MAX_LIMIT_REACHED)
 			break;
@@ -336,7 +354,6 @@ static void CUPTIAPI buffer_completed(CUcontext ctx, uint32_t stream_id, uint8_t
 			     status, cupti_errstr(status));
 			break;
 		}
-
 
 		int err = handle_cupti_record(rec);
 		if (err) {
@@ -382,7 +399,8 @@ static bool cupti_lazy_init(void)
 			return false;
 	}
 
-	cupti_init = true;
+	cupti_phase = CUPTI_INITIALIZED;
+
 	return true;
 }
 
@@ -430,17 +448,30 @@ int init_cupti_activities(void)
 	return 0;
 }
 
+static void cupti_callback(void *userdata, CUpti_CallbackDomain domain, CUpti_CallbackId cbid, const void *cbdata);
+
 int start_cupti_activities(void)
 {
 	CUptiResult ret;
-	int err = 0;
+	int err = -EPROTO;
 
 	vlog("Initializing CUPTI activity subscription...\n");
+
+	ret = cupti_subscribe(&cupti_subscr, cupti_callback, NULL);
+	if (ret == CUPTI_ERROR_MULTIPLE_SUBSCRIBERS_NOT_SUPPORTED) {
+		elog("Active CUPTI subscriber detected, WE ARE NOT ALONE HERE! Bailing...\n");
+		return -EBUSY;
+	} else if (ret != CUPTI_SUCCESS) {
+		elog("Failed to perform CUPTI subscription: %d (%s)!\n", ret, cupti_errstr(ret));
+		return -EPROTO;
+	}
+
+	atomic_store(&cupti_phase, CUPTI_SUBSCR);
 
 	ret = cupti_get_thread_id_type(&cupti_old_thread_id_type);
 	if (ret != CUPTI_SUCCESS) {
 		elog("Failed to get current thread ID type: %d (%s)!\n", ret, cupti_errstr(ret));
-		return -EPROTO;
+		goto cleanup;
 	}
 
 	if (cupti_old_thread_id_type != CUPTI_ACTIVITY_THREAD_ID_TYPE_SYSTEM) {
@@ -451,7 +482,7 @@ int start_cupti_activities(void)
 		ret = cupti_set_thread_id_type(CUPTI_ACTIVITY_THREAD_ID_TYPE_SYSTEM);
 		if (ret != CUPTI_SUCCESS) {
 			elog("Failed to set current thread ID type to system one: %d (%s)!\n", ret, cupti_errstr(ret));
-			return -EPROTO;
+			goto cleanup;
 		}
 	}
 
@@ -461,7 +492,7 @@ int start_cupti_activities(void)
 		elog("Failed to register CUPTI activity callbacks: %d (%s)!\n",
 		     ret, cupti_errstr(ret));
 		cupti_set_thread_id_type(cupti_old_thread_id_type);
-		return -EPROTO;
+		goto cleanup;
 	}
 
 	vlog("CUPTI activity callbacks registered.\n");
@@ -485,33 +516,13 @@ int start_cupti_activities(void)
 	return 0;
 
 cleanup:
+	(void)cupti_unsubscribe(cupti_subscr);
 	finalize_cupti_activities();
 	return err;
 }
 
-/* Finalize CUPTI and flush any remaining activity records */
-void finalize_cupti_activities(void)
+static void cupti_finalize_cb(void)
 {
-	if (!cupti_init)
-		return;
-
-	bool live = atomic_load(&cupti_live);
-	if (live) {
-		vlog("Flushing CUPTI activity buffers...\n");
-		/* drain buffers forcefully to avoid getting our callbacks called */
-		(void)cupti_activity_flush_all(CUPTI_ACTIVITY_FLAG_FLUSH_FORCED);
-	} else {
-		vlog("Skipping CUPTI activity flush as CUPTI doesn't seem to be active!\n");
-	}
-
-	atomic_store(&cupti_shutting_down, 1);
-	while (atomic_load(&cupti_processing) != 0)
-		sched_yield();
-
-	int err = cuda_dump_finalize();
-	if (err) /* not much we can do about that, but report it loudly */
-		elog("!!! CUDA dump finalization returned error: %d\n", err);
-
 	/* deactivate any activity we might have activated */
 	for (int i = 0; i < ARRAY_SIZE(cupti_act_kinds); i++) {
 		CUpti_ActivityKind kind = cupti_act_kinds[i];
@@ -520,21 +531,99 @@ void finalize_cupti_activities(void)
 		(void)cupti_activity_disable(kind);
 	}
 
+	if (cupti_old_thread_id_type != CUPTI_ACTIVITY_THREAD_ID_TYPE_SYSTEM) {
+		vlog("Restoring original CUPTI thread ID type setting...\n");
+		(void)cupti_set_thread_id_type(cupti_old_thread_id_type);
+	}
+
 	/*
 	 * Make sure any remaining accummulated records between last flush and
 	 * disabling activities are drained and buffers are freed properly
 	 */
+	vlog("Flushing CUPTI activity buffers again...\n");
+	/* drain buffers forcefully to avoid getting our callbacks called */
+	(void)cupti_activity_flush_all(CUPTI_ACTIVITY_FLAG_FLUSH_FORCED);
+
+	vlog("Finalizing CUPTI...\n");
+	cupti_finalize();
+
+	vlog("CUPTI finalization DONE.\n");
+}
+
+static volatile bool cupti_finalizing __aligned(64) = false;
+
+static void cupti_callback(void *userdata, CUpti_CallbackDomain domain, CUpti_CallbackId cbid, const void *cbdata)
+{
+	if (domain != CUPTI_CB_DOMAIN_DRIVER_API && domain != CUPTI_CB_DOMAIN_RUNTIME_API)
+		return;
+
+	const CUpti_CallbackData *cb = cbdata;
+	if (cb->callbackSite != CUPTI_API_EXIT)
+		return;
+
+	if (!cupti_finalizing)
+		return;
+
+	cupti_finalize_cb();
+
+	cupti_finalizing = false;
+}
+
+/* Finalize CUPTI and flush any remaining activity records */
+void finalize_cupti_activities(void)
+{
+	enum cupti_phase phase = atomic_load(&cupti_phase);
+	if (phase < CUPTI_INITIALIZED)
+		return;
+
+	if (phase == CUPTI_INITIALIZED)
+		goto unload_cupti; /* we didn't really subscribe */
+
+	vlog("Starting DRAINING phase...\n");
+	atomic_store(&cupti_phase, CUPTI_DRAINING);
+
+	bool live = atomic_load(&cupti_alloc_buf_cnt) > 0;
 	if (live) {
-		vlog("Flushing CUPTI activity buffers again...\n");
+		vlog("Flushing CUPTI activity buffers...\n");
 		/* drain buffers forcefully to avoid getting our callbacks called */
 		(void)cupti_activity_flush_all(CUPTI_ACTIVITY_FLAG_FLUSH_FORCED);
+
+		vlog("Moving to DRAINED phase and waiting for CUPTI activity processing to cease...\n");
+		atomic_store(&cupti_phase, CUPTI_DRAINED);
+		while (atomic_load(&cupti_processing) != 0)
+			sched_yield();
+	} else {
+		vlog("Skipping CUPTI activity flush as CUPTI doesn't seem to be active!\n");
 	}
 
-	if (cupti_old_thread_id_type != CUPTI_ACTIVITY_THREAD_ID_TYPE_SYSTEM)
-		(void)cupti_set_thread_id_type(cupti_old_thread_id_type);
+	vlog("Finalizing CUDA data dump...\n");
+	int err = cuda_dump_finalize();
+	if (err) /* not much we can do about that, but report it loudly */
+		elog("!!! CUDA dump finalization returned error: %d\n", err);
 
-	vlog("CUPTI activity API finalized.\n");
+	if (live) {
+		CUptiResult ret;
 
+		vlog("Enabling CUPTI_CB_DOMAIN_RUNTIME_API subscription...\n");
+		ret = cupti_enable_domain(1, cupti_subscr, CUPTI_CB_DOMAIN_RUNTIME_API);
+		if (ret != CUPTI_SUCCESS)
+			elog("Failed to enable CUPTI_CB_DOMAIN_RUNTIME_API subscription: %d (%s)\n", ret, cupti_errstr(ret));
+
+		vlog("Enabling CUPTI_CB_DOMAIN_DRIVER_API subscription...\n");
+		ret = cupti_enable_domain(1, cupti_subscr, CUPTI_CB_DOMAIN_DRIVER_API);
+		if (ret != CUPTI_SUCCESS)
+			elog("Failed to enable CUPTI_CB_DOMAIN_DRIVER_API subscription: %d (%s)\n", ret, cupti_errstr(ret));
+
+		vlog("Waiting for CUPTI finalization to be done...\n");
+		/* XXX: add timeout? what if no CUDA API call happens ever again? */
+		cupti_finalizing = true;
+		while (cupti_finalizing)
+			sched_yield();
+
+		vlog("CUPTI activity API finalized!\n");
+	}
+
+unload_cupti:
 	if (cupti_handle) {
 		vlog("Performing dlclose(libcupti.so) to not leak its handle...\n");
 		int err = dlclose(cupti_handle);
@@ -545,5 +634,7 @@ void finalize_cupti_activities(void)
 		cupti_handle = NULL;
 	}
 
-	cupti_init = false;
+	atomic_store(&cupti_phase, CUPTI_UNINIT);
+
+	vlog("Done tearing down CUPTI functionality!\n");
 }
