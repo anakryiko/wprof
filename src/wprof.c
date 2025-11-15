@@ -241,12 +241,6 @@ static int wcuda_fill_task_info(struct wprof_event *w, struct wcuda_event *e,
 	}
 
 	(void)thread_name_by_tid(pid, ti->host_tid, ti->thread_name, sizeof(ti->thread_name));
-
-	if (pid != e->cuda_api.pid) {
-		vprintf("TRANSLATED NAMESPACED TID %d -> HOST TID %d (PID %d %s,%s)\n",
-			e->cuda_api.tid, ti->host_tid, pid, ti->thread_name, proc_name);
-	}
-
 cache:
 	hashmap__add(tid_cache, key, ti);
 
@@ -334,6 +328,9 @@ static int merge_wprof_data(int workdir_fd, struct worker_state *workers)
 		} else if (cuda->state == TRACEE_SHUTDOWN_TIMEOUT) {
 			eprintf("Tracee tracee #%d (PID %d, %s) timed out its shutdown, but we'll try to collect its data nevertheless!..\n",
 				i, cuda->pid, cuda->proc_name);
+		} else if (cuda->state == TRACEE_IGNORED) {
+			/* expected uninteresting case, don't pollute logs */
+			continue;
 		} else {
 			eprintf("Skipping CUDA tracing data from tracee #%d (PID %d, %s, %s) as it had problems...\n",
 				i, cuda->pid, cuda->proc_name, cuda_tracee_state_str(cuda->state));

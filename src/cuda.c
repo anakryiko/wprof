@@ -82,13 +82,12 @@ static int discover_pid_cuda_binaries(int pid, int workdir_fd, bool force)
 			vprintf("PID %d (%s) has CUDA, but no CUPTI, but continuing nevertheless...\n", pid, proc_name(pid));
 			goto force_continue;
 		} else {
-			eprintf("PID %d (%s) has CUDA, but no CUPTI, skipping...\n", pid, proc_name(pid));
+			vprintf("PID %d (%s) has CUDA, but no CUPTI, skipping...\n", pid, proc_name(pid));
 		}
 		return 0;
 	}
 
-	if (env.verbose)
-		printf("PID %d (%s) has CUPTI!\n", pid, proc_name(pid));
+	dprintf(2, "PID %d (%s) has CUPTI!\n", pid, proc_name(pid));
 
 force_continue:
 	snprintf(log_path, sizeof(log_path), LIBWPROFINJ_LOG_PATH_FMT, getpid(), pid);
@@ -206,7 +205,7 @@ int cuda_trace_prepare(int workdir_fd, long sess_timeout_ms)
 	for (int i = 0; i < env.cuda_cnt; i++) {
 		struct cuda_tracee *cuda = &env.cudas[i];
 
-		vprintf("Tracee #%d (PID %d, %s, %s): LOG %s DUMP %s\n",
+		dprintf(1 ,"Tracee #%d (PID %d, %s, %s): LOG %s DUMP %s\n",
 			i, cuda->pid, cuda->proc_name,
 			cuda_tracee_state_str(cuda->state),
 			cuda->log_path, cuda->dump_path);
@@ -233,7 +232,7 @@ int cuda_trace_prepare(int workdir_fd, long sess_timeout_ms)
 		case INJ_SETUP_FAILED:
 		default:
 			if (cuda->ctx->exit_hint == HINT_CUPTI_BUSY) {
-				vprintf("Tracee #%d (PID %d, %s) will be IGNORED: NO CUDA UDAGE or (*unlikely*) CUPTI is used by another profiler.\n",
+				dprintf(1, "Tracee #%d (PID %d, %s) will be IGNORED: NO CUDA USAGE (or, unlikely, CUPTI is used by another profiler).\n",
 					i, cuda->pid, cuda->proc_name);
 				cuda->state = TRACEE_IGNORED;
 			} else if (cuda->ctx->exit_hint) {
@@ -305,9 +304,13 @@ void cuda_trace_deactivate(void)
 	for (int i = 0; i < env.cuda_cnt; i++) {
 		struct cuda_tracee *cuda = &env.cudas[i];
 
-		if (cuda->state == TRACEE_SETUP_FAILED ||
-		    cuda->state == TRACEE_SETUP_TIMEOUT ||
-		    cuda->state == TRACEE_IGNORED) {
+		if (cuda->state == TRACEE_IGNORED) {
+			zclose(cuda->uds_fd);
+			/* don't dump tracee log, uninteresting */
+			continue;
+		}
+
+		if (cuda->state == TRACEE_SETUP_FAILED || cuda->state == TRACEE_SETUP_TIMEOUT) {
 			zclose(cuda->uds_fd);
 			dump_tracee_log(cuda);
 			continue;
@@ -340,13 +343,13 @@ void cuda_trace_deactivate(void)
 	for (int i = 0; i < env.cuda_cnt; i++) {
 		struct cuda_tracee *cuda = &env.cudas[i];
 
-		if (cuda->state != TRACEE_ACTIVE) {
+		if (cuda->state != TRACEE_ACTIVE && cuda->state != TRACEE_IGNORED) {
 			vprintf("NOT WAITING for tracee #%d (PID %d, %s, %s) as it was not successfully set up!\n",
 				i, cuda->pid, cuda->proc_name, cuda_tracee_state_str(cuda->state));
 			continue;
 		}
 
-		vprintf("Waiting for tracee #%d (PID %d, %s) to be done...\n", i, cuda->pid, cuda->proc_name);
+		dprintf(1, "Waiting for tracee #%d (PID %d, %s) to be done...\n", i, cuda->pid, cuda->proc_name);
 
 		while (!cuda->ctx->worker_thread_done &&
 		       (ktime_now_ns() - start_ts < LIBWPROFINJ_TEARDOWN_TIMEOUT_MS * 1000000ULL)) {
@@ -354,13 +357,20 @@ void cuda_trace_deactivate(void)
 		}
 
 		if (!cuda->ctx->worker_thread_done) {
-			vprintf("Tracee #%d (PID %d, %s) TIMED OUT DURING TEARDOWN! SKIPPING PTRACE RETRACTION!\n",
+			eprintf("Tracee #%d (PID %d, %s) TIMED OUT DURING TEARDOWN! SKIPPING PTRACE RETRACTION!\n",
 				i, cuda->pid, cuda->proc_name);
 			cuda->state = TRACEE_SHUTDOWN_TIMEOUT;
 		} else {
-			vprintf("Tracee #%d (PID %d, %s) has shut down cleanly.\n",
-				i, cuda->pid, cuda->proc_name);
-			cuda->state = TRACEE_INACTIVE;
+			if (cuda->state == TRACEE_IGNORED) {
+				dprintf(1, "Tracee #%d (PID %d, %s) has shut down cleanly.\n",
+					i, cuda->pid, cuda->proc_name);
+			} else {
+				vprintf("Tracee #%d (PID %d, %s) has shut down cleanly.\n",
+					i, cuda->pid, cuda->proc_name);
+			}
+
+			if (cuda->state != TRACEE_IGNORED)
+				cuda->state = TRACEE_INACTIVE;
 
 			int err = tracee_retract(cuda->tracee);
 			if (err) {
@@ -369,7 +379,8 @@ void cuda_trace_deactivate(void)
 			}
 		}
 
-		dump_tracee_log(cuda);
+		if (cuda->state != TRACEE_IGNORED) /* we already emitted those logs */
+			dump_tracee_log(cuda);
 	}
 
 	env.cudas_deactivated = true;
