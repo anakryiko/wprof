@@ -32,11 +32,26 @@ struct inj_setup_ctx {
 	int uds_parent_fd;
 };
 
+enum inj_exit_hint {
+	HINT_UNSET = 0,
+	HINT_CUPTI_BUSY = 1,
+	HINT_ERROR,
+};
+
+enum inj_setup_state {
+	INJ_SETUP_PENDING = 0,
+	INJ_SETUP_READY = 1,
+	INJ_SETUP_FAILED = 2,
+};
+
 struct inj_run_ctx {
-	bool cupti_ready;
 	bool worker_thread_done;
 	long sess_start_ts;
 	long sess_end_ts;
+
+	enum inj_setup_state setup_state;
+	enum inj_exit_hint exit_hint;
+	char exit_hint_msg[1024];
 };
 
 enum inj_msg_kind {

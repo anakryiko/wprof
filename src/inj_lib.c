@@ -444,7 +444,7 @@ static int handle_msg(struct inj_msg *msg, int *fds, int fd_cnt)
 
 		int dump_fd = fds[0];
 		if ((err = cuda_dump_setup(dump_fd)) < 0) {
-			elog("Failed to setup CUDA data dump: %d\n:", err);
+			elog("Failed to setup CUDA data dump: %d\n", err);
 			return err;
 		}
 
@@ -458,14 +458,14 @@ static int handle_msg(struct inj_msg *msg, int *fds, int fd_cnt)
 		(void)prctl(PR_SET_NAME, WPROFINJ_CUPTI_THREAD_NAME, 0, 0, 0);
 
 		if ((err = start_cupti_activities()) < 0) {
-			elog("Failed to start CUDA activity tracing: %d\n:", err);
+			elog("Failed to start CUDA activity tracing: %d\n", err);
 			return err;
 		}
 
 		/* restore original "wprofinj" name now */
 		(void)prctl(PR_SET_NAME, WPROFINJ_THREAD_NAME, 0, 0, 0);
 
-		run_ctx->cupti_ready = true;
+		run_ctx->setup_state = INJ_SETUP_READY;
 
 		timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
 		if (timer_fd < 0) {
@@ -491,9 +491,7 @@ static int handle_msg(struct inj_msg *msg, int *fds, int fd_cnt)
 			return err;
 		}
 
-
 		vlog("CUDA session timeout successfully set up %3ldms from now.\n", sess_timeout_ms);
-
 		break;
 	}
 	case INJ_MSG_SHUTDOWN:
@@ -667,10 +665,20 @@ cleanup:
 	zclose(epoll_fd);
 	zclose(timer_fd);
 
-	if (err)
+	if (err) {
+		if (run_ctx && run_ctx->setup_state == INJ_SETUP_PENDING) {
+			run_ctx->setup_state = INJ_SETUP_FAILED;
+			if (!run_ctx->exit_hint) {
+				char msg[256];
+				snprintf(msg, sizeof(msg), "Worker thread exited with error %d!\n", err);
+				inj_set_exit_hint(HINT_ERROR, msg);
+			}
+		}
+
 		elog("Worker thread exited with ERROR %d.\n", err);
-	else
+	} else {
 		vlog("Worker thread exited successfully.\n");
+	}
 
 	if (run_ctx && run_ctx != MAP_FAILED) {
 		run_ctx->worker_thread_done = true;
