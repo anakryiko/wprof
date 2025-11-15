@@ -220,18 +220,32 @@ int cuda_trace_prepare(int workdir_fd, long sess_timeout_ms)
 		if (cuda->state != TRACEE_PENDING)
 			continue;
 
-		while (!cuda->ctx->cupti_ready &&
+		while (*(volatile enum inj_setup_state *)&cuda->ctx->setup_state == INJ_SETUP_PENDING &&
 		       (ktime_now_ns() - start_ts < LIBWPROFINJ_SETUP_TIMEOUT_MS * 1000000ULL)) {
 			usleep(10000);
 		}
 
-		if (!cuda->ctx->cupti_ready) {
-			vprintf("Tracee #%d (PID %d, %s) TIMED OUT! Ignoring it...\n",
-				i, cuda->pid, cuda->proc_name);
-			cuda->state = TRACEE_SETUP_TIMEOUT;
-		} else {
+		switch (cuda->ctx->setup_state) {
+		case INJ_SETUP_READY:
 			vprintf("Tracee #%d (PID %d NAME %s) is READY!\n", i, cuda->pid, cuda->proc_name);
 			cuda->state = TRACEE_ACTIVE;
+			break;
+		case INJ_SETUP_FAILED:
+		default:
+			if (cuda->ctx->exit_hint == HINT_CUPTI_BUSY) {
+				vprintf("Tracee #%d (PID %d, %s) will be IGNORED: NO CUDA UDAGE or (*unlikely*) CUPTI is used by another profiler.\n",
+					i, cuda->pid, cuda->proc_name);
+				cuda->state = TRACEE_IGNORED;
+			} else if (cuda->ctx->exit_hint) {
+				vprintf("Tracee #%d (PID %d, %s) failed initial setup with message: '%s'.\n",
+					i, cuda->pid, cuda->proc_name, cuda->ctx->exit_hint_msg);
+				cuda->state = TRACEE_SETUP_FAILED;
+			} else  {
+				vprintf("Tracee #%d (PID %d, %s) TIMED OUT! Ignoring it...\n",
+					i, cuda->pid, cuda->proc_name);
+				cuda->state = TRACEE_SETUP_TIMEOUT;
+			}
+			break;
 		}
 	}
 
@@ -255,6 +269,9 @@ int cuda_trace_activate(long sess_start_ts, long sess_end_ts)
 
 static void dump_tracee_log(struct cuda_tracee *cuda)
 {
+	if (!(env_log_set & LOG_TRACEE))
+		return;
+
 	vprintf("Tracee PID %d (%s) LOG (%s) DUMP (LAST STATE %s):\n"
 		"=======================================================================================================\n",
 		cuda->pid, cuda->proc_name, cuda->log_path, cuda_tracee_state_str(cuda->state));
@@ -288,6 +305,14 @@ void cuda_trace_deactivate(void)
 	for (int i = 0; i < env.cuda_cnt; i++) {
 		struct cuda_tracee *cuda = &env.cudas[i];
 
+		if (cuda->state == TRACEE_SETUP_FAILED ||
+		    cuda->state == TRACEE_SETUP_TIMEOUT ||
+		    cuda->state == TRACEE_IGNORED) {
+			zclose(cuda->uds_fd);
+			dump_tracee_log(cuda);
+			continue;
+		}
+
 		vprintf("Signaling tracee #%d PID %d (%s) to exit...\n", i, cuda->pid, cuda->proc_name);
 
 		struct inj_msg msg = {
@@ -305,9 +330,7 @@ void cuda_trace_deactivate(void)
 			if (cuda->state == TRACEE_ACTIVE)
 				cuda->state = TRACEE_SHUTDOWN_FAILED;
 
-			if (env_log_set & LOG_TRACEE)
-				dump_tracee_log(cuda);
-
+			dump_tracee_log(cuda);
 			continue;
 		}
 	}
@@ -346,8 +369,7 @@ void cuda_trace_deactivate(void)
 			}
 		}
 
-		if (env.log_set & LOG_TRACEE)
-			dump_tracee_log(cuda);
+		dump_tracee_log(cuda);
 	}
 
 	env.cudas_deactivated = true;

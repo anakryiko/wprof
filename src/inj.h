@@ -58,4 +58,12 @@ static inline u64 ktime_now_ns()
 int cuda_dump_event(struct wcuda_event *e);
 int cuda_dump_finalize(void);
 
+static inline void inj_set_exit_hint(enum inj_exit_hint hint, const char *msg)
+{
+	if (!run_ctx)
+		return;
+	run_ctx->exit_hint = hint;
+	snprintf(run_ctx->exit_hint_msg, sizeof(run_ctx->exit_hint_msg), "%s", msg);
+}
+
 #endif /* __INJ_H_ */
