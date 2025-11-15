@@ -554,6 +554,8 @@ static void cupti_finalize_cb(void)
 }
 
 static volatile bool cupti_finalizing __aligned(64) = false;
+static long cupti_fini_cnt = 0;
+static int cupti_fini_pipe_fds[2] = {-1, -1};
 
 static void cupti_callback(void *userdata, CUpti_CallbackDomain domain, CUpti_CallbackId cbid, const void *cbdata)
 {
@@ -567,9 +569,21 @@ static void cupti_callback(void *userdata, CUpti_CallbackDomain domain, CUpti_Ca
 	if (!cupti_finalizing)
 		return;
 
-	cupti_finalize_cb();
-
-	cupti_finalizing = false;
+	/* make sure only one thread performs finalization */
+	if (atomic_add(&cupti_fini_cnt, 1) == 1) {
+		vlog("CUDA callback thread (TID %d) is finalizing CUPTI....\n", gettid());
+		cupti_finalize_cb();
+		cupti_finalizing = false;
+		/* unblock other CUDA threads and wprofinj thread by closing write end of pipe */
+		vlog("CUDA callback thread (TID %d) is DONE, waking everyone up.\n", gettid());
+		close(cupti_fini_pipe_fds[1]);
+	} else {
+		char tmp;
+		/* wait for the "winning" finalizing CUPTI callback thread to be done */
+		vlog("CUDA callback thread (TID %d) is WAITING for the winning finalizer thread...\n", gettid());
+		(void)read(cupti_fini_pipe_fds[0], &tmp, 1);
+		vlog("CUDA callback thread (TID %d) is PROCEEDING further...\n", gettid());
+	}
 }
 
 /* Finalize CUPTI and flush any remaining activity records */
@@ -607,6 +621,11 @@ void finalize_cupti_activities(void)
 	if (live) {
 		CUptiResult ret;
 
+		if (pipe2(cupti_fini_pipe_fds, O_CLOEXEC) < 0)
+			elog("Failed to create pipe FDs: %d!\n", -errno);
+
+		cupti_finalizing = true;
+
 		vlog("Enabling CUPTI_CB_DOMAIN_RUNTIME_API subscription...\n");
 		ret = cupti_enable_domain(1, cupti_subscr, CUPTI_CB_DOMAIN_RUNTIME_API);
 		if (ret != CUPTI_SUCCESS)
@@ -618,10 +637,13 @@ void finalize_cupti_activities(void)
 			elog("Failed to enable CUPTI_CB_DOMAIN_DRIVER_API subscription: %d (%s)\n", ret, cupti_errstr(ret));
 
 		vlog("Waiting for CUPTI finalization to be done...\n");
+		char tmp;
 		/* XXX: add timeout? what if no CUDA API call happens ever again? */
-		cupti_finalizing = true;
-		while (cupti_finalizing)
-			sched_yield();
+		int pipe_fd = cupti_fini_pipe_fds[0];
+		(void)read(pipe_fd, &tmp, 1);
+
+		atomic_store(&cupti_fini_pipe_fds[0], -1);
+		close(pipe_fd);
 
 		vlog("CUPTI activity API finalized!\n");
 	}
