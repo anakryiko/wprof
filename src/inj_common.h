@@ -52,6 +52,12 @@ struct inj_run_ctx {
 	enum inj_setup_state setup_state;
 	enum inj_exit_hint exit_hint;
 	char exit_hint_msg[1024];
+
+	long cupti_rec_cnt;		/* captured records */
+	long cupti_drop_cnt;		/* dropped records */
+	long cupti_err_cnt;		/* errored records */
+	long cupti_data_sz;		/* total data size, bytes */
+	long cupti_buf_cnt;		/* buffers passed to recording callback */
 };
 
 enum inj_msg_kind {

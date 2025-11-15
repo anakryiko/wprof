@@ -817,6 +817,31 @@ skip_rb_stats:
 		ru.ru_nvcsw / 1000.0, ru.ru_nivcsw / 1000.0);
 
 skip_rusage:
+	for (int i = 0; i < env.cuda_cnt; i++) {
+		struct cuda_tracee *cuda = &env.cudas[i];
+
+		if (cuda->state == TRACEE_IGNORED)
+			continue;
+
+		if (cuda->state != TRACEE_INACTIVE) {
+			eprintf("!!! CUDA tracee (PID %d, %s) encountered problem. Last state: %s\n",
+				cuda->pid, cuda->proc_name, cuda_tracee_state_str(cuda->state));
+			continue;
+		}
+
+		if (cuda->ctx->cupti_err_cnt + cuda->ctx->cupti_drop_cnt > 0) {
+			eprintf("!!! CUDA tracee (PID %d, %s): %ld records dropped, %ld errors.\n",
+				cuda->pid, cuda->proc_name,
+				cuda->ctx->cupti_drop_cnt, cuda->ctx->cupti_err_cnt);
+		}
+		if (env.verbose || env.stats) {
+			eprintf("CUDA tracee (PID %d, %s): %ld records, %ld buffers, %.3lfMBs.\n",
+				cuda->pid, cuda->proc_name,
+				cuda->ctx->cupti_rec_cnt, cuda->ctx->cupti_buf_cnt,
+				cuda->ctx->cupti_data_sz / 1024.0 / 1024.0);
+		}
+	}
+
 	if (s.rb_misses)
 		eprintf("!!! Ringbuf fetch misses: %llu\n", s.rb_misses);
 	if (s.rb_drops) {
