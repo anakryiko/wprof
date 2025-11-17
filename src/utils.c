@@ -284,3 +284,46 @@ u64 ktime_to_realtime_ns(u64 ts_ns)
 {
 	return ktime_off + ts_ns;
 }
+
+__printf(2, 3)
+void log_printf(int verbosity, const char *fmt, ...)
+{
+	va_list args;
+	int old_errno;
+
+	if (verbosity == 1 && !env_verbose)
+		return;
+	if (verbosity > 1 && verbosity > 1 + env_debug_level)
+		return;
+
+	old_errno = errno;
+
+	struct timeval tv;
+	struct tm *tm;
+	char buf[4096];
+	size_t len;
+
+	/* we append timestamps to normal output *only if* wprof is run in verbose mode */
+	if (verbosity <= 0 && !env_verbose) {
+		len = 0;
+		buf[0] = '\0';
+	} else {
+		gettimeofday(&tv, NULL);
+		tm = localtime(&tv.tv_sec);
+		len = snprintf(buf, sizeof(buf) - 1, "%02d:%02d:%02d.%06ld ",
+			       tm->tm_hour, tm->tm_min, tm->tm_sec, tv.tv_usec);
+	}
+
+	va_start(args, fmt);
+	len += vsnprintf(buf + len, sizeof(buf) - len - 1, fmt, args);
+	va_end(args);
+
+	if (buf[len - 1] != '\n') {
+		buf[len++] = '\n';
+		buf[len++] = '\0';
+	}
+
+	fputs(buf, verbosity == 0 ? stdout : stderr);
+
+	errno = old_errno;
+}

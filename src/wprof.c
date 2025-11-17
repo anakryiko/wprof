@@ -692,7 +692,7 @@ static void print_exit_summary(struct worker_state *workers, int worker_cnt, str
 		goto skip_prog_stats;
 
 	if (env.stats)
-		printf("BPF program stats:\n");
+		wprintf("BPF program stats:\n");
 
 	struct bpf_program *prog;
 	u64 total_run_cnt = 0, total_run_ns = 0;
@@ -717,7 +717,7 @@ static void print_exit_summary(struct worker_state *workers, int worker_cnt, str
 		}
 
 		if (env.stats) {
-			printf("\t%s%-*s %8llu (%6.0lf/CPU/s) runs for total of %.3lfms (%.3lfms/CPU/s).\n",
+			wprintf("\t%s%-*s %8llu (%6.0lf/CPU/s) runs for total of %.3lfms (%.3lfms/CPU/s).\n",
 				bpf_program__name(prog),
 				(int)max(1UL, 24 - strlen(bpf_program__name(prog))), ":",
 				info.run_cnt,
@@ -730,7 +730,7 @@ static void print_exit_summary(struct worker_state *workers, int worker_cnt, str
 	}
 
 	if (env.stats) {
-		printf("\t%-24s %8llu (%6.0lf/CPU/s) runs for total of %.3lfms (%.3lfms/CPU/s).\n",
+		wprintf("\t%-24s %8llu (%6.0lf/CPU/s) runs for total of %.3lfms (%.3lfms/CPU/s).\n",
 			"TOTAL:", total_run_cnt,
 			total_run_cnt / num_cpus / dur_s,
 			total_run_ns / 1000000.0,
@@ -742,7 +742,7 @@ skip_prog_stats:
 		goto skip_rb_stats;
 
 	if (env.stats)
-		printf("Data procesing stats:\n");
+		wprintf("Data procesing stats:\n");
 
 	for (int i = 0; i < worker_cnt; i++) {
 		struct worker_state *w = &workers[i];
@@ -779,13 +779,13 @@ skip_prog_stats:
 			char rb_name[32];
 			snprintf(rb_name, sizeof(rb_name), "RB #%d:", i);
 
-			printf("\t%-8s %8llu records (%.3lfMB, %.3lfMB/s) processed, %llu dropped (%.3lf%% drop rate), %llu records (%.3lfMB) ignored.\n",
+			wprintf("\t%-8s %8llu records (%.3lfMB, %.3lfMB/s) processed, %llu dropped (%.3lf%% drop rate), %llu records (%.3lfMB) ignored.\n",
 				rb_name, w->rb_handled_cnt, w->rb_handled_sz / 1024.0 / 1024.0,
 				w->rb_handled_sz / 1024.0 / 1024.0 / dur_s,
 				stats_by_rb[i].rb_drops, stats_by_rb[i].rb_drops * 100.0 / (w->rb_handled_cnt + stats_by_rb[i].rb_drops),
 				w->rb_ignored_cnt, w->rb_ignored_sz / 1024.0 / 1024.0);
 		}
-		printf("\t%-8s %8llu records (%.3lfMB, %.3lfMB/s, %.3lfMB/RB/s) processed, %llu dropped (%.3lf%% drop rate), %llu records (%.3lfMB) ignored.\n",
+		wprintf("\t%-8s %8llu records (%.3lfMB, %.3lfMB/s, %.3lfMB/RB/s) processed, %llu dropped (%.3lf%% drop rate), %llu records (%.3lfMB) ignored.\n",
 			"TOTAL:", rb_handled_cnt, rb_handled_sz / 1024.0 / 1024.0,
 			rb_handled_sz / 1024.0 / 1024.0 / dur_s,
 			rb_handled_sz / 1024.0 / 1024.0 / dur_s / env.ringbuf_cnt,
@@ -803,17 +803,17 @@ skip_rb_stats:
 		goto skip_rusage;
 	}
 
-	printf("wprof's own resource usage:\n");
-	printf("\tCPU time (user/system, s):\t\t%.3lf/%.3lf\n",
+	wprintf("wprof's own resource usage:\n");
+	wprintf("\tCPU time (user/system, s):\t\t%.3lf/%.3lf\n",
 		ru.ru_utime.tv_sec + ru.ru_utime.tv_usec / 1000000.0,
 		ru.ru_stime.tv_sec + ru.ru_stime.tv_usec / 1000000.0);
-	printf("\tMemory (max RSS, MB):\t\t\t%.3lf\n",
+	wprintf("\tMemory (max RSS, MB):\t\t\t%.3lf\n",
 		ru.ru_maxrss / 1024.0);
-	printf("\tPage faults (maj/min, K)\t\t%.3lf/%.3lf\n",
+	wprintf("\tPage faults (maj/min, K)\t\t%.3lf/%.3lf\n",
 		ru.ru_majflt / 1000.0, ru.ru_minflt / 1000.0);
-	printf("\tBlock I/Os (K):\t\t\t\t%.3lf/%.3lf\n",
+	wprintf("\tBlock I/Os (K):\t\t\t\t%.3lf/%.3lf\n",
 		ru.ru_inblock / 1000.0, ru.ru_oublock / 1000.0);
-	printf("\tContext switches (vol/invol, K):\t%.3lf/%.3lf\n",
+	wprintf("\tContext switches (vol/invol, K):\t%.3lf/%.3lf\n",
 		ru.ru_nvcsw / 1000.0, ru.ru_nivcsw / 1000.0);
 
 skip_rusage:
@@ -870,7 +870,7 @@ skip_rusage:
 	if (s.req_state_drops)
 		eprintf("!!! Request state drops: %llu\n", s.req_state_drops);
 
-	printf("Exited %s (after %.3lfs).\n",
+	wprintf("Exited %s (after %.3lfs).\n",
 		exit_code ? "with errors" : "cleanly",
 		(ktime_now_ns() - env.actual_start_ts) / 1000000000.0);
 }
@@ -1626,43 +1626,43 @@ int main(int argc, char **argv)
 		if (env.replay_info) {
 			const int w = 26;
 
-			printf("Replay info:\n");
-			printf("============\n");
-			printf("%-*s%u.%u\n", w, "Data version:", dump_hdr->version_major, dump_hdr->version_minor);
-			printf("%-*s%.3lfs (%.3lfms)\n", w, "Duration:",
-			       cfg->duration_ns / 1000000000.0, cfg->duration_ns / 1000000.0);
-			printf("%-*s%llu (%.3lfMBs)\n", w, "Events:",
-			       dump_hdr->event_cnt, dump_hdr->events_sz / 1024.0 / 1024.0);
+			wprintf("Replay info:\n");
+			wprintf("============\n");
+			wprintf("%-*s%u.%u\n", w, "Data version:", dump_hdr->version_major, dump_hdr->version_minor);
+			wprintf("%-*s%.3lfs (%.3lfms)\n", w, "Duration:",
+				cfg->duration_ns / 1000000000.0, cfg->duration_ns / 1000000.0);
+			wprintf("%-*s%llu (%.3lfMBs)\n", w, "Events:",
+				dump_hdr->event_cnt, dump_hdr->events_sz / 1024.0 / 1024.0);
 			if (cfg->captured_stack_traces) {
 				const struct wprof_stacks_hdr *shdr = (void *)dump_hdr + dump_hdr->hdr_sz + dump_hdr->stacks_off;
-				printf("%-*s%u (%.3lfMBs data, %.3lfMBs strings): ", w, "Stack traces:",
-				       shdr->stack_cnt,
-				       (dump_hdr->stacks_sz - shdr->strs_sz) / 1024.0 / 1024.0,
-				       shdr->strs_sz / 1024.0 / 1024.0);
+				wprintf("%-*s%u (%.3lfMBs data, %.3lfMBs strings): ", w, "Stack traces:",
+					shdr->stack_cnt,
+					(dump_hdr->stacks_sz - shdr->strs_sz) / 1024.0 / 1024.0,
+					shdr->strs_sz / 1024.0 / 1024.0);
 				if (cfg->captured_stack_traces & ST_TIMER)
-					printf("timer, ");
+					wprintf("timer, ");
 				if (cfg->captured_stack_traces & ST_OFFCPU)
-					printf("offcpu, ");
+					wprintf("offcpu, ");
 				if (cfg->captured_stack_traces & ST_WAKER)
-					printf("waker, ");
-				printf("\n");
+					wprintf("waker, ");
+				wprintf("\n");
 			} else {
-				printf("%-*s%s\n", w, "Stack traces:", "NONE");
+				wprintf("%-*s%s\n", w, "Stack traces:", "NONE");
 			}
-			printf("%-*s%dHz\n", w, "Timer frequency:", cfg->timer_freq_hz);
-			printf("%-*s", w, "Perf counters:");
+			wprintf("%-*s%dHz\n", w, "Timer frequency:", cfg->timer_freq_hz);
+			wprintf("%-*s", w, "Perf counters:");
 			if (cfg->counter_cnt == 0) {
-				printf("NONE");
+				wprintf("NONE");
 			} else {
 				for (int i = 0; i < cfg->counter_cnt; i++) {
-					printf("%s%s", i == 0 ? "" : ", ",
-					       perf_counter_defs[cfg->counter_ids[i]].alias);
+					wprintf("%s%s", i == 0 ? "" : ", ",
+						perf_counter_defs[cfg->counter_ids[i]].alias);
 				}
 			}
-			printf("\n");
+			wprintf("\n");
 			for (int i = 0; i < ARRAY_SIZE(capture_features); i++) {
 				const struct capture_feature *f = &capture_features[i];
-				printf("%-*s%s\n", w, f->header, f->cfg_get_flag(cfg) ? "YES" : "NO");
+				wprintf("%-*s%s\n", w, f->header, f->cfg_get_flag(cfg) ? "YES" : "NO");
 			}
 			goto cleanup;
 		}
@@ -1853,7 +1853,7 @@ int main(int argc, char **argv)
 	}
 
 	if (env.cuda_cnt > 0) {
-		printf("Preparing CUDA tracees...\n");
+		wprintf("Preparing CUDA tracees...\n");
 		/* give 2 seconds extra time for auto-timeout within tracee */
 		err = cuda_trace_prepare(workdir_fd, env.duration_ns / 1000000 + 2000);
 		if (err) {
@@ -1862,7 +1862,7 @@ int main(int argc, char **argv)
 		}
 	}
 
-	printf("Running...\n");
+	wprintf("Running...\n");
 
 	env.ktime_start_ns = ktime_now_ns();
 	env.realtime_start_ns = ktime_to_realtime_ns(env.ktime_start_ns);
@@ -1871,7 +1871,7 @@ int main(int argc, char **argv)
 	env.sess_end_ts = env.ktime_start_ns + env.duration_ns;
 
 	if (env.cuda_cnt > 0) {
-		printf("Activating CUDA tracees...\n");
+		wprintf("Activating CUDA tracees...\n");
 		err = cuda_trace_activate(env.sess_start_ts, env.sess_end_ts);
 		if (err) {
 			eprintf("Failed to active CUDA tracing sessions: %d\n", err);
@@ -1894,18 +1894,18 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	printf("Stopping...\n");
+	wprintf("Stopping...\n");
 	detach_bpf(&bpf_state, num_cpus);
 
 	if (env.cuda_cnt > 0) {
-		printf("Retracting CUDA trace injections...\n");
+		wprintf("Retracting CUDA trace injections...\n");
 		cuda_trace_deactivate();
 	}
 
-	printf("Draining...\n");
+	wprintf("Draining...\n");
 	drain_bpf(&bpf_state, num_cpus);
 
-	printf("Merging...\n");
+	wprintf("Merging...\n");
 	err = merge_wprof_data(workdir_fd, workers);
 	if (err) {
 		eprintf("Failed to finalize data dump: %d\n", err);
@@ -1928,7 +1928,7 @@ int main(int argc, char **argv)
 			goto cleanup;
 		}
 		ssize_t file_sz = file_size(workers[0].dump);
-		printf("Produced %.3lfMB data file at '%s'.\n",
+		wprintf("Produced %.3lfMB data file at '%s'.\n",
 			file_sz / (1024.0 * 1024.0), env.data_path);
 	}
 
@@ -1970,7 +1970,7 @@ skip_data_collection:
 
 		fflush(w->trace);
 		ssize_t file_sz = file_size(w->trace);
-		printf("Produced %.3lfMB trace file at '%s'.\n",
+		wprintf("Produced %.3lfMB trace file at '%s'.\n",
 			file_sz / (1024.0 * 1024.0), env.trace_path);
 	}
 cleanup:

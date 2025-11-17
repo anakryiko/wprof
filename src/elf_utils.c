@@ -41,12 +41,12 @@ static int elf_open(const char *binary_path, struct elf_fd *elf_fd)
 	}
 	fd = open(binary_path, O_RDONLY | O_CLOEXEC);
 	if (fd < 0) {
-		deprintf(2, "Failed open ELF binary '%s': %d\n", binary_path, -errno);
+		dprintf(2, "Failed open ELF binary '%s': %d\n", binary_path, -errno);
 		return -errno;
 	}
 	elf = elf_begin(fd, ELF_C_READ_MMAP, NULL);
 	if (!elf) {
-		deprintf(2, "Failed to read ELF file '%s': %s\n", binary_path, elf_errmsg(-1));
+		dprintf(2, "Failed to read ELF file '%s': %s\n", binary_path, elf_errmsg(-1));
 		close(fd);
 		return -EINVAL;
 	}
@@ -88,13 +88,13 @@ int elf_sym_iter_new(struct elf_sym_iter *it,
 	memset(it, 0, sizeof(*it));
 
 	if (!gelf_getehdr(elf, &ehdr)) {
-		deprintf(2, "Failed to get ELF ehdr from '%s': %s\n", binary_path, elf_errmsg(-1));
+		dprintf(2, "Failed to get ELF ehdr from '%s': %s\n", binary_path, elf_errmsg(-1));
 		return -EINVAL;
 	}
 
 	scn = elf_find_next_scn_by_type(elf, sh_type, NULL);
 	if (!scn) {
-		deprintf(2, "Failed to find symbol table ELF sections in '%s'\n", binary_path);
+		dprintf(2, "Failed to find symbol table ELF sections in '%s'\n", binary_path);
 		return -ENOENT;
 	}
 
@@ -104,7 +104,7 @@ int elf_sym_iter_new(struct elf_sym_iter *it,
 	it->strtabidx = sh.sh_link;
 	it->syms = elf_getdata(scn, 0);
 	if (!it->syms) {
-		deprintf(2, "Failed to get symbols for ELF symtab section in '%s': %s\n",
+		dprintf(2, "Failed to get symbols for ELF symtab section in '%s': %s\n",
 			binary_path, elf_errmsg(-1));
 		return -EINVAL;
 	}
@@ -127,7 +127,7 @@ int elf_sym_iter_new(struct elf_sym_iter *it,
 
 	it->verdefs = elf_getdata(scn, 0);
 	if (!it->verdefs || !gelf_getshdr(scn, &sh)) {
-		deprintf(2, "Failed to get verdef ELF section in '%s'\n", binary_path);
+		dprintf(2, "Failed to get verdef ELF section in '%s'\n", binary_path);
 		return -EINVAL;
 	}
 	it->verdef_strtabidx = sh.sh_link;

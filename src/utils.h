@@ -39,6 +39,8 @@ static inline bool is_false_or_unset(enum tristate tri)
 #define __unused __attribute__((unused))
 #define __weak __attribute__((weak))
 #define __cleanup(fn) __attribute__((cleanup(fn)))
+#define __printf(a, b) __attribute__((format(printf, a, b)))
+#define __aligned(N) __attribute__((aligned(N)))
 
 #define zclose(fd) do { if (fd >= 0) { close(fd); fd = -1; } } while (0)
 
@@ -70,45 +72,15 @@ extern bool env_verbose;
 extern int env_debug_level;
 extern enum log_subset env_log_set;
 
-#define eprintf(fmt, ...) do {									\
-	int _errno = errno;									\
-	fprintf(stderr, fmt, ##__VA_ARGS__);							\
-	errno = _errno;										\
-} while (0);
-#define vprintf(fmt, ...) do {									\
-	if (env_verbose) {									\
-		int _errno = errno;								\
-		fprintf(stderr, fmt, ##__VA_ARGS__);						\
-		errno = _errno;									\
-	}											\
-} while (0);
-#define veprintf(fmt, ...) \
-	if (env_verbose) {									\
-		int _errno = errno;								\
-		fprintf(stderr, fmt, ##__VA_ARGS__);						\
-		errno = _errno;									\
-	}											\
-} while (0);
-#define dprintf(_level, fmt, ...) do {								\
-	if (env_debug_level >= _level) {							\
-		int _errno = errno;								\
-		fprintf(stderr, fmt, ##__VA_ARGS__);						\
-		errno = _errno;									\
-	}											\
-} while (0);
-#define deprintf(_level, fmt, ...) do {								\
-	if (env_debug_level >= _level) {							\
-		int _errno = errno;								\
-		fprintf(stderr, fmt, ##__VA_ARGS__);						\
-		errno = _errno;									\
-	}											\
-} while (0);
+__printf(2, 3) void log_printf(int verbosity, const char *fmt, ...);
+
+#define eprintf(fmt, ...) log_printf(-1, fmt, ##__VA_ARGS__)
+#define wprintf(fmt, ...) log_printf(0, fmt, ##__VA_ARGS__)
+#define vprintf(fmt, ...) log_printf(1, fmt, ##__VA_ARGS__)
+#define dprintf(_level, fmt, ...) log_printf(1 + _level, fmt, ##__VA_ARGS__)
 #define dlogf(_set, _level, fmt, ...) do {							\
-	if ((env_log_set & LOG_##_set) && env_debug_level >= _level) {				\
-		int _errno = errno;								\
-		fprintf(stderr, fmt, ##__VA_ARGS__);						\
-		errno = _errno;									\
-	}											\
+	if (env_log_set & LOG_##_set)								\
+		log_printf(1 + _level, fmt, ##__VA_ARGS__);						\
 } while (0);
 
 /*
