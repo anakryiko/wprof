@@ -21,7 +21,7 @@
 
 #define DEBUG_SYMBOLIZATION 0
 
-#define debugf(...) if (DEBUG_SYMBOLIZATION) fprintf(stderr, ##__VA_ARGS__)
+#define debugf(...) if (DEBUG_SYMBOLIZATION) dprintf(1, ##__VA_ARGS__)
 
 struct symb_state {
 	struct stack_frame_index *sframe_idx;
@@ -270,7 +270,7 @@ int process_stack_traces(struct worker_state *w)
 	int err;
 	u64 base_off = 0;
 
-	printf("Symbolizing...\n");
+	wprintf("Symbolizing...\n");
 	u64 symb_start_ns = ktime_now_ns();
 
 	struct wprof_event_record *rec;
@@ -532,7 +532,7 @@ int process_stack_traces(struct worker_state *w)
 		    (last_uniq_cnt + addr_cnt) * 100.0 / total_uniq_cnt - last_progress_pct >= min_progress_pct) {
 			last_progress_ns = ktime_now_ns();
 			last_progress_pct = (last_uniq_cnt + addr_cnt) * 100.0 / total_uniq_cnt;
-			printf("Symbolized %zu (%.3lf%%) unique addresses in %.3lfs...\n",
+			wprintf("Symbolized %zu (%.3lf%%) unique addresses in %.3lfs...\n",
 				last_uniq_cnt + addr_cnt, (last_uniq_cnt + addr_cnt) * 100.0 / total_uniq_cnt,
 				(last_progress_ns - symb_start_ns) / 1000000000.0);
 		}
@@ -549,7 +549,7 @@ int process_stack_traces(struct worker_state *w)
 	free(addrs);
 
 	u64 symb_end_ns = ktime_now_ns();
-	printf("Symbolized %zu user and %zu kernel UNIQUE addresses (%zu total, failed %zu) in %.3lfs.\n",
+	wprintf("Symbolized %zu user and %zu kernel UNIQUE addresses (%zu total, failed %zu) in %.3lfs.\n",
 		uaddr_cnt, kaddr_cnt, uaddr_cnt + kaddr_cnt, unkn_cnt,
 		(symb_end_ns - symb_start_ns) / 1000000000.0);
 
@@ -763,7 +763,7 @@ int process_stack_traces(struct worker_state *w)
 	w->dump_sz = orig_pos;
 
 	u64 end_ns = ktime_now_ns();
-	printf("Symbolized %zu stack traces with %zu frames (%zu traces and %zu frames deduped, %zu unknown frames, %.3lfMB) in %.3lfs.\n",
+	wprintf("Symbolized %zu stack traces with %zu frames (%zu traces and %zu frames deduped, %zu unknown frames, %.3lfMB) in %.3lfs.\n",
 		state->strace_cnt, frames_total,
 		callstacks_deduped, frames_deduped,
 		frames_failed,
@@ -898,7 +898,7 @@ int generate_stack_traces(struct worker_state *w)
 	};
 	enc_trace_packet(&w->stream, &ev_pb);
 	ssize_t pb_sz_after = file_size(w->trace);
-	printf("Emitted %.3lfMB of stack traces data.\n", (pb_sz_after - pb_sz_before) / 1024.0 / 1024.0);
+	wprintf("Emitted %.3lfMB of stack traces data.\n", (pb_sz_after - pb_sz_before) / 1024.0 / 1024.0);
 	return 0;
 }
 

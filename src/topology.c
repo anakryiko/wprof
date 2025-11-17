@@ -178,8 +178,8 @@ static void print_cpu_grouping(struct cpu_topo *topo, struct ufset *sets, int cp
 	qsort(topo, cpu_cnt, sizeof(*topo), cpu_cmp_by_id);
 
 	for (int i = 0; i < cpu_cnt; i++) {
-		printf("CPU #%d -> GROUP %d SET %d MEMBER_CNT %d\n", i, topo[i].group,
-		       sets_find(sets, cpu_cnt, i), sets_find_count(sets, cpu_cnt, i));
+		wprintf("CPU #%d -> GROUP %d SET %d MEMBER_CNT %d\n", i, topo[i].group,
+			sets_find(sets, cpu_cnt, i), sets_find_count(sets, cpu_cnt, i));
 	}
 
 	qsort(topo, cpu_cnt, sizeof(*topo), cpu_cmp_by_topo);
@@ -331,16 +331,16 @@ assign:
 
 done:
 	if ((env.log_set & LOG_TOPOLOGY) && env.debug_level >= 1) {
-		printf("CPU topology and CPU-to-ringbuf mapping:\n");
-		printf("========================================\n");
+		wprintf("CPU topology and CPU-to-ringbuf mapping:\n");
+		wprintf("========================================\n");
 		for (int i = 0; i < cpu_cnt; i++) {
-			printf("CPU #%3d (NUMA=%llu, L3=%llu, L2=%llu, L1=%llu) -> ringbuf #%d\n",
-			       i,
-			       topo[i].topo[TOPO_NUMA],
-			       topo[i].topo[TOPO_L3],
-			       topo[i].topo[TOPO_L2],
-			       topo[i].topo[TOPO_L1],
-			       rb_cpu_mapping[i]);
+			wprintf("CPU #%3d (NUMA=%llu, L3=%llu, L2=%llu, L1=%llu) -> ringbuf #%d\n",
+				i,
+				topo[i].topo[TOPO_NUMA],
+				topo[i].topo[TOPO_L3],
+				topo[i].topo[TOPO_L2],
+				topo[i].topo[TOPO_L1],
+				rb_cpu_mapping[i]);
 		}
 	}
 

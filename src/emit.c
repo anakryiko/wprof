@@ -2189,7 +2189,7 @@ int emit_trace(struct worker_state *w)
 {
 	int err;
 
-	printf("Generating trace...\n");
+	wprintf("Generating trace...\n");
 	if (env.capture_requests)
 		emit_track_descr(cur_stream, TRACK_UUID_REQUESTS, 0, "REQUESTS", 1000);
 	if (env.capture_cuda)

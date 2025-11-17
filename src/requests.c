@@ -48,8 +48,8 @@ static int add_uprobe_binary(u64 dev, u64 inode, const char *path, const char *a
 	hashmap__set(env.req_binaries, binary, binary, NULL, NULL);
 
 	/*
-	printf("Added binary: DEV %llu INODE %llu PATH %s ATTACH %s\n",
-	       dev, inode, path, attach_path ?: path);
+	wprintf("Added binary: DEV %llu INODE %llu PATH %s ATTACH %s\n",
+		dev, inode, path, attach_path ?: path);
 	*/
 
 	return 0;
