@@ -326,22 +326,22 @@ static int merge_wprof_data(int workdir_fd, struct worker_state *workers)
 		if (cuda->state == TRACEE_INACTIVE) {
 			/* expected clean shutdown case */
 		} else if (cuda->state == TRACEE_SHUTDOWN_TIMEOUT) {
-			eprintf("Tracee tracee #%d (PID %d, %s) timed out its shutdown, but we'll try to collect its data nevertheless!..\n",
-				i, cuda->pid, cuda->proc_name);
+			eprintf("Tracee #%d (%s) timed out its shutdown, but we'll try to collect its data nevertheless!..\n",
+				i, cuda_str(cuda));
 		} else if (cuda->state == TRACEE_IGNORED) {
 			/* expected uninteresting case, don't pollute logs */
 			continue;
 		} else {
-			eprintf("Skipping CUDA tracing data from tracee #%d (PID %d, %s, %s) as it had problems...\n",
-				i, cuda->pid, cuda->proc_name, cuda_tracee_state_str(cuda->state));
+			eprintf("Skipping CUDA tracing data from tracee #%d (%s, %s) as it had problems...\n",
+				i, cuda_str(cuda), cuda_tracee_state_str(cuda->state));
 			continue;
 		}
 
 		struct stat st;
 		if (fstat(cuda->dump_fd, &st) < 0) {
 			err = -errno;
-			eprintf("Failed to fstat() CUDA data dump for tracee PID %d (%s) at '%s': %d\n",
-				cuda->pid, cuda->proc_name, cuda->dump_path, err);
+			eprintf("Failed to fstat() CUDA data dump for tracee %s at '%s': %d\n",
+				cuda_str(cuda), cuda->dump_path, err);
 			continue;
 		}
 
@@ -349,8 +349,8 @@ static int merge_wprof_data(int workdir_fd, struct worker_state *workers)
 		wcudas[i].dump_hdr = mmap(NULL, wcudas[i].dump_sz, PROT_READ | PROT_WRITE, MAP_SHARED, cuda->dump_fd, 0);
 		if (wcudas[i].dump_hdr == MAP_FAILED) {
 			err = -errno;
-			eprintf("Failed to mmap() CUDA data dump for tracee PID %d (%s) at '%s': %d\n",
-				cuda->pid, cuda->proc_name, cuda->dump_path, err);
+			eprintf("Failed to mmap() CUDA data dump for tracee %s at '%s': %d\n",
+				cuda_str(cuda), cuda->dump_path, err);
 			continue;
 		}
 
@@ -426,8 +426,8 @@ static int merge_wprof_data(int workdir_fd, struct worker_state *workers)
 			struct wcuda_event *e = wcuda_payload - wcuda_data_off;
 			err = wcuda_remap_strs(e, r->e->kind, wcudas[cidx].strs, wcuda_strs);
 			if (err) {
-				eprintf("Failed to remap strings for CUDA dump event tracee PID %d (%s) at '%s': %d\n",
-					cuda->pid, cuda->proc_name, cuda->dump_path, err);
+				eprintf("Failed to remap strings for CUDA dump event tracee %s at '%s': %d\n",
+					cuda_str(cuda), cuda->dump_path, err);
 				return err;
 			}
 
@@ -439,8 +439,8 @@ static int merge_wprof_data(int workdir_fd, struct worker_state *workers)
 
 			err = wcuda_fill_task_info(w, r->e, cuda->pid, cuda->proc_name, tid_cache);
 			if (err) {
-				eprintf("Failed to fill out CUDA event task info for tracee PID %d (%s) at '%s': %d\n",
-					cuda->pid, cuda->proc_name, cuda->dump_path, err);
+				eprintf("Failed to fill out CUDA event task info for tracee %s at '%s': %d\n",
+					cuda_str(cuda), cuda->dump_path, err);
 				return err;
 			}
 
@@ -459,8 +459,8 @@ static int merge_wprof_data(int workdir_fd, struct worker_state *workers)
 			} else {
 				int cidx = widx - env.ringbuf_cnt;
 				struct cuda_tracee *cuda = &env.cudas[cidx];
-				eprintf("Failed to fwrite() event from CUDA tracee PID %d (%s): %d\n",
-					cuda->pid, cuda->proc_name, err);
+				eprintf("Failed to fwrite() event from CUDA tracee %s: %d\n",
+					cuda_str(cuda), err);
 			}
 			return err;
 		}
@@ -675,7 +675,8 @@ static int handle_rb_event(void *ctx, void *data, size_t size)
 	return 0;
 }
 
-static void print_exit_summary(struct worker_state *workers, int worker_cnt, struct wprof_bpf *skel, int num_cpus, int exit_code)
+static void print_exit_summary(struct worker_state *workers, int worker_cnt,
+			       struct wprof_bpf *skel, int num_cpus, int exit_code)
 {
 	int err;
 	u64 rb_handled_cnt = 0, rb_ignored_cnt = 0;
@@ -824,19 +825,19 @@ skip_rusage:
 			continue;
 
 		if (cuda->state != TRACEE_INACTIVE) {
-			eprintf("!!! CUDA tracee (PID %d, %s) encountered problem. Last state: %s\n",
-				cuda->pid, cuda->proc_name, cuda_tracee_state_str(cuda->state));
+			eprintf("!!! CUDA tracee #%d (%s) encountered problem. Last state: %s\n",
+				i, cuda_str(cuda), cuda_tracee_state_str(cuda->state));
 			continue;
 		}
 
 		if (cuda->ctx->cupti_err_cnt + cuda->ctx->cupti_drop_cnt > 0) {
-			eprintf("!!! CUDA tracee (PID %d, %s): %ld records dropped, %ld errors.\n",
-				cuda->pid, cuda->proc_name,
+			eprintf("!!! CUDA tracee #%d (%s): %ld records dropped, %ld errors.\n",
+				i, cuda_str(cuda),
 				cuda->ctx->cupti_drop_cnt, cuda->ctx->cupti_err_cnt);
 		}
 		if (env.verbose || env.stats) {
-			eprintf("CUDA tracee (PID %d, %s): %ld records, %ld buffers, %.3lfMBs.\n",
-				cuda->pid, cuda->proc_name,
+			eprintf("CUDA tracee #%d (%s): %ld records, %ld buffers, %.3lfMBs.\n",
+				i, cuda_str(cuda),
 				cuda->ctx->cupti_rec_cnt, cuda->ctx->cupti_buf_cnt,
 				cuda->ctx->cupti_data_sz / 1024.0 / 1024.0);
 		}

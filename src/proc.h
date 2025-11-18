@@ -11,6 +11,7 @@
 
 int proc_name_by_pid(int pid, char *buf, size_t buf_sz);
 int thread_name_by_tid(int pid, int tid, char *buf, size_t buf_sz);
+int ns_tid_by_host_tid(int host_pid, int host_tid);
 int host_tid_by_ns_tid(int host_pid, int ns_tid);
 
 static inline const char *proc_name(int pid)
