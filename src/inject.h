@@ -6,6 +6,7 @@
 #include "inj_common.h"
 struct tracee_info {
 	int pid;
+	int ns_pid;
 	const char *name;
 	int uds_fd;
 	struct inj_run_ctx *run_ctx;

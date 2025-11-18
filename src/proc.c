@@ -58,11 +58,47 @@ int thread_name_by_tid(int pid, int tid, char *buf, size_t buf_sz)
 	return -ESRCH;
 }
 
-int host_tid_by_ns_tid(int host_pid, int ns_tid)
+int ns_tid_by_host_tid(int host_pid, int host_tid)
 {
 	char line[512], path[64];
+
+	snprintf(path, sizeof(path), "/proc/%d/task/%d/status", host_pid, host_tid);
+	FILE *fp = fopen(path, "re");
+	if (!fp)
+		return -errno;
+
+	while (fgets(line, sizeof(line), fp)) {
+		if (strncmp(line, "NSpid:", 6) != 0)
+			continue;
+		/*
+		 * NSpid line format: "NSpid:\t<host_tid>\t<ns1_tid>\t...\t<ns2_tid>"
+		 * The last entry is the TID in the innermost namespace.
+		 */
+		char *s = strrchr(line, '\t');
+		if (!s) {
+			fclose(fp);
+			return -EPROTO;
+		}
+		s++; /* skip '\t' */
+
+		int v, n;
+		if (sscanf(s, "%d%n", &v, &n) != 1 || s[n] != '\n') {
+			fclose(fp);
+			return -EPROTO;
+		}
+
+		fclose(fp);
+		return v;
+	}
+
+	return -ESRCH;
+}
+
+int host_tid_by_ns_tid(int host_pid, int ns_tid)
+{
 	DIR *task_dir = NULL;
 	struct dirent *entry;
+	char path[64];
 
 	/* quickly check if there is actually no namespacing */
 	snprintf(path, sizeof(path), "/proc/%d/task/%d", host_pid, ns_tid);
@@ -76,44 +112,19 @@ int host_tid_by_ns_tid(int host_pid, int ns_tid)
 
 	bool found = false;
 	while (!found && (entry = readdir(task_dir))) {
-		int tid, n;
+		int host_tid, n, tid;
 
-		if (sscanf(entry->d_name, "%d%n", &tid, &n) != 1 || entry->d_name[n] != '\0')
+		if (sscanf(entry->d_name, "%d%n", &host_tid, &n) != 1 || entry->d_name[n] != '\0')
 			continue;
 
-		snprintf(path, sizeof(path), "/proc/%d/task/%d/status", host_pid, tid);
-		FILE *fp = fopen(path, "re");
-		if (!fp)
-			continue;
-
-		while (fgets(line, sizeof(line), fp)) {
-			if (strncmp(line, "NSpid:", 6) != 0)
-				continue;
-			/*
-			 * NSpid line format: "NSpid:\t<host_tid>\t<ns1_tid>\t...\t<ns2_tid>"
-			 * The last entry is the TID in the innermost namespace.
-			 */
-			char *s = strrchr(line, '\t');
-			if (!s)
-				continue;
-			s++; /* skip '\t' */
-
-			int v, n;
-			if (sscanf(s, "%d%n", &v, &n) != 1 || s[n] != '\n')
-				continue;
-
-			if (v == ns_tid) {
-				fclose(fp);
-				closedir(task_dir);
-				return tid;
-			}
-			break; /* stop at NSpid: line */
+		tid = ns_tid_by_host_tid(host_pid, host_tid);
+		if (tid == ns_tid) {
+			closedir(task_dir);
+			return host_tid;
 		}
-
-		fclose(fp);
 	}
-	closedir(task_dir);
 
+	closedir(task_dir);
 	return -ESRCH;
 }
 

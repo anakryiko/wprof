@@ -41,6 +41,7 @@ static inline const char *cuda_tracee_state_str(enum cuda_tracee_state state)
 
 struct cuda_tracee {
 	int pid;
+	int ns_pid;
 	const char *proc_name;
 	int uds_fd;
 
@@ -55,6 +56,8 @@ struct cuda_tracee {
 	struct tracee_state *tracee;
 	struct inj_run_ctx *ctx;
 };
+
+const char *cuda_str(const struct cuda_tracee *t);
 
 int cuda_trace_setup(int workdir_fd);
 void cuda_trace_teardown(void);

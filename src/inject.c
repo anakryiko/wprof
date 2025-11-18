@@ -35,6 +35,7 @@
 
 struct tracee_state {
 	int pid;
+	int ns_pid;
 	int pid_fd;
 	char *proc_name;
 
@@ -70,10 +71,21 @@ enum ptrace_state {
 	PTRACE_STATE_PENDING_SYSCALL,
 };
 
-#define elog(fmt, ...) eprintf("tracee(%d, %s): " fmt, tracee->pid, tracee->proc_name, ##__VA_ARGS__)
-#define vlog(fmt, ...) vprintf("tracee(%d, %s): " fmt, tracee->pid, tracee->proc_name, ##__VA_ARGS__)
-#define dlog(fmt, ...) dlogf(INJECTION, 1, "tracee(%d, %s): " fmt, tracee->pid, tracee->proc_name, ##__VA_ARGS__)
-#define ddlog(fmt, ...) dlogf(INJECTION, 2, "tracee(%d, %s): " fmt, tracee->pid, tracee->proc_name, ##__VA_ARGS__)
+static const char *tracee_str(const struct tracee_state *t)
+{
+	static char buf[128];
+
+	if (t->pid == t->ns_pid)
+		snprintf(buf, sizeof(buf), "tracee(%d,%s)", t->pid, t->proc_name);
+	else
+		snprintf(buf, sizeof(buf), "tracee(%d=%d,%s)", t->pid, t->ns_pid, t->proc_name);
+	return buf;
+}
+
+#define elog(fmt, ...) eprintf("%s: " fmt, tracee_str(tracee), ##__VA_ARGS__)
+#define vlog(fmt, ...) vprintf("%s: " fmt, tracee_str(tracee), ##__VA_ARGS__)
+#define dlog(fmt, ...) dlogf(INJECTION, 1, "%s: " fmt, tracee_str(tracee), ##__VA_ARGS__)
+#define ddlog(fmt, ...) dlogf(INJECTION, 2, "%s: " fmt, tracee_str(tracee), ##__VA_ARGS__)
 
 #define LIBWPROFINJ_SETUP_SYM_NAME __str(LIBWPROFINJ_SETUP_SYM)
 
@@ -598,6 +610,7 @@ struct tracee_state *tracee_inject(int pid)
 
 	tracee = calloc(1, sizeof(*tracee));
 	tracee->pid = pid;
+	tracee->ns_pid = ns_tid_by_host_tid(pid, pid);
 	tracee->proc_name = strdup(proc_name(pid));
 	tracee->memfd_remote_fd = -1;
 	tracee->uds_local_fd = -1;
@@ -869,6 +882,7 @@ struct tracee_state *tracee_inject(int pid)
 	zclose(memfd_local_fd);
 
 	tracee->info.pid = tracee->pid;
+	tracee->info.ns_pid = tracee->ns_pid;
 	tracee->info.name = tracee->proc_name;
 	tracee->info.uds_fd = tracee->uds_local_fd;
 
@@ -1006,7 +1020,7 @@ int tracee_handshake(struct tracee_state *tracee, int log_fd)
 {
 	int err = 0, ctx_mem_fd = -1;
 
-	dlog("Handshake with tracee PID %d (%s) started...\n", tracee->pid, tracee->proc_name);
+	dlog("Starting handshake sequence...\n");
 
 	char memfd_name[64];
 	snprintf(memfd_name, sizeof(memfd_name), "wprofinj-ctx-%d", getpid());
@@ -1044,7 +1058,7 @@ int tracee_handshake(struct tracee_state *tracee, int log_fd)
 		goto cleanup;
 	}
 
-	dlog("Handshake with tracee PID %d (%s) completed successfully.\n", tracee->pid, tracee->proc_name);
+	dlog("Handshake completed successfully.\n");
 
 cleanup:
 	zclose(ctx_mem_fd); /* we still have mmap()'ed memory active, no need for FD */
