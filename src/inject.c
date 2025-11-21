@@ -23,6 +23,8 @@
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/ptrace.h>
+#include <linux/ptrace.h>
+#include <linux/audit.h>
 #include <linux/futex.h>
 
 #include "inj_common.h"
@@ -208,6 +210,108 @@ static int remote_vm_read(const struct tracee_state *tracee, const void *local_d
 	}
 
 	return 0;
+}
+
+__unused
+static void log_regs(const struct tracee_state *tracee, const struct user_regs_struct *regs, const char *label)
+{
+#if defined(__x86_64__)
+	dlog("%s REGS (x86-64):\n", label);
+	dlog("  RIP=%016llx RSP=%016llx RBP=%016llx\n", regs->rip, regs->rsp, regs->rbp);
+	dlog("  RAX=%016llx RBX=%016llx RCX=%016llx RDX=%016llx\n", regs->rax, regs->rbx, regs->rcx, regs->rdx);
+	dlog("  RSI=%016llx RDI=%016llx\n", regs->rsi, regs->rdi);
+	dlog("  R8 =%016llx R9 =%016llx R10=%016llx R11=%016llx\n", regs->r8, regs->r9, regs->r10, regs->r11);
+	dlog("  R12=%016llx R13=%016llx R14=%016llx R15=%016llx\n", regs->r12, regs->r13, regs->r14, regs->r15);
+	dlog("  EFLAGS=%016llx ORIG_RAX=%016llx\n", regs->eflags, regs->orig_rax);
+	dlog("  CS=%04llx SS=%04llx DS=%04llx ES=%04llx FS=%04llx GS=%04llx\n", regs->cs, regs->ss, regs->ds, regs->es, regs->fs, regs->gs);
+	dlog("  FS_BASE=%016llx GS_BASE=%016llx\n", regs->fs_base, regs->gs_base);
+#elif defined(__aarch64__)
+	dlog("%s REGS (arm64):\n", label);
+	dlog("  PC=%016llx SP=%016llx PSTATE=%016llx\n", regs->pc, regs->sp, regs->pstate);
+	for (int i = 0; i < 28; i += 4) {
+		dlog("  X%-2d=%016llx X%-2d=%016llx X%-2d=%016llx X%-2d=%016llx\n", i, regs->regs[i], i+1, regs->regs[i+1], i+2, regs->regs[i+2], i+3, regs->regs[i+3]);
+	}
+	dlog("  X%-2d=%016llx X%-2d=%016llx X%-2d=%016llx\n", 28, regs->regs[28], 29, regs->regs[29], 30, regs->regs[30]);
+#else
+#error "Unsupported architecture for register logging"
+#endif
+}
+
+static const char *syscall_info_op_str(__u8 op)
+{
+	switch (op) {
+	case PTRACE_SYSCALL_INFO_NONE: return "NONE";
+	case PTRACE_SYSCALL_INFO_ENTRY: return "ENTRY";
+	case PTRACE_SYSCALL_INFO_EXIT: return "EXIT";
+	case PTRACE_SYSCALL_INFO_SECCOMP: return "SECCOMP";
+	default: return "UNKNOWN";
+	}
+}
+
+static const char *syscall_info_arch_str(__u32 arch)
+{
+	switch (arch) {
+#ifdef AUDIT_ARCH_X86_64
+	case AUDIT_ARCH_X86_64: return "x86_64";
+#endif
+#ifdef AUDIT_ARCH_I386
+	case AUDIT_ARCH_I386: return "i386";
+#endif
+#ifdef AUDIT_ARCH_AARCH64
+	case AUDIT_ARCH_AARCH64: return "aarch64";
+#endif
+#ifdef AUDIT_ARCH_ARM
+	case AUDIT_ARCH_ARM: return "arm";
+#endif
+#ifdef AUDIT_ARCH_ARMEB
+	case AUDIT_ARCH_ARMEB: return "armeb";
+#endif
+	default: return "unknown";
+	}
+}
+
+__unused
+static void log_syscall_info(const struct tracee_state *tracee, const char *label)
+{
+	struct ptrace_syscall_info info;
+
+	memset(&info, 0, sizeof(info));
+
+	long ret = ptrace(PTRACE_GET_SYSCALL_INFO, tracee->pid, sizeof(info), &info);
+	if (ret < 0) {
+		dlog("ptrace(PTRACE_GET_SYSCALL_INFO) failed: %d\n", -errno);
+		return;
+	}
+
+	dlog("%s SYSCALL_INFO:\n", label);
+	dlog("  op=%s arch=%s ip=0x%llx sp=0x%llx\n",
+	     syscall_info_op_str(info.op), syscall_info_arch_str(info.arch),
+	     info.instruction_pointer, info.stack_pointer);
+
+	switch (info.op) {
+	case PTRACE_SYSCALL_INFO_NONE:
+		break;
+	case PTRACE_SYSCALL_INFO_ENTRY:
+		dlog("  nr=%lld (0x%llx)\n", info.entry.nr, info.entry.nr);
+		dlog("  args=[0x%llx, 0x%llx, 0x%llx, 0x%llx, 0x%llx, 0x%llx]\n",
+		     info.entry.args[0], info.entry.args[1], info.entry.args[2],
+		     info.entry.args[3], info.entry.args[4], info.entry.args[5]);
+		break;
+	case PTRACE_SYSCALL_INFO_EXIT:
+		dlog("  rval=%lld (0x%llx) is_error=%d\n",
+		     info.exit.rval, info.exit.rval, info.exit.is_error);
+		break;
+	case PTRACE_SYSCALL_INFO_SECCOMP:
+		dlog("  nr=%lld (0x%llx)\n", info.seccomp.nr, info.seccomp.nr);
+		dlog("  args=[0x%llx, 0x%llx, 0x%llx, 0x%llx, 0x%llx, 0x%llx]\n",
+		     info.seccomp.args[0], info.seccomp.args[1], info.seccomp.args[2],
+		     info.seccomp.args[3], info.seccomp.args[4], info.seccomp.args[5]);
+		dlog("  ret_data=0x%x\n", info.seccomp.ret_data);
+		break;
+	default:
+		dlog("  (unknown op 0x%x)\n", info.op);
+		break;
+	}
 }
 
 static int ptrace_get_regs(const struct tracee_state *tracee, struct user_regs_struct *regs)
