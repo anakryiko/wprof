@@ -414,7 +414,10 @@ static int ptrace_intercept(const struct tracee_state *tracee, struct user_regs_
 	if ((err = ptrace_set_regs(tracee, regs)) < 0)
 		goto err_detach;
 #elif defined(__aarch64__)
-	regs->pc -= 4;
+	regs->pc -= 4; /* adjust for syscal replay, arm64 instruction is 4 bytes */
+	if ((err = ptrace_set_regs(tracee, regs)) < 0)
+		goto err_detach;
+
 	/* On ARM64 we need to cancel pending syscall with explicit NT_ARM_SYSTEM_CALL */
 	int syscall_nr = -1;
 	struct iovec iov = {
@@ -1001,7 +1004,7 @@ int tracee_retract(struct tracee_state *tracee)
 cleanup:
 	if (ptrace_state == PTRACE_STATE_PENDING_SYSCALL) {
 		dlog("Trying to restore & replay the original syscall...\n");
-		(void)ptrace_exec_syscall(tracee, &tracee->orig_regs, NULL);
+		(void)ptrace_replay(tracee);
 	}
 
 	zclose(tracee->uds_local_fd);
