@@ -331,7 +331,8 @@ void cuda_trace_deactivate(void)
 
 		if (cuda->state == TRACEE_IGNORED) {
 			zclose(cuda->uds_fd);
-			/* don't dump tracee log, uninteresting */
+			if (env.debug_level)
+				dump_tracee_log(cuda, i);
 			continue;
 		}
 
@@ -368,7 +369,9 @@ void cuda_trace_deactivate(void)
 	for (int i = 0; i < env.cuda_cnt; i++) {
 		struct cuda_tracee *cuda = &env.cudas[i];
 
-		if (cuda->state != TRACEE_ACTIVE && cuda->state != TRACEE_IGNORED) {
+		if (cuda->state != TRACEE_ACTIVE &&
+		    cuda->state != TRACEE_IGNORED &&
+		    cuda->state != TRACEE_SETUP_FAILED) {
 			vprintf("NOT WAITING for tracee #%d (%s, %s) as it was not successfully set up!\n",
 				i, cuda_str(cuda), cuda_tracee_state_str(cuda->state));
 			continue;
@@ -394,7 +397,7 @@ void cuda_trace_deactivate(void)
 					i, cuda_str(cuda));
 			}
 
-			if (cuda->state != TRACEE_IGNORED)
+			if (cuda->state != TRACEE_IGNORED && cuda->state != TRACEE_SETUP_FAILED)
 				cuda->state = TRACEE_INACTIVE;
 
 			int err = tracee_retract(cuda->tracee);
