@@ -461,7 +461,7 @@ int start_cupti_activities(void)
 	CUptiResult ret;
 	int err = -EPROTO;
 
-	vlog("Initializing CUPTI activity subscription...\n");
+	vlog("Calling cuptiSubscribe()...\n");
 
 	ret = cupti_subscribe(&cupti_subscr, cupti_callback, NULL);
 	if (ret == CUPTI_ERROR_MULTIPLE_SUBSCRIBERS_NOT_SUPPORTED) {
@@ -474,6 +474,8 @@ int start_cupti_activities(void)
 		elog("Failed to perform CUPTI subscription: %d (%s)!\n", ret, cupti_errstr(ret));
 		return -EPROTO;
 	}
+
+	vlog("Calling cuptiGetThreadIdType()...\n");
 
 	atomic_store(&cupti_phase, CUPTI_SUBSCR);
 
@@ -494,6 +496,8 @@ int start_cupti_activities(void)
 			goto cleanup;
 		}
 	}
+
+	vlog("Calling cuptiActivityRegisterCallbacks()...\n");
 
 	/* Register callbacks for activity buffer management */
 	ret = cupti_activity_register_callbacks(buffer_requested, buffer_completed);
@@ -605,7 +609,7 @@ void finalize_cupti_activities(void)
 	vlog("Starting DRAINING phase...\n");
 	atomic_store(&cupti_phase, CUPTI_DRAINING);
 
-	bool live = atomic_load(&cupti_alloc_buf_cnt) > 0;
+	bool live = true || atomic_load(&cupti_alloc_buf_cnt) > 0;
 	if (live) {
 		vlog("Flushing CUPTI activity buffers...\n");
 		/* drain buffers forcefully to avoid getting our callbacks called */
