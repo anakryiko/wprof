@@ -497,6 +497,15 @@ static int ptrace_intercept(const struct tracee_state *tracee, struct user_regs_
 		goto err_detach;
 	if ((err = ptrace_wait_stop(tracee)) < 0)
 		goto err_detach;
+
+	if (env_debug_level && (env_log_set & LOG_INJECTION)) {
+		struct user_regs_struct tmp_regs;
+		if ((err = ptrace_get_regs(tracee, &tmp_regs)) < 0)
+			goto err_detach;
+		log_regs(tracee, &tmp_regs, "INTERRUPT");
+		log_syscall_info(tracee, "INTERRUPT");
+	}
+
 	/*
 	 * Take over next syscall
 	 */
@@ -508,6 +517,11 @@ static int ptrace_intercept(const struct tracee_state *tracee, struct user_regs_
 	/* backup original registers */
 	if ((err = ptrace_get_regs(tracee, regs)) < 0)
 		goto err_detach;
+
+	if (env_debug_level && (env_log_set & LOG_INJECTION)) {
+		log_regs(tracee, regs, "SYSCALL-ENTER");
+		log_syscall_info(tracee, "SYSCALL-ENTER");
+	}
 
 #if defined(__x86_64__)
 	regs->rip -= 2; /* adjust for syscall replay, syscall instruction is 2 bytes */
@@ -547,6 +561,13 @@ static int ptrace_intercept(const struct tracee_state *tracee, struct user_regs_
 	if ((err = ptrace_wait_syscall(tracee)) < 0)
 		goto err_detach;
 
+	if (env_debug_level && (env_log_set & LOG_INJECTION)) {
+		struct user_regs_struct tmp_regs;
+		if ((err = ptrace_get_regs(tracee, &tmp_regs)) < 0)
+			goto err_detach;
+		log_regs(tracee, regs, "SYSCALL-EXIT");
+		log_syscall_info(tracee, "SYSCALL-EXIT");
+	}
 	/*
 	 * Now we are in syscall-exit-stop, we can replay/restart syscall or
 	 * proceed with user space code execution
