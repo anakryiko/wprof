@@ -475,14 +475,13 @@ int start_cupti_activities(void)
 		return -EPROTO;
 	}
 
-	vlog("Calling cuptiGetThreadIdType()...\n");
-
 	atomic_store(&cupti_phase, CUPTI_SUBSCR);
 
+	vlog("Calling cuptiGetThreadIdType()...\n");
 	ret = cupti_get_thread_id_type(&cupti_old_thread_id_type);
 	if (ret != CUPTI_SUCCESS) {
 		elog("Failed to get current thread ID type: %d (%s)!\n", ret, cupti_errstr(ret));
-		goto cleanup;
+		goto unsubscr;
 	}
 
 	if (cupti_old_thread_id_type != CUPTI_ACTIVITY_THREAD_ID_TYPE_SYSTEM) {
@@ -493,19 +492,18 @@ int start_cupti_activities(void)
 		ret = cupti_set_thread_id_type(CUPTI_ACTIVITY_THREAD_ID_TYPE_SYSTEM);
 		if (ret != CUPTI_SUCCESS) {
 			elog("Failed to set current thread ID type to system one: %d (%s)!\n", ret, cupti_errstr(ret));
-			goto cleanup;
+			goto unsubscr;
 		}
 	}
 
-	vlog("Calling cuptiActivityRegisterCallbacks()...\n");
-
 	/* Register callbacks for activity buffer management */
+	vlog("Calling cuptiActivityRegisterCallbacks()...\n");
 	ret = cupti_activity_register_callbacks(buffer_requested, buffer_completed);
 	if (ret != CUPTI_SUCCESS) {
 		elog("Failed to register CUPTI activity callbacks: %d (%s)!\n",
 		     ret, cupti_errstr(ret));
 		cupti_set_thread_id_type(cupti_old_thread_id_type);
-		goto cleanup;
+		goto unsubscr;
 	}
 
 	vlog("CUPTI activity callbacks registered.\n");
@@ -528,8 +526,9 @@ int start_cupti_activities(void)
 	
 	return 0;
 
-cleanup:
+unsubscr:
 	(void)cupti_unsubscribe(cupti_subscr);
+cleanup:
 	finalize_cupti_activities();
 	return err;
 }
