@@ -524,18 +524,12 @@ static int ptrace_intercept(const struct tracee_state *tracee, struct user_regs_
 	}
 
 #if defined(__x86_64__)
-	regs->rip -= 2; /* adjust for syscall replay, syscall instruction is 2 bytes */
 	regs->rax = regs->orig_rax;
 	regs->orig_rax = -1;
-
 	/* cancel pending syscall with that orig_rax == -1 */
 	if ((err = ptrace_set_regs(tracee, regs)) < 0)
 		goto err_detach;
 #elif defined(__aarch64__)
-	regs->pc -= 4; /* adjust for syscal replay, arm64 instruction is 4 bytes */
-	if ((err = ptrace_set_regs(tracee, regs)) < 0)
-		goto err_detach;
-
 	/* On ARM64 we need to cancel pending syscall with explicit NT_ARM_SYSTEM_CALL */
 	int syscall_nr = -1;
 	struct iovec iov = {
@@ -568,6 +562,15 @@ static int ptrace_intercept(const struct tracee_state *tracee, struct user_regs_
 		log_regs(tracee, regs, "SYSCALL-EXIT");
 		log_syscall_info(tracee, "SYSCALL-EXIT");
 	}
+
+#if defined(__x86_64__)
+	regs->rip -= 2; /* adjust for syscall replay, syscall instruction is 2 bytes */
+#elif defined(__aarch64__)
+	regs->pc -= 4; /* adjust for syscal replay, arm64 instruction is 4 bytes */
+#else
+#error "Unsupported architecture"
+#endif
+
 	/*
 	 * Now we are in syscall-exit-stop, we can replay/restart syscall or
 	 * proceed with user space code execution
