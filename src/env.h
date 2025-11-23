@@ -26,6 +26,12 @@ extern bool env_verbose;
 extern int env_debug_level;
 extern enum log_subset env_log_set;
 
+enum cuda_discover_strategy {
+	CUDA_DISCOVER_NONE, /* no automatic discovery */
+	CUDA_DISCOVER_SMI,  /* use nvidia-smi (default) */
+	CUDA_DISCOVER_PROC, /* find processes with libcupti.so */
+};
+
 struct env {
 	bool verbose;
 	int debug_level;
@@ -111,7 +117,7 @@ struct env {
 	/* EXPERIMENTAL (CUDA tracking) */
 	int *cuda_pids;
 	int cuda_pid_cnt;
-	bool cuda_global_discovery;
+	enum cuda_discover_strategy cuda_discovery;
 
 	struct cuda_tracee *cudas;
 	int cuda_cnt;

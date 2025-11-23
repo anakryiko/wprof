@@ -308,7 +308,10 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		} else if (strcasecmp(arg, "scx-layer") == 0) {
 			env.capture_scx_layer_info = val;
 		} else if (strcasecmp(arg, "cuda") == 0) {
-			env.cuda_global_discovery = val == TRUE;
+			env.cuda_discovery = (val == TRUE) ? CUDA_DISCOVER_SMI : CUDA_DISCOVER_NONE;
+			env.capture_cuda = val;
+		} else if (strcasecmp(arg, "cuda=all") == 0) {
+			env.cuda_discovery = (val == TRUE) ? CUDA_DISCOVER_PROC : CUDA_DISCOVER_NONE;
 			env.capture_cuda = val;
 		} else if (strncasecmp(arg, "cuda=", 5) == 0) {
 			const char *cuda_arg = arg + 5;

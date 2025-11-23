@@ -1052,7 +1052,7 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 		bpf_map__set_autocreate(skel->maps.req_states, false);
 	}
 
-	if (env.cuda_pid_cnt > 0 || env.cuda_global_discovery) {
+	if (env.cuda_pid_cnt > 0 || env.cuda_discovery) {
 		err = cuda_trace_setup(workdir_fd);
 		if (err) {
 			eprintf("CUDA trace setup failed: %d\n", err);
