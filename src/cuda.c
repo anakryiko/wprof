@@ -160,28 +160,78 @@ int cuda_trace_setup(int workdir_fd)
 {
 	int err = 0;
 
-	if (env.cuda_global_discovery) {
+retry:
+	switch (env.cuda_discovery) {
+	case CUDA_DISCOVER_PROC: {
 		int *pidp, pid;
 
 		wprof_for_each(proc, pidp) {
 			pid = *pidp;
 			err = discover_pid_cuda_binaries(pid, workdir_fd, false);
 			if (err) {
-				eprintf("Failed to check if PID %d uses CUDA+CUPTI: %d (skipping...)\n", pid, err);
+				eprintf("Failed to check if PID %d (%s) uses CUDA+CUPTI: %d (skipping...)\n",
+					pid, proc_name(pid), err);
+				continue;
+			}
+		}
+		break;
+	}
+	case CUDA_DISCOVER_SMI: {
+		vprintf("Using nvidia-smi to find processes using CUDA...\n");
+
+		FILE *f = popen("nvidia-smi --query-compute-apps=pid --format=csv,noheader", "r");
+		if (!f) {
+			eprintf("Failed to query nvidia-smi, falling back to process discovery logic...\n");
+			env.cuda_discovery = CUDA_DISCOVER_PROC;
+			goto retry;
+		}
+
+		char pidbuf[32];
+		int pid;
+		while (fgets(pidbuf, sizeof(pidbuf), f)) {
+			if (sscanf(pidbuf, "%d", &pid) != 1) {
+				eprintf("nvidia-smi returned invalid PID '%s', skipping...\n", pidbuf);
+				continue;
+			}
+			vprintf("nvidia-smi returned PID %d (%s)\n", pid, proc_name(pid));
+
+			err = discover_pid_cuda_binaries(pid, workdir_fd, true);
+			if (err) {
+				eprintf("Failed to check if PID %d (%s) uses CUDA+CUPTI: %d (skipping...)\n",
+					pid, proc_name(pid), err);
 				continue;
 			}
 		}
 
-		/* no point in doing per-PID discovery, we just found all applicable processes */
-		return 0;
+		pclose(f);
+		break;
+	}
+	case CUDA_DISCOVER_NONE: {
+		break;
+	}
+	default:
+		eprintf("Unrecognized CUDA discovery strategy %d!\n", env.cuda_discovery);
+		return -EOPNOTSUPP;
 	}
 
 	for (int i = 0; i < env.cuda_pid_cnt; i++) {
 		int pid = env.cuda_pids[i];
+		bool found = false;
+
+		for (int j = 0; j < env.cuda_cnt; j++) {
+			if (env.cudas[j].pid == pid) {
+				found = true;
+				break;
+			}
+		}
+
+		if (found)
+			continue;
 
 		err = discover_pid_cuda_binaries(pid, workdir_fd, true);
 		if (err) {
-			eprintf("Failed to check if PID %d uses CUDA+CUPTI: %d (skipping...)\n", pid, err);
+			eprintf("Failed to check if PID %d (%s) uses CUDA+CUPTI: %d (skipping...)\n",
+				pid, proc_name(pid), err);
 			continue;
 		}
 	}
