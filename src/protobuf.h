@@ -207,6 +207,7 @@ enum pb_static_iid {
 		IID_ANNK_WAKER_PID,				/* waker_pid */
 		IID_ANNK_WAKING_REASON,				/* waking_reason */
 		IID_ANNK_OFFCPU_REASON,				/* offcpu_reason */
+		IID_ANNK_OFFCPU_DUR_US,				/* offcpu_dur_us */
 		IID_ANNK_WAKEE,					/* wakee */
 		IID_ANNK_WAKEE_TID,				/* wakee_tid */
 		IID_ANNK_WAKEE_PID,				/* wakee_pid */

@@ -34,6 +34,7 @@ struct task_state {
 	/* on-cpu state */
 	enum task_run_state run_state;
 	u64 oncpu_ts;
+	u64 offcpu_ts;
 	u64 req_id; /* active ongoing request ID */
 	/* perf counters */
 	struct perf_counters oncpu_ctrs;
@@ -1101,6 +1102,7 @@ skip_waker_task:
 	/* reset perf counters */
 	memset(&prev_st->oncpu_ctrs, 0, sizeof(struct perf_counters));
 	prev_st->oncpu_ts = 0;
+	prev_st->offcpu_ts = e->ts;
 	prev_st->run_state = preempted ? TASK_STATE_PREEMPTED : TASK_STATE_WAITING;
 
 skip_prev_task:
@@ -1110,6 +1112,9 @@ skip_prev_task:
 	struct task_state *next_st = task_state(w, &e->swtch.next);
 	next_st->oncpu_ctrs = e->swtch.ctrs;
 	next_st->oncpu_ts = e->ts;
+
+	u64 offcpu_dur_ns = next_st->offcpu_ts ? e->ts - next_st->offcpu_ts : e->ts - env.sess_start_ts;
+	next_st->offcpu_ts = 0;
 
 	if (!e->swtch.waking_ts)
 		goto skip_waking;
@@ -1164,6 +1169,9 @@ skip_waking:
 		emit_kv_int(IID_ANNK_CPU, e->cpu);
 		if (env.emit_numa)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
+
+		if (offcpu_dur_ns)
+			emit_kv_float(IID_ANNK_OFFCPU_DUR_US, "%.3lf", offcpu_dur_ns / 1000.0);
 
 		if (e->swtch.waking_ts) {
 			emit_kv_str(IID_ANNK_WAKER,
