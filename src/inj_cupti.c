@@ -556,6 +556,8 @@ static void cupti_finalize_cb(void)
 	/* drain buffers forcefully to avoid getting our callbacks called */
 	(void)cupti_activity_flush_all(CUPTI_ACTIVITY_FLAG_FLUSH_FORCED);
 
+	vlog("Unsubscribing from CUPTI...\n");
+	cupti_unsubscribe(cupti_subscr);
 	vlog("Finalizing CUPTI...\n");
 	cupti_finalize();
 
