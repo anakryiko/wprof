@@ -1180,10 +1180,8 @@ skip_waking:
 				emit_kv_int(IID_ANNK_WAKER_TID, task_tid(&e->swtch.waker));
 				emit_kv_int(IID_ANNK_WAKER_PID, e->swtch.waker.pid);
 			}
-			if (env.emit_waking_reason) {
-				emit_kv_str(IID_ANNK_WAKING_REASON,
-					    IID_ANNV_WAKING_REASON + wreason_enum(e->swtch.waking_flags));
-			}
+			emit_kv_str(IID_ANNK_WAKING_REASON,
+				    IID_ANNV_WAKING_REASON + wreason_enum(e->swtch.waking_flags));
 			emit_kv_int(IID_ANNK_WAKER_CPU, e->swtch.waker_cpu);
 			if (env.emit_numa)
 				emit_kv_int(IID_ANNK_WAKER_NUMA_NODE, e->swtch.waker_numa_node);
