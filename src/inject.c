@@ -1017,6 +1017,28 @@ struct tracee_state *tracee_inject(int pid)
 	tracee->info.name = tracee->proc_name;
 	tracee->info.uds_fd = tracee->uds_local_fd;
 
+	if (env_debug_level >= 1 && (env_log_set & LOG_INJECTION)) {
+		struct vma_info *vma;
+
+		wprof_for_each(vma, vma, tracee->pid, VMA_QUERY_FILE_BACKED_VMA) {
+			/* Look for memfd mappings (libwprofinj.so is loaded from memfd) */
+			if (!strstr(vma->vma_name, "memfd:wprof-injection"))
+				continue;
+
+			char perm_buf[5];
+			perm_buf[0] = (vma->vma_flags & 0x01) ? 'r' : '-';
+			perm_buf[1] = (vma->vma_flags & 0x02) ? 'w' : '-';
+			perm_buf[2] = (vma->vma_flags & 0x04) ? 'x' : '-';
+			perm_buf[3] = (vma->vma_flags & 0x08) ? 's' : 'p';
+			perm_buf[4] = '\0';
+
+			dlog("VMA %016llx-%016llx %s %08llx %02x:%02x %-8llu %s\n",
+			     vma->vma_start, vma->vma_end, perm_buf, vma->vma_offset,
+			     vma->dev_major, vma->dev_minor, vma->inode, vma->vma_name);
+		}
+	}
+
+
 	return tracee;
 
 cleanup:
