@@ -676,6 +676,10 @@ void finalize_cupti_activities(void)
 		atomic_store(&cupti_fini_pipe_fds[0], -1);
 		close(pipe_fd);
 
+		vlog("Letting CUPTI Callback API finish running our callbacks...\n");
+		/* wait 50ms to give CUPTI Callback APIs time to exit our callbacks */
+		usleep(50 * 1000);
+
 		vlog("CUPTI activity API finalized!\n");
 	}
 
