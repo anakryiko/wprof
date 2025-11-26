@@ -836,10 +836,10 @@ skip_rusage:
 				cuda->ctx->cupti_drop_cnt, cuda->ctx->cupti_err_cnt);
 		}
 		if (env.verbose || env.stats) {
-			eprintf("CUDA tracee #%d (%s): %ld records, %ld buffers, %.3lfMBs.\n",
+			eprintf("CUDA tracee #%d (%s): %ld records (%ld ignored), %ld buffers, %.3lfMBs.\n",
 				i, cuda_str(cuda),
-				cuda->ctx->cupti_rec_cnt, cuda->ctx->cupti_buf_cnt,
-				cuda->ctx->cupti_data_sz / 1024.0 / 1024.0);
+				cuda->ctx->cupti_rec_cnt, cuda->ctx->cupti_ignore_cnt,
+				cuda->ctx->cupti_buf_cnt, cuda->ctx->cupti_data_sz / 1024.0 / 1024.0);
 		}
 	}
 

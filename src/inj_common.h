@@ -56,6 +56,7 @@ struct inj_run_ctx {
 	long cupti_rec_cnt;		/* captured records */
 	long cupti_drop_cnt;		/* dropped records */
 	long cupti_err_cnt;		/* errored records */
+	long cupti_ignore_cnt;		/* ignored records */
 	long cupti_data_sz;		/* total data size, bytes */
 	long cupti_buf_cnt;		/* buffers passed to recording callback */
 };
