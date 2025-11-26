@@ -1856,7 +1856,8 @@ int main(int argc, char **argv)
 	if (env.cuda_cnt > 0) {
 		wprintf("Preparing CUDA tracees...\n");
 		/* give 2 seconds extra time for auto-timeout within tracee */
-		err = cuda_trace_prepare(workdir_fd, env.duration_ns / 1000000 + 2000);
+		err = cuda_trace_prepare(workdir_fd,
+					 env.duration_ns / 1000000 + LIBWPROFINJ_SESSION_TIMEOUT_MS);
 		if (err) {
 			eprintf("Failed to active CUDA tracing sessions: %d\n", err);
 			goto cleanup;

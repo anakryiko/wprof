@@ -17,9 +17,6 @@
 #define LIBWPROFINJ_LOG_PATH_FMT "wprofinj-log.%d.%d.log"
 #define LIBWPROFINJ_DUMP_PATH_FMT "wprofinj-cuda.%d.%d.data"
 
-#define LIBWPROFINJ_SETUP_TIMEOUT_MS 5000
-#define LIBWPROFINJ_TEARDOWN_TIMEOUT_MS 5000
-
 static const char *proc_str(int pid, int ns_pid, const char *proc_name)
 {
 	static char buf[128];

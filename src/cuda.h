@@ -6,6 +6,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#define LIBWPROFINJ_SESSION_TIMEOUT_MS 15000
+#define LIBWPROFINJ_SETUP_TIMEOUT_MS 10000
+#define LIBWPROFINJ_TEARDOWN_TIMEOUT_MS 10000
+
 struct tracee_state;
 struct inj_run_ctx;
 
