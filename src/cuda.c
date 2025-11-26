@@ -195,6 +195,16 @@ retry:
 			}
 			vprintf("nvidia-smi returned PID %d (%s)\n", pid, proc_name(pid));
 
+			bool found = false;
+			for (int j = 0; j < env.cuda_cnt; j++) {
+				if (env.cudas[j].pid == pid) {
+					found = true;
+					break;
+				}
+			}
+			if (found)
+				continue;
+
 			err = discover_pid_cuda_binaries(pid, workdir_fd, true);
 			if (err) {
 				eprintf("Failed to check if PID %d (%s) uses CUDA+CUPTI: %d (skipping...)\n",
