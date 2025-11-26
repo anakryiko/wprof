@@ -614,12 +614,6 @@ static void cupti_callback(void *userdata, CUpti_CallbackDomain domain, CUpti_Ca
 		/* unblock other CUDA threads and wprofinj thread by closing write end of pipe */
 		vlog("CUDA callback thread (TID %d) is DONE, waking everyone up.\n", gettid());
 		close(cupti_fini_pipe_fds[1]);
-	} else {
-		char tmp;
-		/* wait for the "winning" finalizing CUPTI callback thread to be done */
-		vlog("CUDA callback thread (TID %d) is WAITING for the winning finalizer thread...\n", gettid());
-		(void)read(cupti_fini_pipe_fds[0], &tmp, 1);
-		vlog("CUDA callback thread (TID %d) is PROCEEDING further...\n", gettid());
 	}
 }
 
