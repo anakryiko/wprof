@@ -13,4 +13,11 @@ Copy over nanopb encoder:
 $ cp ~/nanopb/pb_{common,encode}.[ch] .
 ```
 
+## Meta specific
 
+```
+python3 -m venv ~/nanopb-venv
+source ~/nanopb-venv/bin/activate
+pip install --proxy http://fwdproxy:8080 protobuf grpcio-tools
+deactivate
+```
