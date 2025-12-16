@@ -66,6 +66,9 @@ PB_BIND(perfetto_protos_AndroidSystemPropertyConfig, perfetto_protos_AndroidSyst
 PB_BIND(perfetto_protos_AppWakelocksConfig, perfetto_protos_AppWakelocksConfig, AUTO)
 
 
+PB_BIND(perfetto_protos_CpuPerUidConfig, perfetto_protos_CpuPerUidConfig, AUTO)
+
+
 PB_BIND(perfetto_protos_KernelWakelocksConfig, perfetto_protos_KernelWakelocksConfig, AUTO)
 
 
@@ -90,6 +93,9 @@ PB_BIND(perfetto_protos_SurfaceFlingerLayersConfig, perfetto_protos_SurfaceFling
 PB_BIND(perfetto_protos_SurfaceFlingerTransactionsConfig, perfetto_protos_SurfaceFlingerTransactionsConfig, AUTO)
 
 
+PB_BIND(perfetto_protos_AndroidUserListConfig, perfetto_protos_AndroidUserListConfig, AUTO)
+
+
 PB_BIND(perfetto_protos_WindowManagerConfig, perfetto_protos_WindowManagerConfig, AUTO)
 
 
@@ -111,10 +117,10 @@ PB_BIND(perfetto_protos_V8Config, perfetto_protos_V8Config, AUTO)
 PB_BIND(perfetto_protos_EtwConfig, perfetto_protos_EtwConfig, AUTO)
 
 
+PB_BIND(perfetto_protos_FrozenFtraceConfig, perfetto_protos_FrozenFtraceConfig, AUTO)
+
+
 PB_BIND(perfetto_protos_FtraceConfig, perfetto_protos_FtraceConfig, 2)
-
-
-PB_BIND(perfetto_protos_FtraceConfig_KprobeEvent, perfetto_protos_FtraceConfig_KprobeEvent, AUTO)
 
 
 PB_BIND(perfetto_protos_FtraceConfig_CompactSchedConfig, perfetto_protos_FtraceConfig_CompactSchedConfig, AUTO)
@@ -127,6 +133,12 @@ PB_BIND(perfetto_protos_FtraceConfig_PrintFilter_Rule, perfetto_protos_FtraceCon
 
 
 PB_BIND(perfetto_protos_FtraceConfig_PrintFilter_Rule_AtraceMessage, perfetto_protos_FtraceConfig_PrintFilter_Rule_AtraceMessage, AUTO)
+
+
+PB_BIND(perfetto_protos_FtraceConfig_KprobeEvent, perfetto_protos_FtraceConfig_KprobeEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_FtraceConfig_TracefsOption, perfetto_protos_FtraceConfig_TracefsOption, AUTO)
 
 
 PB_BIND(perfetto_protos_GpuCounterConfig, perfetto_protos_GpuCounterConfig, AUTO)
@@ -151,6 +163,9 @@ PB_BIND(perfetto_protos_InterceptorConfig, perfetto_protos_InterceptorConfig, 2)
 
 
 PB_BIND(perfetto_protos_AndroidPowerConfig, perfetto_protos_AndroidPowerConfig, AUTO)
+
+
+PB_BIND(perfetto_protos_PriorityBoostConfig, perfetto_protos_PriorityBoostConfig, AUTO)
 
 
 PB_BIND(perfetto_protos_ProcessStatsConfig, perfetto_protos_ProcessStatsConfig, AUTO)
@@ -267,6 +282,12 @@ PB_BIND(perfetto_protos_TraceConfig_CmdTraceStartDelay, perfetto_protos_TraceCon
 PB_BIND(perfetto_protos_TraceConfig_SessionSemaphore, perfetto_protos_TraceConfig_SessionSemaphore, AUTO)
 
 
+PB_BIND(perfetto_protos_Utsname, perfetto_protos_Utsname, AUTO)
+
+
+PB_BIND(perfetto_protos_SystemInfo, perfetto_protos_SystemInfo, 2)
+
+
 PB_BIND(perfetto_protos_TraceStats, perfetto_protos_TraceStats, 2)
 
 
@@ -331,6 +352,9 @@ PB_BIND(perfetto_protos_AndroidCameraSessionStats_CameraGraph_CameraNode, perfet
 
 
 PB_BIND(perfetto_protos_AndroidCameraSessionStats_CameraGraph_CameraEdge, perfetto_protos_AndroidCameraSessionStats_CameraGraph_CameraEdge, AUTO)
+
+
+PB_BIND(perfetto_protos_CpuPerUidData, perfetto_protos_CpuPerUidData, AUTO)
 
 
 PB_BIND(perfetto_protos_FrameTimelineEvent, perfetto_protos_FrameTimelineEvent, AUTO)
@@ -438,6 +462,15 @@ PB_BIND(perfetto_protos_BlurRegion, perfetto_protos_BlurRegion, AUTO)
 PB_BIND(perfetto_protos_ColorTransformProto, perfetto_protos_ColorTransformProto, AUTO)
 
 
+PB_BIND(perfetto_protos_BoxShadowSettings, perfetto_protos_BoxShadowSettings, AUTO)
+
+
+PB_BIND(perfetto_protos_BoxShadowSettings_BoxShadowParams, perfetto_protos_BoxShadowSettings_BoxShadowParams, AUTO)
+
+
+PB_BIND(perfetto_protos_BorderSettings, perfetto_protos_BorderSettings, AUTO)
+
+
 PB_BIND(perfetto_protos_LayersTraceFileProto, perfetto_protos_LayersTraceFileProto, AUTO)
 
 
@@ -462,6 +495,9 @@ PB_BIND(perfetto_protos_PositionProto, perfetto_protos_PositionProto, AUTO)
 PB_BIND(perfetto_protos_FloatRectProto, perfetto_protos_FloatRectProto, AUTO)
 
 
+PB_BIND(perfetto_protos_CornerRadiiProto, perfetto_protos_CornerRadiiProto, AUTO)
+
+
 PB_BIND(perfetto_protos_ActiveBufferProto, perfetto_protos_ActiveBufferProto, AUTO)
 
 
@@ -483,6 +519,9 @@ PB_BIND(perfetto_protos_LayerCreationArgs, perfetto_protos_LayerCreationArgs, AU
 PB_BIND(perfetto_protos_Transform, perfetto_protos_Transform, AUTO)
 
 
+PB_BIND(perfetto_protos_TransactionBarrier, perfetto_protos_TransactionBarrier, AUTO)
+
+
 PB_BIND(perfetto_protos_TransactionState, perfetto_protos_TransactionState, AUTO)
 
 
@@ -490,6 +529,9 @@ PB_BIND(perfetto_protos_LayerState, perfetto_protos_LayerState, 2)
 
 
 PB_BIND(perfetto_protos_LayerState_Matrix22, perfetto_protos_LayerState_Matrix22, AUTO)
+
+
+PB_BIND(perfetto_protos_LayerState_CornerRadii, perfetto_protos_LayerState_CornerRadii, AUTO)
 
 
 PB_BIND(perfetto_protos_LayerState_Color3, perfetto_protos_LayerState_Color3, AUTO)
@@ -502,6 +544,12 @@ PB_BIND(perfetto_protos_LayerState_WindowInfo, perfetto_protos_LayerState_Window
 
 
 PB_BIND(perfetto_protos_DisplayState, perfetto_protos_DisplayState, AUTO)
+
+
+PB_BIND(perfetto_protos_AndroidUserList, perfetto_protos_AndroidUserList, AUTO)
+
+
+PB_BIND(perfetto_protos_AndroidUserList_UserInfo, perfetto_protos_AndroidUserList_UserInfo, AUTO)
 
 
 PB_BIND(perfetto_protos_WinscopeExtensions, perfetto_protos_WinscopeExtensions, AUTO)
@@ -603,10 +651,37 @@ PB_BIND(perfetto_protos_CSwitchEtwEvent, perfetto_protos_CSwitchEtwEvent, AUTO)
 PB_BIND(perfetto_protos_ReadyThreadEtwEvent, perfetto_protos_ReadyThreadEtwEvent, AUTO)
 
 
-PB_BIND(perfetto_protos_EtwTraceEvent, perfetto_protos_EtwTraceEvent, AUTO)
+PB_BIND(perfetto_protos_MemInfoEtwEvent, perfetto_protos_MemInfoEtwEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_FileIoCreateEtwEvent, perfetto_protos_FileIoCreateEtwEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_FileIoDirEnumEtwEvent, perfetto_protos_FileIoDirEnumEtwEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_FileIoInfoEtwEvent, perfetto_protos_FileIoInfoEtwEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_FileIoReadWriteEtwEvent, perfetto_protos_FileIoReadWriteEtwEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_FileIoSimpleOpEtwEvent, perfetto_protos_FileIoSimpleOpEtwEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_FileIoOpEndEtwEvent, perfetto_protos_FileIoOpEndEtwEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_EtwTraceEvent, perfetto_protos_EtwTraceEvent, 2)
 
 
 PB_BIND(perfetto_protos_EtwTraceEventBundle, perfetto_protos_EtwTraceEventBundle, AUTO)
+
+
+PB_BIND(perfetto_protos_EvdevEvent, perfetto_protos_EvdevEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_EvdevEvent_InputEvent, perfetto_protos_EvdevEvent_InputEvent, AUTO)
 
 
 PB_BIND(perfetto_protos_FileDescriptorSet, perfetto_protos_FileDescriptorSet, AUTO)
@@ -807,6 +882,9 @@ PB_BIND(perfetto_protos_CmaAllocStartFtraceEvent, perfetto_protos_CmaAllocStartF
 PB_BIND(perfetto_protos_CmaAllocInfoFtraceEvent, perfetto_protos_CmaAllocInfoFtraceEvent, AUTO)
 
 
+PB_BIND(perfetto_protos_CmaAllocFinishFtraceEvent, perfetto_protos_CmaAllocFinishFtraceEvent, AUTO)
+
+
 PB_BIND(perfetto_protos_MmCompactionBeginFtraceEvent, perfetto_protos_MmCompactionBeginFtraceEvent, AUTO)
 
 
@@ -916,6 +994,51 @@ PB_BIND(perfetto_protos_DrmVblankEventFtraceEvent, perfetto_protos_DrmVblankEven
 
 
 PB_BIND(perfetto_protos_DrmVblankEventDeliveredFtraceEvent, perfetto_protos_DrmVblankEventDeliveredFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_Dwc3AllocRequestFtraceEvent, perfetto_protos_Dwc3AllocRequestFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_Dwc3CompleteTrbFtraceEvent, perfetto_protos_Dwc3CompleteTrbFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_Dwc3CtrlReqFtraceEvent, perfetto_protos_Dwc3CtrlReqFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_Dwc3EpDequeueFtraceEvent, perfetto_protos_Dwc3EpDequeueFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_Dwc3EpQueueFtraceEvent, perfetto_protos_Dwc3EpQueueFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_Dwc3EventFtraceEvent, perfetto_protos_Dwc3EventFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_Dwc3FreeRequestFtraceEvent, perfetto_protos_Dwc3FreeRequestFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_Dwc3GadgetEpCmdFtraceEvent, perfetto_protos_Dwc3GadgetEpCmdFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_Dwc3GadgetEpDisableFtraceEvent, perfetto_protos_Dwc3GadgetEpDisableFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_Dwc3GadgetEpEnableFtraceEvent, perfetto_protos_Dwc3GadgetEpEnableFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_Dwc3GadgetGenericCmdFtraceEvent, perfetto_protos_Dwc3GadgetGenericCmdFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_Dwc3GadgetGivebackFtraceEvent, perfetto_protos_Dwc3GadgetGivebackFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_Dwc3PrepareTrbFtraceEvent, perfetto_protos_Dwc3PrepareTrbFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_Dwc3ReadlFtraceEvent, perfetto_protos_Dwc3ReadlFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_Dwc3WritelFtraceEvent, perfetto_protos_Dwc3WritelFtraceEvent, AUTO)
 
 
 PB_BIND(perfetto_protos_Ext4DaWriteBeginFtraceEvent, perfetto_protos_Ext4DaWriteBeginFtraceEvent, AUTO)
@@ -1359,6 +1482,9 @@ PB_BIND(perfetto_protos_FuncgraphEntryFtraceEvent, perfetto_protos_FuncgraphEntr
 PB_BIND(perfetto_protos_FuncgraphExitFtraceEvent, perfetto_protos_FuncgraphExitFtraceEvent, AUTO)
 
 
+PB_BIND(perfetto_protos_FwtpPerfettoCounterFtraceEvent, perfetto_protos_FwtpPerfettoCounterFtraceEvent, AUTO)
+
+
 PB_BIND(perfetto_protos_G2dTracingMarkWriteFtraceEvent, perfetto_protos_G2dTracingMarkWriteFtraceEvent, AUTO)
 
 
@@ -1389,6 +1515,21 @@ PB_BIND(perfetto_protos_DrmRunJobFtraceEvent, perfetto_protos_DrmRunJobFtraceEve
 PB_BIND(perfetto_protos_DrmSchedProcessJobFtraceEvent, perfetto_protos_DrmSchedProcessJobFtraceEvent, AUTO)
 
 
+PB_BIND(perfetto_protos_DrmSchedJobAddDepFtraceEvent, perfetto_protos_DrmSchedJobAddDepFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_DrmSchedJobDoneFtraceEvent, perfetto_protos_DrmSchedJobDoneFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_DrmSchedJobQueueFtraceEvent, perfetto_protos_DrmSchedJobQueueFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_DrmSchedJobRunFtraceEvent, perfetto_protos_DrmSchedJobRunFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_DrmSchedJobUnschedulableFtraceEvent, perfetto_protos_DrmSchedJobUnschedulableFtraceEvent, AUTO)
+
+
 PB_BIND(perfetto_protos_HypEnterFtraceEvent, perfetto_protos_HypEnterFtraceEvent, AUTO)
 
 
@@ -1402,6 +1543,42 @@ PB_BIND(perfetto_protos_HostSmcFtraceEvent, perfetto_protos_HostSmcFtraceEvent, 
 
 
 PB_BIND(perfetto_protos_HostMemAbortFtraceEvent, perfetto_protos_HostMemAbortFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_HostFfaCallFtraceEvent, perfetto_protos_HostFfaCallFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_IommuIdmapFtraceEvent, perfetto_protos_IommuIdmapFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_PsciMemProtectFtraceEvent, perfetto_protos_PsciMemProtectFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_HypervisorHostHcallFtraceEvent, perfetto_protos_HypervisorHostHcallFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_HypervisorHostSmcFtraceEvent, perfetto_protos_HypervisorHostSmcFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_HypervisorHypExitFtraceEvent, perfetto_protos_HypervisorHypExitFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_HypervisorIommuIdmapFtraceEvent, perfetto_protos_HypervisorIommuIdmapFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_HypervisorPsciMemProtectFtraceEvent, perfetto_protos_HypervisorPsciMemProtectFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_HypervisorHostMemAbortFtraceEvent, perfetto_protos_HypervisorHostMemAbortFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_HypervisorHypEnterFtraceEvent, perfetto_protos_HypervisorHypEnterFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_HypervisorIommuIdmapCompleteFtraceEvent, perfetto_protos_HypervisorIommuIdmapCompleteFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_HypervisorVcpuIllegalTrapFtraceEvent, perfetto_protos_HypervisorVcpuIllegalTrapFtraceEvent, AUTO)
 
 
 PB_BIND(perfetto_protos_I2cReadFtraceEvent, perfetto_protos_I2cReadFtraceEvent, AUTO)
@@ -1453,6 +1630,12 @@ PB_BIND(perfetto_protos_IrqHandlerEntryFtraceEvent, perfetto_protos_IrqHandlerEn
 
 
 PB_BIND(perfetto_protos_IrqHandlerExitFtraceEvent, perfetto_protos_IrqHandlerExitFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_LocalTimerEntryFtraceEvent, perfetto_protos_LocalTimerEntryFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_LocalTimerExitFtraceEvent, perfetto_protos_LocalTimerExitFtraceEvent, AUTO)
 
 
 PB_BIND(perfetto_protos_KgslGpuFrequencyFtraceEvent, perfetto_protos_KgslGpuFrequencyFtraceEvent, AUTO)
@@ -1600,6 +1783,12 @@ PB_BIND(perfetto_protos_IonBufferCreateFtraceEvent, perfetto_protos_IonBufferCre
 
 
 PB_BIND(perfetto_protos_IonBufferDestroyFtraceEvent, perfetto_protos_IonBufferDestroyFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_MmAllocContigMigrateRangeInfoFtraceEvent, perfetto_protos_MmAllocContigMigrateRangeInfoFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_DmabufRssStatFtraceEvent, perfetto_protos_DmabufRssStatFtraceEvent, AUTO)
 
 
 PB_BIND(perfetto_protos_KvmAccessFaultFtraceEvent, perfetto_protos_KvmAccessFaultFtraceEvent, AUTO)
@@ -2049,6 +2238,15 @@ PB_BIND(perfetto_protos_ScmCallStartFtraceEvent, perfetto_protos_ScmCallStartFtr
 PB_BIND(perfetto_protos_ScmCallEndFtraceEvent, perfetto_protos_ScmCallEndFtraceEvent, AUTO)
 
 
+PB_BIND(perfetto_protos_ScsiDispatchCmdErrorFtraceEvent, perfetto_protos_ScsiDispatchCmdErrorFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_ScsiDispatchCmdTimeoutFtraceEvent, perfetto_protos_ScsiDispatchCmdTimeoutFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_ScsiEhWakeupFtraceEvent, perfetto_protos_ScsiEhWakeupFtraceEvent, AUTO)
+
+
 PB_BIND(perfetto_protos_SdeTracingMarkWriteFtraceEvent, perfetto_protos_SdeTracingMarkWriteFtraceEvent, AUTO)
 
 
@@ -2116,6 +2314,30 @@ PB_BIND(perfetto_protos_ThermalExynosAcpmBulkFtraceEvent, perfetto_protos_Therma
 
 
 PB_BIND(perfetto_protos_ThermalExynosAcpmHighOverheadFtraceEvent, perfetto_protos_ThermalExynosAcpmHighOverheadFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_HrtimerStartFtraceEvent, perfetto_protos_HrtimerStartFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_HrtimerCancelFtraceEvent, perfetto_protos_HrtimerCancelFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_HrtimerExpireEntryFtraceEvent, perfetto_protos_HrtimerExpireEntryFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_HrtimerExpireExitFtraceEvent, perfetto_protos_HrtimerExpireExitFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_TimerStartFtraceEvent, perfetto_protos_TimerStartFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_TimerCancelFtraceEvent, perfetto_protos_TimerCancelFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_TimerExpireEntryFtraceEvent, perfetto_protos_TimerExpireEntryFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_TimerExpireExitFtraceEvent, perfetto_protos_TimerExpireExitFtraceEvent, AUTO)
 
 
 PB_BIND(perfetto_protos_TrustySmcFtraceEvent, perfetto_protos_TrustySmcFtraceEvent, AUTO)
@@ -2263,6 +2485,27 @@ PB_BIND(perfetto_protos_FtraceEventBundle_CompactSched, perfetto_protos_FtraceEv
 
 
 PB_BIND(perfetto_protos_FtraceEventBundle_FtraceError, perfetto_protos_FtraceEventBundle_FtraceError, AUTO)
+
+
+PB_BIND(perfetto_protos_FtraceEventBundle_GenericEventDescriptor, perfetto_protos_FtraceEventBundle_GenericEventDescriptor, AUTO)
+
+
+PB_BIND(perfetto_protos_GenericKernelCpuFrequencyEvent, perfetto_protos_GenericKernelCpuFrequencyEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_GenericKernelTaskStateEvent, perfetto_protos_GenericKernelTaskStateEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_GenericKernelTaskRenameEvent, perfetto_protos_GenericKernelTaskRenameEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_GenericKernelProcessTree, perfetto_protos_GenericKernelProcessTree, AUTO)
+
+
+PB_BIND(perfetto_protos_GenericKernelProcessTree_Thread, perfetto_protos_GenericKernelProcessTree_Thread, AUTO)
+
+
+PB_BIND(perfetto_protos_GenericKernelProcessTree_Process, perfetto_protos_GenericKernelProcessTree_Process, AUTO)
 
 
 PB_BIND(perfetto_protos_GpuCounterEvent, perfetto_protos_GpuCounterEvent, AUTO)
@@ -2437,6 +2680,12 @@ PB_BIND(perfetto_protos_TaskExecution, perfetto_protos_TaskExecution, AUTO)
 
 
 PB_BIND(perfetto_protos_TrackEvent, perfetto_protos_TrackEvent, 2)
+
+
+PB_BIND(perfetto_protos_TrackEvent_Callstack, perfetto_protos_TrackEvent_Callstack, AUTO)
+
+
+PB_BIND(perfetto_protos_TrackEvent_Callstack_Frame, perfetto_protos_TrackEvent_Callstack_Frame, AUTO)
 
 
 PB_BIND(perfetto_protos_TrackEvent_LegacyEvent, perfetto_protos_TrackEvent_LegacyEvent, AUTO)
@@ -2655,12 +2904,6 @@ PB_BIND(perfetto_protos_SysStats_CpuIdleStateEntry, perfetto_protos_SysStats_Cpu
 PB_BIND(perfetto_protos_SysStats_CpuIdleState, perfetto_protos_SysStats_CpuIdleState, AUTO)
 
 
-PB_BIND(perfetto_protos_Utsname, perfetto_protos_Utsname, AUTO)
-
-
-PB_BIND(perfetto_protos_SystemInfo, perfetto_protos_SystemInfo, 2)
-
-
 PB_BIND(perfetto_protos_CpuInfo, perfetto_protos_CpuInfo, AUTO)
 
 
@@ -2758,6 +3001,14 @@ PB_BIND(perfetto_protos_TracePacket, perfetto_protos_TracePacket, 2)
 
 
 PB_BIND(perfetto_protos_Trace, perfetto_protos_Trace, AUTO)
+
+
+
+
+
+
+
+
 
 
 
