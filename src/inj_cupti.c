@@ -11,10 +11,7 @@
 #include <time.h>
 #include <sched.h>
 
-#include <cupti.h>
-#include <cupti_activity.h>
-#include <cupti_callbacks.h>
-
+#include "wprof_cupti.h"
 #include "strset.h"
 #include "inj.h"
 #include "inj_common.h"
@@ -336,9 +333,6 @@ static int handle_cupti_record(CUpti_Activity *rec)
 
 	return -ENODATA;
 }
-
-enum CUpti_driver_api_trace_cbid_enum driver_cbids;
-enum CUpti_runtime_api_trace_cbid_enum runtime_cbids;
 
 static void consume_activity_buf(void *buf)
 {

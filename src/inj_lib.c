@@ -358,26 +358,6 @@ int cuda_dump_finalize(void)
 	return 0;
 }
 
-__weak int init_cupti_activities(void)
-{
-	/*
-	 * Normally this function implementation will be resolved to the one
-	 * in inj_cupti.c, unless CUPTI headers were not available during
-	 * build time.
-	 */
-	elog("CUPTI functionality wasn't built into wprof!\n");
-	return -EOPNOTSUPP;
-}
-
-__weak int start_cupti_activities(void)
-{
-	return -EOPNOTSUPP;
-}
-
-__weak void finalize_cupti_activities(void)
-{
-}
-
 static int handle_session_end(void)
 {
 	int err = 0;

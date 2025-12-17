@@ -3,7 +3,6 @@
 /sim
 /*.pb
 /*.log
-/*.gen.c
 /dump.txt
 /wprof.data
 /wprof.data.*

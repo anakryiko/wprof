@@ -17,12 +17,7 @@
 #include "env.h"
 #include "data.h"
 
-const char *argp_program_version = "wprof " WPROF_VERSION
-#ifdef HAVE_CUPTI
-" (with CUDA support)";
-#else
-;
-#endif
+const char *argp_program_version = "wprof " WPROF_VERSION;
 
 const char *argp_program_bug_address = "Andrii Nakryiko <andrii@kernel.org>";
 const char argp_program_doc[] =
