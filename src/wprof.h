@@ -186,8 +186,10 @@ struct wprof_event {
 		struct wprof_timer {
 		} timer;
 		struct wprof_waking {
+			struct wprof_task wakee;
 		} waking;
 		struct wprof_wakeup_new {
+			struct wprof_task wakee;
 		} wakeup_new;
 		struct wprof_hardirq {
 			u64 hardirq_ts;
