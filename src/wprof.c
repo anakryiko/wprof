@@ -1004,7 +1004,7 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 
 	libbpf_set_print(libbpf_print_fn);
 
-	err = parse_cpu_mask_file(online_cpus_file, &st->online_mask, &st->num_online_cpus);
+	err = parse_cpu_mask(online_cpus_file, &st->online_mask, &st->num_online_cpus);
 	if (err) {
 		eprintf("Failed to get online CPU numbers: %d\n", err);
 		return -EINVAL;

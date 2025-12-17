@@ -348,4 +348,3 @@ void vma_iter_destroy(struct vma_iter *it)
 
 	errno = old_errno;
 }
-

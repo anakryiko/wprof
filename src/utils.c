@@ -175,6 +175,79 @@ int parse_str_from_file(const char *file, char *buf, size_t buf_sz)
 
 	fclose(f);
 	return 0;
+
+}
+/* libbpf's implementation fixed up a bit to avoid unnecessary warnings for empty CPU masks */
+static int parse_cpu_mask_str(const char *s, bool **mask, int *mask_sz)
+{
+	int err = 0, n, len, start, end = -1;
+	bool *tmp;
+
+	*mask = NULL;
+	*mask_sz = 0;
+
+	/* Each sub string separated by ',' has format \d+-\d+ or \d+ */
+	while (*s) {
+		if (*s == ',' || *s == '\n') {
+			s++;
+			continue;
+		}
+		n = sscanf(s, "%d%n-%d%n", &start, &len, &end, &len);
+		if (n <= 0 || n > 2) {
+			eprintf("Failed to get CPU range %s: %d\n", s, n);
+			err = -EINVAL;
+			goto cleanup;
+		} else if (n == 1) {
+			end = start;
+		}
+		if (start < 0 || start > end) {
+			eprintf("Invalid CPU range [%d,%d] in %s\n", start, end, s);
+			err = -EINVAL;
+			goto cleanup;
+		}
+		tmp = realloc(*mask, end + 1);
+		if (!tmp) {
+			err = -ENOMEM;
+			goto cleanup;
+		}
+		*mask = tmp;
+		memset(tmp + *mask_sz, 0, start - *mask_sz);
+		memset(tmp + start, 1, end - start + 1);
+		*mask_sz = end + 1;
+		s += len;
+	}
+	return 0;
+cleanup:
+	free(*mask);
+	*mask = NULL;
+	return err;
+}
+
+int parse_cpu_mask(const char *fcpu, bool **mask, int *mask_sz)
+{
+	int fd, err = 0, len;
+	char buf[128];
+
+	fd = open(fcpu, O_RDONLY | O_CLOEXEC);
+	if (fd < 0) {
+		err = -errno;
+		eprintf("Failed to open cpu mask file %s: %d\n", fcpu, err);
+		return err;
+	}
+	len = read(fd, buf, sizeof(buf));
+	close(fd);
+	if (len <= 0) {
+		err = len ? -errno : -EINVAL;
+		eprintf("Failed to read cpu mask from %s: %d\n", fcpu, err);
+		return err;
+	}
+	if (len >= sizeof(buf)) {
+		eprintf("CPU mask is too big in file %s\n", fcpu);
+		return -E2BIG;
+	}
+	buf[len] = '\0';
+
+	return parse_cpu_mask_str(buf, mask, mask_sz);
 }
 
 /**
