@@ -8,7 +8,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build & Test (${{ matrix.arch }}${{ matrix.cuda && ', CUDA' || '' }}, ${{ matrix.static && 'static' || 'dynamic' }})
+    name: Build & Test (${{ matrix.arch }}, ${{ matrix.static && 'static' || 'dynamic' }})
     runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
@@ -27,21 +27,6 @@ jobs:
             static: false
 
           - arch: amd64
-            cuda: true
-            file_str: x86-64
-            target: x86_64-unknown-linux-gnu
-            runner: ubuntu-latest
-            static: false
-
-          - arch: arm64
-            cuda: true
-            file_str: aarch64
-            target: aarch64-unknown-linux-gnu
-            runner: ubuntu-24.04-arm
-            static: false
-
-          # Static builds (no CUDA support for static)
-          - arch: amd64
             file_str: x86-64
             target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
@@ -59,24 +44,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cargo llvm libelf-dev zlib1g-dev libzstd-dev protobuf-compiler
 
-      - name: Install CUDA Toolkit
-        if: matrix.cuda
-        run: |
-          # Install CUDA Toolkit with CUPTI headers from Ubuntu repos
-          sudo apt-get update
-          sudo apt-get install -y nvidia-cuda-toolkit
-          # Find cupti_activity.h and extract its directory path
-          CUPTI_HEADER=$(find /usr -name "cupti_activity.h" 2>/dev/null | head -1)
-          if [ -z "$CUPTI_HEADER" ]; then
-            echo "Error: cupti_activity.h not found!"
-            exit 1
-          fi
-          CUPTI_DIR=$(dirname "$CUPTI_HEADER")
-          echo "Found CUPTI headers at: $CUPTI_DIR"
-          ls -la "$CUPTI_DIR"
-          # Provide CUPTI_INCLUDE for subsequent wprof build
-          echo "CUPTI_INCLUDE_DIR=$CUPTI_DIR" >> $GITHUB_ENV
-
       - name: Checkout wprof code
         uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4.1.0
         with:
@@ -86,19 +53,7 @@ jobs:
       - name: Build wprof
         working-directory: 'wprof'
         run: |
-          make -j$(nproc) -C src V=1 CUPTI_INCLUDE="$CUPTI_INCLUDE_DIR" ${{ matrix.static && 'STATIC=1' || '' }}
-
-      - name: Test CUPTI support compilation
-        if: matrix.cuda
-        working-directory: 'wprof/src'
-        run: |
-          # Check that CUPTI object files were compiled
-          test -f .output/inj_cupti.o || { echo "✗ Failed: inj_cupti.o not found"; exit 1; }
-          test -f .output/cupti_driver_cbid_map.gen.o || { echo "✗ Failed: cupti_driver_cbid_map.gen.o not found"; exit 1; }
-          test -f .output/cupti_runtime_cbid_map.gen.o || { echo "✗ Failed: cupti_runtime_cbid_map.gen.o not found"; exit 1; }
-          # Verify version string reports CUDA support
-          ./wprof --version | tee /dev/stderr | grep -q " (with CUDA support)" || { echo "✗ Failed: CUDA support not detected in version string"; exit 1; }
-          echo "✓ CUPTI support successfully compiled"
+          make -j$(nproc) -C src V=1 ${{ matrix.static && 'STATIC=1' || '' }}
 
       - name: Test wprof binary
         working-directory: 'wprof/src'
@@ -118,16 +73,10 @@ jobs:
         working-directory: 'wprof/src'
         run: |
           # Run wprof for 500ms to capture a short trace
-          if [ "${{ matrix.cuda }}" = "true" ]; then
-            sudo ./wprof -d500 -T trace.pb -D wprof.data -f cuda --log=inject --log=tracee -vv || { echo "✗ Failed: wprof trace capture (w/ CUDA) failed"; exit 1; }
-          else
-            sudo ./wprof -d500 -T trace.pb -D wprof.data || { echo "✗ Failed: wprof trace capture failed"; exit 1; }
-          fi
+          sudo ./wprof -d500 -T trace.pb -D wprof.data -f cuda || { echo "✗ Failed: wprof trace capture failed"; exit 1; }
           # Validate binary dump with replay mode
           ./wprof -R -I -D wprof.data || { echo "✗ Failed: wprof.data validation failed"; exit 1; }
-          if [ "${{ matrix.cuda }}" = "true" ]; then
-            ./wprof -R -I -D wprof.data | grep -q "CUDA:.*YES" || { echo "✗ Failed: CUDA not detected in trace"; exit 1; }
-          fi
+          ./wprof -R -I -D wprof.data | grep -q "CUDA:.*YES" || { echo "✗ Failed: CUDA not detected in trace"; exit 1; }
           # Validate Perfetto trace and count packets
           PACKET_COUNT=$(protoc --decode=perfetto.protos.Trace perfetto_trace.proto < trace.pb 2>/dev/null | grep -c "packet {" || echo "0")
           TRACE_SIZE=$(ls -lh trace.pb | awk '{print $5}')
@@ -141,16 +90,10 @@ jobs:
         working-directory: 'wprof/src'
         run: |
           # Run wprof with stack traces for 500ms
-          if [ "${{ matrix.cuda }}" = "true" ]; then
-            sudo ./wprof -d500 -T trace-stacks.pb -D wprof-stacks.data -S -f cuda --log=inject --log=tracee -vv || { echo "✗ Failed: wprof trace with stacks (w/ CUDA) failed"; exit 1; }
-          else
-            sudo ./wprof -d500 -T trace-stacks.pb -D wprof-stacks.data -S || { echo "✗ Failed: wprof trace with stacks failed"; exit 1; }
-          fi
+          sudo ./wprof -d500 -T trace-stacks.pb -D wprof-stacks.data -S -f cuda || { echo "✗ Failed: wprof trace with stacks failed"; exit 1; }
           # Validate binary dump with replay mode
           ./wprof -R -I -D wprof-stacks.data || { echo "✗ Failed: wprof-stacks.data validation failed"; exit 1; }
-          if [ "${{ matrix.cuda }}" = "true" ]; then
-            ./wprof -R -I -D wprof-stacks.data | grep -q "CUDA:.*YES" || { echo "✗ Failed: CUDA not detected in trace"; exit 1; }
-          fi
+          ./wprof -R -I -D wprof-stacks.data | grep -q "CUDA:.*YES" || { echo "✗ Failed: CUDA not detected in trace"; exit 1; }
           # Validate stack traces were captured
           ./wprof -R -I -D wprof-stacks.data | grep -q "Stack traces:.*[1-9]" || { echo "✗ Failed: No stack traces captured"; exit 1; }
           # Validate Perfetto trace and count packets
@@ -166,7 +109,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: wprof-${{ matrix.arch }}${{ matrix.cuda && '-cuda' || '' }}-${{ matrix.static && 'static' || 'dynamic' }}
+          name: wprof-${{ matrix.arch }}-${{ matrix.static && 'static' || 'dynamic' }}
           path: |
             wprof/src/wprof
             wprof/src/trace.pb
