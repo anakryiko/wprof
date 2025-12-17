@@ -307,6 +307,7 @@ static const char *pb_static_strs[] = {
 	[IID_ANNK_CUDA_DST_KIND] = "dst_kind",
 	[IID_ANNK_CUDA_CONTEXT_ID] = "context_id",
 	[IID_ANNK_CUDA_EVENT_ID] = "event_id",
+	[IID_ANNK_CUDA_MANGLED_NAME] = "mangled_name",
 
 	[IID_ANNV_SOFTIRQ_ACTION + HI_SOFTIRQ] = "hi",
 	[IID_ANNV_SOFTIRQ_ACTION + TIMER_SOFTIRQ] = "timer",
