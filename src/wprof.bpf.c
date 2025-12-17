@@ -625,6 +625,7 @@ int BPF_PROG(wprof_task_waking, struct task_struct *p)
 		goto skip_emit;
 
 	emit_task_event_dyn(e, dptr, fix_sz, dyn_sz, EV_WAKING, now_ts, task) {
+		fill_task_info(p, &e->waking.wakee);
 		emit_stack_trace(tr, dyn_sz, dptr, fix_sz);
 		e->flags |= ST_WAKER;
 	}
@@ -672,6 +673,7 @@ int BPF_PROG(wprof_task_wakeup_new, struct task_struct *p)
 		goto skip_emit;
 
 	emit_task_event_dyn(e, dptr, fix_sz, dyn_sz, EV_WAKEUP_NEW, now_ts, task) {
+		fill_task_info(p, &e->wakeup_new.wakee);
 		emit_stack_trace(tr, dyn_sz, dptr, fix_sz);
 		e->flags |= ST_WAKER;
 	}
