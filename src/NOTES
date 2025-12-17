@@ -1,3 +1,5 @@
+# Perfetto protobuf regeneration
+
 Perfetto repo: https://github.com/google/perfetto.git
 nanopb repo: https://github.com/nanopb/nanopb.git
 
@@ -13,11 +15,34 @@ Copy over nanopb encoder:
 $ cp ~/nanopb/pb_{common,encode}.[ch] .
 ```
 
-## Meta specific
+## Meta specific details due to devserver limitations
 
 ```
 python3 -m venv ~/nanopb-venv
 source ~/nanopb-venv/bin/activate
 pip install --proxy http://fwdproxy:8080 protobuf grpcio-tools
 deactivate
+```
+
+# CUDA headers and generated files
+
+We seem to need the following packages (on CentOS) to get all necessary headers:
+  - cuda-nvcc-<version>;
+  - cuda-cudart-devel-<version>;
+  - cuda-cupti-<version>
+
+Search for cupti_activity.h and cuda.h in /usr/local/cuda*/targets/*/include:
+
+```
+$ find /usr/local/cuda*/targets/*/include -name 'cupti_activity.h'
+/usr/local/cuda-12.2/targets/x86_64-linux/include/cupti_activity.h
+/usr/local/cuda-12.4/targets/x86_64-linux/include/cupti_activity.h
+/usr/local/cuda-13.0/targets/x86_64-linux/include/cupti_activity.h
+```
+
+With that, to regenerate mapping for driver/runtime API names:
+
+```
+$ cat $(ls /usr/local/cuda*/targets/*/include/cupti_driver_cbid.h | sort -Vr | head -n1) | awk -f gen_cupti_driver_cbid.awk | tee cupti_driver_cbid_map.gen.c
+$ cat $(ls /usr/local/cuda*/targets/*/include/cupti_runtime_cbid.h | sort -Vr | head -n1) | awk -f gen_cupti_runtime_cbid.awk | tee cupti_runtime_cbid_map.gen.c
 ```

@@ -44,20 +44,6 @@ ALL_CFLAGS := $(CFLAGS) $(EXTRA_CFLAGS) -fno-omit-frame-pointer				\
 	      -Wno-c23-extensions -Wno-sign-compare -Wno-format-truncation
 ALL_LDFLAGS := $(LDFLAGS) $(EXTRA_LDFLAGS) -lrt -ldl -lpthread -lm
 
-# We seem to need the following packages (on CentOS) to get all necessary headers:
-#   - cuda-nvcc-<version>;
-#   - cuda-cudart-devel-<version>;
-#   - cuda-cupti-<version>
-CUPTI_PATHS := /usr/local/cuda*/targets/*/include
-
-# Auto-detect CUPTI if not specified
-CUPTI_INCLUDE ?= $(shell								\
-	for p in $(CUPTI_PATHS); do 							\
-		[ -f "$$p/cupti_activity.h" ] && [ -f "$$p/cuda.h" ] && echo $$p;	\
-	 done | sort -Vr | head -n1)
-INCLUDES += $(if $(CUPTI_INCLUDE),-I$(CUPTI_INCLUDE))
-ALL_CFLAGS += $(if $(CUPTI_INCLUDE),-DHAVE_CUPTI)
-
 # Get Clang's default includes on this system. We'll explicitly add these dirs
 # to the includes list when compiling with `-target bpf` because otherwise some
 # architecture-specific dirs will be "missing" on some architectures/distros -
@@ -145,27 +131,15 @@ $(OUTPUT)/wprof.skel.h: $(OUTPUT)/wprof.bpf.o $(OUTPUT)/utils.bpf.o | $(OUTPUT) 
 WPROF_SRCS := wprof.c utils.c env.c protobuf.c emit.c stacktrace.c				\
 	      pb_common.c pb_encode.c perfetto_trace.pb.c topology.c proc.c			\
 	      requests.c cuda.c inject.c sys.c elf_utils.c					\
-	      $(if $(CUPTI_INCLUDE),cupti_driver_cbid_map.gen.c cupti_runtime_cbid_map.gen.c)
+	      cupti_driver_cbid_map.gen.c cupti_runtime_cbid_map.gen.c
 WPROF_HDRS := wprof.h utils.h env.h protobuf.h emit.h stacktrace.h data.h topology.h		\
 	      proc.h requests.h cuda.h inj_common.h inject.h sys.h elf_utils.h cuda_data.h 	\
 	      wprof_types.h
 WPROF_OBJS := $(patsubst %.c,$(OUTPUT)/%.o,$(WPROF_SRCS))
 
-WPROFINJ_SRCS := inj_lib.c inj_strset.c inj_hashmap.c $(if $(CUPTI_INCLUDE),inj_cupti.c)
-WPROFINJ_HDRS := inj_common.h inj.h
+WPROFINJ_SRCS := inj_lib.c inj_strset.c inj_hashmap.c inj_cupti.c
+WPROFINJ_HDRS := inj_common.h inj.h wprof_cupti.h
 WPROFINJ_OBJS := $(patsubst %.c,$(OUTPUT)/%.o,$(WPROFINJ_SRCS))
-
-ifneq ($(CUPTI_INCLUDE),)
-cupti_driver_cbid_map.gen.c: $(CUPTI_INCLUDE)/cupti_driver_cbid.h gen_cupti_driver_cbid.awk | $(OUTPUT)
-	$(call msg,GEN,$@)
-	$(Q)$(AWK) -f gen_cupti_driver_cbid.awk <$(CUPTI_INCLUDE)/cupti_driver_cbid.h >$@
-
-cupti_runtime_cbid_map.gen.c: $(CUPTI_INCLUDE)/cupti_runtime_cbid.h gen_cupti_runtime_cbid.awk | $(OUTPUT)
-	$(call msg,GEN,$@)
-	$(Q)$(AWK) -f gen_cupti_runtime_cbid.awk <$(CUPTI_INCLUDE)/cupti_runtime_cbid.h >$@
-else
-$(warning "WARNING! CUDA tracing won't be compiled due to missing CUPTI headers, check CUPTI_INCLUDE!")
-endif
 
 $(WPROFINJ_OBJS): ALL_CFLAGS += -fPIC
 $(WPROFINJ_OBJS): INCLUDES += -I../libbpf/src
@@ -199,7 +173,7 @@ wprof: $(WPROF_HDRS) $(WPROF_OBJS)								\
 .PHONY: clean
 clean:
 	$(call msg,CLEAN)
-	$(Q)rm -rf $(OUTPUT)/*.o $(OUTPUT)/libwprofinj.* cupti_*.gen.c wprof
+	$(Q)rm -rf $(OUTPUT)/*.o $(OUTPUT)/libwprofinj.* wprof
 
 .PHONY: clean-all
 clean-all: clean
