@@ -16,6 +16,7 @@
 #include "env.h"
 #include "stacktrace.h"
 #include "cuda_data.h"
+#include "demangle.h"
 
 enum task_run_state {
 	TASK_STATE_RUNNING,
@@ -1907,6 +1908,49 @@ static bool is_time_range_in_session(u64 start_ts, u64 end_ts)
 	return true;
 }
 
+/*
+ * Simplify a demangled C++ function name by stripping template parameters,
+ * anonymous namespace markers, and function arguments, in place. Examples:
+ *   "foo::bar<int, std::vector<char>>::baz(int, char*)" -> "foo::bar::baz"
+ *   "foo::(anonymous namespace)::bar(void)" -> "foo::::bar"
+ */
+static void simplify_demangled_name(char *name)
+{
+	int i, j, nest_lvl = 0;
+
+	for (i = 0, j = 0; name[i]; i++) {
+		/* blah<whatever> -> blah (handles nested templates) */
+		if (name[i] == '<') {
+			nest_lvl++;
+			continue;
+		}
+		if (name[i] == '>') {
+			nest_lvl--;
+			continue;
+		}
+		/* ::(anonymous namespace):: -> :::: */
+		if (i >= 2 && name[i] == '(' && name[i - 1] == ':' && name[i - 2] == ':') {
+			nest_lvl++;
+			continue;
+		}
+		if (name[i] == ')' && name[i + 1] == ':' && name[i + 2] == ':') {
+			nest_lvl--;
+			continue;
+		}
+
+		/* func(args...) -> func (stop at top-level opening paren) */
+		if (nest_lvl == 0 && name[i] == '(') {
+			break;
+		}
+
+		if (nest_lvl == 0) {
+			name[j] = name[i];
+			j++;
+		}
+	}
+	name[j] = '\0';
+}
+
 /* WCK_CUDA_KERNEL */
 static int process_cuda_kernel(struct worker_state *w, struct wprof_event *e, size_t size)
 {
@@ -1924,10 +1968,23 @@ static int process_cuda_kernel(struct worker_state *w, struct wprof_event *e, si
 
 	const char *strs = (void *)w->dump_hdr + w->dump_hdr->hdr_sz + w->dump_hdr->strs_off;
 	const char *cuda_kern_name = strs + cu->name_off;
-	pb_iid name_iid = emit_intern_str(w, cuda_kern_name);
+
+	char demangled_buf[4096];
+	const char *cuda_kern_name_demangled = NULL;
+	if (demangle_symbol(cuda_kern_name, demangled_buf, sizeof(demangled_buf)) >= 0) {
+		simplify_demangled_name(demangled_buf);
+		cuda_kern_name_demangled = demangled_buf;
+	}
+
+	const char *name = cuda_kern_name_demangled ?: cuda_kern_name;
+	pb_iid name_iid = emit_intern_str(w, name);
 
 	emit_track_slice_start(clamp_ts(e->ts), track_uuid,
-			       iid_str(name_iid, cuda_kern_name), IID_CAT_CUDA_KERNEL) {
+			       iid_str(name_iid, name), IID_CAT_CUDA_KERNEL) {
+		if (name != cuda_kern_name) {
+			pb_iid mangled_name_iid = emit_intern_str(w, cuda_kern_name);
+			emit_kv_str(IID_ANNK_CUDA_MANGLED_NAME, iid_str(mangled_name_iid, cuda_kern_name));
+		}
 		emit_kv_int(IID_ANNK_CUDA_DEVICE_ID, cu->device_id);
 		emit_kv_int(IID_ANNK_CUDA_STREAM_ID, cu->stream_id);
 		emit_kv_int(IID_ANNK_CUDA_CONTEXT_ID, cu->ctx_id);
@@ -1942,7 +1999,7 @@ static int process_cuda_kernel(struct worker_state *w, struct wprof_event *e, si
 	}
 
 	emit_track_slice_end(clamp_ts(cu->end_ts), track_uuid,
-			     iid_str(name_iid, cuda_kern_name), IID_CAT_CUDA_KERNEL);
+			     iid_str(name_iid, name), IID_CAT_CUDA_KERNEL);
 
 	return 0;
 }

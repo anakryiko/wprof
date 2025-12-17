@@ -14,3 +14,4 @@
 /.cache
 /.gdb_history
 /.claude
+/demangle/target

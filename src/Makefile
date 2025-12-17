@@ -27,6 +27,8 @@ BPFTOOL ?= $(BPFTOOL_OUTPUT)/bootstrap/bpftool
 LIBBLAZESYM_SRC := $(abspath ../blazesym/)
 LIBBLAZESYM_INC := $(abspath $(LIBBLAZESYM_SRC)/capi/include)
 LIBBLAZESYM_OBJ := $(abspath $(OUTPUT)/libblazesym_c.a)
+LIBDEMANGLE_SRC := $(abspath demangle/)
+LIBDEMANGLE_OBJ := $(abspath $(OUTPUT)/libdemangle_c.a)
 ARCH ?= $(shell uname -m | sed 's/x86_64/x86/' \
 			 | sed 's/arm.*/arm/' \
 			 | sed 's/aarch64/arm64/' \
@@ -104,12 +106,20 @@ $(BPFTOOL): | $(BPFTOOL_OUTPUT)
 
 # Build blazesym
 $(LIBBLAZESYM_SRC)/target/$(if $(BLAZESYM_DEBUG),debug,release)/libblazesym_c.a::
+	$(call msg,LIB,$@)
 	$(Q) [ -d ../blazesym/src ] || git submodule update --init --recursive
-	$(Q)cd $(LIBBLAZESYM_SRC) && $(CARGO) build --package=blazesym-c $(if $(BLAZESYM_DEBUG),,--release)
+	$(Q)cd $(LIBBLAZESYM_SRC) && $(CARGO) build --package=blazesym-c -q $(if $(BLAZESYM_DEBUG),,--release)
 
 $(LIBBLAZESYM_OBJ): $(LIBBLAZESYM_SRC)/target/$(if $(BLAZESYM_DEBUG),debug,release)/libblazesym_c.a | $(OUTPUT)
-	$(call msg,LIB, $@)
 	$(Q)cp $(LIBBLAZESYM_SRC)/target/$(if $(BLAZESYM_DEBUG),debug,release)/libblazesym_c.a $@
+
+# Build demangle shim
+$(LIBDEMANGLE_SRC)/target/release/libdemangle_c.a::
+	$(call msg,LIB,$@)
+	$(Q)cd $(LIBDEMANGLE_SRC) && $(CARGO) build --release -q
+
+$(LIBDEMANGLE_OBJ): $(LIBDEMANGLE_SRC)/target/release/libdemangle_c.a | $(OUTPUT)
+	$(Q)cp $< $@
 
 # Build BPF code
 $(OUTPUT)/%.bpf.o: %.bpf.c $(LIBBPF_OBJ) $(wildcard %.h) $(VMLINUX) | $(OUTPUT) $(BPFTOOL)
@@ -134,7 +144,7 @@ WPROF_SRCS := wprof.c utils.c env.c protobuf.c emit.c stacktrace.c				\
 	      cupti_driver_cbid_map.gen.c cupti_runtime_cbid_map.gen.c
 WPROF_HDRS := wprof.h utils.h env.h protobuf.h emit.h stacktrace.h data.h topology.h		\
 	      proc.h requests.h cuda.h inj_common.h inject.h sys.h elf_utils.h cuda_data.h 	\
-	      wprof_types.h
+	      wprof_types.h demangle.h
 WPROF_OBJS := $(patsubst %.c,$(OUTPUT)/%.o,$(WPROF_SRCS))
 
 WPROFINJ_SRCS := inj_lib.c inj_strset.c inj_hashmap.c inj_cupti.c
@@ -166,7 +176,7 @@ $(OUTPUT)/libwprofinj_embed.o: $(OUTPUT)/libwprofinj.so
 # Build application binary
 wprof: $(WPROF_HDRS) $(WPROF_OBJS)								\
 		$(OUTPUT)/libwprofinj_embed.o							\
-		$(LIBBPF_OBJ) $(LIBBLAZESYM_OBJ) | $(OUTPUT)
+		$(LIBBPF_OBJ) $(LIBBLAZESYM_OBJ) $(LIBDEMANGLE_OBJ) | $(OUTPUT)
 	$(call msg,BINARY,$@)
 	$(Q)$(CC) $(ALL_CFLAGS) $(filter %.c %.a %.o,$^) $(ALL_LDFLAGS) $(if $(STATIC),--static) -lelf -lz -lzstd -o $@
 
