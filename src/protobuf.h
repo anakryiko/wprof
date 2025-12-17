@@ -255,6 +255,7 @@ enum pb_static_iid {
 		IID_ANNK_CUDA_CONTEXT_ID,			/* context_id */
 		IID_ANNK_CUDA_EVENT_ID,				/* event_id */
 		IID_ANNK_CUDA_MANGLED_NAME,			/* mangled_name */
+		IID_ANNK_CUDA_GPU_DELAY_US,			/* gpu_delay_us */
 	ANNK_END_IID,
 
 	ANNV_START_IID, __ANNV_RESET_IID = ANNV_START_IID - 1,
