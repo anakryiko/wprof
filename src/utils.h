@@ -83,13 +83,6 @@ __printf(2, 3) void log_printf(int verbosity, const char *fmt, ...);
 		log_printf(1 + _level, fmt, ##__VA_ARGS__);						\
 } while (0);
 
-/*
- * This function is from libbpf, but it is not a public API and can only be
- * used for demonstration. We can use this here because we statically link
- * against the libbpf built from submodule during build.
- */
-extern int parse_cpu_mask_file(const char *fcpu, bool **mask, int *mask_sz);
-
 ssize_t file_size(FILE *f);
 
 static inline bool is_pow_of_2(long x)
@@ -138,6 +131,7 @@ const char *sfmt(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 const char *vsfmt(const char *fmt, va_list ap);
 int parse_int_from_file(const char *file, const char *fmt, void *val);
 int parse_str_from_file(const char *file, char *buf, size_t buf_sz);
+int parse_cpu_mask(const char *fcpu, bool **mask, int *mask_sz);
 
 bool wprof_glob_match(const char *pat, const char *str);
 

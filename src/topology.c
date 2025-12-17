@@ -40,7 +40,7 @@ int determine_cpu_topology(struct cpu_topo *topo, int cpu_cnt)
 		if (access(path, F_OK) != 0)
 			break;
 
-		err = parse_cpu_mask_file(path, &mask, &mask_sz);
+		err = parse_cpu_mask(path, &mask, &mask_sz);
 		if (err) {
 			eprintf("Failed to parse CPU list from '%s': %d\n", path, err);
 			continue;
