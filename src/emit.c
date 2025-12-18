@@ -522,6 +522,7 @@ static const char *event_kind_str_map[] = {
 	[EV_IPI_SEND] = "IPI_SEND",
 	[EV_IPI_EXIT] = "IPI_EXIT",
 	[EV_REQ_EVENT] = "REQ_EVENT",
+	[EV_SCX_DSQ_END] = "SCX_DSQ_END",
 };
 
 __unused
@@ -1562,6 +1563,51 @@ static int process_wq_end(struct worker_state *w, struct wprof_event *e, size_t 
 	return 0;
 }
 
+static const char *scx_dsq_insert_type_str(enum scx_dsq_insert_type type)
+{
+	switch (type) {
+	case SCX_DSQ_INSERT: return "dsq_insert";
+	case SCX_DSQ_INSERT_VTIME: return "dsq_insert_vtime";
+	case SCX_DSQ_DISPATCH: return "dispatch";
+	case SCX_DSQ_DISPATCH_VTIME: return "dispatch_vtime";
+	case SCX_DSQ_MOVE: return "dsq_move";
+	case SCX_DSQ_MOVE_VTIME: return "dsq_move_vtime";
+	case SCX_DSQ_DISPATCH_FROM_DSQ: return "dispatch_from_dsq";
+	case SCX_DSQ_DISPATCH_VTIME_FROM_DSQ: return "dispatch_vtime_from_dsq";
+	default: return "unknown";
+	}
+}
+
+/* EV_SCX_DSQ_END */
+static int process_scx_dsq_end(struct worker_state *w, struct wprof_event *e, size_t size)
+{
+	if (!should_trace_task(&e->task))
+		return 0;
+
+	(void)task_state(w, &e->task);
+
+	const char *insert_type_str = scx_dsq_insert_type_str(e->scx_dsq.scx_dsq_insert_type);
+	const char *name = sfmt("DSQ:%s_0x%llx", insert_type_str, (u64)e->scx_dsq.scx_dsq_id);
+
+	u64 start_ts = is_ts_in_range(e->scx_dsq.scx_dsq_insert_ts) ? e->scx_dsq.scx_dsq_insert_ts : env.sess_start_ts;
+	emit_slice_begin(start_ts, &e->task,
+			 iid_str(IID_NONE, name),
+			 IID_CAT_SCX_DSQ) {
+		emit_kv_int(IID_ANNK_CPU, e->cpu);
+		if (env.emit_numa)
+			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
+		emit_kv_str(IID_ANNK_ACTION, insert_type_str);
+	}
+	emit_slice_end(e->ts, &e->task,
+		       iid_str(IID_NONE, name),
+		       IID_CAT_SCX_DSQ) {
+		emit_kv_int(iid_str(IID_NONE, "dsq_id"), e->scx_dsq.scx_dsq_id);
+		emit_kv_int(iid_str(IID_NONE, "layer_id"), e->scx_dsq.scx_layer_id);
+	}
+
+	return 0;
+}
+
 /* EV_IPI_SEND */
 static int process_ipi_send(struct worker_state *w, struct wprof_event *e, size_t size)
 {
@@ -2238,6 +2284,7 @@ static event_fn ev_fns[] = {
 	[EV_IPI_EXIT] = process_ipi_exit,
 	[EV_REQ_EVENT] = process_req_event,
 	[EV_REQ_TASK_EVENT] = process_req_task_event,
+	[EV_SCX_DSQ_END] = process_scx_dsq_end,
 
 	[WCK_CUDA_KERNEL] = process_cuda_kernel,
 	[WCK_CUDA_MEMCPY] = process_cuda_memcpy,

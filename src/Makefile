@@ -131,9 +131,10 @@ $(OUTPUT)/%.bpf.o: %.bpf.c $(LIBBPF_OBJ) $(wildcard %.h) $(VMLINUX) | $(OUTPUT) 
 
 $(OUTPUT)/wprof.bpf.o: wprof.h wprof.bpf.h
 $(OUTPUT)/utils.bpf.o: wprof.h wprof.bpf.h
+$(OUTPUT)/scx.bpf.o: wprof.h wprof.bpf.h
 
 # Generate BPF skeletons
-$(OUTPUT)/wprof.skel.h: $(OUTPUT)/wprof.bpf.o $(OUTPUT)/utils.bpf.o | $(OUTPUT) $(BPFTOOL)
+$(OUTPUT)/wprof.skel.h: $(OUTPUT)/wprof.bpf.o $(OUTPUT)/utils.bpf.o $(OUTPUT)/scx.bpf.o | $(OUTPUT) $(BPFTOOL)
 	$(call msg,GEN-SKEL,$@)
 	$(Q)$(BPFTOOL) gen object $(OUTPUT)/wprof-final.bpf.o $^
 	$(Q)$(BPFTOOL) gen skeleton $(OUTPUT)/wprof-final.bpf.o name wprof_bpf > $@

@@ -22,6 +22,7 @@
 #include <linux/perf_event.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
+#include <bpf/btf.h>
 #include <time.h>
 #include <sys/time.h>
 #include <sys/signal.h>
@@ -1061,70 +1062,37 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 	}
 
 	if (env.capture_scx_layer_info) {
-		u32 next_id = 0;
-		bool found = false;
+		struct btf *vmlinux_btf = btf__parse("/sys/kernel/btf/vmlinux", NULL);
 
-		while (true) {
-			err = bpf_map_get_next_id(next_id, &next_id);
-			if (err == -ENOENT)
-				break;
-			if (err < 0) {
-				eprintf("Failed to iterate BPF maps: %d\n", err);
-				return err;
-			}
-
-			int map_fd = bpf_map_get_fd_by_id(next_id);
-			if (map_fd == -ENOENT)
-				continue;
-			if (map_fd < 0) {
-				eprintf("Failed to fetch map FD for map #%d: %d\n", next_id, map_fd);
-				continue;
-			}
-
-			struct bpf_map_info info;
-			u32 info_len = sizeof(info);
-
-			memset(&info, 0, sizeof(info));
-			err = bpf_map_get_info_by_fd(map_fd, &info, &info_len);
-			if (err) {
-				eprintf("Failed to fetch map info for map #%d: %d\n", next_id, err);
-				close(map_fd);
-				continue;
-			}
-
-			if (strcmp(info.name, "task_ctxs") != 0) {
-				close(map_fd);
-				continue;
-			}
-
-			if (found) {
-				close(map_fd);
-				eprintf("Found multiple 'task_ctxs' BPF maps, unsure which one to use!\n");
-				return -EINVAL;
-			}
-
-			err = bpf_map__reuse_fd(skel->maps.scx_task_ctxs, map_fd);
-			close(map_fd);
-			if (err) {
-				eprintf("Failed to reuse map #%d ('%s'): %d\n",
-					next_id, info.name, err);
-				continue;
-			}
-
-			found = true;
-		}
-
-		if (!found) {
-			eprintf("WARNING: Failed to find sched-ext's 'task_ctxs' BPF map for fetching layer info.\n");
-			eprintf("WARNING: '-f scx-layer' feature will be disabled!\n");
-			eprintf("WARNING: Make sure that scx-layered is running to make effective use of this functionality.\n");
+		if (!vmlinux_btf) {
+			eprintf("Failed to parse /sys/kernel/btf/vmlinux, disabling SCX layer/DSQ capture\n");
 			env.capture_scx_layer_info = FALSE;
+		} else {
+			if (btf__find_by_name_kind(vmlinux_btf, "scx_bpf_dsq_insert", BTF_KIND_FUNC) < 0) {
+				bpf_program__set_autoload(skel->progs.wprof_dispatch, true);
+			} else {
+				bpf_program__set_autoload(skel->progs.wprof_dsq_insert, true);
+			}
+			if (btf__find_by_name_kind(vmlinux_btf, "scx_bpf_dsq_insert_vtime", BTF_KIND_FUNC) < 0) {
+				bpf_program__set_autoload(skel->progs.wprof_dispatch_vtime, true);
+			} else {
+				bpf_program__set_autoload(skel->progs.wprof_dsq_insert_vtime, true);
+			}
+			if (btf__find_by_name_kind(vmlinux_btf, "scx_bpf_dsq_move", BTF_KIND_FUNC) < 0) {
+				bpf_program__set_autoload(skel->progs.wprof_dispatch_from_dsq, true);
+			} else {
+				bpf_program__set_autoload(skel->progs.wprof_dsq_move, true);
+			}
+			if (btf__find_by_name_kind(vmlinux_btf, "scx_bpf_dsq_move_vtime", BTF_KIND_FUNC) < 0) {
+				bpf_program__set_autoload(skel->progs.wprof_dispatch_vtime_from_dsq, true);
+			} else {
+				bpf_program__set_autoload(skel->progs.wprof_dsq_move_vtime, true);
+			}
+			btf__free(vmlinux_btf);
 		}
 	}
 
 	skel->rodata->capture_scx_layer_id = env.capture_scx_layer_info == TRUE;
-	if (!env.capture_scx_layer_info)
-		bpf_map__set_autocreate(skel->maps.scx_task_ctxs, false);
 
 	bpf_map__set_max_entries(skel->maps.rbs, env.ringbuf_cnt);
 	bpf_map__set_max_entries(skel->maps.task_states, env.task_state_sz);
