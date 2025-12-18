@@ -1587,20 +1587,19 @@ static int process_scx_dsq_end(struct worker_state *w, struct wprof_event *e, si
 	(void)task_state(w, &e->task);
 
 	const char *insert_type_str = scx_dsq_insert_type_str(e->scx_dsq.scx_dsq_insert_type);
+	pb_iid insert_type_str_iid = emit_intern_str(w, insert_type_str);
+
 	const char *name = sfmt("DSQ:%s_0x%llx", insert_type_str, (u64)e->scx_dsq.scx_dsq_id);
+	pb_iid name_iid = emit_intern_str(w, name);
 
 	u64 start_ts = is_ts_in_range(e->scx_dsq.scx_dsq_insert_ts) ? e->scx_dsq.scx_dsq_insert_ts : env.sess_start_ts;
-	emit_slice_begin(start_ts, &e->task,
-			 iid_str(IID_NONE, name),
-			 IID_CAT_SCX_DSQ) {
+	emit_slice_begin(start_ts, &e->task, iid_str(name_iid, name), IID_CAT_SCX_DSQ) {
 		emit_kv_int(IID_ANNK_CPU, e->cpu);
 		if (env.emit_numa)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
-		emit_kv_str(IID_ANNK_ACTION, insert_type_str);
+		emit_kv_str(IID_ANNK_ACTION, iid_str(insert_type_str_iid, insert_type_str));
 	}
-	emit_slice_end(e->ts, &e->task,
-		       iid_str(IID_NONE, name),
-		       IID_CAT_SCX_DSQ) {
+	emit_slice_end(e->ts, &e->task, iid_str(name_iid, name), IID_CAT_SCX_DSQ) {
 		emit_kv_int(iid_str(IID_NONE, "dsq_id"), e->scx_dsq.scx_dsq_id);
 		emit_kv_int(iid_str(IID_NONE, "layer_id"), e->scx_dsq.scx_layer_id);
 	}
