@@ -81,6 +81,7 @@ enum event_kind {
 	EV_IPI_EXIT = 15,
 	EV_REQ_EVENT = 16,
 	EV_REQ_TASK_EVENT = 17,
+	EV_SCX_DSQ_END = 18,
 };
 
 enum stack_trace_kind {
@@ -153,6 +154,17 @@ enum wprof_req_event_kind {
 	REQ_TASK_ENQUEUE = 15,
 	REQ_TASK_DEQUEUE = 16,
 	REQ_TASK_STATS = 17,
+};
+
+enum scx_dsq_insert_type {
+	SCX_DSQ_INSERT = 0,
+	SCX_DSQ_INSERT_VTIME = 1,
+	SCX_DSQ_DISPATCH = 2,
+	SCX_DSQ_DISPATCH_VTIME = 3,
+	SCX_DSQ_MOVE = 4,
+	SCX_DSQ_MOVE_VTIME = 5,
+	SCX_DSQ_DISPATCH_FROM_DSQ = 6,
+	SCX_DSQ_DISPATCH_VTIME_FROM_DSQ = 7,
 };
 
 struct wprof_event {
@@ -244,6 +256,12 @@ struct wprof_event {
 			u64 wait_time_ns;
 			u64 run_time_ns;
 		} req_task;
+		struct wprof_scx_dsq {
+			u64 scx_dsq_insert_ts;
+			u64 scx_dsq_id;
+			u32 scx_layer_id;
+			enum scx_dsq_insert_type scx_dsq_insert_type;
+		} scx_dsq;
 	};
 };
 
