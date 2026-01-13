@@ -10,6 +10,8 @@
 #define WPROF_DATA_MINOR 11
 #define WPROF_DATA_FLAG_INCOMPLETE 0xffffffffffffffffULL
 
+#define FILE_BUF_SZ (64 * 1024)
+
 struct wprof_data_cfg {
 	u64 ktime_start_ns;
 	u64 realtime_start_ns;

@@ -137,6 +137,33 @@ struct perf_counter_def {
 
 extern const struct perf_counter_def perf_counter_defs[];
 
+static inline bool cfg_get_capture_ipis(const struct wprof_data_cfg *cfg) { return cfg->capture_ipis; }
+static inline void cfg_set_capture_ipis(struct wprof_data_cfg *cfg, bool val) { cfg->capture_ipis = val; }
+
+static inline bool cfg_get_capture_reqs(const struct wprof_data_cfg *cfg) { return cfg->capture_requests; }
+static inline void cfg_set_capture_reqs(struct wprof_data_cfg *cfg, bool val) { cfg->capture_requests = val; }
+
+static inline bool cfg_get_capture_req_experimental(const struct wprof_data_cfg *cfg) { return cfg->capture_req_experimental; }
+static inline void cfg_set_capture_req_experimental(struct wprof_data_cfg *cfg, bool val) { cfg->capture_req_experimental = val; }
+
+static inline bool cfg_get_capture_scx_layer_info(const struct wprof_data_cfg *cfg) { return cfg->capture_scx_layer_info; }
+static inline void cfg_set_capture_scx_layer_info(struct wprof_data_cfg *cfg, bool val) { cfg->capture_scx_layer_info = val; }
+
+static inline bool cfg_get_capture_cuda(const struct wprof_data_cfg *cfg) { return cfg->capture_cuda; }
+static inline void cfg_set_capture_cuda(struct wprof_data_cfg *cfg, bool val) { cfg->capture_cuda = val; }
+
+struct capture_feature {
+	const char *name;
+	const char *header;
+	enum tristate default_val;
+	size_t env_flag_off;
+	bool (*cfg_get_flag)(const struct wprof_data_cfg *cfg);
+	void (*cfg_set_flag)(struct wprof_data_cfg *cfg, bool val);
+};
+
+extern const struct capture_feature capture_features[];
+extern const int capture_feature_cnt;
+
 struct worker_state {
 	int worker_id;
 	struct str_iid_domain name_iids;
