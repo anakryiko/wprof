@@ -38,8 +38,7 @@ jobs:
       - name: Build static wprof natively
         working-directory: 'wprof'
         run: |
-          CFLAGS=--static \
-              make -j -C src V=1
+          make -j -C src V=1 STATIC=1
           strip src/wprof
 
       - name: Test wprof binary
