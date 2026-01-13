@@ -124,7 +124,7 @@ struct tid_cache_value {
 	char thread_name[16];
 };
 
-static int wcuda_fill_task_info(struct wprof_event *w, struct wcuda_event *e,
+static int wcuda_fill_task_info(struct wprof_event *w, const struct wcuda_event *e,
 				int pid, const char *proc_name, struct hashmap *tid_cache)
 {
 	w->cpu = 0;
@@ -178,6 +178,17 @@ cache:
 	snprintf(w->task.comm, sizeof(w->task.comm), "%s", ti->thread_name);
 
 	return 0;
+}
+
+static int wcuda_event_cmp(const void *a, const void *b)
+{
+	const struct wcuda_event *x = *(const struct wcuda_event **)a;
+	const struct wcuda_event *y = *(const struct wcuda_event **)b;
+
+	if (x->ts == y->ts)
+		return 0;
+
+	return (s64)(x->ts - y->ts) < 0 ? -1 : 1;
 }
 
 int wprof_merge_data(int workdir_fd, struct worker_state *workers)
@@ -243,15 +254,18 @@ int wprof_merge_data(int workdir_fd, struct worker_state *workers)
 	}
 
 	struct wcuda_state {
-		struct wcuda_event_iter iter;
 		struct wcuda_data_hdr *dump_hdr;
 		size_t dump_sz;
 		const char *strs;
+		const struct wcuda_event **recs;
+		u64 rec_cnt;
+		u64 rec_idx;
 	} *wcudas = calloc(env.cuda_cnt, sizeof(*wcudas));
-	struct wcuda_event_record **wcuda_recs = calloc(env.cuda_cnt, sizeof(*wcuda_recs));
+	const struct wcuda_event **wcuda_recs = calloc(env.cuda_cnt, sizeof(*wcuda_recs));
 	struct strset *wcuda_strs = strset__new(UINT_MAX, "", 1);
 	for (int i = 0; i < env.cuda_cnt; i++) {
 		struct cuda_tracee *cuda = &env.cudas[i];
+		struct wcuda_state *wcuda = &wcudas[i];
 
 		if (cuda->state == TRACEE_INACTIVE) {
 			/* expected clean shutdown case */
@@ -275,18 +289,30 @@ int wprof_merge_data(int workdir_fd, struct worker_state *workers)
 			continue;
 		}
 
-		wcudas[i].dump_sz = st.st_size;
-		wcudas[i].dump_hdr = mmap(NULL, wcudas[i].dump_sz, PROT_READ | PROT_WRITE, MAP_SHARED, cuda->dump_fd, 0);
-		if (wcudas[i].dump_hdr == MAP_FAILED) {
+		wcuda->dump_sz = st.st_size;
+		wcuda->dump_hdr = mmap(NULL, wcuda->dump_sz, PROT_READ | PROT_WRITE, MAP_SHARED, cuda->dump_fd, 0);
+		if (wcuda->dump_hdr == MAP_FAILED) {
 			err = -errno;
 			eprintf("Failed to mmap() CUDA data dump for tracee %s at '%s': %d\n",
 				cuda_str(cuda), cuda->dump_path, err);
 			continue;
 		}
 
-		wcudas[i].strs = (void *)wcudas[i].dump_hdr + wcudas[i].dump_hdr->hdr_sz + wcudas[i].dump_hdr->strs_off;
-		wcudas[i].iter = wcuda_event_iter_new(wcudas[i].dump_hdr);
-		wcuda_recs[i] = wcuda_event_iter_next(&wcudas[i].iter);
+		wcuda->strs = (void *)wcuda->dump_hdr + wcuda->dump_hdr->hdr_sz + wcuda->dump_hdr->strs_off;
+
+		/* re-sort CUDA events because they don't come completely ordered out of CUPTI */
+		wcuda->rec_idx = 0;
+		wcuda->rec_cnt = wcuda->dump_hdr->event_cnt;
+		wcuda->recs = calloc(wcuda->rec_cnt, sizeof(*wcuda->recs));
+
+		struct wcuda_event_record *rec;
+		u64 idx = 0;
+		wcuda_for_each_event(rec, wcuda->dump_hdr) {
+			wcuda->recs[idx++] = rec->e;
+		}
+
+		qsort(wcuda->recs, wcuda->rec_cnt, sizeof(*wcuda->recs), wcuda_event_cmp);
+		wcuda_recs[i] = wcuda->rec_cnt > 0 ? wcuda->recs[0] : NULL;
 	}
 
 	while (true) {
@@ -304,13 +330,13 @@ int wprof_merge_data(int workdir_fd, struct worker_state *workers)
 			}
 		}
 		for (int i = 0; i < env.cuda_cnt; i++) {
-			struct wcuda_event_record *r = wcuda_recs[i];
+			const struct wcuda_event *r = wcuda_recs[i];
 			if (!r)
 				continue;
 			/* find event with smallest timestamp */
-			if (widx < 0 || (s64)(r->e->ts - ts) < 0) {
+			if (widx < 0 || (s64)(r->ts - ts) < 0) {
 				widx = env.ringbuf_cnt + i;
-				ts = r->e->ts;
+				ts = r->ts;
 			}
 		}
 
@@ -333,14 +359,16 @@ int wprof_merge_data(int workdir_fd, struct worker_state *workers)
 			recs[widx] = wprof_event_iter_next(&iters[widx]);
 		} else {
 			int cidx = widx - env.ringbuf_cnt;
-			struct wcuda_event_record *r = wcuda_recs[cidx];
+
+			struct wcuda_state *wcuda = &wcudas[cidx];
+			const struct wcuda_event *r = wcuda_recs[cidx];
 			struct cuda_tracee *cuda = &env.cudas[cidx];
 
 			const size_t wcuda_data_off = offsetof(struct wcuda_event, __wcuda_data);
 			const size_t wprof_data_off = offsetof(struct wprof_event, __wprof_data);
 
 			/* prepare wcuda event with 8 byte length prefix */
-			data_sz = r->e->sz + wprof_data_off - wcuda_data_off;
+			data_sz = r->sz + wprof_data_off - wcuda_data_off;
 			memcpy(data_buf, &data_sz, sizeof(data_sz));
 
 			event_cnt += 1;
@@ -352,9 +380,9 @@ int wprof_merge_data(int workdir_fd, struct worker_state *workers)
 			 */
 
 			void *wcuda_payload = (void *)data_buf + sizeof(size_t) + wprof_data_off;
-			memcpy(wcuda_payload, (void *)r->e + wcuda_data_off, r->e->sz - wcuda_data_off);
+			memcpy(wcuda_payload, (void *)r + wcuda_data_off, r->sz - wcuda_data_off);
 			struct wcuda_event *e = wcuda_payload - wcuda_data_off;
-			err = wcuda_remap_strs(e, r->e->kind, wcudas[cidx].strs, wcuda_strs);
+			err = wcuda_remap_strs(e, r->kind, wcuda->strs, wcuda_strs);
 			if (err) {
 				eprintf("Failed to remap strings for CUDA dump event tracee %s at '%s': %d\n",
 					cuda_str(cuda), cuda->dump_path, err);
@@ -364,10 +392,10 @@ int wprof_merge_data(int workdir_fd, struct worker_state *workers)
 			struct wprof_event *w = (void *)data_buf + sizeof(size_t);
 			w->sz = data_sz;
 			w->flags = 0;
-			w->kind = (int)r->e->kind;
-			w->ts = r->e->ts;
+			w->kind = (int)r->kind;
+			w->ts = r->ts;
 
-			err = wcuda_fill_task_info(w, r->e, cuda->pid, cuda->proc_name, tid_cache);
+			err = wcuda_fill_task_info(w, r, cuda->pid, cuda->proc_name, tid_cache);
 			if (err) {
 				eprintf("Failed to fill out CUDA event task info for tracee %s at '%s': %d\n",
 					cuda_str(cuda), cuda->dump_path, err);
@@ -375,9 +403,10 @@ int wprof_merge_data(int workdir_fd, struct worker_state *workers)
 			}
 
 			data = data_buf;
-			data_sz = r->e->sz + sizeof(size_t) + wprof_data_off - wcuda_data_off;
+			data_sz = r->sz + sizeof(size_t) + wprof_data_off - wcuda_data_off;
 
-			wcuda_recs[cidx] = wcuda_event_iter_next(&wcudas[cidx].iter);
+			wcuda->rec_idx++;
+			wcuda_recs[cidx] = wcuda->rec_idx < wcuda->rec_cnt ? wcuda->recs[wcuda->rec_idx] : NULL;
 		}
 
 		/* we prepend each with size prefix */
@@ -425,6 +454,7 @@ int wprof_merge_data(int workdir_fd, struct worker_state *workers)
 
 		zclose(cuda->dump_fd);
 
+		free(w->recs);
 		w->dump_hdr = NULL;
 		w->dump_sz = 0;
 	}

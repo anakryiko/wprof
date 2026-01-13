@@ -213,6 +213,7 @@ static int epoll_del(int epoll_fd, int fd)
 
 #define CUDA_DUMP_BUF_SZ (256 * 1024)
 static FILE *cuda_dump;
+static u64 cuda_event_cnt;
 
 #define CUDA_DUMP_MAX_STRS_SZ (1024 * 1024 * 1024)
 struct strset *cuda_dump_strs;
@@ -225,6 +226,7 @@ int cuda_dump_event(struct wcuda_event *e)
 		return err;
 	}
 
+	cuda_event_cnt++;
 	return 0;
 }
 
@@ -332,6 +334,7 @@ int cuda_dump_finalize(void)
 	hdr.sess_end_ns = run_ctx->sess_end_ts;
 	hdr.events_off = 0;
 	hdr.events_sz = strs_off - sizeof(struct wcuda_data_hdr);
+	hdr.event_cnt = cuda_event_cnt;
 	hdr.strs_off = strs_off - sizeof(struct wcuda_data_hdr);
 	hdr.strs_sz = strs_sz;
 	hdr.cfg.dummy = 0;
