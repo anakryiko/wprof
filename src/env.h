@@ -10,7 +10,7 @@
 #include "cuda.h"
 #include "pmu.h"
 
-#define WPROF_VERSION "0.2"
+#define WPROF_VERSION "0.3-dev"
 
 #define DEFAULT_RINGBUF_SZ (8 * 1024 * 1024)
 #define DEFAULT_TASK_STATE_SZ (32 * 1024)
