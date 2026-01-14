@@ -63,20 +63,6 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va
 	return vfprintf(stderr, format, args);
 }
 
-/* The order of these definition matters as the position determines
- * a persisted ID stored in wprof.data, so when adding/removing definitions,
- * preserve the order (i.e., we'll need to stub out events that we remove)
- */
-const struct perf_counter_def perf_counter_defs[] = {
-	{ "cpu-cycles", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES, 1e-3, "cpu_cycles_kilo", IID_ANNK_PERF_CPU_CYCLES },
-	{ "cpu-insns", PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS, 1e-3, "cpu_insns_kilo", IID_ANNK_PERF_CPU_INSNS },
-	{ "cache-hits", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CACHE_REFERENCES, 1e-3, "cache_hits_kilo", IID_ANNK_PERF_CACHE_HITS },
-	{ "cache-misses", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CACHE_MISSES, 1e-3, "cache_misses_kilo", IID_ANNK_PERF_CACHE_MISSES },
-	{ "stall-cycles-fe", PERF_TYPE_HARDWARE, PERF_COUNT_HW_STALLED_CYCLES_FRONTEND, 1e-3, "stalled_cycles_fe_kilo", IID_ANNK_PERF_STALL_CYCLES_FE },
-	{ "stall-cycles-be", PERF_TYPE_HARDWARE, PERF_COUNT_HW_STALLED_CYCLES_BACKEND, 1e-3, "stalled_cycles_be_kilo", IID_ANNK_PERF_STALL_CYCLES_BE },
-	{},
-};
-
 const struct capture_feature capture_features[] = {
 	{"IPIs", "IPIs:", DEFAULT_CAPTURE_IPIS,
 	 offsetof(struct env, capture_ipis), cfg_get_capture_ipis, cfg_set_capture_ipis},
@@ -419,37 +405,43 @@ static int setup_perf_counters(struct bpf_state *st, int num_cpus)
 
 	st->perf_counter_fds = calloc(st->perf_counter_fd_cnt, sizeof(int));
 	for (int i = 0; i < num_cpus; i++) {
-		for (int j = 0; j < env.counter_cnt; j++)
-			st->perf_counter_fds[i * env.counter_cnt + j] = -1;
+		for (int j = 0; j < env.pmu_event_cnt; j++)
+			st->perf_counter_fds[i * env.pmu_event_cnt + j] = -1;
 	}
 
 	for (int cpu = 0; cpu < num_cpus; cpu++) {
 		/* set up requested perf counters */
-		for (int j = 0; j < env.counter_cnt; j++) {
-			const struct perf_counter_def *def = &perf_counter_defs[env.counter_ids[j]];
-			int pe_idx = cpu * env.counter_cnt + j;
+		for (int j = 0; j < env.pmu_event_cnt; j++) {
+			const struct pmu_event *ev = &env.pmu_events[j];
+			int pe_idx = cpu * env.pmu_event_cnt + j;
+
+			/* Derived metrics don't have hardware PMUs */
+			if (ev->perf_type == PERF_TYPE_DERIVED)
+				continue;
 
 			memset(&attr, 0, sizeof(attr));
 			attr.size = sizeof(attr);
-			attr.type = def->perf_type;
-			attr.config = def->perf_cfg;
+			attr.type = ev->perf_type;
+			attr.config = ev->config;
+			attr.config1 = ev->config1;
+			attr.config2 = ev->config2;
 
 			int pefd = sys_perf_event_open(&attr, -1, cpu, -1, PERF_FLAG_FD_CLOEXEC);
 			if (pefd < 0) {
-				eprintf("Failed to create %s PMU for CPU #%d, skipping...\n", def->alias, cpu);
+				eprintf("Failed to create %s PMU for CPU #%d, skipping...\n", ev->name, cpu);
 			} else {
 				st->perf_counter_fds[pe_idx] = pefd;
 				err = bpf_map__update_elem(st->skel->maps.perf_cntrs,
 							   &pe_idx, sizeof(pe_idx),
 							   &pefd, sizeof(pefd), 0);
 				if (err) {
-					eprintf("Failed to set up %s PMU on CPU#%d for BPF: %d\n", def->alias, cpu, err);
+					eprintf("Failed to set up %s PMU on CPU#%d for BPF: %d\n", ev->name, cpu, err);
 					return err;
 				}
 				err = ioctl(pefd, PERF_EVENT_IOC_ENABLE, 0);
 				if (err) {
 					err = -errno;
-					eprintf("Failed to enable %s PMU on CPU#%d: %d\n", def->alias, cpu, err);
+					eprintf("Failed to enable %s PMU on CPU#%d: %d\n", ev->name, cpu, err);
 					return err;
 				}
 			}
@@ -681,8 +673,8 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 	if (env.deny_kthread)
 		skel->rodata->filt_mode |= FILT_DENY_KTHREAD;
 
-	st->perf_counter_fd_cnt = num_cpus * env.counter_cnt;
-	skel->rodata->perf_ctr_cnt = env.counter_cnt;
+	st->perf_counter_fd_cnt = num_cpus * env.pmu_event_cnt;
+	skel->rodata->perf_ctr_cnt = env.pmu_event_cnt;
 	bpf_map__set_max_entries(skel->maps.perf_cntrs, st->perf_counter_fd_cnt);
 
 	if (env.requested_stack_traces & ST_TIMER)
@@ -759,7 +751,7 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 		}
 	}
 
-	if (env.counter_cnt) {
+	if (env.pmu_event_cnt) {
 		err = setup_perf_counters(st, num_cpus);
 		if (err) {
 			eprintf("Failed to setup perf counters: %d\n", err);
@@ -1032,8 +1024,12 @@ int main(int argc, char **argv)
 		}
 	}
 	env.ringbuf_cnt = min(env.ringbuf_cnt, num_cpus);
-	if (!env.replay)
+	if (!env.replay) {
 		vprintf("Using %zu BPF ring buffers.\n", env.ringbuf_cnt);
+		/* -1 is only meaningful for the replay mode to autoload counters */
+		if (env.pmu_event_cnt == -1)
+			env.pmu_event_cnt = 0;
+    }
 
 	/* during replay or trace generation there is only one worker */
 	worker_cnt = env.replay ? 1 : env.ringbuf_cnt;
@@ -1089,16 +1085,13 @@ int main(int argc, char **argv)
 				wprintf("%-*s%s\n", w, "Stack traces:", "NONE");
 			}
 			wprintf("%-*s%dHz\n", w, "Timer frequency:", cfg->timer_freq_hz);
-			wprintf("%-*s", w, "Perf counters:");
-			if (cfg->counter_cnt == 0) {
-				wprintf("NONE");
+			if (cfg->pmu_event_cnt == 0) {
+				wprintf("%-*s%s\n", w, "Perf counters:", "NONE");
 			} else {
-				for (int i = 0; i < cfg->counter_cnt; i++) {
-					wprintf("%s%s", i == 0 ? "" : ", ",
-						perf_counter_defs[cfg->counter_ids[i]].alias);
-				}
+				wprintf("%-*s%d\n", w, "Perf counters:", cfg->pmu_event_cnt);
+				for (int i = 0; i < cfg->pmu_event_cnt; i++)
+					wprintf("%*s%s", w, "", cfg->pmu_events[i].name);
 			}
-			wprintf("\n");
 			for (int i = 0; i < ARRAY_SIZE(capture_features); i++) {
 				const struct capture_feature *f = &capture_features[i];
 				wprintf("%-*s%s\n", w, f->header, f->cfg_get_flag(cfg) ? "YES" : "NO");
@@ -1169,27 +1162,53 @@ int main(int argc, char **argv)
 			goto cleanup;
 		}
 
-		/* check if all requested counters were captured and determine
-		 * their actual positions in data dump
-		 */
-		for (int i = 0; i < env.counter_cnt; i++) {
-			int pos = -1;
-			for (int j = 0; j < cfg->counter_cnt; j++) {
-				if (env.counter_ids[i] != cfg->counter_ids[j])
+		/* Default replay behavior: load all stored counters unless user provides --pmu */
+		if (env.pmu_event_cnt == -1) {
+			for (int i = 0; i < cfg->pmu_event_cnt; i++) {
+				deserialized_pmu_event(&cfg->pmu_events[i], &env.pmu_events[i]);
+				env.pmu_events[i].stored_idx = i;
+			}
+			env.pmu_event_cnt = cfg->pmu_event_cnt;
+		}
+
+		for (int i = 0; i < env.pmu_event_cnt; i++) {
+			struct pmu_event *ev = &env.pmu_events[i];
+
+			/* Derived metrics don't match stored data - they're computed at emit time */
+			if (ev->perf_type == PERF_TYPE_DERIVED) {
+				ev->stored_idx = -1;
+				continue;
+			}
+
+			/* Reset stored_idx - will be resolved against stored data */
+			ev->stored_idx = -1;
+
+			/* Find matching event in captured data by name */
+			for (int j = 0; j < cfg->pmu_event_cnt; j++) {
+				if (strcmp(ev->name, cfg->pmu_events[j].name) != 0)
 					continue;
-				pos = j;
+				ev->stored_idx = j;
+				/* If event was specified by name only (unresolved),
+				 * copy full definition from stored data
+				 */
+				if (ev->perf_type == PERF_TYPE_UNRESOLVED) {
+					deserialized_pmu_event(&cfg->pmu_events[j], ev);
+					ev->stored_idx = j;
+				}
 				break;
 			}
 
-			if (pos < 0) {
-				eprintf("replay: counter '%s' requested, but wasn't captured\n",
-					perf_counter_defs[env.counter_ids[i]].alias);
+			if (ev->stored_idx < 0) {
+				eprintf("replay: counter '%s' requested, but wasn't captured\n", ev->name);
 				err = -EINVAL;
 				goto cleanup;
 			}
-
-			env.counter_pos[i] = pos;
 		}
+
+		/* Resolve derived metric indices */
+		err = pmu_resolve_derived(env.pmu_events, env.pmu_event_cnt);
+		if (err)
+			goto cleanup;
 
 		env.timer_freq_hz = cfg->timer_freq_hz;
 
@@ -1207,6 +1226,16 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
+	/* Check for unresolved PMU events (name-only references only valid in replay) */
+	for (int i = 0; i < env.pmu_event_cnt; i++) {
+		if (env.pmu_events[i].perf_type == PERF_TYPE_UNRESOLVED) {
+			eprintf("Unknown counter '%s' - check -RI for a list of captured counters\n",
+				env.pmu_events[i].name);
+			err = -EINVAL;
+			goto cleanup;
+		}
+	}
+
 	/* Init data capture settings defaults, if they were not set */
 	if (env.timer_freq_hz == 0)
 		env.timer_freq_hz = DEFAULT_TIMER_FREQ_HZ;
@@ -1214,8 +1243,6 @@ int main(int argc, char **argv)
 		env.duration_ns = DEFAULT_DURATION_MS * 1000000ULL;
 	if (env.requested_stack_traces == ST_UNSET)
 		env.requested_stack_traces = DEFAULT_REQUESTED_STACK_TRACES;
-	for (int i = 0; i < env.counter_cnt; i++)
-		env.counter_pos[i] = i;
 	for (int i = 0; i < ARRAY_SIZE(capture_features); i++) {
 		const struct capture_feature *f = &capture_features[i];
 		enum tristate *flag = (void *)&env + f->env_flag_off;
@@ -1278,6 +1305,11 @@ int main(int argc, char **argv)
 			goto cleanup;
 		}
 	}
+
+	/* Resolve derived metric indices before BPF setup */
+	err = pmu_resolve_derived(env.pmu_events, env.pmu_event_cnt);
+	if (err)
+		goto cleanup;
 
 	err = setup_bpf(&bpf_state, workers, num_cpus, workdir_fd);
 	if (err) {
