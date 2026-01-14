@@ -227,12 +227,6 @@ enum pb_static_iid {
 		IID_ANNK_SENDER_CPU,				/* sender_cpu */
 		IID_ANNK_TARGET_CPU,				/* target_cpu */
 		IID_ANNK_IPI_DELAY_US,				/* ipi_delay_us */
-		IID_ANNK_PERF_CPU_CYCLES,			/* cpu_cycles_kilo */
-		IID_ANNK_PERF_CPU_INSNS,			/* cpu_insns_kilo */
-		IID_ANNK_PERF_CACHE_HITS,			/* cache_hits_kilo */
-		IID_ANNK_PERF_CACHE_MISSES,			/* cache_misses_kilo */
-		IID_ANNK_PERF_STALL_CYCLES_FE,			/* stalled_cycles_fe_kilo */
-		IID_ANNK_PERF_STALL_CYCLES_BE,			/* stalled_cycles_be_kilo */
 		IID_ANNK_REQ_NAME,				/* req_name */
 		IID_ANNK_REQ_ID,				/* req_id */
 		IID_ANNK_REQ_LATENCY_US,			/* req_latency_us */
