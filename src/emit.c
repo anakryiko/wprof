@@ -285,9 +285,14 @@ static void emit_trace_packet(pb_ostream_t *stream, TracePacket *pb)
 			eprintf("BUG: interned_data.debug_annotation_string_values is already set!\n");
 			exit(1);
 		}
+		if (pb->has_interned_data && pb->interned_data.debug_annotation_names.funcs.encode) {
+			eprintf("BUG: interned_data.debug_annotation_names is already set!\n");
+			exit(1);
+		}
 		pb->has_interned_data = true;
 		pb->interned_data.event_names = PB_STR_IIDS(&em.str_iids);
 		pb->interned_data.debug_annotation_string_values = PB_STR_IIDS(&em.str_iids);
+		pb->interned_data.debug_annotation_names = PB_STR_IIDS(&em.str_iids);
 	}
 
 	if (em.flow_ids.cnt > 0)
@@ -1111,15 +1116,34 @@ skip_waker_task:
 			emit_kv_int(IID_ANNK_SWITCH_TO_PID, e->swtch.next.pid);
 		}
 
-		for (int i = 0; i < env.counter_cnt; i++) {
-			const struct perf_counter_def *def = &perf_counter_defs[env.counter_ids[i]];
+		static int emit_cnt = 0;
+		for (int i = 0; i < env.pmu_event_cnt; i++) {
+			const struct pmu_event *ev = &env.pmu_events[i];
 			const struct perf_counters *st_ctrs = &prev_st->oncpu_ctrs;
 			const struct perf_counters *ev_ctrs = &e->swtch.ctrs;
-			int p = env.counter_pos[i];
 
-			if (st_ctrs->val[p] && ev_ctrs->val[p]) {
-				emit_kv_float(iid_str(def->trace_name_iid, def->trace_name),
-					      "%.6lf", (ev_ctrs->val[p] - st_ctrs->val[p]) * def->mul);
+			if (st_ctrs->val[i] && ev_ctrs->val[i]) {
+				emit_cnt++;
+				emit_kv_float(iid_str(emit_intern_str(w, ev->name), ev->name),
+					      "%.6lf", (ev_ctrs->val[i] - st_ctrs->val[i]) * ev->multiplier);
+			}
+		}
+
+		/* Emit derived metrics */
+		for (int i = 0; i < env.derived_metric_cnt; i++) {
+			const struct derived_metric *m = &env.derived_metrics[i];
+			const struct perf_counters *st_ctrs = &prev_st->oncpu_ctrs;
+			const struct perf_counters *ev_ctrs = &e->swtch.ctrs;
+
+			if (m->num_idx >= 0 && m->denom_idx >= 0 &&
+			    st_ctrs->val[m->num_idx] && ev_ctrs->val[m->num_idx] &&
+			    st_ctrs->val[m->denom_idx] && ev_ctrs->val[m->denom_idx]) {
+				double num = ev_ctrs->val[m->num_idx] - st_ctrs->val[m->num_idx];
+				double denom = ev_ctrs->val[m->denom_idx] - st_ctrs->val[m->denom_idx];
+				if (denom > 0) {
+					emit_kv_float(iid_str(emit_intern_str(w, m->name), m->name),
+						      "%.6lf", num / denom);
+				}
 			}
 		}
 
@@ -1505,12 +1529,11 @@ static int process_hardirq_exit(struct worker_state *w, struct wprof_event *e, s
 		emit_kv_str(IID_ANNK_ACTION, e->hardirq.name);
 	}
 	emit_slice_end(e->ts, &e->task, IID_NAME_HARDIRQ, IID_CAT_HARDIRQ) {
-		for (int i = 0; i < env.counter_cnt; i++) {
-			const struct perf_counter_def *def = &perf_counter_defs[env.counter_ids[i]];
-			int p = env.counter_pos[i];
+		for (int i = 0; i < env.pmu_event_cnt; i++) {
+			const struct pmu_event *ev = &env.pmu_events[i];
 
-			emit_kv_float(iid_str(def->trace_name_iid, def->trace_name),
-				      "%.6lf", e->hardirq.ctrs.val[p] * def->mul);
+			emit_kv_float(iid_str(emit_intern_str(w, ev->name), ev->name),
+				      "%.6lf", e->hardirq.ctrs.val[i] * ev->multiplier);
 		}
 	}
 
@@ -1547,12 +1570,11 @@ static int process_softirq_exit(struct worker_state *w, struct wprof_event *e, s
 	emit_slice_end(e->ts, &e->task,
 		       iid_str(name_iid, sfmt("%s:%s", "SOFTIRQ", softirq_str(e->softirq.vec_nr))),
 		       IID_CAT_SOFTIRQ) {
-		for (int i = 0; i < env.counter_cnt; i++) {
-			const struct perf_counter_def *def = &perf_counter_defs[env.counter_ids[i]];
-			int p = env.counter_pos[i];
+		for (int i = 0; i < env.pmu_event_cnt; i++) {
+			const struct pmu_event *ev = &env.pmu_events[i];
 
-			emit_kv_float(iid_str(def->trace_name_iid, def->trace_name),
-				      "%.6lf", e->softirq.ctrs.val[p] * def->mul);
+			emit_kv_float(iid_str(emit_intern_str(w, ev->name), ev->name),
+				      "%.6lf", e->softirq.ctrs.val[i] * ev->multiplier);
 		}
 	}
 
@@ -1579,12 +1601,11 @@ static int process_wq_end(struct worker_state *w, struct wprof_event *e, size_t 
 	emit_slice_end(e->ts, &e->task,
 		       iid_str(IID_NONE, sfmt("%s:%s", "WQ", e->wq.desc)),
 		       IID_CAT_WQ) {
-		for (int i = 0; i < env.counter_cnt; i++) {
-			const struct perf_counter_def *def = &perf_counter_defs[env.counter_ids[i]];
-			int p = env.counter_pos[i];
+		for (int i = 0; i < env.pmu_event_cnt; i++) {
+			const struct pmu_event *ev = &env.pmu_events[i];
 
-			emit_kv_float(iid_str(def->trace_name_iid, def->trace_name),
-				      "%.6lf", e->wq.ctrs.val[p] * def->mul);
+			emit_kv_float(iid_str(emit_intern_str(w, ev->name), ev->name),
+				      "%.6lf", e->wq.ctrs.val[i] * ev->multiplier);
 		}
 	}
 
@@ -1692,12 +1713,11 @@ static int process_ipi_exit(struct worker_state *w, struct wprof_event *e, size_
 			emit_kv_float(IID_ANNK_IPI_DELAY_US,
 				      "%.3lf", (e->ipi.ipi_ts - e->ipi.send_ts) / 1000.0);
 		}
-		for (int i = 0; i < env.counter_cnt; i++) {
-			const struct perf_counter_def *def = &perf_counter_defs[env.counter_ids[i]];
-			int p = env.counter_pos[i];
+		for (int i = 0; i < env.pmu_event_cnt; i++) {
+			const struct pmu_event *ev = &env.pmu_events[i];
 
-			emit_kv_float(iid_str(def->trace_name_iid, def->trace_name),
-				      "%.6lf", e->ipi.ctrs.val[p] * def->mul);
+			emit_kv_float(iid_str(emit_intern_str(w, ev->name), ev->name),
+				      "%.6lf", e->ipi.ctrs.val[i] * ev->multiplier);
 		}
 	}
 

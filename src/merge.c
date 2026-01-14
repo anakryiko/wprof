@@ -14,6 +14,7 @@
 #include "wprof.h"
 #include "data.h"
 #include "env.h"
+#include "pmu.h"
 #include "cuda.h"
 #include "cuda_data.h"
 #include "proc.h"
@@ -514,6 +515,18 @@ int wprof_merge_data(int workdir_fd, struct worker_state *workers)
 	hdr.cfg.timer_freq_hz = env.timer_freq_hz;
 	hdr.cfg.counter_cnt = env.counter_cnt;
 	memcpy(&hdr.cfg.counter_ids, env.counter_ids, sizeof(env.counter_ids));
+
+	/* Store PMU events */
+	hdr.cfg.pmu_event_cnt = env.pmu_event_cnt;
+	for (int i = 0; i < env.pmu_event_cnt; i++) {
+		pmu_event_to_stored(&env.pmu_events[i], &hdr.cfg.pmu_events[i]);
+	}
+
+	/* Store derived metrics */
+	hdr.cfg.derived_metric_cnt = env.derived_metric_cnt;
+	for (int i = 0; i < env.derived_metric_cnt; i++) {
+		hdr.cfg.derived_metrics[i] = env.derived_metrics[i];
+	}
 
 	hdr.events_off = 0;
 	hdr.events_sz = events_sz;
