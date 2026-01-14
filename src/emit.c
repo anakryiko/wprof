@@ -1119,13 +1119,14 @@ skip_waker_task:
 		static int emit_cnt = 0;
 		for (int i = 0; i < env.pmu_event_cnt; i++) {
 			const struct pmu_event *ev = &env.pmu_events[i];
+			int idx = ev->stored_idx;
 			const struct perf_counters *st_ctrs = &prev_st->oncpu_ctrs;
 			const struct perf_counters *ev_ctrs = &e->swtch.ctrs;
 
-			if (st_ctrs->val[i] && ev_ctrs->val[i]) {
+			if (st_ctrs->val[idx] && ev_ctrs->val[idx]) {
 				emit_cnt++;
 				emit_kv_float(iid_str(emit_intern_str(w, ev->name), ev->name),
-					      "%.6lf", (ev_ctrs->val[i] - st_ctrs->val[i]) * ev->multiplier);
+					      "%.6lf", (ev_ctrs->val[idx] - st_ctrs->val[idx]) * ev->multiplier);
 			}
 		}
 
@@ -1531,9 +1532,10 @@ static int process_hardirq_exit(struct worker_state *w, struct wprof_event *e, s
 	emit_slice_end(e->ts, &e->task, IID_NAME_HARDIRQ, IID_CAT_HARDIRQ) {
 		for (int i = 0; i < env.pmu_event_cnt; i++) {
 			const struct pmu_event *ev = &env.pmu_events[i];
+			int idx = ev->stored_idx;
 
 			emit_kv_float(iid_str(emit_intern_str(w, ev->name), ev->name),
-				      "%.6lf", e->hardirq.ctrs.val[i] * ev->multiplier);
+				      "%.6lf", e->hardirq.ctrs.val[idx] * ev->multiplier);
 		}
 	}
 
@@ -1572,9 +1574,10 @@ static int process_softirq_exit(struct worker_state *w, struct wprof_event *e, s
 		       IID_CAT_SOFTIRQ) {
 		for (int i = 0; i < env.pmu_event_cnt; i++) {
 			const struct pmu_event *ev = &env.pmu_events[i];
+			int idx = ev->stored_idx;
 
 			emit_kv_float(iid_str(emit_intern_str(w, ev->name), ev->name),
-				      "%.6lf", e->softirq.ctrs.val[i] * ev->multiplier);
+				      "%.6lf", e->softirq.ctrs.val[idx] * ev->multiplier);
 		}
 	}
 
@@ -1603,9 +1606,10 @@ static int process_wq_end(struct worker_state *w, struct wprof_event *e, size_t 
 		       IID_CAT_WQ) {
 		for (int i = 0; i < env.pmu_event_cnt; i++) {
 			const struct pmu_event *ev = &env.pmu_events[i];
+			int idx = ev->stored_idx;
 
 			emit_kv_float(iid_str(emit_intern_str(w, ev->name), ev->name),
-				      "%.6lf", e->wq.ctrs.val[i] * ev->multiplier);
+				      "%.6lf", e->wq.ctrs.val[idx] * ev->multiplier);
 		}
 	}
 
@@ -1715,9 +1719,10 @@ static int process_ipi_exit(struct worker_state *w, struct wprof_event *e, size_
 		}
 		for (int i = 0; i < env.pmu_event_cnt; i++) {
 			const struct pmu_event *ev = &env.pmu_events[i];
+			int idx = ev->stored_idx;
 
 			emit_kv_float(iid_str(emit_intern_str(w, ev->name), ev->name),
-				      "%.6lf", e->ipi.ctrs.val[i] * ev->multiplier);
+				      "%.6lf", e->ipi.ctrs.val[idx] * ev->multiplier);
 		}
 	}
 

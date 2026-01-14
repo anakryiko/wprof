@@ -1208,21 +1208,46 @@ int main(int argc, char **argv)
 			env.counter_pos[i] = pos;
 		}
 
-		/* Load PMU events from captured data for replay */
-		env.pmu_event_cnt = cfg->pmu_event_cnt;
-		for (int i = 0; i < cfg->pmu_event_cnt; i++) {
-			pmu_event_from_stored(&cfg->pmu_events[i], &env.pmu_events[i]);
-		}
+		/* For replay: resolve PMU event indices to match stored data positions */
+		if (env.pmu_event_cnt > 0) {
+			/* User specified -C during replay - validate and resolve indices */
+			for (int i = 0; i < env.pmu_event_cnt; i++) {
+				struct pmu_event *ev = &env.pmu_events[i];
+				ev->stored_idx = -1;
 
-		/* Load derived metrics from captured data if none specified on command line */
-		if (env.derived_metric_cnt == 0 && cfg->derived_metric_cnt > 0) {
-			env.derived_metric_cnt = cfg->derived_metric_cnt;
-			for (int i = 0; i < cfg->derived_metric_cnt; i++) {
-				env.derived_metrics[i] = cfg->derived_metrics[i];
-				env.derived_metrics[i].num_idx = -1;
-				env.derived_metrics[i].denom_idx = -1;
+				/* Find matching event in captured data by name */
+				for (int j = 0; j < cfg->pmu_event_cnt; j++) {
+					if (strcmp(ev->name, cfg->pmu_events[j].name) == 0) {
+						ev->stored_idx = j;
+						/* If event was specified by name only (unresolved),
+						 * copy full definition from stored data
+						 */
+						if (ev->perf_type == UINT32_MAX) {
+							pmu_event_from_stored(&cfg->pmu_events[j], ev);
+							ev->stored_idx = j;
+						}
+						/* Copy multiplier from stored event if not overridden */
+						if (ev->multiplier == 1.0) {
+							ev->multiplier = cfg->pmu_events[j].multiplier;
+						}
+						break;
+					}
+				}
+
+				if (ev->stored_idx < 0) {
+					eprintf("replay: counter '%s' requested, but wasn't captured\n", ev->name);
+					err = -EINVAL;
+					goto cleanup;
+				}
 			}
 		}
+		/* If env.pmu_event_cnt == 0, no counters will be emitted */
+
+		/* Note: We intentionally don't auto-load derived metrics from stored data
+		 * during replay. User must explicitly specify -M if they want derived
+		 * metrics. This avoids issues when user requests a subset of counters
+		 * that doesn't include all counters required by stored metrics.
+		 */
 
 		/* Resolve derived metric indices */
 		if (env.derived_metric_cnt > 0) {
@@ -1245,6 +1270,16 @@ int main(int argc, char **argv)
 		eprintf("Time range start/end offsets can only be specified in replay mode!\n");
 		err = -EINVAL;
 		goto cleanup;
+	}
+
+	/* Check for unresolved PMU events (name-only references only valid in replay) */
+	for (int i = 0; i < env.pmu_event_cnt; i++) {
+		if (env.pmu_events[i].perf_type == UINT32_MAX) {
+			eprintf("Unknown counter '%s' - name-only references only work in replay mode\n",
+				env.pmu_events[i].name);
+			err = -EINVAL;
+			goto cleanup;
+		}
 	}
 
 	/* Init data capture settings defaults, if they were not set */

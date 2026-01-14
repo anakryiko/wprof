@@ -57,6 +57,9 @@ struct pmu_event {
 
 	/* For predefined events, index into legacy perf_counter_defs */
 	int predefined_idx;    /* -1 if not predefined */
+
+	/* For replay: index into stored counter data (ctrs.val[]) */
+	int stored_idx;        /* -1 if unset, resolved during replay */
 };
 
 /* Stored format for data persistence (fixed size) */

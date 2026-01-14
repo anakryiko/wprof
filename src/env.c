@@ -470,8 +470,18 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 
 		err = pmu_parse_event(arg, &ev);
 		if (err) {
-			fprintf(stderr, "Unrecognized or invalid counter '%s': %d\n", arg, err);
-			argp_usage(state);
+			/* For replay mode, allow specifying just the stored event name.
+			 * Create a placeholder event with just the name - it will be
+			 * resolved against stored events during replay initialization.
+			 */
+			memset(&ev, 0, sizeof(ev));
+			ev.type = PMU_TYPE_RAW;  /* placeholder type */
+			ev.perf_type = UINT32_MAX;  /* mark as unresolved */
+			ev.multiplier = 1.0;
+			ev.predefined_idx = -1;
+			ev.stored_idx = -1;
+			strncpy(ev.name, arg, PMU_NAME_LEN - 1);
+			ev.name[PMU_NAME_LEN - 1] = '\0';
 		}
 
 		/* Check for duplicates (by name) */
@@ -482,7 +492,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			}
 		}
 
-		env.pmu_events[env.pmu_event_cnt++] = ev;
+		env.pmu_events[env.pmu_event_cnt] = ev;
+		env.pmu_events[env.pmu_event_cnt].stored_idx = env.pmu_event_cnt; /* 1:1 for collection */
+		env.pmu_event_cnt++;
 
 		/* Also maintain legacy counter_ids for predefined events */
 		if (ev.type == PMU_TYPE_PREDEFINED && ev.predefined_idx >= 0) {
