@@ -8,6 +8,7 @@
 #include "wprof.h"
 #include "data.h"
 #include "cuda.h"
+#include "pmu.h"
 
 #define WPROF_VERSION "0.2"
 
@@ -126,16 +127,7 @@ struct env {
 extern struct env env;
 extern const struct argp argp;
 
-struct perf_counter_def {
-	const char *alias;
-	int perf_type;
-	int perf_cfg;
-	double mul;
-	const char *trace_name;
-	u32 trace_name_iid;
-};
 
-extern const struct perf_counter_def perf_counter_defs[];
 
 static inline bool cfg_get_capture_ipis(const struct wprof_data_cfg *cfg) { return cfg->capture_ipis; }
 static inline void cfg_set_capture_ipis(struct wprof_data_cfg *cfg, bool val) { cfg->capture_ipis = val; }
