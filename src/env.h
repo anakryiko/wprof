@@ -8,8 +8,9 @@
 #include "wprof.h"
 #include "data.h"
 #include "cuda.h"
+#include "pmu.h"
 
-#define WPROF_VERSION "0.2"
+#define WPROF_VERSION "0.3-dev"
 
 #define DEFAULT_RINGBUF_SZ (8 * 1024 * 1024)
 #define DEFAULT_TASK_STATE_SZ (32 * 1024)
@@ -69,6 +70,13 @@ struct env {
 
 	int timer_freq_hz;
 
+	int pmu_event_cnt;
+	struct pmu_event pmu_events[MAX_PMU_COUNTERS];
+
+	int derived_metric_cnt;
+	struct derived_metric derived_metrics[MAX_DERIVED_METRICS];
+
+	/* Legacy counter tracking for replay compatibility */
 	int counter_cnt;
 	int counter_ids[MAX_PERF_COUNTERS];
 	int counter_pos[MAX_PERF_COUNTERS];
@@ -125,17 +133,6 @@ struct env {
 
 extern struct env env;
 extern const struct argp argp;
-
-struct perf_counter_def {
-	const char *alias;
-	int perf_type;
-	int perf_cfg;
-	double mul;
-	const char *trace_name;
-	u32 trace_name_iid;
-};
-
-extern const struct perf_counter_def perf_counter_defs[];
 
 static inline bool cfg_get_capture_ipis(const struct wprof_data_cfg *cfg) { return cfg->capture_ipis; }
 static inline void cfg_set_capture_ipis(struct wprof_data_cfg *cfg, bool val) { cfg->capture_ipis = val; }

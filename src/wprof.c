@@ -63,20 +63,6 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va
 	return vfprintf(stderr, format, args);
 }
 
-/* The order of these definition matters as the position determines
- * a persisted ID stored in wprof.data, so when adding/removing definitions,
- * preserve the order (i.e., we'll need to stub out events that we remove)
- */
-const struct perf_counter_def perf_counter_defs[] = {
-	{ "cpu-cycles", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES, 1e-3, "cpu_cycles_kilo", IID_ANNK_PERF_CPU_CYCLES },
-	{ "cpu-insns", PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS, 1e-3, "cpu_insns_kilo", IID_ANNK_PERF_CPU_INSNS },
-	{ "cache-hits", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CACHE_REFERENCES, 1e-3, "cache_hits_kilo", IID_ANNK_PERF_CACHE_HITS },
-	{ "cache-misses", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CACHE_MISSES, 1e-3, "cache_misses_kilo", IID_ANNK_PERF_CACHE_MISSES },
-	{ "stall-cycles-fe", PERF_TYPE_HARDWARE, PERF_COUNT_HW_STALLED_CYCLES_FRONTEND, 1e-3, "stalled_cycles_fe_kilo", IID_ANNK_PERF_STALL_CYCLES_FE },
-	{ "stall-cycles-be", PERF_TYPE_HARDWARE, PERF_COUNT_HW_STALLED_CYCLES_BACKEND, 1e-3, "stalled_cycles_be_kilo", IID_ANNK_PERF_STALL_CYCLES_BE },
-	{},
-};
-
 const struct capture_feature capture_features[] = {
 	{"IPIs", "IPIs:", DEFAULT_CAPTURE_IPIS,
 	 offsetof(struct env, capture_ipis), cfg_get_capture_ipis, cfg_set_capture_ipis},
@@ -415,43 +401,82 @@ static int setup_perf_counters(struct bpf_state *st, int num_cpus)
 
 	st->perf_counter_fds = calloc(st->perf_counter_fd_cnt, sizeof(int));
 	for (int i = 0; i < num_cpus; i++) {
-		for (int j = 0; j < env.counter_cnt; j++)
-			st->perf_counter_fds[i * env.counter_cnt + j] = -1;
+		for (int j = 0; j < env.pmu_event_cnt; j++)
+			st->perf_counter_fds[i * env.pmu_event_cnt + j] = -1;
 	}
 
 	for (int cpu = 0; cpu < num_cpus; cpu++) {
 		/* set up requested perf counters */
-		for (int j = 0; j < env.counter_cnt; j++) {
-			const struct perf_counter_def *def = &perf_counter_defs[env.counter_ids[j]];
-			int pe_idx = cpu * env.counter_cnt + j;
+		for (int j = 0; j < env.pmu_event_cnt; j++) {
+			const struct pmu_event *ev = &env.pmu_events[j];
+			int pe_idx = cpu * env.pmu_event_cnt + j;
 
 			memset(&attr, 0, sizeof(attr));
 			attr.size = sizeof(attr);
-			attr.type = def->perf_type;
-			attr.config = def->perf_cfg;
+			attr.type = ev->perf_type;
+			attr.config = ev->config;
+			attr.config1 = ev->config1;
+			attr.config2 = ev->config2;
 
 			int pefd = sys_perf_event_open(&attr, -1, cpu, -1, PERF_FLAG_FD_CLOEXEC);
 			if (pefd < 0) {
-				eprintf("Failed to create %s PMU for CPU #%d, skipping...\n", def->alias, cpu);
+				eprintf("Failed to create %s PMU for CPU #%d, skipping...\n", ev->name, cpu);
 			} else {
 				st->perf_counter_fds[pe_idx] = pefd;
 				err = bpf_map__update_elem(st->skel->maps.perf_cntrs,
 							   &pe_idx, sizeof(pe_idx),
 							   &pefd, sizeof(pefd), 0);
 				if (err) {
-					eprintf("Failed to set up %s PMU on CPU#%d for BPF: %d\n", def->alias, cpu, err);
+					eprintf("Failed to set up %s PMU on CPU#%d for BPF: %d\n", ev->name, cpu, err);
 					return err;
 				}
 				err = ioctl(pefd, PERF_EVENT_IOC_ENABLE, 0);
 				if (err) {
 					err = -errno;
-					eprintf("Failed to enable %s PMU on CPU#%d: %d\n", def->alias, cpu, err);
+					eprintf("Failed to enable %s PMU on CPU#%d: %d\n", ev->name, cpu, err);
 					return err;
 				}
 			}
 		}
 	}
 
+	return 0;
+}
+
+static int resolve_derived_metrics(void)
+{
+	for (int i = 0; i < env.derived_metric_cnt; i++) {
+		struct derived_metric *m = &env.derived_metrics[i];
+
+		m->num_idx = -1;
+		m->denom_idx = -1;
+
+		/* Find numerator counter */
+		for (int j = 0; j < env.pmu_event_cnt; j++) {
+			if (strcmp(env.pmu_events[j].name, m->numerator) == 0) {
+				m->num_idx = j;
+				break;
+			}
+		}
+		if (m->num_idx < 0) {
+			eprintf("Derived metric '%s': numerator counter '%s' not found\n",
+				m->name, m->numerator);
+			return -ENOENT;
+		}
+
+		/* Find denominator counter */
+		for (int j = 0; j < env.pmu_event_cnt; j++) {
+			if (strcmp(env.pmu_events[j].name, m->denominator) == 0) {
+				m->denom_idx = j;
+				break;
+			}
+		}
+		if (m->denom_idx < 0) {
+			eprintf("Derived metric '%s': denominator counter '%s' not found\n",
+				m->name, m->denominator);
+			return -ENOENT;
+		}
+	}
 	return 0;
 }
 
@@ -676,8 +701,8 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 	if (env.deny_kthread)
 		skel->rodata->filt_mode |= FILT_DENY_KTHREAD;
 
-	st->perf_counter_fd_cnt = num_cpus * env.counter_cnt;
-	skel->rodata->perf_ctr_cnt = env.counter_cnt;
+	st->perf_counter_fd_cnt = num_cpus * env.pmu_event_cnt;
+	skel->rodata->perf_ctr_cnt = env.pmu_event_cnt;
 	bpf_map__set_max_entries(skel->maps.perf_cntrs, st->perf_counter_fd_cnt);
 
 	if (env.requested_stack_traces & ST_TIMER)
@@ -754,7 +779,7 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 		}
 	}
 
-	if (env.counter_cnt) {
+	if (env.pmu_event_cnt) {
 		err = setup_perf_counters(st, num_cpus);
 		if (err) {
 			eprintf("Failed to setup perf counters: %d\n", err);
@@ -1081,19 +1106,16 @@ int main(int argc, char **argv)
 					wprintf("waker, ");
 				wprintf("\n");
 			} else {
-				wprintf("%-*s%s\n", w, "Stack traces:", "NONE");
+				wprintf("%-*sNONE\n", w, "Stack traces:");
 			}
 			wprintf("%-*s%dHz\n", w, "Timer frequency:", cfg->timer_freq_hz);
-			wprintf("%-*s", w, "Perf counters:");
-			if (cfg->counter_cnt == 0) {
-				wprintf("NONE");
+			if (cfg->pmu_event_cnt == 0) {
+				wprintf("%-*sNONE\n", w, "Perf counters:");
 			} else {
-				for (int i = 0; i < cfg->counter_cnt; i++) {
-					wprintf("%s%s", i == 0 ? "" : ", ",
-						perf_counter_defs[cfg->counter_ids[i]].alias);
-				}
+				wprintf("%-*s", w, "Perf counters:");
+				for (int i = 0; i < cfg->pmu_event_cnt; i++)
+					wprintf("%*s%s", w, "", cfg->pmu_events[i].name);
 			}
-			wprintf("\n");
 			for (int i = 0; i < ARRAY_SIZE(capture_features); i++) {
 				const struct capture_feature *f = &capture_features[i];
 				wprintf("%-*s%s\n", w, f->header, f->cfg_get_flag(cfg) ? "YES" : "NO");
@@ -1186,6 +1208,54 @@ int main(int argc, char **argv)
 			env.counter_pos[i] = pos;
 		}
 
+		/* For replay: resolve PMU event indices to match stored data positions */
+		if (env.pmu_event_cnt > 0) {
+			/* User specified -C during replay - validate and resolve indices */
+			for (int i = 0; i < env.pmu_event_cnt; i++) {
+				struct pmu_event *ev = &env.pmu_events[i];
+				ev->stored_idx = -1;
+
+				/* Find matching event in captured data by name */
+				for (int j = 0; j < cfg->pmu_event_cnt; j++) {
+					if (strcmp(ev->name, cfg->pmu_events[j].name) == 0) {
+						ev->stored_idx = j;
+						/* If event was specified by name only (unresolved),
+						 * copy full definition from stored data
+						 */
+						if (ev->perf_type == UINT32_MAX) {
+							pmu_event_from_stored(&cfg->pmu_events[j], ev);
+							ev->stored_idx = j;
+						}
+						/* Copy multiplier from stored event if not overridden */
+						if (ev->multiplier == 1.0) {
+							ev->multiplier = cfg->pmu_events[j].multiplier;
+						}
+						break;
+					}
+				}
+
+				if (ev->stored_idx < 0) {
+					eprintf("replay: counter '%s' requested, but wasn't captured\n", ev->name);
+					err = -EINVAL;
+					goto cleanup;
+				}
+			}
+		}
+		/* If env.pmu_event_cnt == 0, no counters will be emitted */
+
+		/* Note: We intentionally don't auto-load derived metrics from stored data
+		 * during replay. User must explicitly specify -M if they want derived
+		 * metrics. This avoids issues when user requests a subset of counters
+		 * that doesn't include all counters required by stored metrics.
+		 */
+
+		/* Resolve derived metric indices */
+		if (env.derived_metric_cnt > 0) {
+			err = resolve_derived_metrics();
+			if (err)
+				goto cleanup;
+		}
+
 		env.timer_freq_hz = cfg->timer_freq_hz;
 
 		goto skip_data_collection;
@@ -1200,6 +1270,16 @@ int main(int argc, char **argv)
 		eprintf("Time range start/end offsets can only be specified in replay mode!\n");
 		err = -EINVAL;
 		goto cleanup;
+	}
+
+	/* Check for unresolved PMU events (name-only references only valid in replay) */
+	for (int i = 0; i < env.pmu_event_cnt; i++) {
+		if (env.pmu_events[i].perf_type == UINT32_MAX) {
+			eprintf("Unknown counter '%s' - name-only references only work in replay mode\n",
+				env.pmu_events[i].name);
+			err = -EINVAL;
+			goto cleanup;
+		}
 	}
 
 	/* Init data capture settings defaults, if they were not set */
@@ -1272,6 +1352,13 @@ int main(int argc, char **argv)
 			eprintf("Failed to set data file buffer size to %dKB: %d\n", FILE_BUF_SZ / 1024, err);
 			goto cleanup;
 		}
+	}
+
+	/* Resolve derived metric indices before BPF setup */
+	if (env.derived_metric_cnt > 0) {
+		err = resolve_derived_metrics();
+		if (err)
+			goto cleanup;
 	}
 
 	err = setup_bpf(&bpf_state, workers, num_cpus, workdir_fd);

@@ -5,9 +5,10 @@
 
 #include "wprof_types.h"
 #include "wprof.h"
+#include "pmu.h"
 
 #define WPROF_DATA_MAJOR 1
-#define WPROF_DATA_MINOR 11
+#define WPROF_DATA_MINOR 12
 #define WPROF_DATA_FLAG_INCOMPLETE 0xffffffffffffffffULL
 
 #define FILE_BUF_SZ (64 * 1024)
@@ -27,8 +28,17 @@ struct wprof_data_cfg {
 
 	int timer_freq_hz;
 
+	/* Legacy counter tracking for backward compatibility */
 	int counter_cnt;
 	int counter_ids[MAX_PERF_COUNTERS];
+
+	/* New PMU event storage */
+	int pmu_event_cnt;
+	struct pmu_event_stored pmu_events[MAX_PMU_COUNTERS];
+
+	/* Derived metrics */
+	int derived_metric_cnt;
+	struct derived_metric derived_metrics[MAX_DERIVED_METRICS];
 };
 
 struct wprof_data_hdr {

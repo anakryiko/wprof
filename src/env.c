@@ -120,9 +120,12 @@ static const struct argp_option opts[] = {
 	{ "task-state-size", OPT_TASK_STATE_SZ, "SIZE", 0, "BPF task state map size (in threads)" },
 	{ "ringbuf-cnt", OPT_RINGBUF_CNT, "N", 0, "Number of BPF ringbufs to use" },
 
-	{ "cpu-counter", 'C', "NAME", 0,
-	  "Capture and emit specified perf/CPU/hardware counter (cpu-cycles, cpu-insns, cache-hits, "
-	  "cache-misses, stalled-cycles-fe, stallec-cycles-be)" },
+	{ "cpu-counter", 'C', "EVENT", 0,
+	  "Capture perf counter. Formats: predefined (cpu-cycles, cache-misses), "
+	  "raw (r003c), PMU (cpu/event=0x3c/ or pmu/L1-icache-loads/), "
+	  "software (sw:page-faults)" },
+	{ "metric", 'M', "FORMULA", 0,
+	  "Define derived metric from counter ratio (e.g., ipc=insns/cycles)" },
 	{},
 };
 
@@ -457,35 +460,67 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		env.ringbuf_cnt = env.ringbuf_cnt;
 		break;
 	case 'C': {
-		int counter_idx = -1;
+		struct pmu_event ev;
+		int err;
 
-		for (int i = 0; perf_counter_defs[i].alias; i++) {
-			if (strcmp(arg, perf_counter_defs[i].alias) != 0)
-				continue;
-
-			counter_idx = i;
-			break;
+		if (env.pmu_event_cnt >= MAX_PMU_COUNTERS) {
+			fprintf(stderr, "Too many perf counters requested, only %d are supported!\n", MAX_PMU_COUNTERS);
+			return -E2BIG;
 		}
 
-		if (counter_idx < 0) {
-			fprintf(stderr, "Unrecognized counter '%s'!\n", arg);
+		err = pmu_parse_event(arg, &ev);
+		if (err) {
+			/* For replay mode, allow specifying just the stored event name.
+			 * Create a placeholder event with just the name - it will be
+			 * resolved against stored events during replay initialization.
+			 */
+			memset(&ev, 0, sizeof(ev));
+			ev.type = PMU_TYPE_RAW;  /* placeholder type */
+			ev.perf_type = UINT32_MAX;  /* mark as unresolved */
+			ev.multiplier = 1.0;
+			ev.predefined_idx = -1;
+			ev.stored_idx = -1;
+			strncpy(ev.name, arg, PMU_NAME_LEN - 1);
+			ev.name[PMU_NAME_LEN - 1] = '\0';
+		}
+
+		/* Check for duplicates (by name) */
+		for (int i = 0; i < env.pmu_event_cnt; i++) {
+			if (strcmp(env.pmu_events[i].name, ev.name) == 0) {
+				fprintf(stderr, "Duplicate counter '%s' specified\n", ev.name);
+				argp_usage(state);
+			}
+		}
+
+		env.pmu_events[env.pmu_event_cnt] = ev;
+		env.pmu_events[env.pmu_event_cnt].stored_idx = env.pmu_event_cnt; /* 1:1 for collection */
+		env.pmu_event_cnt++;
+
+		/* Also maintain legacy counter_ids for predefined events */
+		if (ev.type == PMU_TYPE_PREDEFINED && ev.predefined_idx >= 0) {
+			env.counter_ids[env.counter_cnt] = ev.predefined_idx;
+			env.counter_pos[env.counter_cnt] = env.counter_cnt;
+			env.counter_cnt++;
+		}
+		break;
+	}
+	case 'M': {
+		struct derived_metric m;
+		int err;
+
+		if (env.derived_metric_cnt >= MAX_DERIVED_METRICS) {
+			fprintf(stderr, "Too many derived metrics, only %d are supported!\n",
+				MAX_DERIVED_METRICS);
+			return -E2BIG;
+		}
+
+		err = parse_derived_metric(arg, &m);
+		if (err) {
+			fprintf(stderr, "Invalid metric formula '%s': expected name=num/denom\n", arg);
 			argp_usage(state);
 		}
 
-		for (int i = 0; i < env.counter_cnt; i++) {
-			if (env.counter_ids[i] == counter_idx) {
-				counter_idx = -1;
-				break;
-			}
-		}
-
-		if (counter_idx >= 0) {
-			if (env.counter_cnt >= MAX_PERF_COUNTERS) {
-				fprintf(stderr, "Too many perf counters requested, only %d are currently supported!\n", MAX_PERF_COUNTERS);
-				return -E2BIG;
-			}
-			env.counter_ids[env.counter_cnt++] = counter_idx;
-		}
+		env.derived_metrics[env.derived_metric_cnt++] = m;
 		break;
 	}
 	case ARGP_KEY_ARG:
