@@ -70,6 +70,13 @@ struct env {
 
 	int timer_freq_hz;
 
+	int pmu_event_cnt;
+	struct pmu_event pmu_events[MAX_PMU_COUNTERS];
+
+	int derived_metric_cnt;
+	struct derived_metric derived_metrics[MAX_DERIVED_METRICS];
+
+	/* Legacy counter tracking for replay compatibility */
 	int counter_cnt;
 	int counter_ids[MAX_PERF_COUNTERS];
 	int counter_pos[MAX_PERF_COUNTERS];
@@ -126,8 +133,6 @@ struct env {
 
 extern struct env env;
 extern const struct argp argp;
-
-
 
 static inline bool cfg_get_capture_ipis(const struct wprof_data_cfg *cfg) { return cfg->capture_ipis; }
 static inline void cfg_set_capture_ipis(struct wprof_data_cfg *cfg, bool val) { cfg->capture_ipis = val; }
