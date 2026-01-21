@@ -108,6 +108,7 @@ extern char __inj_trap[];
 	 * return: rax contains the result
 	 */
 	__asm__(
+	".globl __inj_call, __inj_trap, __inj_call_end	\n\t"
 	"__inj_call:					\n\t"
 	"	call *%rax				\n\t"
 	"__inj_trap:					\n\t"
@@ -121,6 +122,7 @@ extern char __inj_trap[];
 	 * return: x0 contains the result
 	 */
 	__asm__(
+	".globl __inj_call, __inj_trap, __inj_call_end	\n\t"
 	"__inj_call:					\n\t"
 	"	blr x8					\n\t"
 	"__inj_trap:					\n\t"
