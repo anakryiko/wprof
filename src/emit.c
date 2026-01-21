@@ -2249,11 +2249,11 @@ static int process_cuda_sync(struct worker_state *w, struct wprof_event *e, size
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Warray-bounds"
-__weak const char *cupti_driver_cbid_str_map[1];
-__weak int cupti_driver_cbid_str_map_sz = ARRAY_SIZE(cupti_driver_cbid_str_map);
+extern const char *cupti_driver_cbid_str_map[];
+extern int cupti_driver_cbid_str_map_sz;
 
-__weak const char *cupti_runtime_cbid_str_map[1];
-__weak int cupti_runtime_cbid_str_map_sz = ARRAY_SIZE(cupti_runtime_cbid_str_map);
+extern const char *cupti_runtime_cbid_str_map[];
+extern int cupti_runtime_cbid_str_map_sz;
 
 static const char *cuda_driver_cbid_str(int cbid)
 {

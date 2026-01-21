@@ -447,15 +447,16 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			argp_usage(state);
 		}
 		break;
-	case OPT_RINGBUF_CNT:
+	case OPT_RINGBUF_CNT: {
 		errno = 0;
-		env.ringbuf_cnt = strtol(arg, NULL, 0);
-		if (errno || env.ringbuf_cnt <= 0) {
+		int ringbuf_cnt = strtol(arg, NULL, 0);
+		if (errno || ringbuf_cnt <= 0) {
 			fprintf(stderr, "Invalid ringbuf count: %s\n", arg);
 			argp_usage(state);
 		}
-		env.ringbuf_cnt = env.ringbuf_cnt;
+		env.ringbuf_cnt = ringbuf_cnt;
 		break;
+	}
 	case 'C': {
 		int counter_idx = -1;
 

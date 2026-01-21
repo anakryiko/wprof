@@ -75,7 +75,7 @@ struct env {
 
 	int ringbuf_sz;
 	int task_state_sz;
-	int ringbuf_cnt;
+	size_t ringbuf_cnt;
 
 	u64 actual_start_ts;
 	u64 sess_start_ts;

@@ -1028,7 +1028,7 @@ int main(int argc, char **argv)
 	}
 	env.ringbuf_cnt = min(env.ringbuf_cnt, num_cpus);
 	if (!env.replay)
-		vprintf("Using %d BPF ring buffers.\n", env.ringbuf_cnt);
+		vprintf("Using %zu BPF ring buffers.\n", env.ringbuf_cnt);
 
 	/* during replay or trace generation there is only one worker */
 	worker_cnt = env.replay ? 1 : env.ringbuf_cnt;
