@@ -69,6 +69,9 @@ PB_BIND(perfetto_protos_AppWakelocksConfig, perfetto_protos_AppWakelocksConfig, 
 PB_BIND(perfetto_protos_CpuPerUidConfig, perfetto_protos_CpuPerUidConfig, AUTO)
 
 
+PB_BIND(perfetto_protos_InputMethodConfig, perfetto_protos_InputMethodConfig, AUTO)
+
+
 PB_BIND(perfetto_protos_KernelWakelocksConfig, perfetto_protos_KernelWakelocksConfig, AUTO)
 
 
@@ -292,6 +295,9 @@ PB_BIND(perfetto_protos_TraceStats, perfetto_protos_TraceStats, 2)
 
 
 PB_BIND(perfetto_protos_TraceStats_BufferStats, perfetto_protos_TraceStats_BufferStats, 2)
+
+
+PB_BIND(perfetto_protos_TraceStats_BufferStats_ShadowBufferStats, perfetto_protos_TraceStats_BufferStats_ShadowBufferStats, AUTO)
 
 
 PB_BIND(perfetto_protos_TraceStats_WriterStats, perfetto_protos_TraceStats_WriterStats, AUTO)
@@ -1485,6 +1491,9 @@ PB_BIND(perfetto_protos_FuncgraphExitFtraceEvent, perfetto_protos_FuncgraphExitF
 PB_BIND(perfetto_protos_FwtpPerfettoCounterFtraceEvent, perfetto_protos_FwtpPerfettoCounterFtraceEvent, AUTO)
 
 
+PB_BIND(perfetto_protos_FwtpPerfettoSliceFtraceEvent, perfetto_protos_FwtpPerfettoSliceFtraceEvent, AUTO)
+
+
 PB_BIND(perfetto_protos_G2dTracingMarkWriteFtraceEvent, perfetto_protos_G2dTracingMarkWriteFtraceEvent, AUTO)
 
 
@@ -2148,6 +2157,9 @@ PB_BIND(perfetto_protos_DevicePmCallbackStartFtraceEvent, perfetto_protos_Device
 PB_BIND(perfetto_protos_DevicePmCallbackEndFtraceEvent, perfetto_protos_DevicePmCallbackEndFtraceEvent, AUTO)
 
 
+PB_BIND(perfetto_protos_GpuPowerStateFtraceEvent, perfetto_protos_GpuPowerStateFtraceEvent, AUTO)
+
+
 PB_BIND(perfetto_protos_ConsoleFtraceEvent, perfetto_protos_ConsoleFtraceEvent, AUTO)
 
 
@@ -2703,6 +2715,9 @@ PB_BIND(perfetto_protos_EventName, perfetto_protos_EventName, AUTO)
 PB_BIND(perfetto_protos_InternedData, perfetto_protos_InternedData, 2)
 
 
+PB_BIND(perfetto_protos_AndroidJobName, perfetto_protos_AndroidJobName, AUTO)
+
+
 PB_BIND(perfetto_protos_MemoryTrackerSnapshot, perfetto_protos_MemoryTrackerSnapshot, AUTO)
 
 
@@ -3001,6 +3016,14 @@ PB_BIND(perfetto_protos_TracePacket, perfetto_protos_TracePacket, 2)
 
 
 PB_BIND(perfetto_protos_Trace, perfetto_protos_Trace, AUTO)
+
+
+
+
+
+
+
+
 
 
 
