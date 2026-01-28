@@ -145,8 +145,8 @@ static void print_exit_summary(struct worker_state *workers, int worker_cnt,
 			       struct wprof_bpf *skel, int num_cpus, int exit_code)
 {
 	int err;
-	u64 rb_handled_cnt = 0, rb_ignored_cnt = 0;
-	u64 rb_handled_sz = 0, rb_ignored_sz = 0;
+	u64 rb_handled_cnt = 0;
+	u64 rb_handled_sz = 0;
 	struct wprof_stats stats_by_cpu[num_cpus];
 	struct wprof_stats stats_by_rb[env.ringbuf_cnt];
 	struct wprof_stats s = {};
@@ -215,8 +215,6 @@ skip_prog_stats:
 		struct worker_state *w = &workers[i];
 		rb_handled_cnt += w->rb_handled_cnt;
 		rb_handled_sz += w->rb_handled_sz;
-		rb_ignored_cnt += w->rb_ignored_cnt;
-		rb_ignored_sz += w->rb_ignored_sz;
 	}
 
 	int zero = 0;
@@ -231,10 +229,12 @@ skip_prog_stats:
 		s.task_state_drops += stats_by_cpu[i].task_state_drops;
 		s.req_state_drops += stats_by_cpu[i].req_state_drops;
 
+		s.rb_rescues += stats_by_cpu[i].rb_rescues;
 		s.rb_misses += stats_by_cpu[i].rb_misses;
 		s.rb_drops += stats_by_cpu[i].rb_drops;
 
 		int rb_id = skel->data_rb_cpu_map->rb_cpu_map[i];
+		stats_by_rb[rb_id].rb_rescues += stats_by_cpu[i].rb_rescues;
 		stats_by_rb[rb_id].rb_drops += stats_by_cpu[i].rb_drops;
 		stats_by_rb[rb_id].rb_misses += stats_by_cpu[i].rb_misses;
 	}
@@ -246,18 +246,20 @@ skip_prog_stats:
 			char rb_name[32];
 			snprintf(rb_name, sizeof(rb_name), "RB #%d:", i);
 
-			wprintf("\t%-8s %8llu records (%.3lfMB, %.3lfMB/s) processed, %llu dropped (%.3lf%% drop rate), %llu records (%.3lfMB) ignored.\n",
-				rb_name, w->rb_handled_cnt, w->rb_handled_sz / 1024.0 / 1024.0,
-				w->rb_handled_sz / 1024.0 / 1024.0 / dur_s,
-				stats_by_rb[i].rb_drops, stats_by_rb[i].rb_drops * 100.0 / (w->rb_handled_cnt + stats_by_rb[i].rb_drops),
-				w->rb_ignored_cnt, w->rb_ignored_sz / 1024.0 / 1024.0);
+			wprintf("\t%-8s %8llu (%.3lf%%) records (%.3lfMB, %.3lfMB/s) processed, %llu rescued (%.3lf%%), %llu dropped (%.3lf%%).\n",
+				rb_name,
+				w->rb_handled_cnt, w->rb_handled_cnt * 100.0 / (w->rb_handled_cnt + stats_by_rb[i].rb_drops),
+				w->rb_handled_sz / 1024.0 / 1024.0, w->rb_handled_sz / 1024.0 / 1024.0 / dur_s,
+				stats_by_rb[i].rb_rescues, stats_by_rb[i].rb_rescues * 100.0 / (w->rb_handled_cnt + stats_by_rb[i].rb_drops),
+				stats_by_rb[i].rb_drops, stats_by_rb[i].rb_drops * 100.0 / (w->rb_handled_cnt + stats_by_rb[i].rb_drops));
 		}
-		wprintf("\t%-8s %8llu records (%.3lfMB, %.3lfMB/s, %.3lfMB/RB/s) processed, %llu dropped (%.3lf%% drop rate), %llu records (%.3lfMB) ignored.\n",
-			"TOTAL:", rb_handled_cnt, rb_handled_sz / 1024.0 / 1024.0,
-			rb_handled_sz / 1024.0 / 1024.0 / dur_s,
+		wprintf("\t%-8s %8llu (%.3lf%%) records (%.3lfMB, %.3lfMB/s, %.3lfMB/RB/s) processed, %llu rescued (%.3lf%%), %llu dropped (%.3lf%%).\n",
+			"TOTAL:",
+			rb_handled_cnt, rb_handled_cnt * 100.0 / (rb_handled_cnt + s.rb_drops),
+			rb_handled_sz / 1024.0 / 1024.0, rb_handled_sz / 1024.0 / 1024.0 / dur_s,
 			rb_handled_sz / 1024.0 / 1024.0 / dur_s / env.ringbuf_cnt,
-			s.rb_drops, s.rb_drops * 100.0 / (rb_handled_cnt + s.rb_drops),
-			rb_ignored_cnt, rb_ignored_sz / 1024.0 / 1024.0);
+			s.rb_rescues, s.rb_rescues * 100.0 / (rb_handled_cnt + s.rb_drops),
+			s.rb_drops, s.rb_drops * 100.0 / (rb_handled_cnt + s.rb_drops));
 	}
 
 skip_rb_stats:
@@ -271,17 +273,12 @@ skip_rb_stats:
 	}
 
 	wprintf("wprof's own resource usage:\n");
-	wprintf("\tCPU time (user/system, s):\t\t%.3lf/%.3lf\n",
-		ru.ru_utime.tv_sec + ru.ru_utime.tv_usec / 1000000.0,
-		ru.ru_stime.tv_sec + ru.ru_stime.tv_usec / 1000000.0);
-	wprintf("\tMemory (max RSS, MB):\t\t\t%.3lf\n",
-		ru.ru_maxrss / 1024.0);
-	wprintf("\tPage faults (maj/min, K)\t\t%.3lf/%.3lf\n",
-		ru.ru_majflt / 1000.0, ru.ru_minflt / 1000.0);
-	wprintf("\tBlock I/Os (K):\t\t\t\t%.3lf/%.3lf\n",
-		ru.ru_inblock / 1000.0, ru.ru_oublock / 1000.0);
-	wprintf("\tContext switches (vol/invol, K):\t%.3lf/%.3lf\n",
-		ru.ru_nvcsw / 1000.0, ru.ru_nivcsw / 1000.0);
+	wprintf("\tCPU time (user/system, s):\t\t%.3lf/%.3lf\n",	ru.ru_utime.tv_sec + ru.ru_utime.tv_usec / 1000000.0,
+									ru.ru_stime.tv_sec + ru.ru_stime.tv_usec / 1000000.0);
+	wprintf("\tMemory (max RSS, MB):\t\t\t%.3lf\n", 		ru.ru_maxrss / 1024.0);
+	wprintf("\tPage faults (maj/min, K)\t\t%.3lf/%.3lf\n", 		ru.ru_majflt / 1000.0, ru.ru_minflt / 1000.0);
+	wprintf("\tBlock I/Os (K):\t\t\t\t%.3lf/%.3lf\n", 		ru.ru_inblock / 1000.0, ru.ru_oublock / 1000.0);
+	wprintf("\tContext switches (vol/invol, K):\t%.3lf/%.3lf\n", 	ru.ru_nvcsw / 1000.0, ru.ru_nivcsw / 1000.0);
 
 skip_rusage:
 	for (int i = 0; i < env.cuda_cnt; i++) {
@@ -316,8 +313,10 @@ skip_rusage:
 			if (stats_by_cpu[i].rb_drops == 0)
 				continue;
 
-			eprintf("!!! Drops (CPU #%d): %llu (%llu handled, %.3lf%% drop rate)\n",
-				i, stats_by_cpu[i].rb_drops, stats_by_cpu[i].rb_handled,
+			eprintf("!!! Drops (CPU #%d): %llu (%.3lf%% handled, %.3lf%% rescued, %.3lf%% dropped)\n",
+				i, stats_by_cpu[i].rb_drops,
+				stats_by_cpu[i].rb_handled * 100.0 / (stats_by_cpu[i].rb_handled + stats_by_cpu[i].rb_drops),
+				stats_by_cpu[i].rb_rescues * 100.0 / (stats_by_cpu[i].rb_handled + stats_by_cpu[i].rb_drops),
 				stats_by_cpu[i].rb_drops * 100.0 / (stats_by_cpu[i].rb_handled + stats_by_cpu[i].rb_drops));
 		}
 		for (int i = 0; i < env.ringbuf_cnt; i++) {
@@ -325,12 +324,17 @@ skip_rusage:
 				continue;
 
 			struct worker_state *w = &workers[i];
-			eprintf("!!! Drops (RB #%d): %llu (%llu handled, %.3lf%% drop rate)\n",
-				i, stats_by_rb[i].rb_drops, w->rb_handled_cnt,
+			eprintf("!!! Drops (RB #%d): %llu (%.3lf%% handled, %.3lf%% rescued, %.3lf%% dropped)\n",
+				i, stats_by_rb[i].rb_drops,
+				w->rb_handled_cnt * 100.0 / (w->rb_handled_cnt + stats_by_rb[i].rb_drops),
+				stats_by_rb[i].rb_rescues * 100.0 / (w->rb_handled_cnt + stats_by_rb[i].rb_drops),
 				stats_by_rb[i].rb_drops * 100.0 / (w->rb_handled_cnt + stats_by_rb[i].rb_drops));
 		}
-		eprintf("!!! Drops (TOTAL): %llu (%llu handled, %.3lf%% drop rate)\n",
-			s.rb_drops, rb_handled_cnt, s.rb_drops * 100.0 / (rb_handled_cnt + s.rb_drops));
+		eprintf("!!! Drops (TOTAL): %llu (%.3lf%% handled, %.3lf%% rescued, %.3lf%% dropped)\n",
+			s.rb_drops,
+			rb_handled_cnt * 100.0 / (rb_handled_cnt + s.rb_drops),
+			s.rb_rescues * 100.0 / (rb_handled_cnt + s.rb_drops),
+			s.rb_drops * 100.0 / (rb_handled_cnt + s.rb_drops));
 	}
 	if (s.task_state_drops)
 		eprintf("!!! Task state drops: %llu\n", s.task_state_drops);
