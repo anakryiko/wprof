@@ -821,7 +821,6 @@ static int handle_hardirq(u64 now_ts, struct task_struct *task,
 	if (s->hardirq_ts == 0) /* we never recorded matching start, ignore */
 		return 0;
 
-	now_ts = bpf_ktime_get_ns();
 	emit_task_event(e, EV_SZ(hardirq), 0, EV_HARDIRQ_EXIT, now_ts, task) {
 		e->hardirq.hardirq_ts = s->hardirq_ts;
 		e->hardirq.irq = irq;
