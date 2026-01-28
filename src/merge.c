@@ -180,6 +180,17 @@ cache:
 	return 0;
 }
 
+static int wprof_event_cmp(const void *a, const void *b)
+{
+	const struct wprof_event_record *x = a;
+	const struct wprof_event_record *y = b;
+
+	if (x->e->ts == y->e->ts)
+		return 0;
+
+	return (s64)(x->e->ts - y->e->ts) < 0 ? -1 : 1;
+}
+
 static int wcuda_event_cmp(const void *a, const void *b)
 {
 	const struct wcuda_event *x = *(const struct wcuda_event **)a;
@@ -219,11 +230,16 @@ int wprof_merge_data(int workdir_fd, struct worker_state *workers)
 	/* Merge per-ringbuf and per-process CUDA dumps */
 	u64 events_sz = 0;
 	u64 event_cnt = 0;
-	struct wprof_event_iter *iters = calloc(env.ringbuf_cnt, sizeof(*iters));
-	struct wprof_event_record **recs = calloc(env.ringbuf_cnt, sizeof(*recs));
+	struct wmerge_state {
+		struct wprof_event_record *recs;
+		const struct wprof_event_record *next_rec;
+		u64 rec_cnt;
+		u64 rec_idx;
+	} *wmerges = calloc(env.ringbuf_cnt, sizeof(*wmerges));
 
 	for (int i = 0; i < env.ringbuf_cnt; i++) {
 		struct worker_state *w = &workers[i];
+		struct wmerge_state *wmerge = &wmerges[i];
 
 		long pos = ftell(w->dump);
 		if (pos < 0) {
@@ -249,8 +265,19 @@ int wprof_merge_data(int workdir_fd, struct worker_state *workers)
 		w->dump_hdr->events_sz = pos - sizeof(*w->dump_hdr);
 		w->dump_hdr->event_cnt = w->rb_handled_cnt;
 
-		iters[i] = wprof_event_iter_new(w->dump_hdr);
-		recs[i] = wprof_event_iter_next(&iters[i]);
+		/* re-sort events by timestamp, they can be a bit out of order */
+		wmerge->rec_idx = 0;
+		wmerge->rec_cnt = w->dump_hdr->event_cnt;
+		wmerge->recs = calloc(wmerge->rec_cnt, sizeof(*wmerge->recs));
+
+		const struct wprof_event_record *rec;
+		u64 idx = 0;
+		wprof_for_each_event(rec, w->dump_hdr) {
+			wmerge->recs[idx++] = *rec;
+		}
+
+		qsort(wmerge->recs, wmerge->rec_cnt, sizeof(*rec), wprof_event_cmp);
+		wmerge->next_rec = wmerge->rec_cnt > 0 ? &wmerge->recs[0] : NULL;
 	}
 
 	struct wcuda_state {
@@ -258,10 +285,10 @@ int wprof_merge_data(int workdir_fd, struct worker_state *workers)
 		size_t dump_sz;
 		const char *strs;
 		const struct wcuda_event **recs;
+		const struct wcuda_event *next_rec;
 		u64 rec_cnt;
 		u64 rec_idx;
 	} *wcudas = calloc(env.cuda_cnt, sizeof(*wcudas));
-	const struct wcuda_event **wcuda_recs = calloc(env.cuda_cnt, sizeof(*wcuda_recs));
 	struct strset *wcuda_strs = strset__new(UINT_MAX, "", 1);
 	for (int i = 0; i < env.cuda_cnt; i++) {
 		struct cuda_tracee *cuda = &env.cudas[i];
@@ -312,7 +339,7 @@ int wprof_merge_data(int workdir_fd, struct worker_state *workers)
 		}
 
 		qsort(wcuda->recs, wcuda->rec_cnt, sizeof(*wcuda->recs), wcuda_event_cmp);
-		wcuda_recs[i] = wcuda->rec_cnt > 0 ? wcuda->recs[0] : NULL;
+		wcuda->next_rec = wcuda->rec_cnt > 0 ? wcuda->recs[0] : NULL;
 	}
 
 	while (true) {
@@ -320,7 +347,7 @@ int wprof_merge_data(int workdir_fd, struct worker_state *workers)
 		u64 ts = 0;
 
 		for (int i = 0; i < env.ringbuf_cnt; i++) {
-			struct wprof_event_record *r = recs[i];
+			const struct wprof_event_record *r = wmerges[i].next_rec;
 			if (!r)
 				continue;
 			/* find event with smallest timestamp */
@@ -330,7 +357,7 @@ int wprof_merge_data(int workdir_fd, struct worker_state *workers)
 			}
 		}
 		for (int i = 0; i < env.cuda_cnt; i++) {
-			const struct wcuda_event *r = wcuda_recs[i];
+			const struct wcuda_event *r = wcudas[i].next_rec;
 			if (!r)
 				continue;
 			/* find event with smallest timestamp */
@@ -348,7 +375,8 @@ int wprof_merge_data(int workdir_fd, struct worker_state *workers)
 		size_t data_sz;
 
 		if (widx < env.ringbuf_cnt) {
-			struct wprof_event_record *r = recs[widx];
+			struct wmerge_state *wmerge = &wmerges[widx];
+			const struct wprof_event_record *r = wmerge->next_rec;
 
 			event_cnt += 1;
 			events_sz += r->sz;
@@ -356,12 +384,13 @@ int wprof_merge_data(int workdir_fd, struct worker_state *workers)
 			data = (const void *)r->e - sizeof(size_t);
 			data_sz = r->sz + sizeof(size_t);
 
-			recs[widx] = wprof_event_iter_next(&iters[widx]);
+			wmerge->rec_idx++;
+			wmerge->next_rec = wmerge->rec_idx < wmerge->rec_cnt ? &wmerge->recs[wmerge->rec_idx] : NULL;
 		} else {
 			int cidx = widx - env.ringbuf_cnt;
 
 			struct wcuda_state *wcuda = &wcudas[cidx];
-			const struct wcuda_event *r = wcuda_recs[cidx];
+			const struct wcuda_event *r = wcuda->next_rec;
 			struct cuda_tracee *cuda = &env.cudas[cidx];
 
 			const size_t wcuda_data_off = offsetof(struct wcuda_event, __wcuda_data);
@@ -406,7 +435,7 @@ int wprof_merge_data(int workdir_fd, struct worker_state *workers)
 			data_sz = r->sz + sizeof(size_t) + wprof_data_off - wcuda_data_off;
 
 			wcuda->rec_idx++;
-			wcuda_recs[cidx] = wcuda->rec_idx < wcuda->rec_cnt ? wcuda->recs[wcuda->rec_idx] : NULL;
+			wcuda->next_rec = wcuda->rec_idx < wcuda->rec_cnt ? wcuda->recs[wcuda->rec_idx] : NULL;
 		}
 
 		/* we prepend each with size prefix */
@@ -427,6 +456,8 @@ int wprof_merge_data(int workdir_fd, struct worker_state *workers)
 
 	for (int i = 0; i < env.ringbuf_cnt; i++) {
 		struct worker_state *w = &workers[i];
+		struct wmerge_state *wmerge = &wmerges[i];
+
 		munmap(w->dump_mem, w->dump_sz);
 		fclose(w->dump);
 		if (!env.keep_workdir)
@@ -438,7 +469,11 @@ int wprof_merge_data(int workdir_fd, struct worker_state *workers)
 		w->dump_sz = 0;
 		w->dump_mem = NULL;
 		w->dump_hdr = NULL;
+
+		free(wmerge->recs);
 	}
+	free(wmerges);
+
 	for (int i = 0; i < env.cuda_cnt; i++) {
 		struct cuda_tracee *cuda = &env.cudas[i];
 		struct wcuda_state *w = &wcudas[i];
@@ -458,6 +493,7 @@ int wprof_merge_data(int workdir_fd, struct worker_state *workers)
 		w->dump_hdr = NULL;
 		w->dump_sz = 0;
 	}
+	free(wcudas);
 
 	if (tid_cache) {
 		size_t bkt;
