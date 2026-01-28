@@ -97,6 +97,7 @@ const volatile u32 perf_ctr_cnt = 1; /* for veristat, reset in user space */
 
 u32 rb_cpu_map[1] SEC(".data.rb_cpu_map");
 const volatile u64 rb_cpu_map_mask;
+const volatile u64 rb_cnt;
 
 const volatile u64 rb_submit_threshold_bytes;
 
@@ -295,6 +296,26 @@ struct rb_ctx {
 	u64 has_dptr;
 };
 
+
+static __always_inline void *pick_rescue_rb()
+{
+	u32 rb_slot;
+	void *rb1, *rb2;
+
+	rb_slot = bpf_get_prandom_u32() % rb_cnt;
+	rb1 = bpf_map_lookup_elem(&rbs, &rb_slot);
+
+	rb_slot = bpf_get_prandom_u32() % rb_cnt;
+	rb2 = bpf_map_lookup_elem(&rbs, &rb_slot);
+
+	if (!rb1 || !rb2) /* should never happen */
+		return NULL;
+
+	u64 rb1_used = bpf_ringbuf_query(rb1, BPF_RB_AVAIL_DATA);
+	u64 rb2_used = bpf_ringbuf_query(rb2, BPF_RB_AVAIL_DATA);
+	return rb1_used < rb2_used ? rb1 : rb2;
+}
+
 static __always_inline struct rb_ctx __rb_event_reserve(struct task_struct *p, u64 fix_sz, u64 dyn_sz,
 							void **ev_out, struct bpf_dynptr **dptr)
 {
@@ -311,10 +332,31 @@ static __always_inline struct rb_ctx __rb_event_reserve(struct task_struct *p, u
 	rb_ctx.rb = rb;
 	rb_ctx.has_dptr = true;
 
-	if (bpf_ringbuf_reserve_dynptr(rb, fix_sz + dyn_sz, 0, &rb_ctx.dptr))
-		(void)inc_stat(rb_drops);
-	else
+	if (bpf_ringbuf_reserve_dynptr(rb, fix_sz + dyn_sz, 0, &rb_ctx.dptr)) {
+		bpf_ringbuf_submit_dynptr(&rb_ctx.dptr, 0); /* no-op */
+
+		/*
+		 * If designated ringbuf is full, fallback to picking best (least full) out of two
+		 * randomly picked ringbufs in a last ditch effort. This is meant to even out
+		 * utilization of ringbufs if system event load is highly skewed to smaller subset
+		 * of CPUs.
+		 */
+		rb_ctx.rb = rb = pick_rescue_rb();
+		if (!rb) {
+			(void)inc_stat(rb_misses);
+			rb_ctx.has_dptr = false;
+			return rb_ctx;
+		}
+
+		if (bpf_ringbuf_reserve_dynptr(rb, fix_sz + dyn_sz, 0, &rb_ctx.dptr)) {
+			(void)inc_stat(rb_drops);
+		} else {
+			(void)inc_stat(rb_rescues);
+			(void)inc_stat(rb_handled);
+		}
+	} else {
 		(void)inc_stat(rb_handled);
+	}
 
 	*ev_out = rb_ctx.ev = bpf_dynptr_data(&rb_ctx.dptr, 0, fix_sz);
 	if (dptr)
