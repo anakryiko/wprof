@@ -83,8 +83,8 @@ void log_printf(int verbosity, const char *fmt, ...)
 
 	gettimeofday(&tv, NULL);
 	tm = localtime(&tv.tv_sec);
-	len = snprintf(buf, sizeof(buf), "WPROFINJ(%d) %02d:%02d:%02d.%06ld: ",
-		       setup_ctx ? setup_ctx->tracee_pid : getpid(),
+	len = snprintf(buf, sizeof(buf), "WPROFINJ(%d/%d) %02d:%02d:%02d.%06ld: ",
+		       setup_ctx ? setup_ctx->tracee_pid : getpid(), gettid(),
 		       tm->tm_hour, tm->tm_min, tm->tm_sec, tv.tv_usec);
 
 	va_start(args, fmt);
