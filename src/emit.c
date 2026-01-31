@@ -818,6 +818,7 @@ static void emit_perf_counters(struct worker_state *w,
 {
 	for (int i = 0; i < env.pmu_event_cnt; i++) {
 		const struct pmu_event *ev = &env.pmu_events[i];
+		double value = -1.0;
 
 		if (ev->perf_type == PERF_TYPE_DERIVED) {
 			/* Derived metric: compute ratio of two hw counters */
@@ -826,34 +827,26 @@ static void emit_perf_counters(struct worker_state *w,
 			/* Get stored_idx for each counter */
 			int num_stored = env.pmu_events[num_ev_idx].stored_idx;
 			int denom_stored = env.pmu_events[denom_ev_idx].stored_idx;
-			if (num_stored >= 0 && denom_stored >= 0 &&
-					st_ctrs->val[num_stored] && st_ctrs->val[denom_stored]) {
-				double num, denom;
-				if (ev_ctrs && ev_ctrs->val[num_stored] && ev_ctrs->val[denom_stored]) {
-					num = ev_ctrs->val[num_stored] - st_ctrs->val[num_stored];
-					denom = ev_ctrs->val[denom_stored] - st_ctrs->val[denom_stored];
-				} else {
-					num = st_ctrs->val[num_stored];
-					denom = st_ctrs->val[denom_stored];
-				}
-				if (denom > 0) {
-					emit_kv_float(iid_str(emit_intern_str(w, ev->name), ev->name),
-							"%.6lf", num / denom);
-				}
+			double num, denom;
+
+			if (ev_ctrs) {
+				num = ev_ctrs->val[num_stored] - st_ctrs->val[num_stored];
+				denom = ev_ctrs->val[denom_stored] - st_ctrs->val[denom_stored];
+			} else {
+				num = st_ctrs->val[num_stored];
+				denom = st_ctrs->val[denom_stored];
 			}
+
+			if (denom > 0)
+				value = num / denom;
 		} else {
 			/* Hardware counter: emit recorded value */
 			int idx = ev->stored_idx;
-			if (idx >= 0 && st_ctrs->val[idx]) {
-				if (ev_ctrs && ev_ctrs->val[idx]) {
-					emit_kv_float(iid_str(emit_intern_str(w, ev->name), ev->name),
-									"%.6lf", (double)ev_ctrs->val[idx] - st_ctrs->val[idx]);
-				} else {
-					emit_kv_float(iid_str(emit_intern_str(w, ev->name), ev->name),
-									"%.6lf", (double)st_ctrs->val[idx]);
-				}
-			}
+			value = ev_ctrs ? ev_ctrs->val[idx] - st_ctrs->val[idx] : st_ctrs->val[idx];
 		}
+
+		if (value != -1.0)
+			emit_kv_float(iid_str(emit_intern_str(w, ev->name), ev->name), "%.6lf", value);
 	}
 }
 

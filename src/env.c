@@ -465,10 +465,12 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		struct pmu_event ev;
 		int err;
 
-		if (env.pmu_event_cnt == -1) {
+		if (env.pmu_event_cnt < 0)
 			env.pmu_event_cnt = 0;
-			if (strcmp(arg, "clear") == 0)
-				break;
+
+		if (strcmp(arg, "clear") == 0) {
+			env.pmu_event_cnt = 0;
+			break;
 		}
 
 		if (env.pmu_event_cnt >= MAX_PMU_COUNTERS) {
