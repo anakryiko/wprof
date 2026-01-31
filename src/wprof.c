@@ -1166,7 +1166,6 @@ int main(int argc, char **argv)
 		if (env.pmu_event_cnt == -1) {
 			for (int i = 0; i < cfg->pmu_event_cnt; i++) {
 				deserialized_pmu_event(&cfg->pmu_events[i], &env.pmu_events[i]);
-				env.pmu_events[i].stored_idx = i;
 			}
 			env.pmu_event_cnt = cfg->pmu_event_cnt;
 		}
