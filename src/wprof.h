@@ -20,7 +20,7 @@
 #define MAX_STACK_DEPTH 128
 #endif
 
-#define MAX_PERF_COUNTERS 6
+#define MAX_PMU_COUNTERS 8
 
 #ifndef PF_WQ_WORKER
 #define PF_WQ_WORKER 0x00000020
@@ -120,7 +120,7 @@ struct wprof_task {
 };
 
 struct perf_counters {
-	u64 val[MAX_PERF_COUNTERS];
+	u64 val[MAX_PMU_COUNTERS];
 };
 
 enum waking_flags {
