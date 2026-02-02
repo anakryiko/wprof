@@ -7,8 +7,8 @@
 #include <stdint.h>
 #include <linux/perf_event.h>
 #include "wprof_types.h"
+#include "wprof.h"
 
-#define MAX_PMU_COUNTERS 6
 #define PMU_NAME_LEN 64
 
 /* Marker for derived metrics (not a real perf type) */
