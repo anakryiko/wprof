@@ -36,7 +36,7 @@ struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__type(key, u32);
 	__type(value, struct stack_trace);
-	__uint(max_entries, 2); /* maximum number of stack traces per event */
+	__uint(max_entries, 1); /* maximum number of stack traces per event */
 } stack_trace_scratch SEC(".maps");
 
 #define inc_stat(stat) ({							\
@@ -396,7 +396,8 @@ static void capture_perf_counters(struct perf_counters *c, int cpu)
 	}
 }
 
-static void __capture_stack_trace(void *ctx, struct task_struct *task, struct stack_trace *st, enum stack_trace_kind kind)
+static void __capture_stack_trace(void *ctx, struct task_struct *task, struct stack_trace *st,
+				  enum stack_trace_kind kind, bool user_only)
 {
 	u64 off = zero;
 
@@ -407,9 +408,13 @@ static void __capture_stack_trace(void *ctx, struct task_struct *task, struct st
 	st->kind = kind;
 	st->pid = task->tgid;
 
-	st->kstack_sz = bpf_get_task_stack(task, st->addrs, sizeof(st->addrs) / 2, 0);
-	if (st->kstack_sz > 0)
-		off += st->kstack_sz;
+	if (user_only) {
+		st->kstack_sz = -ENOENT;
+	} else {
+		st->kstack_sz = bpf_get_task_stack(task, st->addrs, sizeof(st->addrs) / 2, 0);
+		if (st->kstack_sz > 0)
+			off += st->kstack_sz;
+	}
 
 	if (off > sizeof(st->addrs) / 2) /* impossible */
 		off = sizeof(st->addrs) / 2;
@@ -417,19 +422,27 @@ static void __capture_stack_trace(void *ctx, struct task_struct *task, struct st
 	st->ustack_sz = bpf_get_task_stack(task, (void *)st->addrs + off, sizeof(st->addrs) / 2, BPF_F_USER_STACK);
 }
 
-static struct stack_trace *grab_stack_trace(int slot, void *ctx, struct task_struct *task, size_t *sz, enum stack_trace_kind kind)
+static struct stack_trace *__grab_stack_trace(void *ctx, struct task_struct *task,
+					      enum stack_trace_kind kind, bool user_only,
+					      size_t *sz)
 {
 	struct stack_trace *st;
 
-	st = bpf_map_lookup_elem(&stack_trace_scratch, &slot);
+	st = bpf_map_lookup_elem(&stack_trace_scratch, &zero);
 	if (!st)
 		return *sz = 0, NULL; /* shouldn't happen */
 
-	__capture_stack_trace(ctx, task, st, kind);
+	__capture_stack_trace(ctx, task, st, kind, user_only);
 	*sz = (st->kstack_sz < 0 ? 0 : st->kstack_sz) +
 	       (st->ustack_sz < 0 ? 0 : st->ustack_sz) +
 	       offsetof(struct stack_trace, addrs);
 	return st;
+}
+
+static __always_inline struct stack_trace *grab_stack_trace(void *ctx, struct task_struct *task,
+							    enum stack_trace_kind kind, size_t *sz)
+{
+	return __grab_stack_trace(ctx, task, kind, false /*!user_only*/, sz);
 }
 
 static int emit_stack_trace(struct stack_trace *t, size_t sz, struct bpf_dynptr *dptr, size_t offset)
@@ -497,7 +510,7 @@ int wprof_timer_tick(void *ctx)
 	size_t fix_sz = EV_SZ(timer);
 
 	if (requested_stack_traces & ST_TIMER)
-		tr = grab_stack_trace(0, ctx, NULL, &dyn_sz, ST_TIMER);
+		tr = grab_stack_trace(ctx, NULL, ST_TIMER, &dyn_sz);
 
 	emit_task_event_dyn(e, dptr, fix_sz, dyn_sz, EV_TIMER, now_ts, cur) {
 		if (tr) {
@@ -560,7 +573,7 @@ int BPF_PROG(wprof_task_switch,
 	size_t fix_sz = EV_SZ(swtch);
 
 	if (requested_stack_traces & ST_OFFCPU)
-		tr_out = grab_stack_trace(0, ctx, NULL, &tr_out_sz, ST_OFFCPU);
+		tr_out = grab_stack_trace(ctx, NULL, ST_OFFCPU, &tr_out_sz);
 
 	int scx_layer_id = -1;
 	u64 scx_dsq_id = 0;
@@ -633,7 +646,7 @@ int BPF_PROG(wprof_task_waking, struct task_struct *p)
 	size_t dyn_sz = 0;
 	size_t fix_sz = EV_SZ(waking);
 
-	tr = grab_stack_trace(0, ctx, NULL, &dyn_sz, ST_WAKER);
+	tr = grab_stack_trace(ctx, NULL, ST_WAKER, &dyn_sz);
 	if (!tr)
 		goto skip_emit;
 
@@ -681,7 +694,7 @@ int BPF_PROG(wprof_task_wakeup_new, struct task_struct *p)
 	size_t dyn_sz = 0;
 	size_t fix_sz = EV_SZ(wakeup_new);
 
-	tr = grab_stack_trace(0, ctx, NULL, &dyn_sz, ST_WAKER);
+	tr = grab_stack_trace(ctx, NULL, ST_WAKER, &dyn_sz);
 	if (!tr)
 		goto skip_emit;
 
