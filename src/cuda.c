@@ -125,7 +125,7 @@ force_continue:
 		return -errno;
 	}
 
-	err = tracee_handshake(tracee, log_fd);
+	err = tracee_handshake(tracee, log_fd, false);
 	if (err) {
 		eprintf("Injection handshake with %s failed: %d\n",
 			proc_str(pid, ns_tid_by_host_tid(pid, pid), proc_name(pid)), err);

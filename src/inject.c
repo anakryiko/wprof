@@ -1171,7 +1171,7 @@ void tracee_free(struct tracee_state *tracee)
 	free(tracee);
 }
 
-int tracee_handshake(struct tracee_state *tracee, int log_fd)
+int tracee_handshake(struct tracee_state *tracee, int log_fd, bool use_usdts)
 {
 	int err = 0, ctx_mem_fd = -1;
 
@@ -1200,6 +1200,7 @@ int tracee_handshake(struct tracee_state *tracee, int log_fd)
 		goto cleanup;
 	}
 	tracee->run_ctx = ctx_mem;
+	tracee->run_ctx->use_usdts = use_usdts;
 	tracee->info.run_ctx = ctx_mem;
 
 	int tracee_fds[2] = {ctx_mem_fd, log_fd};
