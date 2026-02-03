@@ -16,6 +16,7 @@
 #include "env.h"
 #include "stacktrace.h"
 #include "cuda_data.h"
+#include "wprof_cupti.h"
 #include "demangle.h"
 
 enum task_run_state {
@@ -165,21 +166,34 @@ static inline u64 cuda_corr_key(u32 pid, u32 corr_id)
 	return ((u64)pid << 32) | corr_id;
 }
 
-static void cuda_corr_store(u32 pid, u32 corr_id, u64 api_ts)
+struct cuda_corr_info {
+	u64 api_ts;
+	int tr_id; /* stack trace ID for CUDA API call, comes from BPF side */
+};
+
+static struct cuda_corr_info *cuda_corr_get(u32 pid, u32 corr_id)
 {
 	u64 key = cuda_corr_key(pid, corr_id);
+	struct cuda_corr_info *info;
 
-	hashmap__set(cuda_corrs, key, (void *)api_ts, NULL, NULL);
+	if (hashmap__find(cuda_corrs, key, &info))
+		return info;
+
+	info = calloc(1, sizeof(*info));
+	hashmap__set(cuda_corrs, key, info, NULL, NULL);
+
+	return info;
 }
 
-static u64 cuda_corr_pop(u32 pid, u32 corr_id)
+static struct cuda_corr_info *cuda_corr_pop(u32 pid, u32 corr_id)
 {
-	u64 api_ts, key = cuda_corr_key(pid, corr_id);
+	u64 key = cuda_corr_key(pid, corr_id);
+	struct cuda_corr_info *info;
 
-	if (hashmap__delete(cuda_corrs, key, NULL, &api_ts))
-		return api_ts;
+	if (hashmap__delete(cuda_corrs, key, NULL, &info))
+		return info;
 
-	return 0;
+	return NULL;
 }
 
 int init_emit(struct worker_state *w)
@@ -2044,6 +2058,14 @@ static void simplify_demangled_name(char *name)
 	name[j] = '\0';
 }
 
+static void emit_gpu_delay(u64 ts, int pid, u32 corr_id)
+{
+	struct cuda_corr_info *ci = cuda_corr_pop(pid, corr_id);
+	if (ci && ci->api_ts)
+		emit_kv_float(IID_ANNK_CUDA_GPU_DELAY_US, "%.3lf", (ts - ci->api_ts) / 1000.0);
+	free(ci);
+}
+
 /* WCK_CUDA_KERNEL */
 static int process_cuda_kernel(struct worker_state *w, struct wprof_event *e, size_t size)
 {
@@ -2079,9 +2101,7 @@ static int process_cuda_kernel(struct worker_state *w, struct wprof_event *e, si
 			emit_kv_str(IID_ANNK_CUDA_MANGLED_NAME, iid_str(mangled_name_iid, cuda_kern_name));
 		}
 
-		u64 api_ts = cuda_corr_pop(e->task.pid, cu->corr_id);
-		if (api_ts)
-			emit_kv_float(IID_ANNK_CUDA_GPU_DELAY_US, "%.3lf", (e->ts - api_ts) / 1000.0);
+		emit_gpu_delay(e->ts, e->task.pid, cu->corr_id);
 
 		emit_kv_int(IID_ANNK_CUDA_DEVICE_ID, cu->device_id);
 		emit_kv_int(IID_ANNK_CUDA_STREAM_ID, cu->stream_id);
@@ -2130,9 +2150,7 @@ static int process_cuda_memcpy(struct worker_state *w, struct wprof_event *e, si
 	struct pb_str name = iid_str(name_iid, sfmt("%s:%s", "memcpy", copy_kind_str));
 
 	emit_track_slice_start(clamp_ts(e->ts), track_uuid, name, IID_CAT_CUDA_MEMCPY) {
-		u64 api_ts = cuda_corr_pop(e->task.pid, cu->corr_id);
-		if (api_ts)
-			emit_kv_float(IID_ANNK_CUDA_GPU_DELAY_US, "%.3lf", (e->ts - api_ts) / 1000.0);
+		emit_gpu_delay(e->ts, e->task.pid, cu->corr_id);
 
 		emit_kv_int(IID_ANNK_CUDA_BYTE_CNT, cu->byte_cnt);
 		emit_kv_str(IID_ANNK_CUDA_KIND, iid_str(kind_iid, copy_kind_str));
@@ -2183,9 +2201,7 @@ static int process_cuda_memset(struct worker_state *w, struct wprof_event *e, si
 	struct pb_str name = iid_str(name_iid, sfmt("%s:%s", "memset", mem_kind_str));
 
 	emit_track_slice_start(clamp_ts(e->ts), track_uuid, name, IID_CAT_CUDA_MEMSET) {
-		u64 api_ts = cuda_corr_pop(e->task.pid, cu->corr_id);
-		if (api_ts)
-			emit_kv_float(IID_ANNK_CUDA_GPU_DELAY_US, "%.3lf", (e->ts - api_ts) / 1000.0);
+		emit_gpu_delay(e->ts, e->task.pid, cu->corr_id);
 
 		emit_kv_int(IID_ANNK_CUDA_BYTE_CNT, cu->byte_cnt);
 		emit_kv_str(IID_ANNK_CUDA_KIND, iid_str(kind_iid, mem_kind_str));
@@ -2249,9 +2265,7 @@ static int process_cuda_sync(struct worker_state *w, struct wprof_event *e, size
 	struct pb_str name = iid_str(name_iid, sfmt("%s:%s", "sync", sync_type_str));
 
 	emit_track_slice_start(clamp_ts(e->ts), track_uuid, name, IID_CAT_CUDA_SYNC) {
-		u64 api_ts = cuda_corr_pop(e->task.pid, cu->corr_id);
-		if (api_ts)
-			emit_kv_float(IID_ANNK_CUDA_GPU_DELAY_US, "%.3lf", (e->ts - api_ts) / 1000.0);
+		emit_gpu_delay(e->ts, e->task.pid, cu->corr_id);
 
 		emit_kv_str(IID_ANNK_CUDA_KIND, iid_str(kind_iid, sync_type_str));
 		emit_kv_int(IID_ANNK_CUDA_STREAM_ID, cu->stream_id);
@@ -2309,6 +2323,11 @@ static int process_cuda_api(struct worker_state *w, struct wprof_event *e, size_
 		return 0;
 
 	(void)task_state(w, &e->task);
+
+	/* remember host-side API call timestamp */
+	struct cuda_corr_info *ci = cuda_corr_get(e->task.pid, cu->corr_id);
+	ci->api_ts = e->ts;
+
 	u64 track_uuid = TRACK_UUID(TK_THREAD, e->task.tid);
 
 	const char *name;
@@ -2322,14 +2341,15 @@ static int process_cuda_api(struct worker_state *w, struct wprof_event *e, size_
 
 	emit_track_slice_start(clamp_ts(e->ts), track_uuid,
 			       iid_str(name_iid, name), IID_CAT_CUDA_API) {
+		/* we've recorded stack trace ID earlier from EV_CUDA_CALL event */
+		emit_callstack(w, ci->tr_id);
+
 		emit_flow_id(((u64)e->task.pid << 32) | cu->corr_id);
 	}
 
 	emit_track_slice_end(clamp_ts(cu->end_ts), track_uuid,
 			     iid_str(name_iid, name), IID_CAT_CUDA_API);
 
-	/* remember host-side API call timestamp */
-	cuda_corr_store(e->task.pid, cu->corr_id, e->ts);
 
 	return 0;
 }
@@ -2344,6 +2364,10 @@ static int process_cuda_call(struct worker_state *w, struct wprof_event *e, size
 		return 0;
 
 	(void)task_state(w, &e->task);
+
+	/* remember stack trace ID for subsequent WCK_CUDA_API event */
+	struct cuda_corr_info *ci = cuda_corr_get(e->task.pid, e->cuda_call.corr_id);
+	ci->tr_id = event_stack_trace_id(w, e, ST_CUDA);
 
 	return 0;
 }

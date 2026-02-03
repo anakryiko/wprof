@@ -773,7 +773,7 @@ int process_stack_traces(struct worker_state *w)
 
 #if DEBUG_SYMBOLIZATION
 	struct wprof_stack_frame_record *frec;
-	wprof_for_each_stack_frame(frec, w->dump_hdr) {
+	wprof_for_each_stack_frame(frec, w->dump_hdr, 0) {
 		const char *indent = "";
 		const struct wprof_stack_frame *f = frec->f;
 		u32 fr_idx = frec->idx;
@@ -789,7 +789,7 @@ int process_stack_traces(struct worker_state *w)
 			src, f->line_num, f->addr);
 	}
 	struct wprof_stack_trace_record *trec;
-	wprof_for_each_stack_trace(trec, w->dump_hdr) {
+	wprof_for_each_stack_trace(trec, w->dump_hdr, 0) {
 		const char *indent = "    ";
 
 		eprintf("STACK #%d (%u -> %u) HAS %u FRAMES:\n",
