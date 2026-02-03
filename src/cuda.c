@@ -409,7 +409,8 @@ void cuda_trace_deactivate(void)
 	if (env.cudas_deactivated)
 		return;
 
-	vprintf("Signaling CUDA tracees to shut down...\n");
+	wprintf("Deactivating CUDA trace injections...\n");
+
 	for (int i = 0; i < env.cuda_cnt; i++) {
 		struct cuda_tracee *cuda = &env.cudas[i];
 
@@ -483,24 +484,50 @@ void cuda_trace_deactivate(void)
 
 			if (cuda->state != TRACEE_IGNORED && cuda->state != TRACEE_SETUP_FAILED)
 				cuda->state = TRACEE_INACTIVE;
+		}
+	}
 
-			int err = tracee_retract(cuda->tracee);
-			if (err) {
-				eprintf("Injection retraction for tracee #%d (%s) FAILED: %d!\n",
-					i, cuda_str(cuda), err);
-			}
+	env.cudas_deactivated = true;
+}
+
+void cuda_trace_retract(void)
+{
+	if (env.cudas_retracted)
+		return;
+
+	wprintf("Retracting CUDA trace injections...\n");
+
+	for (int i = 0; i < env.cuda_cnt; i++) {
+		struct cuda_tracee *cuda = &env.cudas[i];
+
+		switch (cuda->state) {
+		case TRACEE_IGNORED:
+		case TRACEE_SETUP_FAILED:
+		case TRACEE_INACTIVE:
+			break;
+		default:
+			continue;
+		}
+
+		dprintf(1, "Retracting tracee #%d (%s)...\n", i, cuda_str(cuda));
+
+		int err = tracee_retract(cuda->tracee);
+		if (err) {
+			eprintf("Retraction for tracee #%d (%s) FAILED: %d!\n",
+				i, cuda_str(cuda), err);
 		}
 
 		if (cuda->state != TRACEE_IGNORED) /* we already emitted those logs */
 			dump_tracee_log(cuda, i);
 	}
 
-	env.cudas_deactivated = true;
+	env.cudas_retracted = true;
 }
 
 void cuda_trace_teardown(void)
 {
 	cuda_trace_deactivate();
+	cuda_trace_retract();
 
 	for (int i = 0; i < env.cuda_cnt; i++) {
 		struct cuda_tracee *cuda = &env.cudas[i];

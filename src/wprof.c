@@ -1380,8 +1380,13 @@ int main(int argc, char **argv)
 	detach_bpf(&bpf_state, num_cpus);
 
 	if (env.cuda_cnt > 0) {
-		wprintf("Retracting CUDA trace injections...\n");
 		cuda_trace_deactivate();
+		/*
+		 * If we capture CUDA stack traces, we want libwprofinj.so to be loaded during
+		 * stack symbolization, so we'll perform final retraction later.
+		 */
+		if (!(env.requested_stack_traces & ST_CUDA))
+			cuda_trace_retract();
 	}
 
 	wprintf("Draining...\n");
@@ -1400,6 +1405,9 @@ int main(int argc, char **argv)
 			eprintf("Failed to symbolize and dump stack traces: %d\n", err);
 			goto cleanup;
 		}
+		/* we delayed ptrace retraction to symbolize libwprofinj.so stacks */
+		if (env.cuda_cnt > 0)
+			cuda_trace_retract();
 	}
 
 	{
