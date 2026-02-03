@@ -66,6 +66,9 @@ const char *cuda_str(const struct cuda_tracee *t);
 int cuda_trace_setup(int workdir_fd);
 void cuda_trace_teardown(void);
 int cuda_trace_prepare(int workdir_fd, long sess_timeout_ms);
+struct bpf_state;
+struct bpf_program;
+int cuda_trace_attach_usdts(struct bpf_state *st, struct bpf_program *prog);
 int cuda_trace_activate(long sess_start_ts, long sess_end_ts);
 void cuda_trace_deactivate(void);
 

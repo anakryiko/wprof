@@ -1018,6 +1018,7 @@ struct tracee_state *tracee_inject(int pid)
 	tracee->info.ns_pid = tracee->ns_pid;
 	tracee->info.name = tracee->proc_name;
 	tracee->info.uds_fd = tracee->uds_local_fd;
+	tracee->info.lib_fd = tracee->memfd_remote_fd;
 
 	if (env_debug_level >= 1 && (env_log_set & LOG_INJECTION)) {
 		struct vma_info *vma;

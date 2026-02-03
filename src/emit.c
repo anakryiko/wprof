@@ -557,6 +557,7 @@ static const char *event_kind_str_map[] = {
 	[EV_IPI_EXIT] = "IPI_EXIT",
 	[EV_REQ_EVENT] = "REQ_EVENT",
 	[EV_SCX_DSQ_END] = "SCX_DSQ_END",
+	[EV_CUDA_CALL] = "CUDA_CALL",
 };
 
 __unused
@@ -2092,7 +2093,6 @@ static int process_cuda_kernel(struct worker_state *w, struct wprof_event *e, si
 		emit_kv_int(IID_ANNK_CUDA_GRID_Y, cu->grid_y);
 		emit_kv_int(IID_ANNK_CUDA_GRID_Z, cu->grid_z);
 
-
 		emit_flow_id(((u64)e->task.pid << 32) | cu->corr_id);
 	}
 
@@ -2334,6 +2334,20 @@ static int process_cuda_api(struct worker_state *w, struct wprof_event *e, size_
 	return 0;
 }
 
+/* EV_CUDA_CALL */
+static int process_cuda_call(struct worker_state *w, struct wprof_event *e, size_t size)
+{
+	if (env.capture_cuda != TRUE || !(env.requested_stack_traces & ST_CUDA))
+		return 0;
+
+	if (!should_trace_task(&e->task))
+		return 0;
+
+	(void)task_state(w, &e->task);
+
+	return 0;
+}
+
 typedef int (*event_fn)(struct worker_state *w, struct wprof_event *e, size_t size);
 
 static event_fn ev_fns[] = {
@@ -2355,6 +2369,7 @@ static event_fn ev_fns[] = {
 	[EV_REQ_EVENT] = process_req_event,
 	[EV_REQ_TASK_EVENT] = process_req_task_event,
 	[EV_SCX_DSQ_END] = process_scx_dsq_end,
+	[EV_CUDA_CALL] = process_cuda_call,
 
 	[WCK_CUDA_KERNEL] = process_cuda_kernel,
 	[WCK_CUDA_MEMCPY] = process_cuda_memcpy,

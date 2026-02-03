@@ -445,6 +445,12 @@ static __always_inline struct stack_trace *grab_stack_trace(void *ctx, struct ta
 	return __grab_stack_trace(ctx, task, kind, false /*!user_only*/, sz);
 }
 
+static __always_inline struct stack_trace *grab_stack_trace_user(void *ctx, struct task_struct *task,
+								 enum stack_trace_kind kind, size_t *sz)
+{
+	return __grab_stack_trace(ctx, task, kind, true /*user_only*/, sz);
+}
+
 static int emit_stack_trace(struct stack_trace *t, size_t sz, struct bpf_dynptr *dptr, size_t offset)
 {
 	if (sz == 0)
@@ -1381,6 +1387,37 @@ int BPF_USDT(wprof_req_task_stats,
 		e->req_task.enqueue_ts = enqueue_ts;
 		e->req_task.wait_time_ns = wait_time_ns;
 		e->req_task.run_time_ns = run_time_ns;
+	}
+
+	return 0;
+}
+
+SEC("?usdt")
+int BPF_USDT(wprof_cuda_call, int domain, int cbid, __u32 corr_id)
+{
+	u64 now_ts = bpf_ktime_get_ns();
+	struct task_struct *task = bpf_get_current_task_btf();
+
+	if (!should_trace_task(task, now_ts))
+		return 0;
+
+	struct wprof_event *e;
+	struct bpf_dynptr *dptr;
+	struct stack_trace *tr = NULL;
+	size_t dyn_sz = 0;
+	size_t fix_sz = EV_SZ(cuda_call);
+
+	if (requested_stack_traces & ST_CUDA)
+		tr = grab_stack_trace_user(ctx, NULL, ST_CUDA, &dyn_sz);
+
+	emit_task_event_dyn(e, dptr, fix_sz, dyn_sz, EV_CUDA_CALL, now_ts, task) {
+		e->cuda_call.domain = domain;
+		e->cuda_call.cbid = cbid;
+		e->cuda_call.corr_id = corr_id;
+		if (tr) {
+			emit_stack_trace(tr, dyn_sz, dptr, fix_sz);
+			e->flags |= ST_CUDA;
+		}
 	}
 
 	return 0;
