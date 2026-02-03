@@ -41,7 +41,8 @@ VMLINUX := ../vmlinux.h/include/$(ARCH)/vmlinux.h
 # Use our own libbpf API headers and Linux UAPI headers distributed with
 # libbpf to avoid dependency on system-wide headers, which could be missing or
 # outdated
-INCLUDES := -I$(OUTPUT) -I../include -I../libbpf/include/uapi -I../libbpf/include -I$(dir $(VMLINUX)) -I$(LIBBLAZESYM_INC)
+INCLUDES := -I$(OUTPUT) -I../include -I../libbpf/include/uapi				\
+	    -I../libbpf/include -I$(dir $(VMLINUX)) -I$(LIBBLAZESYM_INC) -I../usdt
 CFLAGS ?= -g -O$(if $(DEBUG),0,2) -Wall
 ALL_CFLAGS := $(CFLAGS) $(EXTRA_CFLAGS) -fno-omit-frame-pointer				\
 	      -Wno-c23-extensions -Wno-sign-compare -Wno-format-truncation		\

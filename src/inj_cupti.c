@@ -11,6 +11,8 @@
 #include <time.h>
 #include <sched.h>
 
+#include <usdt.h>
+
 #include "wprof_cupti.h"
 #include "strset.h"
 #include "inj.h"
@@ -64,6 +66,7 @@ enum cupti_phase {
 static void *cupti_handle = NULL;
 static CUpti_ActivityThreadIdType cupti_old_thread_id_type = CUPTI_ACTIVITY_THREAD_ID_TYPE_SYSTEM;
 static CUpti_SubscriberHandle cupti_subscr = NULL;
+static bool cupti_subscr_enabled = false;
 
 static enum cupti_phase cupti_phase = CUPTI_UNINIT;
 static long cupti_alloc_buf_cnt = 0;
@@ -476,6 +479,30 @@ int init_cupti_activities(void)
 
 static void cupti_callback(void *userdata, CUpti_CallbackDomain domain, CUpti_CallbackId cbid, const void *cbdata);
 
+static void cupti_enable_subscription(void)
+{
+	CUptiResult ret;
+
+	/*
+	 * We can enable subscription domains early if CUDA stack traces are requested (so that we
+	 * get that USDT triggered; or we can do it at the very end just to do CUPTI finalization
+	 */
+	if (cupti_subscr_enabled)
+		return;
+
+	vlog("Enabling CUPTI_CB_DOMAIN_RUNTIME_API subscription...\n");
+	ret = cupti_enable_domain(1, cupti_subscr, CUPTI_CB_DOMAIN_RUNTIME_API);
+	if (ret != CUPTI_SUCCESS)
+		elog("Failed to enable CUPTI_CB_DOMAIN_RUNTIME_API subscription: %d (%s)\n", ret, cupti_errstr(ret));
+
+	vlog("Enabling CUPTI_CB_DOMAIN_DRIVER_API subscription...\n");
+	ret = cupti_enable_domain(1, cupti_subscr, CUPTI_CB_DOMAIN_DRIVER_API);
+	if (ret != CUPTI_SUCCESS)
+		elog("Failed to enable CUPTI_CB_DOMAIN_DRIVER_API subscription: %d (%s)\n", ret, cupti_errstr(ret));
+
+	cupti_subscr_enabled = true;
+}
+
 int start_cupti_activities(void)
 {
 	CUptiResult ret;
@@ -542,6 +569,9 @@ int start_cupti_activities(void)
 		vlog("CUPTI activity kind '%s' activated successfully.\n", cupti_act_kind_str(kind));
 	}
 
+	if (run_ctx->use_usdts)
+		cupti_enable_subscription();
+
 	vlog("CUPTI activity subscription initialized successfully.\n");
 	
 	return 0;
@@ -588,12 +618,51 @@ static volatile bool cupti_finalizing __aligned(64) = false;
 static long cupti_fini_cnt = 0;
 static int cupti_fini_pipe_fds[2] = {-1, -1};
 
+static __thread CUpti_CallbackId cur_cbid = 0;
+static __thread CUpti_CallbackDomain cur_domain = 0;
+
 static void cupti_callback(void *userdata, CUpti_CallbackDomain domain, CUpti_CallbackId cbid, const void *cbdata)
 {
 	if (domain != CUPTI_CB_DOMAIN_DRIVER_API && domain != CUPTI_CB_DOMAIN_RUNTIME_API)
 		return;
 
 	const CUpti_CallbackData *cb = cbdata;
+
+	if (!run_ctx->use_usdts)
+		goto skip_usdt;
+
+	if (cb->callbackSite == CUPTI_API_ENTER) {
+		if (cur_cbid) /* we have ongoing tracked CBID, ignore this one */
+			goto skip_usdt;
+
+		switch (cuda_api_category(domain, cbid)) {
+		case CUDA_CAT_LAUNCH:
+		case CUDA_CAT_SYNC:
+		case CUDA_CAT_MEM:
+			/*
+			 * Some higher-level API calls, e.g., cudaLaunchKernel, will
+			 * eventually call lower-level API (i.e., cuLaunchKernel).
+			 * CUPTI will trigger callback for both, but cuLaunchKernel
+			 * is not the actual API that was triggered by user code,
+			 * so we want to ignore it.
+			 * For this we keep current active "interesting" CBID,
+			 * and reset it in a matching CUPTI_API_EXIT callsite.
+			 */
+			cur_cbid = cbid;
+			cur_domain = domain;
+			USDT(wprof, cuda_call, domain, cbid, cb->correlationId);
+			break;
+		case CUDA_CAT_OTHER:
+			break;
+		}
+	} else { /* CUPTI_API_EXIT */
+		if (cur_domain == domain && cur_cbid == cbid) {
+			cur_domain = 0;
+			cur_cbid = 0;
+		}
+	}
+
+skip_usdt:
 	if (cb->callbackSite != CUPTI_API_EXIT)
 		return;
 
@@ -644,22 +713,12 @@ void finalize_cupti_activities(void)
 		elog("!!! CUDA dump finalization returned error: %d\n", err);
 
 	if (live) {
-		CUptiResult ret;
-
 		if (pipe2(cupti_fini_pipe_fds, O_CLOEXEC) < 0)
 			elog("Failed to create pipe FDs: %d!\n", -errno);
 
 		cupti_finalizing = true;
 
-		vlog("Enabling CUPTI_CB_DOMAIN_RUNTIME_API subscription...\n");
-		ret = cupti_enable_domain(1, cupti_subscr, CUPTI_CB_DOMAIN_RUNTIME_API);
-		if (ret != CUPTI_SUCCESS)
-			elog("Failed to enable CUPTI_CB_DOMAIN_RUNTIME_API subscription: %d (%s)\n", ret, cupti_errstr(ret));
-
-		vlog("Enabling CUPTI_CB_DOMAIN_DRIVER_API subscription...\n");
-		ret = cupti_enable_domain(1, cupti_subscr, CUPTI_CB_DOMAIN_DRIVER_API);
-		if (ret != CUPTI_SUCCESS)
-			elog("Failed to enable CUPTI_CB_DOMAIN_DRIVER_API subscription: %d (%s)\n", ret, cupti_errstr(ret));
+		cupti_enable_subscription();
 
 		vlog("Waiting for CUPTI finalization to be done...\n");
 		char tmp;

@@ -10,3 +10,6 @@
 [submodule "vmlinux.h"]
 	path = vmlinux.h
 	url = https://github.com/libbpf/vmlinux.h.git
+[submodule "usdt"]
+	path = usdt
+	url = https://github.com/libbpf/usdt.git

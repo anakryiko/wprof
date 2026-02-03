@@ -9,13 +9,14 @@ struct tracee_info {
 	int ns_pid;
 	const char *name;
 	int uds_fd;
+	int lib_fd;
 	struct inj_run_ctx *run_ctx;
 };
 
 struct tracee_state;
 
 struct tracee_state *tracee_inject(int pid);
-int tracee_handshake(struct tracee_state *tracee, int workdir_fd);
+int tracee_handshake(struct tracee_state *tracee, int workdir_fd, bool use_usdts);
 int tracee_retract(struct tracee_state *tracee);
 void tracee_free(struct tracee_state *tracee);
 

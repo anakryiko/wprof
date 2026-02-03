@@ -46,6 +46,7 @@ enum inj_setup_state {
 
 struct inj_run_ctx {
 	bool worker_thread_done;
+	bool use_usdts;
 	long sess_start_ts;
 	long sess_end_ts;
 
