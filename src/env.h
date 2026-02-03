@@ -120,6 +120,7 @@ struct env {
 	struct cuda_tracee *cudas;
 	int cuda_cnt;
 	bool cudas_deactivated;
+	bool cudas_retracted;
 };
 
 extern struct env env;

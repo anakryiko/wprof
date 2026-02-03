@@ -71,5 +71,6 @@ struct bpf_program;
 int cuda_trace_attach_usdts(struct bpf_state *st, struct bpf_program *prog);
 int cuda_trace_activate(long sess_start_ts, long sess_end_ts);
 void cuda_trace_deactivate(void);
+void cuda_trace_retract(void);
 
 #endif /* __CUDA_H_ */
