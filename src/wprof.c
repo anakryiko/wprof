@@ -520,6 +520,8 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 			eprintf("CUDA trace setup failed: %d\n", err);
 			return err;
 		}
+		if (env.requested_stack_traces & ST_CUDA)
+			bpf_program__set_autoload(skel->progs.wprof_cuda_call, true);
 	}
 
 	if (env.capture_scx_layer_info) {
@@ -1347,6 +1349,15 @@ int main(int argc, char **argv)
 		if (err) {
 			eprintf("Failed to active CUDA tracing sessions: %d\n", err);
 			goto cleanup;
+		}
+
+		if (env.requested_stack_traces & ST_CUDA) {
+			wprintf("Attaching CUDA USDTs...\n");
+			err = cuda_trace_attach_usdts(&bpf_state, bpf_state.skel->progs.wprof_cuda_call);
+			if (err) {
+				eprintf("Failed to attach CUDA tracking USDTs: %d\n", err);
+				return err;
+			}
 		}
 	}
 

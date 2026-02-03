@@ -13,6 +13,7 @@
 #include "sys.h"
 #include "inj_common.h"
 #include "inject.h"
+#include "bpf_utils.h"
 
 #define LIBWPROFINJ_LOG_PATH_FMT "wprofinj-log.%d.%d.log"
 #define LIBWPROFINJ_DUMP_PATH_FMT "wprofinj-cuda.%d.%d.data"
@@ -125,7 +126,8 @@ force_continue:
 		return -errno;
 	}
 
-	err = tracee_handshake(tracee, log_fd, false);
+	/* request libwprofinj-side USDTs to be triggered if we need stack traces */
+	err = tracee_handshake(tracee, log_fd, env.requested_stack_traces & ST_CUDA);
 	if (err) {
 		eprintf("Injection handshake with %s failed: %d\n",
 			proc_str(pid, ns_tid_by_host_tid(pid, pid), proc_name(pid)), err);
@@ -327,6 +329,31 @@ int cuda_trace_prepare(int workdir_fd, long sess_timeout_ms)
 			}
 			break;
 		}
+	}
+
+	return 0;
+}
+
+int cuda_trace_attach_usdts(struct bpf_state *st, struct bpf_program *prog)
+{
+	for (int i = 0; i < env.cuda_cnt; i++) {
+		struct cuda_tracee *cuda = &env.cudas[i];
+
+		if (cuda->state != TRACEE_ACTIVE)
+			continue;
+
+		const struct tracee_info *info = tracee_info(cuda->tracee);
+		char lib_path[32];
+		snprintf(lib_path, sizeof(lib_path), "/proc/%d/fd/%d", cuda->pid, info->lib_fd);
+
+		int err = attach_usdt_probe(st, prog, "libwprofinj.so", lib_path, "wprof", "cuda_call");
+		if (err) {
+			eprintf("Failed to attach USDTs for tracee #%d (%s): %d, skipping...\n",
+				i, cuda_str(cuda), err);
+			continue;
+		}
+
+		vprintf("Tracee #%d (%s) got USDTs successfully attached.\n", i, cuda_str(cuda));
 	}
 
 	return 0;

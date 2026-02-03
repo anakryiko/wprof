@@ -83,6 +83,7 @@ enum event_kind {
 	EV_REQ_EVENT = 16,
 	EV_REQ_TASK_EVENT = 17,
 	EV_SCX_DSQ_END = 18,
+	EV_CUDA_CALL = 19,
 };
 
 enum stack_trace_kind {
@@ -91,6 +92,7 @@ enum stack_trace_kind {
 	ST_TIMER		= 1 << 0, /* regular interval timer event */
 	ST_OFFCPU		= 1 << 1, /* context switch out (thread going off-CPU) */
 	ST_WAKER		= 1 << 2, /* thread being marked runnable, waker-side stack trace */
+	ST_CUDA			= 1 << 3, /* CUDA API calls */
 
 	__ST_LAST,
 	ST_ANY = (__ST_LAST - 1) * 2 - 1,
@@ -263,6 +265,11 @@ struct wprof_event {
 			u32 scx_layer_id;
 			enum scx_dsq_insert_type scx_dsq_insert_type;
 		} scx_dsq;
+		struct wprof_cuda_call {
+			int domain;
+			int cbid;
+			u32 corr_id;
+		} cuda_call;
 	};
 };
 
