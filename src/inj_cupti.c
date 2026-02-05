@@ -10,6 +10,7 @@
 #include <fcntl.h>
 #include <time.h>
 #include <sched.h>
+#include <link.h>
 
 #include <usdt.h>
 
@@ -29,6 +30,7 @@ static CUptiResult (*cupti_get_timestamp)(u64 *timestamp);
 static CUptiResult (*cupti_get_result_string)(CUptiResult result, const char **str);
 static CUptiResult (*cupti_get_thread_id_type)(CUpti_ActivityThreadIdType *type);
 static CUptiResult (*cupti_set_thread_id_type)(CUpti_ActivityThreadIdType type);
+static CUptiResult (*cupti_get_version)(uint32_t *version);
 
 static CUptiResult (*cupti_subscribe)(CUpti_SubscriberHandle *subscriber, CUpti_CallbackFunc callback, void *userdata);
 static CUptiResult (*cupti_unsubscribe)(CUpti_SubscriberHandle subscriber);
@@ -49,6 +51,7 @@ static struct {
 	{&cupti_get_result_string, "cuptiGetResultString"},
 	{&cupti_get_thread_id_type, "cuptiGetThreadIdType"},
 	{&cupti_set_thread_id_type, "cuptiSetThreadIdType"},
+	{&cupti_get_version, "cuptiGetVersion"},
 	{&cupti_subscribe, "cuptiSubscribe"},
 	{&cupti_unsubscribe, "cuptiUnsubscribe"},
 	{&cupti_enable_domain, "cuptiEnableDomain"},
@@ -118,6 +121,15 @@ static void calibrate_gpu_clocks(void)
 static u64 gpu_to_cpu_time_ns(u64 gpu_ts)
 {
 	return gpu_ts + gpu_to_cpu_time_delta_ns;
+}
+
+static void print_cupti_version(void)
+{
+	uint32_t version;
+	if (cupti_get_version(&version) != CUPTI_SUCCESS)
+		elog("FAILED to get CUPTI version!");
+	else
+		log("CUPTI version:%u\n", version);
 }
 
 static void CUPTIAPI buffer_requested(uint8_t **buffer, size_t *size, size_t *max_num_records)
@@ -413,7 +425,12 @@ static bool cupti_lazy_init(void)
 {
 	cupti_handle = dlopen("libcupti.so", RTLD_NOLOAD | RTLD_LAZY);
 	if (cupti_handle) {
-		vlog("Found libcupti.so (handle %lx)!\n", (long)cupti_handle);
+		struct link_map *lm;
+		int ret = dlinfo(cupti_handle, RTLD_DI_LINKMAP, &lm);
+		vlog("Found %s (base %lx, handle %lx)!\n",
+				ret == 0 ? lm->l_name : "libcupti.so",
+				ret == 0 ? lm->l_addr: -1,
+				(long)cupti_handle);
 	} else {
 		/* call dlerror() regardless to clear error */
 		const char *err_msg = dlerror();
@@ -469,6 +486,8 @@ int init_cupti_activities(void)
 		elog("Failed to find and resolve CUPTI library!\n");
 		return -ESRCH;
 	}
+
+	print_cupti_version();
 
 	calibrate_gpu_clocks();
 
