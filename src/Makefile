@@ -144,11 +144,11 @@ $(OUTPUT)/wprof.skel.h: $(OUTPUT)/wprof.bpf.o $(OUTPUT)/utils.bpf.o $(OUTPUT)/sc
 
 WPROF_SRCS := wprof.c utils.c env.c protobuf.c emit.c stacktrace.c pmu.c			\
 	      pb_common.c pb_encode.c perfetto_trace.pb.c topology.c proc.c			\
-	      requests.c cuda.c inject.c sys.c elf_utils.c merge.c				\
+	      requests.c cuda.c inject.c sys.c elf_utils.c merge.c persist.c			\
 	      cupti_driver_cbid_map.gen.c cupti_runtime_cbid_map.gen.c
 WPROF_HDRS := wprof.h utils.h env.h protobuf.h emit.h stacktrace.h data.h topology.h pmu.h	\
 	      proc.h requests.h cuda.h inj_common.h inject.h sys.h elf_utils.h cuda_data.h 	\
-	      wprof_types.h demangle.h merge.h
+	      wprof_types.h demangle.h merge.h wevent.h persist.h
 WPROF_OBJS := $(patsubst %.c,$(OUTPUT)/%.o,$(WPROF_SRCS))
 
 WPROFINJ_SRCS := inj_lib.c inj_strset.c inj_hashmap.c inj_cupti.c

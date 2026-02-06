@@ -1057,7 +1057,7 @@ int main(int argc, char **argv)
 			eprintf("Failed to load data dump at '%s': %d\n", env.data_path, err);
 			goto cleanup;
 		}
-		const struct wprof_data_hdr *dump_hdr = worker->dump_hdr;
+		struct wprof_data_hdr *dump_hdr = worker->dump_hdr;
 		const struct wprof_data_cfg *cfg = &dump_hdr->cfg;
 
 		if (env.replay_info) {
@@ -1091,8 +1091,10 @@ int main(int argc, char **argv)
 				wprintf("%-*s%s\n", w, "Perf counters:", "NONE");
 			} else {
 				wprintf("%-*s%d\n", w, "Perf counters:", cfg->pmu_event_cnt);
-				for (int i = 0; i < cfg->pmu_event_cnt; i++)
-					wprintf("%*s%s", w, "", cfg->pmu_events[i].name);
+				for (int i = 0; i < cfg->pmu_event_cnt; i++) {
+					struct wevent_pmu_def *def = wevent_pmu_def(dump_hdr, i);
+					wprintf("%*s%s", w, "", wevent_str(dump_hdr, def->name_stroff));
+				}
 			}
 			for (int i = 0; i < ARRAY_SIZE(capture_features); i++) {
 				const struct capture_feature *f = &capture_features[i];
@@ -1167,7 +1169,7 @@ int main(int argc, char **argv)
 		/* Default replay behavior: load all stored counters unless user provides --pmu */
 		if (env.pmu_event_cnt == -1) {
 			for (int i = 0; i < cfg->pmu_event_cnt; i++) {
-				deserialized_pmu_event(&cfg->pmu_events[i], &env.pmu_events[i]);
+				wevent_pmu_to_event(dump_hdr, i, &env.pmu_events[i]);
 			}
 			env.pmu_event_cnt = cfg->pmu_event_cnt;
 		}
@@ -1186,14 +1188,16 @@ int main(int argc, char **argv)
 
 			/* Find matching event in captured data by name */
 			for (int j = 0; j < cfg->pmu_event_cnt; j++) {
-				if (strcmp(ev->name, cfg->pmu_events[j].name) != 0)
+				struct wevent_pmu_def *def = wevent_pmu_def(dump_hdr, j);
+				const char *pmu_name = wevent_str(dump_hdr, def->name_stroff);
+				if (strcmp(ev->name, pmu_name) != 0)
 					continue;
 				ev->stored_idx = j;
 				/* If event was specified by name only (unresolved),
 				 * copy full definition from stored data
 				 */
 				if (ev->perf_type == PERF_TYPE_UNRESOLVED) {
-					deserialized_pmu_event(&cfg->pmu_events[j], ev);
+					wevent_pmu_to_event(dump_hdr, j, ev);
 					ev->stored_idx = j;
 				}
 				break;
