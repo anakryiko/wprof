@@ -104,6 +104,29 @@ ssize_t file_size(FILE *f)
 	return st.st_size;
 }
 
+#define FILE_BUF_SZ (64 * 1024)
+
+FILE *fopen_buffered(const char *path, const char *mode)
+{
+	FILE *f;
+
+	f = fopen(path, mode);
+	if (!f)
+		return NULL;
+
+	if (setvbuf(f, NULL, _IOFBF, FILE_BUF_SZ)) {
+		int saved_errno = errno;
+
+		eprintf("Failed to set data file buffer size to %dKB: %d\n", FILE_BUF_SZ / 1024, -errno);
+
+		fclose(f);
+		errno = saved_errno;
+		return NULL;
+	}
+
+	return f;
+}
+
 #define FMT_BUF_LEVELS 16
 #define FMT_BUF_LEN 1024
 
