@@ -146,67 +146,6 @@ static struct bpf_event_record *bpf_event_iter_next(struct bpf_event_iter *it)
 	(rec = bpf_event_iter_next(&it));					\
 )
 
-struct tid_cache_value {
-	int host_tid;
-	char thread_name[16];
-};
-
-static int wcuda_fill_task_info(struct wprof_event *w, const struct wcuda_event *e,
-				int pid, const char *proc_name, struct hashmap *tid_cache)
-{
-	w->cpu = 0;
-	w->numa_node = 0;
-	w->task.flags = 0;
-
-	w->task.pid = pid;
-	snprintf(w->task.pcomm, sizeof(w->task.pcomm), "%s", proc_name);
-
-	w->task.tid = 0;
-	w->task.comm[0] = '\0';
-
-	/*
-	 * For CUDA API events, resolve namespaced TID to host-level TID.
-	 * Also fill out thread name, while at it.
-	 */
-	if (e->kind != WCK_CUDA_API)
-		return 0;
-
-	long key = ((u64)pid << 32) | (u32)e->cuda_api.tid;
-	struct tid_cache_value *ti = NULL;
-
-	if (hashmap__find(tid_cache, key, &ti)) {
-		w->task.tid = ti->host_tid;
-		snprintf(w->task.comm, sizeof(w->task.comm), "%s", ti->thread_name);
-		return 0;
-	}
-
-	ti = calloc(1, sizeof(*ti));
-
-	if (pid == e->cuda_api.pid) {
-		/* no namespacing, no need to resolve TID */
-		ti->host_tid = e->cuda_api.tid;
-	} else  {
-		ti->host_tid = host_tid_by_ns_tid(pid, e->cuda_api.tid);
-		if (ti->host_tid < 0) {
-			eprintf("FAILED to resolve host-level TID by namespaced TID %d (PID %d, %s): %d\n",
-				e->cuda_api.tid, pid, proc_name, ti->host_tid);
-			/* negative cache this TID so we don't do expensive look ups again */
-			ti->host_tid = 0;
-			ti->thread_name[0] = '\0';
-			goto cache;
-		}
-	}
-
-	(void)thread_name_by_tid(pid, ti->host_tid, ti->thread_name, sizeof(ti->thread_name));
-cache:
-	hashmap__add(tid_cache, key, ti);
-
-	w->task.tid = ti->host_tid;
-	snprintf(w->task.comm, sizeof(w->task.comm), "%s", ti->thread_name);
-
-	return 0;
-}
-
 static int bpf_event_cmp(const void *a, const void *b)
 {
 	const struct bpf_event_record *x = a;
@@ -227,62 +166,6 @@ static int wcuda_event_cmp(const void *a, const void *b)
 		return 0;
 
 	return (s64)(x->ts - y->ts) < 0 ? -1 : 1;
-}
-
-/*
- * Convert a CUDA event to a temporary wprof_event for further conversion.
- * This bridges the gap between wcuda_event and the persist API.
- */
-/* XXX: this is all broken, fix it later */
-static int wcuda_to_wprof_event(const struct wcuda_event *ce, struct wprof_event *we,
-				int pid, const char *proc_name, struct hashmap *tid_cache,
-				struct persist_state *ps)
-{
-	int err;
-
-	we->sz = sizeof(*we); /* will be overwritten by actual conversion */
-	we->flags = 0;
-	we->kind = (enum event_kind)ce->kind;
-	we->ts = ce->ts;
-
-	err = wcuda_fill_task_info(we, ce, pid, proc_name, tid_cache);
-	if (err)
-		return err;
-
-	/* Copy CUDA-specific payload */
-	switch (ce->kind) {
-	case WCK_CUDA_KERNEL:
-		/* For kernel events, we need to remap the name string */
-		memcpy(&we->cuda_call, &ce->cuda_kernel.corr_id, sizeof(we->cuda_call.corr_id));
-		we->cuda_call.domain = 0;
-		we->cuda_call.cbid = 0;
-		we->cuda_call.corr_id = ce->cuda_kernel.corr_id;
-		break;
-	case WCK_CUDA_MEMCPY:
-		we->cuda_call.domain = 0;
-		we->cuda_call.cbid = 0;
-		we->cuda_call.corr_id = ce->cuda_memcpy.corr_id;
-		break;
-	case WCK_CUDA_API:
-		we->cuda_call.domain = ce->cuda_api.kind;
-		we->cuda_call.cbid = ce->cuda_api.cbid;
-		we->cuda_call.corr_id = ce->cuda_api.corr_id;
-		break;
-	case WCK_CUDA_MEMSET:
-		we->cuda_call.domain = 0;
-		we->cuda_call.cbid = 0;
-		we->cuda_call.corr_id = ce->cuda_memset.corr_id;
-		break;
-	case WCK_CUDA_SYNC:
-		we->cuda_call.domain = 0;
-		we->cuda_call.cbid = 0;
-		we->cuda_call.corr_id = ce->cuda_sync.corr_id;
-		break;
-	default:
-		return -EINVAL;
-	}
-
-	return 0;
 }
 
 int wprof_merge_data(int workdir_fd, struct worker_state *workers)
@@ -479,53 +362,12 @@ int wprof_merge_data(int workdir_fd, struct worker_state *workers)
 			const struct wcuda_event *r = wcuda->next_rec;
 			struct cuda_tracee *cuda = &env.cudas[cidx];
 
-
-			/*
-			const size_t wcuda_data_off = offsetof(struct wcuda_event, __wcuda_data);
-			const size_t wprof_data_off = offsetof(struct wprof_event, __wprof_data);
-			*/
-
-                       /* prepare wcuda event with 8 byte length prefix */
-			/*
-			char data_buf[sizeof(size_t) + max(sizeof(struct wprof_event), sizeof(struct wcuda_event))];
-			const void *data;
-			size_t data_sz;
-
-                       data_sz = r->sz + wprof_data_off - wcuda_data_off;
-                       memcpy(data_buf, &data_sz, sizeof(data_sz));
-		       */
-
-		       /*
-			* Copy CUDA-specific parts over wprof_event layout,
-			* skipping common fields and task-identification data
-			*/
-
-		       /*
-                       void *wcuda_payload = (void *)data_buf + sizeof(size_t) + wprof_data_off;
-                       memcpy(wcuda_payload, (void *)r + wcuda_data_off, r->sz - wcuda_data_off);
-                       struct wcuda_event *e = wcuda_payload - wcuda_data_off;
-                       err = wcuda_remap_strs(e, r->kind, wcuda->strs, wcuda_strs);
-                       if (err) {
-                               eprintf("Failed to remap strings for CUDA dump event tracee %s at '%s': %d\n",
-                                       cuda_str(cuda), cuda->dump_path, err);
-                               return err;
-                       }
-
-                       struct wprof_event *w = (void *)data_buf + sizeof(size_t);
-                       w->sz = data_sz;
-                       w->flags = 0;
-                       w->kind = (int)r->kind;
-                       w->ts = r->ts;
-		       */
-
-			/* Convert CUDA event to temporary wprof_event */
-			struct wprof_event tmp_event;
-			err = wcuda_to_wprof_event(r, &tmp_event, cuda->pid, cuda->proc_name, tid_cache, &ps);
-			if (err) {
-				eprintf("Failed to convert CUDA event for tracee %s: %d\n", cuda_str(cuda), err);
-				return err;
+			wevent_sz = persist_cuda_event(&ps, r, (struct wevent *)wevent_buf,
+						       cuda->pid, cuda->proc_name, wcuda->strs, tid_cache);
+			if (wevent_sz < 0) {
+				eprintf("Failed to convert CUDA event for tracee %s: %d\n", cuda_str(cuda), wevent_sz);
+				return wevent_sz;
 			}
-			wevent_sz = persist_bpf_event(&ps, &tmp_event, tmp_event.sz, (struct wevent *)wevent_buf);
 
 			wcuda->rec_idx++;
 			wcuda->next_rec = wcuda->rec_idx < wcuda->rec_cnt ? wcuda->recs[wcuda->rec_idx] : NULL;

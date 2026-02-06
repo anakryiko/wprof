@@ -154,6 +154,59 @@ struct wevent {
 			int cbid;
 			u32 corr_id;
 		} cuda_call;
+
+		/* CUDA activity events (from CUPTI) */
+		struct wevent_cuda_api { /* host-side CUDA API call */
+			u64 end_ts;
+			u32 task_id;
+			u32 corr_id;
+			u32 cbid;
+			u32 ret_val;
+			u8 kind;
+		} cuda_api;
+
+		struct wevent_cuda_kernel {
+			u64 end_ts;
+			u32 name_stroff;
+			u32 corr_id;
+			u32 device_id;
+			u32 ctx_id;
+			u32 stream_id;
+			u32 grid_x, grid_y, grid_z;
+			u32 block_x, block_y, block_z;
+		} cuda_kernel;
+
+		struct wevent_cuda_memcpy {
+			u64 end_ts;
+			u64 byte_cnt;
+			u32 corr_id;
+			u32 device_id;
+			u32 ctx_id;
+			u32 stream_id;
+			u8 copy_kind;
+			u8 src_kind;
+			u8 dst_kind;
+		} cuda_memcpy;
+
+		struct wevent_cuda_memset {
+			u64 end_ts;
+			u64 byte_cnt;
+			u32 corr_id;
+			u32 device_id;
+			u32 ctx_id;
+			u32 stream_id;
+			u32 value;
+			u8 mem_kind;
+		} cuda_memset;
+
+		struct wevent_cuda_sync {
+			u64 end_ts;
+			u32 corr_id;
+			u32 stream_id;
+			u32 ctx_id;
+			u32 event_id;
+			u8 sync_type;
+		} cuda_sync;
 	};
 };
 
@@ -184,6 +237,11 @@ static inline size_t wevent_fixed_sz(const struct wevent *e)
 	case EV_REQ_TASK_EVENT:	return WEVENT_SZ(req_task);
 	case EV_SCX_DSQ_END:	return WEVENT_SZ(scx_dsq);
 	case EV_CUDA_CALL:	return WEVENT_SZ(cuda_call);
+	case EV_CUDA_KERNEL:	return WEVENT_SZ(cuda_kernel);
+	case EV_CUDA_MEMCPY:	return WEVENT_SZ(cuda_memcpy);
+	case EV_CUDA_MEMSET:	return WEVENT_SZ(cuda_memset);
+	case EV_CUDA_SYNC:	return WEVENT_SZ(cuda_sync);
+	case EV_CUDA_API:	return WEVENT_SZ(cuda_api);
 	default:		return 0;
 	}
 }

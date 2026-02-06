@@ -12,10 +12,6 @@
 struct strset;
 struct hashmap;
 
-/*
- * Thread table for deduplicating task info.
- * Each unique (tid, pid, comm, pcomm) combination gets a unique ID.
- */
 struct thread_table {
 	struct hashmap *lookup;		/* hash(tid, pid, comm, pcomm) -> task_id */
 	struct wevent_task *entries;
@@ -23,10 +19,6 @@ struct thread_table {
 	u32 capacity;
 };
 
-/*
- * PMU counter values table.
- * Stores arrays of counter values, referenced by ID.
- */
 struct pmu_vals_table {
 	u64 *data;			/* flat array: data[id * pmu_cnt + i] */
 	u32 count;
@@ -34,9 +26,6 @@ struct pmu_vals_table {
 	int pmu_cnt;			/* number of counters per entry */
 };
 
-/*
- * Persistence state - holds all tables and pools during conversion.
- */
 struct persist_state {
 	struct strset *strs;
 	struct thread_table threads;
@@ -55,8 +44,8 @@ int persist_add_pmu_def(struct persist_state *ps, const struct pmu_event *ev);
 int persist_bpf_event(struct persist_state *ps,
 		      const struct wprof_event *e, size_t src_sz,
 		      struct wevent *dst);
-int persist_cuda_event(struct persist_state *ps,
-		      const struct wcuda_event *e, size_t src_sz,
-		      struct wevent *dst);
+int persist_cuda_event(struct persist_state *ps, const struct wcuda_event *e, struct wevent *dst,
+		       int host_pid, const char *proc_name, const char *cuda_strs,
+		       struct hashmap *tid_cache);
 
 #endif /* __PERSIST_H_ */

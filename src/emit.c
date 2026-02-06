@@ -556,6 +556,7 @@ static inline u64 trackid_cuda_proc_stream(int pid, u32 stream_id)
 }
 
 static const char *event_kind_str_map[] = {
+	/* BPF-produced events */
 	[EV_TIMER] = "TIMER",
 	[EV_SWITCH] = "SWITCH",
 	[EV_WAKEUP_NEW] = "WAKEUP_NEW",
@@ -574,6 +575,13 @@ static const char *event_kind_str_map[] = {
 	[EV_REQ_EVENT] = "REQ_EVENT",
 	[EV_SCX_DSQ_END] = "SCX_DSQ_END",
 	[EV_CUDA_CALL] = "CUDA_CALL",
+
+	/* CUDA/CUPTI-produced events */
+	[EV_CUDA_KERNEL] = "CUDA_KERNEL",
+	[EV_CUDA_MEMCPY] = "CUDA_MEMCPY",
+	[EV_CUDA_MEMSET] = "CUDA_MEMSET",
+	[EV_CUDA_SYNC] = "CUDA_SYNC",
+	[EV_CUDA_API] = "CUDA_API",
 };
 
 __unused
@@ -2068,13 +2076,13 @@ static void emit_gpu_delay(u64 ts, int pid, u32 corr_id)
 	free(ci);
 }
 
-/* WCK_CUDA_KERNEL */
+/* EV_CUDA_KERNEL */
 static int process_cuda_kernel(struct worker_state *w, struct wprof_event *e, size_t size)
 {
 	if (env.capture_cuda != TRUE)
 		return 0;
 
-	const struct wcuda_cuda_kernel *cu = (void *)e + offsetof(struct wprof_event, __wprof_data);
+	const struct wprof_cuda_kernel *cu = &e->cuda_kernel;
 
 	if (!is_time_range_in_session(e->ts, cu->end_ts))
 		return 0;
@@ -2083,8 +2091,7 @@ static int process_cuda_kernel(struct worker_state *w, struct wprof_event *e, si
 	ensure_cuda_proc_gpu_track(e->task.pid, cu->device_id);
 	u64 track_uuid = ensure_cuda_proc_stream_track(e->task.pid, cu->device_id, cu->stream_id);
 
-	const char *strs = (void *)w->dump_hdr + w->dump_hdr->hdr_sz + w->dump_hdr->strs_off;
-	const char *cuda_kern_name = strs + cu->name_off;
+	const char *cuda_kern_name = cu->name;
 
 	char demangled_buf[4096];
 	const char *cuda_kern_name_demangled = NULL;
@@ -2124,13 +2131,13 @@ static int process_cuda_kernel(struct worker_state *w, struct wprof_event *e, si
 	return 0;
 }
 
-/* WCK_CUDA_MEMCPY */
+/* EV_CUDA_MEMCPY */
 static int process_cuda_memcpy(struct worker_state *w, struct wprof_event *e, size_t size)
 {
 	if (env.capture_cuda != TRUE)
 		return 0;
 
-	const struct wcuda_cuda_memcpy *cu = (void *)e + offsetof(struct wprof_event, __wprof_data);
+	const struct wprof_cuda_memcpy *cu = &e->cuda_memcpy;
 
 	if (!is_time_range_in_session(e->ts, cu->end_ts))
 		return 0;
@@ -2176,13 +2183,13 @@ static int process_cuda_memcpy(struct worker_state *w, struct wprof_event *e, si
 	return 0;
 }
 
-/* WCK_CUDA_MEMSET */
+/* EV_CUDA_MEMSET */
 static int process_cuda_memset(struct worker_state *w, struct wprof_event *e, size_t size)
 {
 	if (env.capture_cuda != TRUE)
 		return 0;
 
-	const struct wcuda_cuda_memset *cu = (void *)e + offsetof(struct wprof_event, __wprof_data);
+	const struct wprof_cuda_memset *cu = &e->cuda_memset;
 
 	if (!is_time_range_in_session(e->ts, cu->end_ts))
 		return 0;
@@ -2219,13 +2226,13 @@ static int process_cuda_memset(struct worker_state *w, struct wprof_event *e, si
 	return 0;
 }
 
-/* WCK_CUDA_SYNC */
+/* EV_CUDA_SYNC */
 static int process_cuda_sync(struct worker_state *w, struct wprof_event *e, size_t size)
 {
 	if (env.capture_cuda != TRUE)
 		return 0;
 
-	const struct wcuda_cuda_sync *cu = (void *)e + offsetof(struct wprof_event, __wprof_data);
+	const struct wprof_cuda_sync *cu = &e->cuda_sync;
 
 	if (!is_time_range_in_session(e->ts, cu->end_ts))
 		return 0;
@@ -2396,12 +2403,11 @@ static event_fn ev_fns[] = {
 	[EV_REQ_TASK_EVENT] = process_req_task_event,
 	[EV_SCX_DSQ_END] = process_scx_dsq_end,
 	[EV_CUDA_CALL] = process_cuda_call,
-
-	[WCK_CUDA_KERNEL] = process_cuda_kernel,
-	[WCK_CUDA_MEMCPY] = process_cuda_memcpy,
-	[WCK_CUDA_MEMSET] = process_cuda_memset,
-	[WCK_CUDA_SYNC] = process_cuda_sync,
-	[WCK_CUDA_API] = process_cuda_api,
+	[EV_CUDA_KERNEL] = process_cuda_kernel,
+	[EV_CUDA_MEMCPY] = process_cuda_memcpy,
+	[EV_CUDA_MEMSET] = process_cuda_memset,
+	[EV_CUDA_SYNC] = process_cuda_sync,
+	[EV_CUDA_API] = process_cuda_api,
 };
 
 static void resolve_wevent_task(struct wprof_data_hdr *hdr, u32 task_id,
@@ -2577,6 +2583,66 @@ static size_t wevent_to_wprof_event(struct wprof_data_hdr *hdr,
 		out->cuda_call.domain = we->cuda_call.domain;
 		out->cuda_call.cbid = we->cuda_call.cbid;
 		out->cuda_call.corr_id = we->cuda_call.corr_id;
+		break;
+
+	case EV_CUDA_KERNEL:
+		fixed_sz = EV_SZ(cuda_kernel);
+		out->cuda_kernel.end_ts = we->cuda_kernel.end_ts;
+		out->cuda_kernel.name = wevent_str(hdr, we->cuda_kernel.name_stroff);
+		out->cuda_kernel.corr_id = we->cuda_kernel.corr_id;
+		out->cuda_kernel.device_id = we->cuda_kernel.device_id;
+		out->cuda_kernel.ctx_id = we->cuda_kernel.ctx_id;
+		out->cuda_kernel.stream_id = we->cuda_kernel.stream_id;
+		out->cuda_kernel.grid_x = we->cuda_kernel.grid_x;
+		out->cuda_kernel.grid_y = we->cuda_kernel.grid_y;
+		out->cuda_kernel.grid_z = we->cuda_kernel.grid_z;
+		out->cuda_kernel.block_x = we->cuda_kernel.block_x;
+		out->cuda_kernel.block_y = we->cuda_kernel.block_y;
+		out->cuda_kernel.block_z = we->cuda_kernel.block_z;
+		break;
+
+	case EV_CUDA_MEMCPY:
+		fixed_sz = EV_SZ(cuda_memcpy);
+		out->cuda_memcpy.end_ts = we->cuda_memcpy.end_ts;
+		out->cuda_memcpy.byte_cnt = we->cuda_memcpy.byte_cnt;
+		out->cuda_memcpy.corr_id = we->cuda_memcpy.corr_id;
+		out->cuda_memcpy.device_id = we->cuda_memcpy.device_id;
+		out->cuda_memcpy.ctx_id = we->cuda_memcpy.ctx_id;
+		out->cuda_memcpy.stream_id = we->cuda_memcpy.stream_id;
+		out->cuda_memcpy.copy_kind = we->cuda_memcpy.copy_kind;
+		out->cuda_memcpy.src_kind = we->cuda_memcpy.src_kind;
+		out->cuda_memcpy.dst_kind = we->cuda_memcpy.dst_kind;
+		break;
+
+	case EV_CUDA_MEMSET:
+		fixed_sz = EV_SZ(cuda_memset);
+		out->cuda_memset.end_ts = we->cuda_memset.end_ts;
+		out->cuda_memset.byte_cnt = we->cuda_memset.byte_cnt;
+		out->cuda_memset.corr_id = we->cuda_memset.corr_id;
+		out->cuda_memset.device_id = we->cuda_memset.device_id;
+		out->cuda_memset.ctx_id = we->cuda_memset.ctx_id;
+		out->cuda_memset.stream_id = we->cuda_memset.stream_id;
+		out->cuda_memset.value = we->cuda_memset.value;
+		out->cuda_memset.mem_kind = we->cuda_memset.mem_kind;
+		break;
+
+	case EV_CUDA_SYNC:
+		fixed_sz = EV_SZ(cuda_sync);
+		out->cuda_sync.end_ts = we->cuda_sync.end_ts;
+		out->cuda_sync.corr_id = we->cuda_sync.corr_id;
+		out->cuda_sync.stream_id = we->cuda_sync.stream_id;
+		out->cuda_sync.ctx_id = we->cuda_sync.ctx_id;
+		out->cuda_sync.event_id = we->cuda_sync.event_id;
+		out->cuda_sync.sync_type = we->cuda_sync.sync_type;
+		break;
+
+	case EV_CUDA_API:
+		fixed_sz = EV_SZ(cuda_api);
+		out->cuda_api.end_ts = we->cuda_api.end_ts;
+		out->cuda_api.corr_id = we->cuda_api.corr_id;
+		out->cuda_api.cbid = we->cuda_api.cbid;
+		out->cuda_api.ret_val = we->cuda_api.ret_val;
+		out->cuda_api.kind = we->cuda_api.kind;
 		break;
 
 	default:
