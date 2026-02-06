@@ -182,6 +182,25 @@ int wprof_merge_data(int workdir_fd, struct worker_state *workers)
 		persist_add_pmu_def(&ps, &env.pmu_events[i]);
 	}
 
+	/* Finalize and mmap() per-ringbuf dumps */
+	for (int i = 0; i < env.ringbuf_cnt; i++) {
+		struct worker_state *w = &workers[i];
+
+		long pos = ftell(w->dump);
+		fflush(w->dump);
+		fsync(fileno(w->dump));
+
+		w->dump_sz = pos;
+		w->dump_mem = mmap(NULL, w->dump_sz, PROT_READ | PROT_WRITE, MAP_SHARED, fileno(w->dump), 0);
+		if (w->dump_mem == MAP_FAILED) {
+			err = -errno;
+			eprintf("Failed to mmap ringbuf #%d dump file '%s': %d\n", i, w->dump_path, err);
+			w->dump_mem = NULL;
+			return err;
+		}
+		w->dump_hdr = w->dump_mem;
+	}
+
 	/* Init data dump header placeholder */
 	FILE *data_dump = fopen(env.data_path, "w+");
 	if (!data_dump) {
@@ -216,27 +235,8 @@ int wprof_merge_data(int workdir_fd, struct worker_state *workers)
 		struct worker_state *w = &workers[i];
 		struct wmerge_state *wmerge = &wmerges[i];
 
-		long pos = ftell(w->dump);
-		if (pos < 0) {
-			err = -errno;
-			eprintf("Failed to get ringbuf #%d file position for '%s': %d\n", i, w->dump_path, err);
-			return err;
-		}
-
-		fflush(w->dump);
-		fsync(fileno(w->dump));
-
-		w->dump_sz = pos;
-		w->dump_mem = mmap(NULL, w->dump_sz, PROT_READ | PROT_WRITE, MAP_SHARED, fileno(w->dump), 0);
-		if (w->dump_mem == MAP_FAILED) {
-			err = -errno;
-			eprintf("Failed to mmap ringbuf #%d dump file '%s': %d\n", i, w->dump_path, err);
-			w->dump_mem = NULL;
-			return err;
-		}
-
-		void *bpf_data = w->dump_mem + sizeof(struct wprof_data_hdr);
-		size_t bpf_data_sz = pos - sizeof(struct wprof_data_hdr);
+		void *data = w->dump_mem + sizeof(struct wprof_data_hdr);
+		size_t data_sz = w->dump_sz - sizeof(struct wprof_data_hdr);
 
 		/* re-sort events by timestamp, they can be a bit out of order */
 		wmerge->rec_idx = 0;
@@ -245,7 +245,7 @@ int wprof_merge_data(int workdir_fd, struct worker_state *workers)
 
 		const struct bpf_event_record *rec;
 		u64 idx = 0;
-		for_each_bpf_event(rec, bpf_data, bpf_data_sz) {
+		for_each_bpf_event(rec, data, data_sz) {
 			wmerge->recs[idx++] = *rec;
 		}
 
