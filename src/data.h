@@ -5,10 +5,11 @@
 
 #include "wprof_types.h"
 #include "wprof.h"
+#include "wevent.h"
 #include "pmu.h"
 
-#define WPROF_DATA_MAJOR 1
-#define WPROF_DATA_MINOR 12
+#define WPROF_DATA_MAJOR 2
+#define WPROF_DATA_MINOR 0
 #define WPROF_DATA_FLAG_INCOMPLETE 0xffffffffffffffffULL
 
 #define FILE_BUF_SZ (64 * 1024)
@@ -28,9 +29,9 @@ struct wprof_data_cfg {
 
 	int timer_freq_hz;
 
-	/* PMU event storage (includes both hw counters and derived metrics) */
+	/* XXX: adapt code to use wprof_data_hdr::pmu_def_cnt */
+	/* PMU event count (definitions stored in separate section) */
 	int pmu_event_cnt;
-	struct pmu_event_stored pmu_events[MAX_PMU_COUNTERS];
 };
 
 struct wprof_data_hdr {
@@ -39,9 +40,25 @@ struct wprof_data_hdr {
 	u64 flags;
 	int version_major;
 	int version_minor;
+
+	/* Events section */
 	u64 events_off, events_sz, event_cnt;
-	u64 stacks_off, stacks_sz;
+
+	/* Thread info section */
+	u64 threads_off, threads_sz, thread_cnt;
+
+	/* PMU counter definitions section */
+	u64 pmu_defs_off, pmu_defs_sz, pmu_def_cnt;
+
+	/* PMU counter values section */
+	u64 pmu_vals_off, pmu_vals_sz, pmu_val_cnt;
+
+	/* String pool section */
 	u64 strs_off, strs_sz;
+
+	/* Symbolized stack traces section */
+	u64 stacks_off, stacks_sz;
+
 	struct wprof_data_cfg cfg;
 } __attribute__((aligned(8)));
 
@@ -49,7 +66,7 @@ struct wprof_stacks_hdr {
 	u64 frames_off; /* individual stack frames */
 	u64 frame_mappings_off; /* stack -> frame mapping elements */
 	u64 stacks_off; /* stack "pointers" */
-	u64 strs_off; /* blob of strings */
+	u64 strs_off; /* stacks-specific blob of strings (separate from main string pool) */
 
 	u32 frame_cnt;
 	u32 frame_mapping_cnt;
@@ -77,6 +94,8 @@ struct wprof_stack_trace {
 	u32 frame_mapping_cnt;
 };
 
+/* ==================== ACCESSOR FUNCTIONS ==================== */
+
 static inline struct wprof_stacks_hdr *wprof_stacks_hdr(struct wprof_data_hdr *hdr)
 {
 	if (hdr->stacks_sz == 0)
@@ -93,55 +112,90 @@ static inline const char *wprof_stacks_str(struct wprof_data_hdr *hdr, u32 off)
 
 static inline struct wprof_stack_frame *wprof_stacks_frame(struct wprof_data_hdr *hdr, u32 fr_idx)
 {
-	struct wprof_stacks_hdr *shdr = (void *)hdr + sizeof(*hdr) + hdr->stacks_off;
+	struct wprof_stacks_hdr *shdr = (void *)hdr + hdr->hdr_sz + hdr->stacks_off;
 	return (void *)shdr + sizeof(*shdr) + shdr->frames_off + fr_idx * sizeof(struct wprof_stack_frame);
 }
 
-/* WPROF_EVENT ITERATOR */
-struct wprof_event_record {
-	size_t sz;
-	struct wprof_event *e;
+static inline const char *wevent_str(struct wprof_data_hdr *hdr, u32 off)
+{
+	return (void *)hdr + hdr->hdr_sz + hdr->strs_off + off;
+}
+
+static inline struct wevent_task *wevent_task(struct wprof_data_hdr *hdr, u32 id)
+{
+	struct wevent_task *threads = (void *)hdr + hdr->hdr_sz + hdr->threads_off;
+	return &threads[id];
+}
+
+static inline struct wevent_pmu_def *wevent_pmu_def(const struct wprof_data_hdr *hdr, u32 idx)
+{
+	struct wevent_pmu_def *defs = (void *)hdr + hdr->hdr_sz + hdr->pmu_defs_off;
+	return &defs[idx];
+}
+
+static inline u64 *wevent_pmu_vals(struct wprof_data_hdr *hdr, u32 id)
+{
+	u64 *vals = (void *)hdr + hdr->hdr_sz + hdr->pmu_vals_off;
+	return &vals[id * hdr->cfg.pmu_event_cnt];
+}
+
+static inline void wevent_pmu_to_event(struct wprof_data_hdr *hdr, u32 idx, struct pmu_event *ev)
+{
+	struct wevent_pmu_def *def = wevent_pmu_def(hdr, idx);
+
+	memset(ev, 0, sizeof(*ev));
+	ev->perf_type = def->perf_type;
+	ev->config = def->config;
+	ev->config1 = def->config1;
+	ev->config2 = def->config2;
+	snprintf(ev->name, sizeof(ev->name), "%s", wevent_str(hdr, def->name_stroff));
+}
+
+/* ==================== WEVENT ITERATOR ==================== */
+
+struct wevent_record {
+	struct wevent *e;
 	int idx;
 };
 
-struct wprof_event_iter {
+struct wevent_iter {
 	void *next;
 	void *last;
 	int next_idx;
-	struct wprof_event_record rec;
+	struct wevent_record rec;
 };
 
-static inline struct wprof_event_iter wprof_event_iter_new(void *data)
+static inline struct wevent_iter wevent_iter_new(void *data)
 {
 	struct wprof_data_hdr *hdr = data;
 
-	return (struct wprof_event_iter) {
-		.next = data + sizeof(struct wprof_data_hdr) + hdr->events_off,
-		.last = data + sizeof(struct wprof_data_hdr) + hdr->events_off + hdr->events_sz,
+	return (struct wevent_iter) {
+		.next = data + hdr->hdr_sz + hdr->events_off,
+		.last = data + hdr->hdr_sz + hdr->events_off + hdr->events_sz,
 	};
 }
 
-static inline struct wprof_event_record *wprof_event_iter_next(struct wprof_event_iter *it)
+static inline struct wevent_record *wevent_iter_next(struct wevent_iter *it)
 {
 	if (it->next >= it->last)
 		return NULL;
 
-	it->rec.sz = *(size_t *)it->next;
-	it->rec.e = it->next + sizeof(size_t);
+	it->rec.e = it->next;
 	it->rec.idx = it->next_idx;
 
-	it->next += sizeof(size_t) + it->rec.sz;
+	it->next += it->rec.e->hdr.sz;
 	it->next_idx += 1;
 
 	return &it->rec;
 }
 
-#define wprof_for_each_event(rec, data) for (						\
-	struct wprof_event_iter it = wprof_event_iter_new(data);			\
-	(rec = wprof_event_iter_next(&it));						\
+#define wevent_for_each_event(rec, data) for (					\
+	struct wevent_iter it = wevent_iter_new(data);				\
+	(rec = wevent_iter_next(&it));						\
 )
 
-/* WPROF_STACK_FRAME ITERATOR */
+/* ==================== STACK FRAME ITERATOR ==================== */
+
 struct wprof_stack_frame_record {
 	struct wprof_stack_frame *f;
 	int idx;
@@ -193,7 +247,8 @@ static inline struct wprof_stack_frame_record *wprof_stack_frame_iter_next(struc
 	(rec = wprof_stack_frame_iter_next(&it));					\
 )
 
-/* WPROF_STACK_TRACE ITERATOR */
+/* ==================== STACK TRACE ITERATOR ==================== */
+
 struct wprof_stack_trace_record {
 	struct wprof_stack_trace *t;
 	int idx;
