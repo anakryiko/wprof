@@ -113,3 +113,10 @@ The build process automatically handles:
 - Ring buffer batching for efficient event delivery
 - Task and CPU state tracking via BPF maps
 - NUMA topology awareness for scheduling analysis
+
+### Coding Style
+
+- **No redundant error checking for internal data**: Don't add defensive checks for IDs/indices that reference internal data structures (e.g., `task_id`, `pmu_vals_id`, stack frame indices). If these are invalid, it means the data file is corrupted and crashing is acceptable. Trust internal invariants.
+- **No obvious comments**: Don't add self-evident comments like "Process stack traces from a wevent" above a function called `process_stack_trace`. If the code is clear, no comment is needed.
+- **Preserve existing non-obvious comments**: Don't remove comments that explain non-obvious behavior (e.g., why a -1 adjustment is needed for stack trace IP entries). If a comment exists, it's probably there for a reason.
+- **Line length**: 120 characters is fine. Prefer single-line statements over wrapping if it only exceeds by a few characters.
