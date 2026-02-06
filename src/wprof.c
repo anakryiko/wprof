@@ -1292,7 +1292,7 @@ int main(int argc, char **argv)
 		char dump_path[PATH_MAX];
 		snprintf(dump_path, sizeof(dump_path), "%s/bpf-rb.%03d.data", workdir_name, i);
 		worker->dump_path = strdup(dump_path);
-		worker->dump = fopen(dump_path, "w+");
+		worker->dump = fopen_buffered(dump_path, "w+");
 		if (!worker->dump) {
 			err = -errno;
 			eprintf("Failed to create data dump at '%s': %d\n", dump_path, err);
@@ -1303,11 +1303,6 @@ int main(int argc, char **argv)
 			eprintf("Failed to initialize ringbuf dump #%d at '%s': %d\n", i, dump_path, err);
 			fclose(worker->dump);
 			return err;
-		}
-		if (setvbuf(worker->dump, NULL, _IOFBF, FILE_BUF_SZ)) {
-			err = -errno;
-			eprintf("Failed to set data file buffer size to %dKB: %d\n", FILE_BUF_SZ / 1024, err);
-			goto cleanup;
 		}
 	}
 
@@ -1430,15 +1425,10 @@ skip_data_collection:
 	if (env.trace_path) {
 		struct worker_state *w = &workers[0];
 
-		w->trace = fopen(env.trace_path, "w+");
+		w->trace = fopen_buffered(env.trace_path, "w+");
 		if (!w->trace) {
 			err = -errno;
 			eprintf("Failed to create trace file '%s': %d\n", env.trace_path, err);
-			goto cleanup;
-		}
-		if (setvbuf(w->trace, NULL, _IOFBF, FILE_BUF_SZ)) {
-			err = -errno;
-			eprintf("Failed to set trace file buffer size to %dKB: %d\n", FILE_BUF_SZ / 1024, err);
 			goto cleanup;
 		}
 		w->stream = (pb_ostream_t){&file_stream_cb, w->trace, SIZE_MAX, 0};

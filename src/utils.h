@@ -84,6 +84,7 @@ __printf(2, 3) void log_printf(int verbosity, const char *fmt, ...);
 } while (0);
 
 ssize_t file_size(FILE *f);
+FILE *fopen_buffered(const char *path, const char *mode);
 
 static inline bool is_pow_of_2(long x)
 {

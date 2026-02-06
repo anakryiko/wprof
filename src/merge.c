@@ -202,7 +202,7 @@ int wprof_merge_data(int workdir_fd, struct worker_state *workers)
 	}
 
 	/* Init data dump header placeholder */
-	FILE *data_dump = fopen(env.data_path, "w+");
+	FILE *data_dump = fopen_buffered(env.data_path, "w+");
 	if (!data_dump) {
 		err = -errno;
 		eprintf("Failed to create final data dump at '%s': %d\n", env.data_path, err);
@@ -211,12 +211,6 @@ int wprof_merge_data(int workdir_fd, struct worker_state *workers)
 	err = wprof_init_data(data_dump);
 	if (err) {
 		eprintf("Failed to initialize data dump at '%s': %d\n", env.data_path, err);
-		fclose(data_dump);
-		return err;
-	}
-	if (setvbuf(data_dump, NULL, _IOFBF, FILE_BUF_SZ)) {
-		err = -errno;
-		eprintf("Failed to set data file buffer size to %dKB: %d\n", FILE_BUF_SZ / 1024, err);
 		fclose(data_dump);
 		return err;
 	}
