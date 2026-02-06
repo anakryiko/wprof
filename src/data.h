@@ -149,6 +149,49 @@ static inline void wevent_pmu_to_event(struct wprof_data_hdr *hdr, u32 idx, stru
 	snprintf(ev->name, sizeof(ev->name), "%s", wevent_str(hdr, def->name_stroff));
 }
 
+
+/* ==================== BPF EVENT (wprof_event) ITERATOR ==================== */
+struct bpf_event_record {
+	size_t sz;
+	struct wprof_event *e;
+	int idx;
+};
+
+struct bpf_event_iter {
+	void *next;
+	void *last;
+	int next_idx;
+	struct bpf_event_record rec;
+};
+
+static inline struct bpf_event_iter bpf_event_iter_new(void *data, size_t data_sz)
+{
+	return (struct bpf_event_iter) {
+		.next = data,
+		.last = data + data_sz,
+	};
+}
+
+static inline struct bpf_event_record *bpf_event_iter_next(struct bpf_event_iter *it)
+{
+	if (it->next >= it->last)
+		return NULL;
+
+	it->rec.sz = *(size_t *)it->next;
+	it->rec.e = it->next + sizeof(size_t);
+	it->rec.idx = it->next_idx;
+
+	it->next += sizeof(size_t) + it->rec.sz;
+	it->next_idx += 1;
+
+	return &it->rec;
+}
+
+#define for_each_bpf_event(rec, data, data_sz) for (				\
+	struct bpf_event_iter it = bpf_event_iter_new(data, data_sz);		\
+	(rec = bpf_event_iter_next(&it));					\
+)
+
 /* ==================== WEVENT ITERATOR ==================== */
 
 struct wevent_record {
