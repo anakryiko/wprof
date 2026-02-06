@@ -9,6 +9,8 @@
 #include "persist.h"
 #include "utils.h"
 #include "pmu.h"
+#include "cuda_data.h"
+#include "proc.h"
 #include "../libbpf/src/strset.h"
 #include "../libbpf/src/hashmap.h"
 
@@ -360,10 +362,148 @@ int persist_bpf_event(struct persist_state *ps,
 	return dst->hdr.sz;
 }
 
-int persist_cuda_event(struct persist_state *ps,
-		      const struct wcuda_event *e, size_t src_sz,
-		      struct wevent *dst)
+struct tid_cache_value {
+	int host_tid;
+	char thread_name[16];
+};
+
+static int resolve_cuda_api_task_id(struct persist_state *ps,
+				    int host_pid, const char *proc_name,
+				    struct hashmap *tid_cache,
+				    const struct wcuda_event *e)
 {
-	eprintf("NOT IMPLEMENTED!!!!\n");
-	exit(1);
+	long key = ((u64)host_pid << 32) | (u32)e->cuda_api.tid;
+	struct tid_cache_value *ti = NULL;
+
+	if (hashmap__find(tid_cache, key, &ti)) {
+		if (ti->host_tid <= 0)
+			return 0;
+	} else {
+		ti = calloc(1, sizeof(*ti));
+
+		if (host_pid == e->cuda_api.pid) {
+			/* no namespacing, no need to resolve TID */
+			ti->host_tid = e->cuda_api.tid;
+		} else {
+			ti->host_tid = host_tid_by_ns_tid(host_pid, e->cuda_api.tid);
+			if (ti->host_tid < 0) {
+				eprintf("FAILED to resolve host-level TID by namespaced TID %d (PID %d, %s): %d\n",
+					e->cuda_api.tid, host_pid, proc_name, ti->host_tid);
+				/* negative cache this TID so we don't do expensive look ups again */
+				ti->host_tid = 0;
+				ti->thread_name[0] = '\0';
+				goto cache;
+			}
+		}
+
+		(void)thread_name_by_tid(host_pid, ti->host_tid, ti->thread_name, sizeof(ti->thread_name));
+cache:
+		hashmap__add(tid_cache, key, ti);
+	}
+
+	if (ti->host_tid <= 0)
+		return 0;
+
+	struct wprof_task task = {
+		.tid = ti->host_tid,
+		.pid = host_pid,
+		.flags = 0,
+	};
+	snprintf(task.comm, sizeof(task.comm), "%s", ti->thread_name);
+	snprintf(task.pcomm, sizeof(task.pcomm), "%s", proc_name);
+
+	return persist_task_id(ps, &task);
+}
+
+static void fill_cuda_wevent_hdr(struct wevent_hdr *hdr, const struct wcuda_event *e,
+				 enum event_kind kind, u32 task_id, u16 sz)
+{
+	hdr->sz = sz;
+	hdr->flags = e->flags;
+	hdr->kind = kind;
+	hdr->task_id = task_id;
+	hdr->cpu = 0;
+	hdr->numa_node = 0;
+	hdr->ts = e->ts;
+}
+
+int persist_cuda_event(struct persist_state *ps, const struct wcuda_event *e, struct wevent *dst,
+		       int host_pid, const char *proc_name, const char *cuda_strs,
+		       struct hashmap *tid_cache)
+{
+	switch (e->kind) {
+	case WCK_CUDA_API: {
+		int task_id = resolve_cuda_api_task_id(ps, host_pid, proc_name, tid_cache, e);
+		fill_cuda_wevent_hdr(&dst->hdr, e, EV_CUDA_API, task_id, WEVENT_SZ(cuda_api));
+
+		dst->cuda_api.end_ts = e->cuda_api.end_ts;
+		dst->cuda_api.corr_id = e->cuda_api.corr_id;
+		dst->cuda_api.cbid = e->cuda_api.cbid;
+		dst->cuda_api.task_id = task_id;
+		dst->cuda_api.ret_val = e->cuda_api.ret_val;
+		dst->cuda_api.kind = e->cuda_api.kind;
+		break;
+	}
+
+	case WCK_CUDA_KERNEL:
+		fill_cuda_wevent_hdr(&dst->hdr, e, EV_CUDA_KERNEL, 0, WEVENT_SZ(cuda_kernel));
+
+		dst->cuda_kernel.end_ts = e->cuda_kernel.end_ts;
+		dst->cuda_kernel.name_stroff = persist_stroff(ps, cuda_strs + e->cuda_kernel.name_off);
+		dst->cuda_kernel.corr_id = e->cuda_kernel.corr_id;
+		dst->cuda_kernel.device_id = e->cuda_kernel.device_id;
+		dst->cuda_kernel.ctx_id = e->cuda_kernel.ctx_id;
+		dst->cuda_kernel.stream_id = e->cuda_kernel.stream_id;
+		dst->cuda_kernel.grid_x = e->cuda_kernel.grid_x;
+		dst->cuda_kernel.grid_y = e->cuda_kernel.grid_y;
+		dst->cuda_kernel.grid_z = e->cuda_kernel.grid_z;
+		dst->cuda_kernel.block_x = e->cuda_kernel.block_x;
+		dst->cuda_kernel.block_y = e->cuda_kernel.block_y;
+		dst->cuda_kernel.block_z = e->cuda_kernel.block_z;
+		break;
+
+	case WCK_CUDA_MEMCPY:
+		fill_cuda_wevent_hdr(&dst->hdr, e, EV_CUDA_MEMCPY, 0, WEVENT_SZ(cuda_memcpy));
+
+		dst->cuda_memcpy.end_ts = e->cuda_memcpy.end_ts;
+		dst->cuda_memcpy.byte_cnt = e->cuda_memcpy.byte_cnt;
+		dst->cuda_memcpy.corr_id = e->cuda_memcpy.corr_id;
+		dst->cuda_memcpy.device_id = e->cuda_memcpy.device_id;
+		dst->cuda_memcpy.ctx_id = e->cuda_memcpy.ctx_id;
+		dst->cuda_memcpy.stream_id = e->cuda_memcpy.stream_id;
+		dst->cuda_memcpy.copy_kind = e->cuda_memcpy.copy_kind;
+		dst->cuda_memcpy.src_kind = e->cuda_memcpy.src_kind;
+		dst->cuda_memcpy.dst_kind = e->cuda_memcpy.dst_kind;
+		break;
+
+	case WCK_CUDA_MEMSET:
+		fill_cuda_wevent_hdr(&dst->hdr, e, EV_CUDA_MEMSET, 0, WEVENT_SZ(cuda_memset));
+
+		dst->cuda_memset.end_ts = e->cuda_memset.end_ts;
+		dst->cuda_memset.byte_cnt = e->cuda_memset.byte_cnt;
+		dst->cuda_memset.corr_id = e->cuda_memset.corr_id;
+		dst->cuda_memset.device_id = e->cuda_memset.device_id;
+		dst->cuda_memset.ctx_id = e->cuda_memset.ctx_id;
+		dst->cuda_memset.stream_id = e->cuda_memset.stream_id;
+		dst->cuda_memset.value = e->cuda_memset.value;
+		dst->cuda_memset.mem_kind = e->cuda_memset.mem_kind;
+		break;
+
+	case WCK_CUDA_SYNC:
+		fill_cuda_wevent_hdr(&dst->hdr, e, EV_CUDA_SYNC, 0, WEVENT_SZ(cuda_sync));
+
+		dst->cuda_sync.end_ts = e->cuda_sync.end_ts;
+		dst->cuda_sync.corr_id = e->cuda_sync.corr_id;
+		dst->cuda_sync.stream_id = e->cuda_sync.stream_id;
+		dst->cuda_sync.ctx_id = e->cuda_sync.ctx_id;
+		dst->cuda_sync.event_id = e->cuda_sync.event_id;
+		dst->cuda_sync.sync_type = e->cuda_sync.sync_type;
+		break;
+
+	default:
+		eprintf("Unrecognized CUDA event type %d while persisting!\n", e->kind);
+		return -EINVAL;
+	}
+
+	return dst->hdr.sz;
 }

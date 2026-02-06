@@ -84,6 +84,13 @@ enum event_kind {
 	EV_REQ_TASK_EVENT = 17,
 	EV_SCX_DSQ_END = 18,
 	EV_CUDA_CALL = 19,
+
+	/* CUDA GPU activity events (from CUPTI) */
+	EV_CUDA_KERNEL = 50,
+	EV_CUDA_MEMCPY = 51,
+	EV_CUDA_MEMSET = 52,
+	EV_CUDA_SYNC = 53,
+	EV_CUDA_API = 54,
 };
 
 enum stack_trace_kind {
@@ -270,6 +277,52 @@ struct wprof_event {
 			int cbid;
 			u32 corr_id;
 		} cuda_call;
+		struct wprof_cuda_kernel {
+			u64 end_ts;
+			const char *name;
+			u32 corr_id;
+			u32 device_id;
+			u32 ctx_id;
+			u32 stream_id;
+			u32 grid_x, grid_y, grid_z;
+			u32 block_x, block_y, block_z;
+		} cuda_kernel;
+		struct wprof_cuda_memcpy {
+			u64 end_ts;
+			u64 byte_cnt;
+			u32 corr_id;
+			u32 device_id;
+			u32 ctx_id;
+			u32 stream_id;
+			u8 copy_kind;
+			u8 src_kind;
+			u8 dst_kind;
+		} cuda_memcpy;
+		struct wprof_cuda_memset {
+			u64 end_ts;
+			u64 byte_cnt;
+			u32 corr_id;
+			u32 device_id;
+			u32 ctx_id;
+			u32 stream_id;
+			u32 value;
+			u8 mem_kind;
+		} cuda_memset;
+		struct wprof_cuda_sync {
+			u64 end_ts;
+			u32 corr_id;
+			u32 stream_id;
+			u32 ctx_id;
+			u32 event_id;
+			u8 sync_type;
+		} cuda_sync;
+		struct wprof_cuda_api {
+			u64 end_ts;
+			u32 corr_id;
+			u32 cbid;
+			u32 ret_val;
+			u8 kind;
+		} cuda_api;
 	};
 };
 
