@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause)
 /* Copyright (c) 2025 Meta Platforms, Inc. */
+#include "wevent.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -13,6 +14,7 @@
 #include "utils.h"
 #include "protobuf.h"
 #include "wprof.h"
+#include "data.h"
 #include "env.h"
 #include "stacktrace.h"
 #include "cuda_data.h"
@@ -2402,6 +2404,202 @@ static event_fn ev_fns[] = {
 	[WCK_CUDA_API] = process_cuda_api,
 };
 
+static void resolve_wevent_task(struct wprof_data_hdr *hdr, u32 task_id,
+				struct wprof_task *task)
+{
+	struct wevent_task *th = wevent_task(hdr, task_id);
+
+	memset(task, 0, sizeof(*task));
+
+	task->flags = th->flags;
+	task->tid = th->tid;
+	task->pid = th->pid;
+	snprintf(task->comm, sizeof(task->comm), "%s", wevent_str(hdr, th->comm_stroff));
+	snprintf(task->pcomm, sizeof(task->pcomm), "%s", wevent_str(hdr, th->pcomm_stroff));
+}
+
+static void resolve_wevent_ctrs(struct wprof_data_hdr *hdr, u32 ctrs_id,
+				struct perf_counters *ctrs)
+{
+	u64 *vals = wevent_pmu_vals(hdr, ctrs_id);
+	int cnt = hdr->cfg.pmu_event_cnt;
+
+	memset(ctrs, 0, sizeof(*ctrs));
+	for (int i = 0; i < cnt && i < MAX_PMU_COUNTERS; i++)
+		ctrs->val[i] = vals[i];
+}
+
+static size_t wevent_to_wprof_event(struct wprof_data_hdr *hdr,
+				    const struct wevent *we,
+				    struct wprof_event *out, size_t out_sz)
+{
+	size_t fixed_sz;
+
+	memset(out, 0, out_sz);
+
+	/* Common header fields */
+	out->kind = we->hdr.kind;
+	out->flags = we->hdr.flags;
+	out->ts = we->hdr.ts;
+	out->cpu = we->hdr.cpu;
+	out->numa_node = we->hdr.numa_node;
+	resolve_wevent_task(hdr, we->hdr.task_id, &out->task);
+
+	/* Type-specific conversion */
+	switch (we->hdr.kind) {
+	case EV_SWITCH:
+		fixed_sz = EV_SZ(swtch);
+		resolve_wevent_task(hdr, we->swtch.next_task_id, &out->swtch.next);
+		resolve_wevent_task(hdr, we->swtch.waker_task_id, &out->swtch.waker);
+		resolve_wevent_ctrs(hdr, we->swtch.pmu_vals_id, &out->swtch.ctrs);
+		out->swtch.waking_ts = we->swtch.waking_ts;
+		out->swtch.prev_task_state = we->swtch.prev_task_state;
+		out->swtch.last_next_task_state = we->swtch.last_next_task_state;
+		out->swtch.prev_prio = we->swtch.prev_prio;
+		out->swtch.next_prio = we->swtch.next_prio;
+		out->swtch.waker_cpu = we->swtch.waker_cpu;
+		out->swtch.waker_numa_node = we->swtch.waker_numa_node;
+		out->swtch.waking_flags = we->swtch.waking_flags;
+		out->swtch.next_task_scx_layer_id = we->swtch.next_task_scx_layer_id;
+		out->swtch.next_task_scx_dsq_id = we->swtch.next_task_scx_dsq_id;
+		break;
+
+	case EV_TIMER:
+		fixed_sz = EV_SZ(timer);
+		break;
+
+	case EV_WAKING:
+		fixed_sz = EV_SZ(waking);
+		resolve_wevent_task(hdr, we->waking.wakee_task_id, &out->waking.wakee);
+		break;
+
+	case EV_WAKEUP_NEW:
+		fixed_sz = EV_SZ(wakeup_new);
+		resolve_wevent_task(hdr, we->wakeup_new.wakee_task_id, &out->wakeup_new.wakee);
+		break;
+
+	case EV_HARDIRQ_EXIT:
+		fixed_sz = EV_SZ(hardirq);
+		out->hardirq.hardirq_ts = we->hardirq.hardirq_ts;
+		out->hardirq.irq = we->hardirq.irq;
+		snprintf(out->hardirq.name, sizeof(out->hardirq.name), "%s",
+			 wevent_str(hdr, we->hardirq.name_stroff));
+		resolve_wevent_ctrs(hdr, we->hardirq.pmu_vals_id, &out->hardirq.ctrs);
+		break;
+
+	case EV_SOFTIRQ_EXIT:
+		fixed_sz = EV_SZ(softirq);
+		out->softirq.softirq_ts = we->softirq.softirq_ts;
+		out->softirq.vec_nr = we->softirq.vec_nr;
+		resolve_wevent_ctrs(hdr, we->softirq.pmu_vals_id, &out->softirq.ctrs);
+		break;
+
+	case EV_WQ_END:
+		fixed_sz = EV_SZ(wq);
+		out->wq.wq_ts = we->wq.wq_ts;
+		snprintf(out->wq.desc, sizeof(out->wq.desc), "%s",
+			 wevent_str(hdr, we->wq.desc_stroff));
+		resolve_wevent_ctrs(hdr, we->wq.pmu_vals_id, &out->wq.ctrs);
+		break;
+
+	case EV_FORK:
+		fixed_sz = EV_SZ(fork);
+		resolve_wevent_task(hdr, we->fork.child_task_id, &out->fork.child);
+		break;
+
+	case EV_EXEC:
+		fixed_sz = EV_SZ(exec);
+		out->exec.old_tid = we->exec.old_tid;
+		snprintf(out->exec.filename, sizeof(out->exec.filename), "%s",
+			 wevent_str(hdr, we->exec.filename_stroff));
+		break;
+
+	case EV_TASK_RENAME:
+		fixed_sz = EV_SZ(rename);
+		snprintf(out->rename.new_comm, sizeof(out->rename.new_comm), "%s",
+			 wevent_str(hdr, we->rename.new_comm_stroff));
+		break;
+
+	case EV_TASK_EXIT:
+		fixed_sz = EV_SZ(task);
+		break;
+
+	case EV_TASK_FREE:
+		fixed_sz = EV_SZ(task);
+		break;
+
+	case EV_IPI_SEND:
+		fixed_sz = EV_SZ(ipi_send);
+		out->ipi_send.ipi_id = we->ipi_send.ipi_id;
+		out->ipi_send.kind = we->ipi_send.kind;
+		out->ipi_send.target_cpu = we->ipi_send.target_cpu;
+		break;
+
+	case EV_IPI_EXIT:
+		fixed_sz = EV_SZ(ipi);
+		out->ipi.ipi_ts = we->ipi.ipi_ts;
+		out->ipi.send_ts = we->ipi.send_ts;
+		out->ipi.ipi_id = we->ipi.ipi_id;
+		out->ipi.kind = we->ipi.kind;
+		out->ipi.send_cpu = we->ipi.send_cpu;
+		resolve_wevent_ctrs(hdr, we->ipi.pmu_vals_id, &out->ipi.ctrs);
+		break;
+
+	case EV_REQ_EVENT:
+		fixed_sz = EV_SZ(req);
+		out->req.req_ts = we->req.req_ts;
+		out->req.req_id = we->req.req_id;
+		out->req.req_event = we->req.req_event;
+		snprintf(out->req.req_name, sizeof(out->req.req_name), "%s",
+			 wevent_str(hdr, we->req.req_name_stroff));
+		break;
+
+	case EV_REQ_TASK_EVENT:
+		fixed_sz = EV_SZ(req_task);
+		out->req_task.req_id = we->req_task.req_id;
+		out->req_task.task_id = we->req_task.req_task_id;
+		out->req_task.enqueue_ts = we->req_task.enqueue_ts;
+		out->req_task.wait_time_ns = we->req_task.wait_time_ns;
+		out->req_task.run_time_ns = we->req_task.run_time_ns;
+		out->req_task.req_task_event = we->req_task.req_task_event;
+		break;
+
+	case EV_SCX_DSQ_END:
+		fixed_sz = EV_SZ(scx_dsq);
+		out->scx_dsq.scx_dsq_insert_ts = we->scx_dsq.scx_dsq_insert_ts;
+		out->scx_dsq.scx_dsq_id = we->scx_dsq.scx_dsq_id;
+		out->scx_dsq.scx_layer_id = we->scx_dsq.scx_layer_id;
+		out->scx_dsq.scx_dsq_insert_type = we->scx_dsq.scx_dsq_insert_type;
+		break;
+
+	case EV_CUDA_CALL:
+		fixed_sz = EV_SZ(cuda_call);
+		out->cuda_call.domain = we->cuda_call.domain;
+		out->cuda_call.cbid = we->cuda_call.cbid;
+		out->cuda_call.corr_id = we->cuda_call.corr_id;
+		break;
+
+	default:
+		eprintf("Unrecognized event %d when converting to wevent!\n", we->hdr.kind);
+		exit(1);
+		break;
+	}
+
+	out->sz = fixed_sz;
+
+	/* Copy trailing stack trace data if present */
+	size_t wevent_fixed = wevent_fixed_sz(we);
+	if (we->hdr.sz > wevent_fixed) {
+		void *src = (void *)we + wevent_fixed;
+		void *dst = (void *)out + fixed_sz;
+		size_t trailing_sz = wevent_trailing_sz(we);
+		memcpy(dst, src, trailing_sz);
+		return fixed_sz + trailing_sz;
+	}
+
+	return fixed_sz;
+}
+
 static int process_event(struct worker_state *w, struct wprof_event *e, size_t size)
 {
 	event_fn ev_fn;
@@ -2434,12 +2632,16 @@ int emit_trace(struct worker_state *w)
 		w->frames_used = calloc((shdr->frame_cnt + 63) / 64, sizeof(u64));
 	}
 
-	struct wprof_event_record *rec;
-	wprof_for_each_event(rec, w->dump_hdr) {
-		err = process_event(w, rec->e, rec->sz);
+	/* XXX: rework this, avoid copying */
+	char event_buf[sizeof(struct wprof_event) + MAX_STACK_DEPTH * 2 * sizeof(u64) * 4];
+	struct wevent_record *rec;
+	wevent_for_each_event(rec, w->dump_hdr) {
+		struct wprof_event *e = (struct wprof_event *)event_buf;
+		size_t sz = wevent_to_wprof_event(w->dump_hdr, rec->e, e, sizeof(event_buf));
+		err = process_event(w, e, sz);
 		if (err) {
 			eprintf("Failed to process event #%d (kind %d, size %zu, offset %zu): %d\n",
-				rec->idx, rec->e->kind, rec->sz, (void *)rec->e - (void *)w->dump_hdr, err);
+				rec->idx, e->kind, sz, (void *)rec->e - (void *)w->dump_hdr, err);
 			return err; /* YEAH, I know about all the clean up, whatever */
 		}
 	}

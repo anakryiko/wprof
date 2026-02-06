@@ -212,15 +212,22 @@ static void stack_frame_append(struct symb_state *s, int pid, int orig_pid, u64 
 	s->sframe_cnt++;
 }
 
-static int process_event_stack_trace(struct symb_state *state, struct wprof_event *e, size_t size)
+static int process_stack_trace(struct symb_state *state,
+			       const struct wevent *e,
+			       struct wprof_data_hdr *hdr)
 {
-	struct stack_trace *tr;
 	const u64 *kaddrs = NULL, *uaddrs = NULL;
 	int ucnt = 0, kcnt = 0;
-	enum stack_trace_kind st_mask = e->flags & EF_STACK_TRACE_MSK;
+	enum stack_trace_kind st_mask = e->hdr.flags & EF_STACK_TRACE_MSK;
+	u32 pid = wevent_task(hdr, e->hdr.task_id)->pid;
 
-	tr = (void *)e + e->sz;
+	struct stack_trace *tr = wevent_trailing_data(e);
 	while (st_mask) {
+		kaddrs = NULL;
+		uaddrs = NULL;
+		kcnt = 0;
+		ucnt = 0;
+
 		if (tr->kstack_sz > 0) {
 			kcnt = tr->kstack_sz / 8;
 			kaddrs = tr->addrs;
@@ -244,14 +251,14 @@ static int process_event_stack_trace(struct symb_state *state, struct wprof_even
 			 * the leaf address.
 			 */
 			for (int i = ucnt - 1; i >= 0; i--)
-				stack_frame_append(state, e->task.pid, e->task.pid, uaddrs[i] + ((i == 0) ? -1 : 0));
+				stack_frame_append(state, pid, pid, uaddrs[i] + ((i == 0) ? -1 : 0));
 		}
 
 		if (kaddrs) {
 			stack_trace_append(state, tr, 0, state->sframe_cnt, kcnt, !!uaddrs /*combine*/);
 			/* see above about that -1 compensation */
 			for (int i = kcnt - 1; i >= 0; i--)
-				stack_frame_append(state, 0 /* kernel */, e->task.pid, kaddrs[i] + ((i == 0) ? -1 : 0));
+				stack_frame_append(state, 0 /* kernel */, pid, kaddrs[i] + ((i == 0) ? -1 : 0));
 		}
 
 		st_mask &= ~tr->kind;
@@ -273,12 +280,12 @@ int process_stack_traces(struct worker_state *w)
 	wprintf("Symbolizing...\n");
 	u64 symb_start_ns = ktime_now_ns();
 
-	struct wprof_event_record *rec;
-	wprof_for_each_event(rec, w->dump_hdr) {
-		err = process_event_stack_trace(state, rec->e, rec->sz);
+	struct wevent_record *rec;
+	wevent_for_each_event(rec, w->dump_hdr) {
+		err = process_stack_trace(state, rec->e, w->dump_hdr);
 		if (err) {
-			eprintf("Failed to pre-process stack trace for event #%d (kind %d, size %zu, offset %zu): %d\n",
-				rec->idx, rec->e->kind, rec->sz, (void *)rec - (void *)w->dump_hdr, err);
+			eprintf("Failed to pre-process stack trace for event #%d (kind %d, size %u): %d\n",
+				rec->idx, rec->e->hdr.kind, rec->e->hdr.sz, err);
 			return err;
 		}
 	}
