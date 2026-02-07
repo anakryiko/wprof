@@ -165,6 +165,17 @@ int file_splice_into(FILE *src_file, FILE *dst_file, off_t *off, size_t *sz)
 	return 0;
 }
 
+void file_pad(FILE *f, size_t align)
+{
+	static const char zeros[16] = {};
+	size_t pad = align - ftell(f) % align;
+
+	if (pad != align && fwrite(zeros, 1, pad, f) != pad) {
+		eprintf("Failed to write %zu bytes of padding: %d\n", pad, -errno);
+		exit(1);
+	}
+}
+
 #define FMT_BUF_LEVELS 16
 #define FMT_BUF_LEN 1024
 
