@@ -903,28 +903,6 @@ int generate_stack_traces(struct worker_state *w)
 	return 0;
 }
 
-int event_stack_trace_id(struct worker_state *w, const struct wprof_event *e,
-			 enum stack_trace_kind kind)
-{
-	struct stack_trace *tr;
-	enum stack_trace_kind st_mask = e->flags & EF_STACK_TRACE_MSK;
-
-	/* if event doesn't contain stack trace kind that was requested, bial */
-	if ((st_mask & env.requested_stack_traces) == 0)
-		return -1;
-
-	tr = (void *)e + e->sz;
-	while (st_mask) {
-		if (tr->kind == kind && tr->stack_id > 0)
-			return tr->stack_id;
-
-		st_mask &= ~tr->kind;
-		tr = (void *)tr + stack_trace_sz(tr);
-	}
-
-	return -1;
-}
-
 void mark_stack_trace_used(struct worker_state *w, int stack_id)
 {
 	struct wprof_stack_trace_iter tr_it = wprof_stack_trace_iter_new(w->dump_hdr, stack_id);

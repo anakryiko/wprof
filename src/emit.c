@@ -1030,7 +1030,7 @@ static int process_timer(struct worker_state *w, struct wprof_event *e, size_t s
 
 	(void)task_state(w, &e->task);
 
-	int tr_id = event_stack_trace_id(w, e, ST_TIMER);
+	int tr_id = (env.requested_stack_traces & ST_TIMER) ? w->cur_wevent->timer.timer_stack_id : 0;
 
 	if (env.emit_timer_ticks || tr_id > 0) {
 		/* task keeps running on CPU */
@@ -1195,7 +1195,7 @@ skip_waker_task:
 			emit_kv_str(IID_ANNK_RENAMED_TO, e->task.comm);
 
 		if (env.requested_stack_traces & ST_OFFCPU)
-			emit_callstack(w, event_stack_trace_id(w, e, ST_OFFCPU));
+			emit_callstack(w, w->cur_wevent->swtch.offcpu_stack_id);
 	}
 
 	if (prev_st->req_id) {
@@ -1528,7 +1528,7 @@ static int process_wakeup_new(struct worker_state *w, struct wprof_event *e, siz
 
 	(void)task_state(w, &e->task);
 
-	int tr_id = event_stack_trace_id(w, e, ST_WAKER);
+	int tr_id = (env.requested_stack_traces & ST_WAKER) ? w->cur_wevent->wakeup_new.waker_stack_id : 0;
 	if (tr_id <= 0)
 		return 0;
 
@@ -1546,7 +1546,7 @@ static int process_waking(struct worker_state *w, struct wprof_event *e, size_t 
 
 	(void)task_state(w, &e->task);
 
-	int tr_id = event_stack_trace_id(w, e, ST_WAKER);
+	int tr_id = (env.requested_stack_traces & ST_WAKER) ? w->cur_wevent->waking.waker_stack_id : 0;
 	if (tr_id <= 0)
 		return 0;
 
@@ -2376,7 +2376,7 @@ static int process_cuda_call(struct worker_state *w, struct wprof_event *e, size
 
 	/* remember stack trace ID for subsequent WCK_CUDA_API event */
 	struct cuda_corr_info *ci = cuda_corr_get(e->task.pid, e->cuda_call.corr_id);
-	ci->tr_id = event_stack_trace_id(w, e, ST_CUDA);
+	ci->tr_id = (env.requested_stack_traces & ST_CUDA) ? w->cur_wevent->cuda_call.cuda_stack_id : 0;
 
 	return 0;
 }
@@ -2653,16 +2653,6 @@ static size_t wevent_to_wprof_event(struct wprof_data_hdr *hdr,
 
 	out->sz = fixed_sz;
 
-	/* Copy trailing stack trace data if present */
-	size_t wevent_fixed = wevent_fixed_sz(we);
-	if (we->hdr.sz > wevent_fixed) {
-		void *src = (void *)we + wevent_fixed;
-		void *dst = (void *)out + fixed_sz;
-		size_t trailing_sz = wevent_trailing_sz(we);
-		memcpy(dst, src, trailing_sz);
-		return fixed_sz + trailing_sz;
-	}
-
 	return fixed_sz;
 }
 
@@ -2698,11 +2688,11 @@ int emit_trace(struct worker_state *w)
 		w->frames_used = calloc((shdr->frame_cnt + 63) / 64, sizeof(u64));
 	}
 
-	/* XXX: rework this, avoid copying */
-	char event_buf[sizeof(struct wprof_event) + MAX_STACK_DEPTH * 2 * sizeof(u64) * 4];
+	struct wprof_event event_buf;
 	struct wevent_record *rec;
 	wevent_for_each_event(rec, w->dump_hdr) {
-		struct wprof_event *e = (struct wprof_event *)event_buf;
+		struct wprof_event *e = &event_buf;
+		w->cur_wevent = rec->e;
 		size_t sz = wevent_to_wprof_event(w->dump_hdr, rec->e, e, sizeof(event_buf));
 		err = process_event(w, e, sz);
 		if (err) {

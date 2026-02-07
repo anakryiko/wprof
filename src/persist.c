@@ -7,6 +7,7 @@
 #include <errno.h>
 
 #include "persist.h"
+#include "stacktrace.h"
 #include "utils.h"
 #include "pmu.h"
 #include "cuda_data.h"
@@ -197,16 +198,34 @@ static void fill_wevent_hdr(struct wevent_hdr *hdr, const struct wprof_event *e,
 	hdr->ts = e->ts;
 }
 
-int persist_bpf_event(struct persist_state *ps,
-		      const struct wprof_event *e, size_t src_sz,
-		      struct wevent *dst)
+/* stack_id of the trailing stack trace, already resolved by process_stack_traces() */
+static u32 bpf_event_stack_id(const struct wprof_event *e, enum stack_trace_kind kind)
+{
+	enum stack_trace_kind st_mask = e->flags & EF_STACK_TRACE_MSK;
+	struct stack_trace *tr;
+
+	if (!(st_mask & kind))
+		return 0;
+
+	tr = (void *)e + e->sz;
+	while (st_mask) {
+		if (tr->kind == kind && tr->stack_id > 0)
+			return tr->stack_id;
+
+		st_mask &= ~tr->kind;
+		tr = (void *)tr + stack_trace_sz(tr);
+	}
+
+	return 0;
+}
+
+int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, struct wevent *dst)
 {
 	int task_id = persist_task_id(ps, &e->task);
-	size_t trailing_sz = src_sz - e->sz;
 
 	switch (e->kind) {
 	case EV_SWITCH: {
-		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(swtch) + trailing_sz);
+		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(swtch));
 
 		dst->swtch.next_task_id = persist_task_id(ps, &e->swtch.next);
 		dst->swtch.waker_task_id = persist_task_id(ps, &e->swtch.waker);
@@ -221,26 +240,30 @@ int persist_bpf_event(struct persist_state *ps,
 		dst->swtch.waker_numa_node = e->swtch.waker_numa_node;
 		dst->swtch.next_task_scx_layer_id = e->swtch.next_task_scx_layer_id;
 		dst->swtch.next_task_scx_dsq_id = e->swtch.next_task_scx_dsq_id;
+		dst->swtch.offcpu_stack_id = bpf_event_stack_id(e, ST_OFFCPU);
 		break;
 	}
 	case EV_TIMER:
-		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(timer) + trailing_sz);
+		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(timer));
+		dst->timer.timer_stack_id = bpf_event_stack_id(e, ST_TIMER);
 		break;
 
 	case EV_WAKING: {
-		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(waking) + trailing_sz);
+		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(waking));
 
 		dst->waking.wakee_task_id = persist_task_id(ps, &e->waking.wakee);
+		dst->waking.waker_stack_id = bpf_event_stack_id(e, ST_WAKER);
 		break;
 	}
 	case EV_WAKEUP_NEW: {
-		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(wakeup_new) + trailing_sz);
+		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(wakeup_new));
 
 		dst->wakeup_new.wakee_task_id = persist_task_id(ps, &e->wakeup_new.wakee);
+		dst->wakeup_new.waker_stack_id = bpf_event_stack_id(e, ST_WAKER);
 		break;
 	}
 	case EV_HARDIRQ_EXIT: {
-		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(hardirq) + trailing_sz);
+		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(hardirq));
 
 		dst->hardirq.hardirq_ts = e->hardirq.hardirq_ts;
 		dst->hardirq.irq = e->hardirq.irq;
@@ -249,7 +272,7 @@ int persist_bpf_event(struct persist_state *ps,
 		break;
 	}
 	case EV_SOFTIRQ_EXIT: {
-		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(softirq) + trailing_sz);
+		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(softirq));
 
 		dst->softirq.softirq_ts = e->softirq.softirq_ts;
 		dst->softirq.vec_nr = e->softirq.vec_nr;
@@ -257,7 +280,7 @@ int persist_bpf_event(struct persist_state *ps,
 		break;
 	}
 	case EV_WQ_END: {
-		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(wq) + trailing_sz);
+		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(wq));
 
 		dst->wq.wq_ts = e->wq.wq_ts;
 		dst->wq.desc_stroff = persist_stroff(ps, e->wq.desc);
@@ -265,34 +288,34 @@ int persist_bpf_event(struct persist_state *ps,
 		break;
 	}
 	case EV_FORK: {
-		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(fork) + trailing_sz);
+		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(fork));
 
 		dst->fork.child_task_id = persist_task_id(ps, &e->fork.child);
 		break;
 	}
 	case EV_EXEC:
-		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(exec) + trailing_sz);
+		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(exec));
 
 		dst->exec.old_tid = e->exec.old_tid;
 		dst->exec.filename_stroff = persist_stroff(ps, e->exec.filename);
 		break;
 
 	case EV_TASK_RENAME:
-		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(rename) + trailing_sz);
+		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(rename));
 
 		dst->rename.new_comm_stroff = persist_stroff(ps, e->rename.new_comm);
 		break;
 
 	case EV_TASK_EXIT:
-		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(task_exit) + trailing_sz);
+		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(task_exit));
 		break;
 
 	case EV_TASK_FREE:
-		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(task_free) + trailing_sz);
+		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(task_free));
 		break;
 
 	case EV_IPI_SEND:
-		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(ipi_send) + trailing_sz);
+		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(ipi_send));
 
 		dst->ipi_send.ipi_id = e->ipi_send.ipi_id;
 		dst->ipi_send.kind = e->ipi_send.kind;
@@ -300,7 +323,7 @@ int persist_bpf_event(struct persist_state *ps,
 		break;
 
 	case EV_IPI_EXIT: {
-		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(ipi) + trailing_sz);
+		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(ipi));
 
 		dst->ipi.ipi_ts = e->ipi.ipi_ts;
 		dst->ipi.send_ts = e->ipi.send_ts;
@@ -311,7 +334,7 @@ int persist_bpf_event(struct persist_state *ps,
 		break;
 	}
 	case EV_REQ_EVENT:
-		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(req) + trailing_sz);
+		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(req));
 
 		dst->req.req_ts = e->req.req_ts;
 		dst->req.req_id = e->req.req_id;
@@ -320,7 +343,7 @@ int persist_bpf_event(struct persist_state *ps,
 		break;
 
 	case EV_REQ_TASK_EVENT:
-		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(req_task) + trailing_sz);
+		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(req_task));
 
 		dst->req_task.req_task_event = e->req_task.req_task_event;
 		dst->req_task.req_id = e->req_task.req_id;
@@ -331,7 +354,7 @@ int persist_bpf_event(struct persist_state *ps,
 		break;
 
 	case EV_SCX_DSQ_END:
-		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(scx_dsq) + trailing_sz);
+		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(scx_dsq));
 
 		dst->scx_dsq.scx_dsq_insert_ts = e->scx_dsq.scx_dsq_insert_ts;
 		dst->scx_dsq.scx_dsq_id = e->scx_dsq.scx_dsq_id;
@@ -340,23 +363,17 @@ int persist_bpf_event(struct persist_state *ps,
 		break;
 
 	case EV_CUDA_CALL:
-		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(cuda_call) + trailing_sz);
+		fill_wevent_hdr(&dst->hdr, e, task_id, WEVENT_SZ(cuda_call));
 
 		dst->cuda_call.domain = e->cuda_call.domain;
 		dst->cuda_call.cbid = e->cuda_call.cbid;
 		dst->cuda_call.corr_id = e->cuda_call.corr_id;
+		dst->cuda_call.cuda_stack_id = bpf_event_stack_id(e, ST_CUDA);
 		break;
 
 	default:
 		eprintf("Unrecognized event type %d while persisting!\n", e->kind);
 		return -EINVAL;
-	}
-
-	/* XXX: we shouldn't have trailing size, to be cleaned up */
-	if (trailing_sz > 0) {
-		void *src = (void *)e + e->sz;
-		void *dst_tail = (void *)dst + dst->hdr.sz - trailing_sz;
-		memcpy(dst_tail, src, trailing_sz);
 	}
 
 	return dst->hdr.sz;

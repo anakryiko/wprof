@@ -287,7 +287,7 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 	}
 
 	/* Merge and convert events in timestamp order */
-	char wevent_buf[64 * 1024]; /* XXX: set it properly once we don't have trailing data */
+	struct wevent wevent_buf;
 	while (true) {
 		int widx = -1;
 		u64 ts = 0;
@@ -321,7 +321,7 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 			struct wmerge_state *wmerge = &wmerges[widx];
 			const struct bpf_event_record *r = wmerge->next_rec;
 
-			wevent_sz = persist_bpf_event(&ps, r->e, r->sz, (struct wevent *)wevent_buf);
+			wevent_sz = persist_bpf_event(&ps, r->e, &wevent_buf);
 
 			wmerge->rec_idx++;
 			wmerge->next_rec = wmerge->rec_idx < wmerge->rec_cnt ? &wmerge->recs[wmerge->rec_idx] : NULL;
@@ -332,7 +332,7 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 			const struct wcuda_event *r = wcuda->next_rec;
 			struct cuda_tracee *cuda = &env.cudas[cidx];
 
-			wevent_sz = persist_cuda_event(&ps, r, (struct wevent *)wevent_buf,
+			wevent_sz = persist_cuda_event(&ps, r, &wevent_buf,
 						       cuda->pid, cuda->proc_name, wcuda->strs, tid_cache);
 			if (wevent_sz < 0) {
 				eprintf("Failed to convert CUDA event for tracee %s: %d\n", cuda_str(cuda), wevent_sz);
@@ -346,7 +346,7 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 		event_cnt += 1;
 		events_sz += wevent_sz;
 
-		if (fwrite(wevent_buf, wevent_sz, 1, data_dump) != 1) {
+		if (fwrite(&wevent_buf, wevent_sz, 1, data_dump) != 1) {
 			err = -errno;
 			if (widx < env.ringbuf_cnt) {
 				eprintf("Failed to fwrite() event from ringbuf #%d ('%s'): %d\n",
@@ -575,7 +575,7 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 		return err;
 	}
 
-#ifdef DEBUG_SYMBOLIZATION
+#if DEBUG_SYMBOLIZATION
 	debug_dump_stack_traces(w);
 #endif
 
