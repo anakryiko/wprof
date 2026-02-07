@@ -20,9 +20,8 @@ struct thread_table {
 };
 
 struct pmu_vals_table {
-	u64 *data;			/* flat array: data[id * pmu_cnt + i] */
+	FILE *dump;			/* file-backed storage for PMU values */
 	u32 count;
-	u32 capacity;
 	int pmu_cnt;			/* number of counters per entry */
 };
 

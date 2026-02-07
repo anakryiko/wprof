@@ -16,7 +16,6 @@
 #include "../libbpf/src/hashmap.h"
 
 #define THREAD_TABLE_INIT_CAP 1024
-#define PMU_VALS_INIT_CAP 4096
 
 /*
  * Thread table lookup key.
@@ -72,13 +71,7 @@ int persist_state_init(struct persist_state *ps, int pmu_cnt)
 	ps->threads.count = 1; /* reserve index 0 as invalid/null */
 
 	ps->pmu_vals.pmu_cnt = pmu_cnt;
-	if (pmu_cnt > 0) {
-		ps->pmu_vals.data = calloc(PMU_VALS_INIT_CAP * pmu_cnt, sizeof(u64));
-		if (!ps->pmu_vals.data)
-			goto err_out;
-		ps->pmu_vals.capacity = PMU_VALS_INIT_CAP;
-		ps->pmu_vals.count = 1; /* reserve index 0 as null entry */
-	}
+	ps->pmu_vals.count = 1; /* reserve index 0 as null entry */
 
 	return 0;
 err_out:
@@ -99,7 +92,6 @@ void persist_state_free(struct persist_state *ps)
 		hashmap__free(ps->threads.lookup);
 	}
 	free(ps->threads.entries);
-	free(ps->pmu_vals.data);
 	free(ps->pmu_defs);
 	strset__free(ps->strs);
 }
@@ -158,15 +150,10 @@ int persist_pmu_vals_id(struct persist_state *ps, const struct perf_counters *ct
 
 	size_t sz = ps->pmu_vals.pmu_cnt * sizeof(u64);
 
-	if (ps->pmu_vals.count >= ps->pmu_vals.capacity) {
-		u32 new_cap = ps->pmu_vals.capacity * 3 / 2;
-
-		ps->pmu_vals.data = realloc(ps->pmu_vals.data, new_cap * sz);
-		ps->pmu_vals.capacity = new_cap;
+	if (fwrite(ctrs->val, sz, 1, ps->pmu_vals.dump) != 1) {
+		eprintf("Failed to write PMU values: %d\n", -errno);
+		exit(1);
 	}
-
-	u64 *dest = &ps->pmu_vals.data[ps->pmu_vals.count * ps->pmu_vals.pmu_cnt];
-	memcpy(dest, ctrs->val, sz);
 	ps->pmu_vals.count += 1;
 
 	return ps->pmu_vals.count - 1;
