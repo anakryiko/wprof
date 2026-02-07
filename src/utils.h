@@ -4,6 +4,7 @@
 #define __UTILS_H_
 
 #include <stdint.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <limits.h>
@@ -86,6 +87,7 @@ __printf(2, 3) void log_printf(int verbosity, const char *fmt, ...);
 ssize_t file_size(FILE *f);
 FILE *fopen_buffered(const char *path, const char *mode);
 int file_splice_into(FILE *src_file, FILE *dst_file, off_t *off, size_t *sz);
+void file_pad(FILE *f, size_t align);
 
 static inline bool is_pow_of_2(long x)
 {

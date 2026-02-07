@@ -415,6 +415,7 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 	}
 
 	/* Write thread table section */
+	file_pad(data_dump, 8);
 	long threads_off = ftell(data_dump) - sizeof(struct wprof_data_hdr);
 	size_t thread_cnt = ps.threads.count;
 	size_t threads_sz = thread_cnt * sizeof(struct wevent_task);
@@ -425,6 +426,7 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 	}
 
 	/* Write PMU definitions section */
+	file_pad(data_dump, 8);
 	long pmu_defs_off = ftell(data_dump) - sizeof(struct wprof_data_hdr);
 	size_t pmu_def_cnt = ps.pmu_def_cnt;
 	size_t pmu_defs_sz = pmu_def_cnt * sizeof(struct wevent_pmu_def);
@@ -436,6 +438,7 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 	}
 
 	/* Write PMU counter values section */
+	file_pad(data_dump, 8);
 	long pmu_vals_off = ftell(data_dump) - sizeof(struct wprof_data_hdr);
 	size_t pmu_vals_cnt = ps.pmu_vals.count;
 	size_t pmu_vals_item_sz = ps.pmu_def_cnt * sizeof(u64);
@@ -448,6 +451,7 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 	}
 
 	/* Write string pool section */
+	file_pad(data_dump, 8);
 	long strs_off = ftell(data_dump) - sizeof(struct wprof_data_hdr);
 	const char *strs_data = strset__data(ps.strs);
 	size_t strs_sz = strset__data_size(ps.strs);
@@ -458,13 +462,7 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 	}
 
 	/* ensure string section ends at 8 byte alignment, just in case */
-	char padding[8] = {};
-	size_t pad_cnt = 8 - ftell(data_dump) % 8;
-	if (pad_cnt != 8 && fwrite(padding, pad_cnt, 1, data_dump) != 1) {
-		err = -errno;
-		eprintf("Failed to fwrite() string pool padding: %d\n", err);
-		return err;
-	}
+	file_pad(data_dump, 8);
 
 	fflush(data_dump);
 	fsync(fileno(data_dump));
