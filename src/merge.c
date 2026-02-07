@@ -157,6 +157,7 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 		w->dump_hdr = w->dump_mem;
 	}
 
+	/* Collect and symbolize stack traces, dump to separate file */
 	FILE *stacks_dump = NULL;
 	char stacks_path[PATH_MAX] = "";
 	if (env.requested_stack_traces) {
@@ -173,6 +174,27 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 			eprintf("Failed to symbolize and dump stack traces: %d\n", err);
 			return err;
 		}
+	}
+
+	/* Create PMU values dump file */
+	FILE *pmu_vals_dump = NULL;
+	char pmu_vals_path[PATH_MAX] = "";
+	if (env.pmu_event_cnt > 0) {
+		snprintf(pmu_vals_path, sizeof(pmu_vals_path), "%s/pmu_vals.data", workdir_name);
+		pmu_vals_dump = fopen_buffered(pmu_vals_path, "w+");
+		if (!pmu_vals_dump) {
+			err = -errno;
+			eprintf("Failed to create PMU values dump file '%s': %d\n", pmu_vals_path, err);
+			return err;
+		}
+		/* write null entry (index 0 reserved) */
+		u64 zeros[MAX_PMU_COUNTERS] = {};
+		if (fwrite(zeros, env.pmu_event_cnt * sizeof(u64), 1, pmu_vals_dump) != 1) {
+			err = -errno;
+			eprintf("Failed to write null PMU values entry: %d\n", err);
+			return err;
+		}
+		ps.pmu_vals.dump = pmu_vals_dump;
 	}
 
 	wprintf("Merging...\n");
@@ -437,17 +459,24 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 		return err;
 	}
 
-	/* Write PMU counter values section */
-	file_pad(data_dump, 8);
-	long pmu_vals_off = ftell(data_dump) - sizeof(struct wprof_data_hdr);
+	/* Write PMU counter values section (spliced from separate file) */
+	off_t pmu_vals_off = 0;
+	size_t pmu_vals_sz = 0;
 	size_t pmu_vals_cnt = ps.pmu_vals.count;
-	size_t pmu_vals_item_sz = ps.pmu_def_cnt * sizeof(u64);
-	size_t pmu_vals_sz = pmu_vals_cnt * pmu_vals_item_sz;
-	if (pmu_vals_cnt > 0 && fwrite(ps.pmu_vals.data, pmu_vals_item_sz,
-				       pmu_vals_cnt, data_dump) != pmu_vals_cnt) {
-		err = -errno;
-		eprintf("Failed to fwrite() PMU values: %d\n", err);
-		return err;
+	if (pmu_vals_dump) {
+		file_pad(data_dump, 8);
+		err = file_splice_into(pmu_vals_dump, data_dump, &pmu_vals_off, &pmu_vals_sz);
+		if (err) {
+			eprintf("Failed to merge PMU values into final dump: %d\n", err);
+			return err;
+		}
+		pmu_vals_off -= sizeof(struct wprof_data_hdr);
+
+		fclose(pmu_vals_dump);
+		pmu_vals_dump = NULL;
+
+		if (!env.keep_workdir)
+			unlink(pmu_vals_path);
 	}
 
 	/* Write string pool section */
