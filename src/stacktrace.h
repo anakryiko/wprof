@@ -4,12 +4,9 @@
 #define __STACKTRACE_H_
 
 #include <stddef.h>
-#include "utils.h"
-#include "wprof.h"
 #include "env.h"
-#include "pb_common.h"
-#include "pb_encode.h"
-#include "perfetto_trace.pb.h"
+
+#define DEBUG_SYMBOLIZATION 0
 
 struct stack_trace_index {
 	struct stack_trace *strace;
@@ -44,11 +41,15 @@ static inline int stack_trace_sz(const struct stack_trace *tr)
 	       (tr->ustack_sz < 0 ? 0 : tr->ustack_sz);
 }
 
-int process_stack_traces(struct worker_state *w);
+int process_stack_traces(struct worker_state *workers, int worker_cnt, FILE *stacks_file);
 int event_stack_trace_id(struct worker_state *w, const struct wprof_event *e,
 			 enum stack_trace_kind kind);
 int generate_stack_traces(struct worker_state *w);
 
 void mark_stack_trace_used(struct worker_state *w, int stack_id);
+
+#if DEBUG_SYMBOLIZATION
+void debug_dump_stack_traces(struct worker_state *w);
+#endif
 
 #endif /* __STACKTRACE_H_ */

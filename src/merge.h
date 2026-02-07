@@ -7,6 +7,6 @@
 
 int wprof_init_data(FILE *dump);
 int wprof_load_data_dump(struct worker_state *w);
-int wprof_merge_data(int workdir_fd, struct worker_state *workers);
+int wprof_merge_data(const char *workdir_name, struct worker_state *workers);
 
 #endif /* __MERGE_H_ */
