@@ -9,6 +9,8 @@
 #include "data.h"
 #include "cuda.h"
 
+struct wevent;
+
 #define WPROF_VERSION "0.3-dev"
 
 #define DEFAULT_RINGBUF_SZ (16 * 1024 * 1024)
@@ -170,6 +172,9 @@ struct worker_state {
 	/* stack trace usage markers */
 	u64 *stacks_used; /* bitmask */
 	u64 *frames_used; /* bitmask */
+
+	/* current wevent being processed (for direct stack_id access in emit phase) */
+	const struct wevent *cur_wevent;
 
 	/* ftrace event buffering per-CPU */
 	struct ftrace_cpu_bundle *ftrace_bundles;

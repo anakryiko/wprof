@@ -50,6 +50,7 @@ struct wevent {
 			u32 next_task_id;
 			u32 waker_task_id;
 			u32 pmu_vals_id;
+			u32 offcpu_stack_id;
 			enum waking_flags waking_flags;
 			u64 waking_ts;
 			u32 prev_task_state;
@@ -63,14 +64,17 @@ struct wevent {
 		} swtch;
 
 		struct wevent_timer {
+			u32 timer_stack_id;
 		} timer;
 
 		struct wevent_waking {
 			u32 wakee_task_id;
+			u32 waker_stack_id;
 		} waking;
 
 		struct wevent_wakeup_new {
 			u32 wakee_task_id;
+			u32 waker_stack_id;
 		} wakeup_new;
 
 		struct wevent_hardirq {
@@ -153,6 +157,7 @@ struct wevent {
 			int domain;
 			int cbid;
 			u32 corr_id;
+			u32 cuda_stack_id;
 		} cuda_call;
 
 		/* CUDA activity events (from CUPTI) */
@@ -244,22 +249,6 @@ static inline size_t wevent_fixed_sz(const struct wevent *e)
 	case EV_CUDA_API:	return WEVENT_SZ(cuda_api);
 	default:		return 0;
 	}
-}
-
-/*
- * Get pointer to trailing stack trace data in a wevent.
- */
-static inline void *wevent_trailing_data(const struct wevent *e)
-{
-	return (void *)e + wevent_fixed_sz(e);
-}
-
-/*
- * Get size of trailing data in a wevent.
- */
-static inline size_t wevent_trailing_sz(const struct wevent *e)
-{
-	return e->hdr.sz - wevent_fixed_sz(e);
 }
 
 #endif /* __WEVENT_H_ */

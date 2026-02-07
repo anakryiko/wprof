@@ -41,9 +41,7 @@ int persist_task_id(struct persist_state *ps, const struct wprof_task *task);
 int persist_pmu_vals_id(struct persist_state *ps, const struct perf_counters *ctrs);
 int persist_stroff(struct persist_state *ps, const char *str);
 int persist_add_pmu_def(struct persist_state *ps, const struct pmu_event *ev);
-int persist_bpf_event(struct persist_state *ps,
-		      const struct wprof_event *e, size_t src_sz,
-		      struct wevent *dst);
+int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, struct wevent *dst);
 int persist_cuda_event(struct persist_state *ps, const struct wcuda_event *e, struct wevent *dst,
 		       int host_pid, const char *proc_name, const char *cuda_strs,
 		       struct hashmap *tid_cache);
