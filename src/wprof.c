@@ -1391,23 +1391,15 @@ int main(int argc, char **argv)
 	wprintf("Draining...\n");
 	drain_bpf(&bpf_state, num_cpus);
 
-	wprintf("Merging...\n");
-	err = wprof_merge_data(workdir_fd, workers);
+	err = wprof_merge_data(workdir_name, workers);
 	if (err) {
 		eprintf("Failed to finalize data dump: %d\n", err);
 		goto cleanup;
 	}
 
-	if (env.requested_stack_traces) {
-		err = process_stack_traces(&workers[0]);
-		if (err) {
-			eprintf("Failed to symbolize and dump stack traces: %d\n", err);
-			goto cleanup;
-		}
-		/* we delayed ptrace retraction to symbolize libwprofinj.so stacks */
-		if (env.cuda_cnt > 0)
-			cuda_trace_retract();
-	}
+	/* we delayed ptrace retraction to symbolize libwprofinj.so stacks */
+	if (env.requested_stack_traces && env.cuda_cnt > 0)
+		cuda_trace_retract();
 
 	{
 		fflush(workers[0].dump);

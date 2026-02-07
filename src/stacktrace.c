@@ -15,11 +15,10 @@
 #include "protobuf.h"
 #include "env.h"
 #include "stacktrace.h"
+#include "data.h"
 
 #include "blazesym.h"
 #include "../libbpf/src/strset.h"
-
-#define DEBUG_SYMBOLIZATION 0
 
 #define debugf(...) if (DEBUG_SYMBOLIZATION) dprintf(1, ##__VA_ARGS__)
 
@@ -212,16 +211,14 @@ static void stack_frame_append(struct symb_state *s, int pid, int orig_pid, u64 
 	s->sframe_cnt++;
 }
 
-static int process_stack_trace(struct symb_state *state,
-			       const struct wevent *e,
-			       struct wprof_data_hdr *hdr)
+static int process_stack_trace(struct symb_state *state, const struct wprof_event *e)
 {
 	const u64 *kaddrs = NULL, *uaddrs = NULL;
 	int ucnt = 0, kcnt = 0;
-	enum stack_trace_kind st_mask = e->hdr.flags & EF_STACK_TRACE_MSK;
-	u32 pid = wevent_task(hdr, e->hdr.task_id)->pid;
+	enum stack_trace_kind st_mask = e->flags & EF_STACK_TRACE_MSK;
+	u32 pid = e->task.pid;
 
-	struct stack_trace *tr = wevent_trailing_data(e);
+	struct stack_trace *tr = (void *)e + e->sz;
 	while (st_mask) {
 		kaddrs = NULL;
 		uaddrs = NULL;
@@ -268,7 +265,7 @@ static int process_stack_trace(struct symb_state *state,
 	return 0;
 }
 
-int process_stack_traces(struct worker_state *w)
+int process_stack_traces(struct worker_state *workers, int worker_cnt, FILE *stacks_dump)
 {
 	struct symb_state _state = {}, *state = &_state;
 	size_t kaddr_cnt = 0, uaddr_cnt = 0, unkn_cnt = 0, comb_cnt = 0;
@@ -280,28 +277,33 @@ int process_stack_traces(struct worker_state *w)
 	wprintf("Symbolizing...\n");
 	u64 symb_start_ns = ktime_now_ns();
 
-	struct wevent_record *rec;
-	wevent_for_each_event(rec, w->dump_hdr) {
-		err = process_stack_trace(state, rec->e, w->dump_hdr);
-		if (err) {
-			eprintf("Failed to pre-process stack trace for event #%d (kind %d, size %u): %d\n",
-				rec->idx, rec->e->hdr.kind, rec->e->hdr.sz, err);
-			return err;
+	/* Collect stack traces across all ringbuf dumps */
+	for (int i = 0; i < worker_cnt; i++) {
+		struct worker_state *w = &workers[i];
+		void *data = w->dump_mem + sizeof(struct wprof_data_hdr);
+		size_t data_sz = w->dump_sz - sizeof(struct wprof_data_hdr);
+
+		const struct bpf_event_record *rec;
+		for_each_bpf_event(rec, data, data_sz) {
+			err = process_stack_trace(state, rec->e);
+			if (err) {
+				eprintf("Failed to pre-process stack trace for event #%d (kind %d, size %u): %d\n",
+					rec->idx, rec->e->kind, rec->e->sz, err);
+				return err;
+			}
 		}
 	}
 
-	w->dump_hdr->stacks_off = ftell(w->dump) - sizeof(struct wprof_data_hdr);
-
 	struct wprof_stacks_hdr hdr;
 	memset(&hdr, 0, sizeof(hdr));
-	if (fwrite(&hdr, sizeof(hdr), 1, w->dump) != 1) {
+	if (fwrite(&hdr, sizeof(hdr), 1, stacks_dump) != 1) {
 		err = -errno;
 		eprintf("Failed to write initial stack header: %d\n", err);
 		return err;
 	}
-	base_off = ftell(w->dump);
+	base_off = ftell(stacks_dump);
 
-	hdr.frames_off = ftell(w->dump) - base_off;
+	hdr.frames_off = ftell(stacks_dump) - base_off;
 	/* Add dummy all-zero stack frame record to have all the frame IDs
 	 * positive, which matches well Perfetto expectations and is generally
 	 * nice to have property to be able to use zero ID as "no frame"
@@ -311,7 +313,7 @@ int process_stack_traces(struct worker_state *w)
 	{
 		struct wprof_stack_frame dummy_frm;
 		memset(&dummy_frm, 0, sizeof(dummy_frm));
-		if (fwrite(&dummy_frm, sizeof(dummy_frm), 1, w->dump) != 1) {
+		if (fwrite(&dummy_frm, sizeof(dummy_frm), 1, stacks_dump) != 1) {
 			err = -errno;
 			eprintf("Failed to write dummy stack frame: %d\n", err);
 			return err;
@@ -471,7 +473,7 @@ int process_stack_traces(struct worker_state *w)
 						.addr = state->sframe_idx[start + i].addr,
 					};
 
-					if (fwrite(&frm, sizeof(frm), 1, w->dump) != 1) {
+					if (fwrite(&frm, sizeof(frm), 1, stacks_dump) != 1) {
 						err = -errno;
 						eprintf("Failed to write stack frame: %d\n", err);
 						return err;
@@ -492,7 +494,7 @@ int process_stack_traces(struct worker_state *w)
 					.flags = WSF_UNSYMBOLIZED | (is_kernel ? WSF_KERNEL : 0),
 				};
 
-				if (fwrite(&frm, sizeof(frm), 1, w->dump) != 1) {
+				if (fwrite(&frm, sizeof(frm), 1, stacks_dump) != 1) {
 					err = -errno;
 					eprintf("Failed to write stack frame: %d\n", err);
 					return err;
@@ -629,7 +631,7 @@ int process_stack_traces(struct worker_state *w)
 	/* dedup and assign callstack IIDs */
 	qsort_r(state->strace_idx, state->strace_cnt, sizeof(*state->strace_idx), stack_trace_cmp_by_content, state);
 
-	hdr.frame_mappings_off = ftell(w->dump) - base_off;
+	hdr.frame_mappings_off = ftell(stacks_dump) - base_off;
 
 	int frame_mapping_idx = 0;
 	u32 trace_iid = 1;
@@ -658,7 +660,7 @@ int process_stack_traces(struct worker_state *w)
 
 			for (int k = 0; k < f->frame_cnt; k++) {
 				u32 frame_iid = f->frame_cnt > 1 ? f->frame_iids[k] : f->frame_iid;
-				if (fwrite(&frame_iid, sizeof(frame_iid), 1, w->dump) != 1) {
+				if (fwrite(&frame_iid, sizeof(frame_iid), 1, stacks_dump) != 1) {
 					err = -errno;
 					eprintf("Failed to write stack trace frame id: %d\n", err);
 					return err;
@@ -675,7 +677,7 @@ int process_stack_traces(struct worker_state *w)
 		trace_iid += 1;
 	}
 
-	hdr.stacks_off = ftell(w->dump) - base_off;
+	hdr.stacks_off = ftell(stacks_dump) - base_off;
 	/* Add dummy all-zero stack trace record to have all the stack IDs
 	 * positive, which matches well Perfetto expectations and is generally
 	 * nice to have property to be able to use zero ID as "no stack"
@@ -685,7 +687,7 @@ int process_stack_traces(struct worker_state *w)
 	{
 		struct wprof_stack_trace dummy_stack;
 		memset(&dummy_stack, 0, sizeof(dummy_stack));
-		if (fwrite(&dummy_stack, sizeof(dummy_stack), 1, w->dump) != 1) {
+		if (fwrite(&dummy_stack, sizeof(dummy_stack), 1, stacks_dump) != 1) {
 			err = -errno;
 			eprintf("Failed to write dummy stack frame: %d\n", err);
 			return err;
@@ -702,7 +704,7 @@ int process_stack_traces(struct worker_state *w)
 			.frame_mapping_idx = t->mapped_frame_idx,
 			.frame_mapping_cnt = t->mapped_frame_cnt,
 		};
-		if (fwrite(&stack, sizeof(stack), 1, w->dump) != 1) {
+		if (fwrite(&stack, sizeof(stack), 1, stacks_dump) != 1) {
 			err = -errno;
 			eprintf("Failed to write stack trace header: %d\n", err);
 			return err;
@@ -713,12 +715,12 @@ int process_stack_traces(struct worker_state *w)
 	qsort(state->sframe_idx, state->sframe_cnt, sizeof(*state->sframe_idx), stack_frame_cmp_by_orig_idx);
 	qsort(state->strace_idx, state->strace_cnt, sizeof(*state->strace_idx), stack_trace_cmp_by_orig_idx);
 
-	hdr.strs_off = ftell(w->dump) - base_off;
+	hdr.strs_off = ftell(stacks_dump) - base_off;
 	hdr.strs_sz = strset__data_size(strs);
 
 	const char *strs_data = strset__data(strs);
 	int strs_rem = hdr.strs_sz, strs_written = 0;
-	while (strs_rem > 0 && (strs_written = fwrite(strs_data, 1, strs_rem, w->dump)) > 0) {
+	while (strs_rem > 0 && (strs_written = fwrite(strs_data, 1, strs_rem, stacks_dump)) > 0) {
 		strs_data += strs_written;
 		strs_rem -= strs_written;
 	}
@@ -731,54 +733,47 @@ int process_stack_traces(struct worker_state *w)
 	strset__free(strs);
 	strs = NULL;
 
-	/* Finalize stack dump and re-mmap() data */
-	long orig_pos = ftell(w->dump);
+	/* Finalize stacks dump */
+	long stacks_sz = ftell(stacks_dump);
 
-	w->dump_hdr->stacks_sz = ftell(w->dump) - w->dump_hdr->stacks_off;
-
-	err = fseek(w->dump, base_off - sizeof(hdr), SEEK_SET);
+	err = fseek(stacks_dump, 0, SEEK_SET);
 	if (err) {
 		err = -errno;
 		eprintf("Failed to fseek() to stacks header: %d\n", err);
 		return err;
 	}
 
-	if (fwrite(&hdr, sizeof(hdr), 1, w->dump) != 1) {
+	if (fwrite(&hdr, sizeof(hdr), 1, stacks_dump) != 1) {
 		err = -errno;
 		eprintf("Failed to update stacks header: %d\n", err);
 		return err;
 	}
 
-	err = fseek(w->dump, orig_pos, SEEK_SET);
+	err = fseek(stacks_dump, stacks_sz, SEEK_SET);
 	if (err) {
 		err = -errno;
 		eprintf("Failed to fseek() to after stacks: %d\n", err);
 		return err;
 	}
 
-	fflush(w->dump);
-	fsync(fileno(w->dump));
-
-	w->dump_mem = mremap(w->dump_mem, w->dump_sz, orig_pos, MREMAP_MAYMOVE);
-	if (w->dump_mem == MAP_FAILED) {
-		err = -errno;
-		eprintf("Failed to expand data dump mmap: %d\n", err);
-		w->dump_mem = NULL;
-		return err;
-	}
-	w->dump_hdr = w->dump_mem;
-	w->dump_sz = orig_pos;
+	fflush(stacks_dump);
+	fsync(fileno(stacks_dump));
 
 	u64 end_ns = ktime_now_ns();
 	wprintf("Symbolized %zu stack traces with %zu frames (%zu traces and %zu frames deduped, %zu unknown frames, %.3lfMB) in %.3lfs.\n",
 		state->strace_cnt, frames_total,
 		callstacks_deduped, frames_deduped,
 		frames_failed,
-		(orig_pos - base_off) / 1024.0 / 1024.0,
+		stacks_sz / 1024.0 / 1024.0,
 		(end_ns - start_ns) / 1000000000.0);
+
+	return 0;
+}
 
 
 #if DEBUG_SYMBOLIZATION
+void debug_dump_stack_traces(struct worker_state *w)
+{
 	struct wprof_stack_frame_record *frec;
 	wprof_for_each_stack_frame(frec, w->dump_hdr, 0) {
 		const char *indent = "";
@@ -788,21 +783,21 @@ int process_stack_traces(struct worker_state *w)
 		const char *fname = f->func_name_stroff ? wprof_stacks_str(w->dump_hdr, f->func_name_stroff) : "???";
 		const char *src = f->src_path_stroff ? wprof_stacks_str(w->dump_hdr, f->src_path_stroff) : "???";
 		eprintf("%sFRAME #%d: [%c] '%s'+%llx (%s%s), %s:%d (ADDR %llx)\n",
-			indent, fr_idx,
-			f->flags & WSF_KERNEL ? 'K' : 'U',
-			fname, f->func_offset,
-			f->flags & WSF_INLINED ? " INLINED" : "",
-			f->flags & WSF_UNSYMBOLIZED ? "UNKNOWN" : "",
-			src, f->line_num, f->addr);
+				indent, fr_idx,
+				f->flags & WSF_KERNEL ? 'K' : 'U',
+				fname, f->func_offset,
+				f->flags & WSF_INLINED ? " INLINED" : "",
+				f->flags & WSF_UNSYMBOLIZED ? "UNKNOWN" : "",
+				src, f->line_num, f->addr);
 	}
 	struct wprof_stack_trace_record *trec;
 	wprof_for_each_stack_trace(trec, w->dump_hdr, 0) {
 		const char *indent = "    ";
 
 		eprintf("STACK #%d (%u -> %u) HAS %u FRAMES:\n",
-			trec->idx, trec->t->frame_mapping_idx,
-			trec->t->frame_mapping_idx + trec->t->frame_mapping_cnt - 1,
-			trec->t->frame_mapping_cnt);
+				trec->idx, trec->t->frame_mapping_idx,
+				trec->t->frame_mapping_idx + trec->t->frame_mapping_cnt - 1,
+				trec->t->frame_mapping_cnt);
 
 		for (int i = 0; i < trec->t->frame_mapping_cnt; i++) {
 			u32 fr_idx = trec->frame_ids[i];
@@ -811,17 +806,16 @@ int process_stack_traces(struct worker_state *w)
 			const char *fname = f->func_name_stroff ? wprof_stacks_str(w->dump_hdr, f->func_name_stroff) : "???";
 			const char *src = f->src_path_stroff ? wprof_stacks_str(w->dump_hdr, f->src_path_stroff) : "???";
 			eprintf("%sFRAME #%d: [%c] '%s'+%llx (%s%s), %s:%d (ADDR %llx)\n",
-				indent, fr_idx,
-				f->flags & WSF_KERNEL ? 'K' : 'U',
-				fname, f->func_offset,
-				f->flags & WSF_INLINED ? " INLINED" : "",
-				f->flags & WSF_UNSYMBOLIZED ? "UNKNOWN" : "",
-				src, f->line_num, f->addr);
+					indent, fr_idx,
+					f->flags & WSF_KERNEL ? 'K' : 'U',
+					fname, f->func_offset,
+					f->flags & WSF_INLINED ? " INLINED" : "",
+					f->flags & WSF_UNSYMBOLIZED ? "UNKNOWN" : "",
+					src, f->line_num, f->addr);
 		}
 	}
-#endif
-	return 0;
 }
+#endif
 
 /* returns whether bit was already set */
 static __always_inline bool bit_set(u64 *bitmask, int id)

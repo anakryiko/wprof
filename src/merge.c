@@ -19,6 +19,7 @@
 #include "cuda_data.h"
 #include "proc.h"
 #include "persist.h"
+#include "stacktrace.h"
 #include "../libbpf/src/strset.h"
 #include "../libbpf/src/hashmap.h"
 
@@ -123,7 +124,7 @@ static int wcuda_event_cmp(const void *a, const void *b)
 	return (s64)(x->ts - y->ts) < 0 ? -1 : 1;
 }
 
-int wprof_merge_data(int workdir_fd, struct worker_state *workers)
+int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 {
 	struct hashmap *tid_cache = hashmap__new(hash_identity_fn, hash_equal_fn, NULL);
 	struct persist_state ps;
@@ -155,6 +156,26 @@ int wprof_merge_data(int workdir_fd, struct worker_state *workers)
 		}
 		w->dump_hdr = w->dump_mem;
 	}
+
+	FILE *stacks_dump = NULL;
+	char stacks_path[PATH_MAX] = "";
+	if (env.requested_stack_traces) {
+		snprintf(stacks_path, sizeof(stacks_path), "%s/stacks.data", workdir_name);
+		stacks_dump = fopen_buffered(stacks_path, "w+");
+		if (!stacks_dump) {
+			err = -errno;
+			eprintf("Failed to create stacks dump file '%s': %d\n", stacks_path, err);
+			return err;
+		}
+
+		err = process_stack_traces(workers, env.ringbuf_cnt, stacks_dump);
+		if (err) {
+			eprintf("Failed to symbolize and dump stack traces: %d\n", err);
+			return err;
+		}
+	}
+
+	wprintf("Merging...\n");
 
 	/* Init data dump header placeholder */
 	FILE *data_dump = fopen_buffered(env.data_path, "w+");
@@ -448,6 +469,24 @@ int wprof_merge_data(int workdir_fd, struct worker_state *workers)
 	fflush(data_dump);
 	fsync(fileno(data_dump));
 
+	/* Append stacks dump into final data dump */
+	off_t stacks_off = 0;
+	size_t stacks_sz = 0;
+	if (stacks_dump) {
+		err = file_splice_into(stacks_dump, data_dump, &stacks_off, &stacks_sz);
+		if (err) {
+			eprintf("Failed to merge stacks into final dump: %d\n", err);
+			return err;
+		}
+		stacks_off -= sizeof(struct wprof_data_hdr);
+
+		fclose(stacks_dump);
+		stacks_dump = NULL;
+
+		if (!env.keep_workdir)
+			unlink(stacks_path);
+	}
+
 	persist_state_free(&ps);
 
 	long dump_sz = ftell(data_dump);
@@ -496,8 +535,8 @@ int wprof_merge_data(int workdir_fd, struct worker_state *workers)
 	hdr.strs_off = strs_off;
 	hdr.strs_sz = strs_sz;
 
-	hdr.stacks_off = 0;
-	hdr.stacks_sz = 0;
+	hdr.stacks_off = stacks_off;
+	hdr.stacks_sz = stacks_sz;
 
 	err = fseek(data_dump, 0, SEEK_SET);
 	if (err) {
@@ -535,6 +574,10 @@ int wprof_merge_data(int workdir_fd, struct worker_state *workers)
 		eprintf("Failed to fseek() to end: %d\n", err);
 		return err;
 	}
+
+#ifdef DEBUG_SYMBOLIZATION
+	debug_dump_stack_traces(w);
+#endif
 
 	return 0;
 }

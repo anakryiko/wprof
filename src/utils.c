@@ -127,6 +127,44 @@ FILE *fopen_buffered(const char *path, const char *mode)
 	return f;
 }
 
+int file_splice_into(FILE *src_file, FILE *dst_file, off_t *off, size_t *sz)
+{
+	int src_fd = fileno(src_file);
+	int dst_fd = fileno(dst_file);
+
+	fflush(src_file);
+	fflush(dst_file);
+
+	off_t src_off = 0;
+	size_t src_sz = ftell(src_file);
+
+	/* optimistically set values, it doesn't matter on error anyways */
+	*off = ftell(dst_file);
+	*sz = src_sz;
+
+	/*
+	 * pass NULL for dst offset so kernel updates the fd's file position
+	 * directly, keeping it in sync with stdio for subsequent ftell()
+	 */
+	while (src_sz > 0) {
+		ssize_t ret = copy_file_range(src_fd, &src_off, dst_fd, NULL, src_sz, 0);
+		if (ret < 0) {
+			int err = -errno;
+			eprintf("Failed to copy_file_range() of %zd bytes: %d\n", src_sz, err);
+			return err;
+		}
+		if (ret == 0)
+			break;
+		src_sz -= ret;
+	}
+	if (src_sz > 0) {
+		eprintf("Failed to copy all bytes (%zu remaining)!\n", src_sz);
+		return -EIO;
+	}
+
+	return 0;
+}
+
 #define FMT_BUF_LEVELS 16
 #define FMT_BUF_LEN 1024
 
