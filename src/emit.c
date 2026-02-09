@@ -170,7 +170,6 @@ static inline u64 cuda_corr_key(u32 pid, u32 corr_id)
 
 struct cuda_corr_info {
 	u64 api_ts;
-	int tr_id; /* stack trace ID for CUDA API call, comes from BPF side */
 };
 
 static struct cuda_corr_info *cuda_corr_get(u32 pid, u32 corr_id)
@@ -574,7 +573,6 @@ static const char *event_kind_str_map[] = {
 	[EV_IPI_EXIT] = "IPI_EXIT",
 	[EV_REQ_EVENT] = "REQ_EVENT",
 	[EV_SCX_DSQ_END] = "SCX_DSQ_END",
-	[EV_CUDA_CALL] = "CUDA_CALL",
 
 	/* CUDA/CUPTI-produced events */
 	[EV_CUDA_KERNEL] = "CUDA_KERNEL",
@@ -2427,8 +2425,7 @@ static int process_cuda_api(struct worker_state *w, const struct wevent *e)
 
 	emit_track_slice_start(clamp_ts(e->ts), track_uuid,
 			       iid_str(name_iid, name), IID_CAT_CUDA_API) {
-		/* we've recorded stack trace ID earlier from EV_CUDA_CALL event */
-		emit_callstack(w, ci->tr_id);
+		emit_callstack(w, e->cuda_api.cuda_stack_id);
 
 		emit_flow_id(((u64)task.pid << 32) | e->cuda_api.corr_id);
 	}
@@ -2436,27 +2433,6 @@ static int process_cuda_api(struct worker_state *w, const struct wevent *e)
 	emit_track_slice_end(clamp_ts(e->cuda_api.end_ts), track_uuid,
 			     iid_str(name_iid, name), IID_CAT_CUDA_API);
 
-
-	return 0;
-}
-
-/* EV_CUDA_CALL */
-static int process_cuda_call(struct worker_state *w, const struct wevent *e)
-{
-	if (env.capture_cuda != TRUE || !(env.requested_stack_traces & ST_CUDA))
-		return 0;
-
-	struct wprof_data_hdr *hdr = w->dump_hdr;
-	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
-
-	if (!should_trace_task(&task))
-		return 0;
-
-	(void)task_state(w, &task);
-
-	/* remember stack trace ID for subsequent WCK_CUDA_API event */
-	struct cuda_corr_info *ci = cuda_corr_get(task.pid, e->cuda_call.corr_id);
-	ci->tr_id = (env.requested_stack_traces & ST_CUDA) ? e->cuda_call.cuda_stack_id : 0;
 
 	return 0;
 }
@@ -2482,7 +2458,6 @@ static event_fn ev_fns[] = {
 	[EV_REQ_EVENT] = process_req_event,
 	[EV_REQ_TASK_EVENT] = process_req_task_event,
 	[EV_SCX_DSQ_END] = process_scx_dsq_end,
-	[EV_CUDA_CALL] = process_cuda_call,
 	[EV_CUDA_KERNEL] = process_cuda_kernel,
 	[EV_CUDA_MEMCPY] = process_cuda_memcpy,
 	[EV_CUDA_MEMSET] = process_cuda_memset,

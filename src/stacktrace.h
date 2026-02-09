@@ -41,6 +41,8 @@ static inline int stack_trace_sz(const struct stack_trace *tr)
 	       (tr->ustack_sz < 0 ? 0 : tr->ustack_sz);
 }
 
+u32 bpf_event_stack_id(const struct wprof_event *e, enum stack_trace_kind kind);
+
 int process_stack_traces(struct worker_state *workers, int worker_cnt, FILE *stacks_file);
 int generate_stack_traces(struct worker_state *w);
 

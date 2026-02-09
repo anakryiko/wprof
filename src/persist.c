@@ -56,27 +56,19 @@ int persist_state_init(struct persist_state *ps, int pmu_cnt)
 	memset(ps, 0, sizeof(*ps));
 
 	ps->strs = strset__new(UINT_MAX, "", 1);
-	if (!ps->strs)
-		return -ENOMEM;
 
 	ps->threads.lookup = hashmap__new(thread_key_hash_fn, thread_key_equal_fn, NULL);
-	if (!ps->threads.lookup)
-		goto err_out;
-
 	ps->threads.entries = calloc(THREAD_TABLE_INIT_CAP, sizeof(*ps->threads.entries));
-	if (!ps->threads.entries)
-		goto err_out;
-
 	ps->threads.capacity = THREAD_TABLE_INIT_CAP;
 	ps->threads.count = 1; /* reserve index 0 as invalid/null */
 
 	ps->pmu_vals.pmu_cnt = pmu_cnt;
 	ps->pmu_vals.count = 1; /* reserve index 0 as null entry */
 
+	ps->tid_cache = hashmap__new(hash_identity_fn, hash_equal_fn, NULL);
+	ps->thread_states = hashmap__new(hash_identity_fn, hash_equal_fn, NULL);
+
 	return 0;
-err_out:
-	persist_state_free(ps);
-	return -ENOMEM;
 }
 
 void persist_state_free(struct persist_state *ps)
@@ -94,6 +86,17 @@ void persist_state_free(struct persist_state *ps)
 	free(ps->threads.entries);
 	free(ps->pmu_defs);
 	strset__free(ps->strs);
+
+	if (ps->tid_cache) {
+		hashmap__for_each_entry(ps->tid_cache, entry, bkt)
+			free(entry->pvalue);
+		hashmap__free(ps->tid_cache);
+	}
+	if (ps->thread_states) {
+		hashmap__for_each_entry(ps->thread_states, entry, bkt)
+			free(entry->pvalue);
+		hashmap__free(ps->thread_states);
+	}
 }
 
 int persist_stroff(struct persist_state *ps, const char *str)
@@ -185,26 +188,15 @@ static void fill_wevent_hdr(struct wevent *dst, const struct wprof_event *e, u32
 	dst->ts = e->ts;
 }
 
-/* stack_id of the trailing stack trace, already resolved by process_stack_traces() */
-static u32 bpf_event_stack_id(const struct wprof_event *e, enum stack_trace_kind kind)
-{
-	enum stack_trace_kind st_mask = e->flags & EF_STACK_TRACE_MSK;
-	struct stack_trace *tr;
+struct tid_cache_value {
+	int host_tid;
+	char thread_name[16];
+};
 
-	if (!(st_mask & kind))
-		return 0;
-
-	tr = (void *)e + e->sz;
-	while (st_mask) {
-		if (tr->kind == kind && tr->stack_id > 0)
-			return tr->stack_id;
-
-		st_mask &= ~tr->kind;
-		tr = (void *)tr + stack_trace_sz(tr);
-	}
-
-	return 0;
-}
+struct persist_thread_state {
+	u32 cuda_corr_id;
+	u32 cuda_stack_id;
+};
 
 int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, struct wevent *dst)
 {
@@ -349,14 +341,19 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 		dst->scx_dsq.scx_dsq_insert_type = e->scx_dsq.scx_dsq_insert_type;
 		break;
 
-	case EV_CUDA_CALL:
-		fill_wevent_hdr(dst, e, task_id, WEVENT_SZ(cuda_call));
+	/* ephemeral */
+	case EV_CUDA_CALL: {
+		long tid_key = e->task.tid;
+		struct persist_thread_state *st;
 
-		dst->cuda_call.domain = e->cuda_call.domain;
-		dst->cuda_call.cbid = e->cuda_call.cbid;
-		dst->cuda_call.corr_id = e->cuda_call.corr_id;
-		dst->cuda_call.cuda_stack_id = bpf_event_stack_id(e, ST_CUDA);
-		break;
+		if (!hashmap__find(ps->thread_states, tid_key, &st)) {
+			st = calloc(1, sizeof(*st));
+			hashmap__add(ps->thread_states, tid_key, st);
+		}
+		st->cuda_corr_id = e->cuda_call.corr_id;
+		st->cuda_stack_id = bpf_event_stack_id(e, ST_CUDA);
+		return 0; /* consumed, no wevent to write */
+	}
 
 	default:
 		eprintf("Unrecognized event type %d while persisting!\n", e->kind);
@@ -366,57 +363,38 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 	return dst->sz;
 }
 
-struct tid_cache_value {
-	int host_tid;
-	char thread_name[16];
-};
-
-static int resolve_cuda_api_task_id(struct persist_state *ps,
-				    int host_pid, const char *proc_name,
-				    struct hashmap *tid_cache,
-				    const struct wcuda_event *e)
+static struct tid_cache_value *resolve_cuda_host_tid(struct persist_state *ps,
+						     int host_pid, const char *proc_name,
+						     int namespaced_pid, int namespaced_tid)
 {
-	long key = ((u64)host_pid << 32) | (u32)e->cuda_api.tid;
+	long key = ((u64)host_pid << 32) | (u32)namespaced_tid;
 	struct tid_cache_value *ti = NULL;
 
-	if (hashmap__find(tid_cache, key, &ti)) {
-		if (ti->host_tid <= 0)
-			return 0;
+	if (hashmap__find(ps->tid_cache, key, &ti))
+		return ti;
+
+	ti = calloc(1, sizeof(*ti));
+
+	if (host_pid == namespaced_pid) {
+		/* no namespacing, no need to resolve TID */
+		ti->host_tid = namespaced_tid;
 	} else {
-		ti = calloc(1, sizeof(*ti));
-
-		if (host_pid == e->cuda_api.pid) {
-			/* no namespacing, no need to resolve TID */
-			ti->host_tid = e->cuda_api.tid;
-		} else {
-			ti->host_tid = host_tid_by_ns_tid(host_pid, e->cuda_api.tid);
-			if (ti->host_tid < 0) {
-				eprintf("FAILED to resolve host-level TID by namespaced TID %d (PID %d, %s): %d\n",
-					e->cuda_api.tid, host_pid, proc_name, ti->host_tid);
-				/* negative cache this TID so we don't do expensive look ups again */
-				ti->host_tid = 0;
-				ti->thread_name[0] = '\0';
-				goto cache;
-			}
+		ti->host_tid = host_tid_by_ns_tid(host_pid, namespaced_tid);
+		if (ti->host_tid < 0) {
+			eprintf("FAILED to resolve host-level TID by namespaced TID %d (PID %d, %s): %d\n",
+				namespaced_tid, host_pid, proc_name, ti->host_tid);
+			/* negative cache this TID so we don't do expensive look ups again */
+			ti->host_tid = 0;
+			ti->thread_name[0] = '\0';
+			goto cache;
 		}
-
-		(void)thread_name_by_tid(host_pid, ti->host_tid, ti->thread_name, sizeof(ti->thread_name));
-cache:
-		hashmap__add(tid_cache, key, ti);
 	}
 
-	if (ti->host_tid <= 0)
-		return 0;
+	(void)thread_name_by_tid(host_pid, ti->host_tid, ti->thread_name, sizeof(ti->thread_name));
+cache:
+	hashmap__add(ps->tid_cache, key, ti);
 
-	struct wprof_thread task = {
-		.tid = ti->host_tid,
-		.pid = host_pid,
-		.flags = 0,
-	};
-	snprintf(task.comm, sizeof(task.comm), "%s", ti->thread_name);
-	snprintf(task.pcomm, sizeof(task.pcomm), "%s", proc_name);
-
-	return persist_task_id(ps, &task);
+	return ti;
 }
 
 static void fill_cuda_wevent_hdr(struct wevent *dst, const struct wcuda_event *e,
@@ -432,12 +410,26 @@ static void fill_cuda_wevent_hdr(struct wevent *dst, const struct wcuda_event *e
 }
 
 int persist_cuda_event(struct persist_state *ps, const struct wcuda_event *e, struct wevent *dst,
-		       int host_pid, const char *proc_name, const char *cuda_strs,
-		       struct hashmap *tid_cache)
+		       int host_pid, const char *proc_name, const char *cuda_strs)
 {
 	switch (e->kind) {
 	case WCK_CUDA_API: {
-		int task_id = resolve_cuda_api_task_id(ps, host_pid, proc_name, tid_cache, e);
+		int task_id = 0;
+		struct tid_cache_value *ti;
+
+		ti = resolve_cuda_host_tid(ps, host_pid, proc_name, e->cuda_api.pid, e->cuda_api.tid);
+		if (ti->host_tid > 0) {
+			struct wprof_thread task = {
+				.tid = ti->host_tid,
+				.pid = host_pid,
+				.flags = 0,
+			};
+			snprintf(task.comm, sizeof(task.comm), "%s", ti->thread_name);
+			snprintf(task.pcomm, sizeof(task.pcomm), "%s", proc_name);
+
+			task_id = persist_task_id(ps, &task);
+		}
+
 		fill_cuda_wevent_hdr(dst, e, EV_CUDA_API, task_id, WEVENT_SZ(cuda_api));
 
 		dst->cuda_api.end_ts = e->cuda_api.end_ts;
@@ -445,7 +437,25 @@ int persist_cuda_event(struct persist_state *ps, const struct wcuda_event *e, st
 		dst->cuda_api.cbid = e->cuda_api.cbid;
 		dst->cuda_api.task_id = task_id;
 		dst->cuda_api.ret_val = e->cuda_api.ret_val;
+		dst->cuda_api.cuda_stack_id = 0;
 		dst->cuda_api.kind = e->cuda_api.kind;
+
+		/* Look up cuda_stack_id by resolved host TID, coming from EV_CALL_STACK */
+		if (ti->host_tid > 0) {
+			struct persist_thread_state *st;
+
+			if (hashmap__find(ps->thread_states, (long)ti->host_tid, &st)) {
+				/* If we dropped some events, we might not find a match */
+				if (st->cuda_corr_id == e->cuda_api.corr_id)
+					dst->cuda_api.cuda_stack_id = st->cuda_stack_id;
+				/*
+				 * If we had some drops, let's reset corr_id to recover for
+				 * subsequent CUDA_API events, at least
+				 */
+				st->cuda_corr_id = 0;
+				st->cuda_stack_id = 0;
+			}
+		}
 		break;
 	}
 

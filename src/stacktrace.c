@@ -917,3 +917,24 @@ void mark_stack_trace_used(struct worker_state *w, int stack_id)
 	for (int i = 0; i < trec->frame_cnt; i++)
 		bit_set(w->frames_used, trec->frame_ids[i]);
 }
+
+/* stack_id of the trailing stack trace, already resolved by process_stack_traces() */
+u32 bpf_event_stack_id(const struct wprof_event *e, enum stack_trace_kind kind)
+{
+	enum stack_trace_kind st_mask = e->flags & EF_STACK_TRACE_MSK;
+	struct stack_trace *tr;
+
+	if (!(st_mask & kind))
+		return 0;
+
+	tr = (void *)e + e->sz;
+	while (st_mask) {
+		if (tr->kind == kind && tr->stack_id > 0)
+			return tr->stack_id;
+
+		st_mask &= ~tr->kind;
+		tr = (void *)tr + stack_trace_sz(tr);
+	}
+
+	return 0;
+}

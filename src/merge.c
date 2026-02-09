@@ -126,7 +126,6 @@ static int wcuda_event_cmp(const void *a, const void *b)
 
 int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 {
-	struct hashmap *tid_cache = hashmap__new(hash_identity_fn, hash_equal_fn, NULL);
 	struct persist_state ps;
 	int err;
 
@@ -344,9 +343,24 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 			const struct bpf_event_record *r = wmerge->next_rec;
 
 			wevent_sz = persist_bpf_event(&ps, r->e, &wevent_buf);
+			if (wevent_sz < 0) {
+				eprintf("Failed to convert BPF event for RB #%d: %d\n", widx, wevent_sz);
+				return wevent_sz;
+			}
 
 			wmerge->rec_idx++;
 			wmerge->next_rec = wmerge->rec_idx < wmerge->rec_cnt ? &wmerge->recs[wmerge->rec_idx] : NULL;
+
+			/*
+			 * Some events (e.g., EV_CUDA_CALL) are "ephemeral": they are collected
+			 * from BPF side and joined into another (e.g., CUDA-produced EV_CUDA_API)
+			 * events, augmenting their data (CUDA call stacks, for instance).
+			 * They are dropped and not persisted by themselves after this, but they
+			 * should be passed into persist_state. persist_bpf_event() signals this
+			 * with wevent_sz == 0 return.
+			 */
+			if (wevent_sz == 0)
+				continue;
 		} else {
 			int cidx = widx - env.ringbuf_cnt;
 
@@ -355,7 +369,7 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 			struct cuda_tracee *cuda = &env.cudas[cidx];
 
 			wevent_sz = persist_cuda_event(&ps, r, &wevent_buf,
-						       cuda->pid, cuda->proc_name, wcuda->strs, tid_cache);
+						       cuda->pid, cuda->proc_name, wcuda->strs);
 			if (wevent_sz < 0) {
 				eprintf("Failed to convert CUDA event for tracee %s: %d\n", cuda_str(cuda), wevent_sz);
 				return wevent_sz;
@@ -425,16 +439,6 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 		w->dump_sz = 0;
 	}
 	free(wcudas);
-
-	/* Cleanup tid cache */
-	if (tid_cache) {
-		size_t bkt;
-		struct hashmap_entry *entry;
-
-		hashmap__for_each_entry(tid_cache, entry, bkt)
-			free(entry->pvalue);
-		hashmap__free(tid_cache);
-	}
 
 	/* Write thread table section */
 	file_pad(data_dump, 8);
