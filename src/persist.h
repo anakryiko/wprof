@@ -36,7 +36,7 @@ struct persist_state {
 int persist_state_init(struct persist_state *ps, int pmu_cnt);
 void persist_state_free(struct persist_state *ps);
 
-int persist_task_id(struct persist_state *ps, const struct wprof_task *task);
+int persist_task_id(struct persist_state *ps, const struct wprof_thread *task);
 int persist_pmu_vals_id(struct persist_state *ps, const struct perf_counters *ctrs);
 int persist_stroff(struct persist_state *ps, const char *str);
 int persist_add_pmu_def(struct persist_state *ps, const struct pmu_event *ev);

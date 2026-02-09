@@ -35,15 +35,13 @@ struct wevent_pmu_def {
 
 /* Full persisted event - header followed by type-specific data */
 struct wevent {
-	struct wevent_hdr {
-		u16 sz;				/* includes header size */
-		u16 flags;
-		enum event_kind kind;
-		u32 task_id;
-		u32 cpu;
-		u32 numa_node;
-		u64 ts;
-	} hdr;
+	u16 sz;				/* includes header size */
+	u16 flags;
+	enum event_kind kind;
+	u32 task_id;
+	u32 cpu;
+	u32 numa_node;
+	u64 ts;
 
 	union {
 		struct wevent_switch {
@@ -223,7 +221,7 @@ struct wevent {
  */
 static inline size_t wevent_fixed_sz(const struct wevent *e)
 {
-	switch (e->hdr.kind) {
+	switch (e->kind) {
 	case EV_SWITCH:		return WEVENT_SZ(swtch);
 	case EV_TIMER:		return WEVENT_SZ(timer);
 	case EV_WAKING:		return WEVENT_SZ(waking);

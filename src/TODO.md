@@ -1,4 +1,2 @@
-- switch emit processing to wevent inputs
 - emit PMU counters as dynamically sized appendix for wprof_event, similarly to stack traces
 - eliminate EV_CUDA_CALL and just join it with EV_CUDA_API to give the latter a stack ID
-
