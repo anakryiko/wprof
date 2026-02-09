@@ -1215,7 +1215,9 @@ int tracee_handshake(struct tracee_state *tracee, int log_fd, bool use_usdts)
 		goto cleanup;
 	}
 
+	/* on successful handshake we transfer UDS FD to caller */
 	dlog("Handshake completed successfully.\n");
+	tracee->uds_local_fd = -1;
 
 cleanup:
 	zclose(ctx_mem_fd); /* we still have mmap()'ed memory active, no need for FD */
