@@ -31,6 +31,8 @@ struct persist_state {
 	struct pmu_vals_table pmu_vals;
 	struct wevent_pmu_def *pmu_defs;
 	int pmu_def_cnt;
+	struct hashmap *tid_cache;	/* (host_pid, ns_tid) -> tid_cache_value for CUDA TID resolution */
+	struct hashmap *thread_states;	/* host TID -> cuda_thread_state (corr_id, stack_id) */
 };
 
 int persist_state_init(struct persist_state *ps, int pmu_cnt);
@@ -42,7 +44,6 @@ int persist_stroff(struct persist_state *ps, const char *str);
 int persist_add_pmu_def(struct persist_state *ps, const struct pmu_event *ev);
 int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, struct wevent *dst);
 int persist_cuda_event(struct persist_state *ps, const struct wcuda_event *e, struct wevent *dst,
-		       int host_pid, const char *proc_name, const char *cuda_strs,
-		       struct hashmap *tid_cache);
+		       int host_pid, const char *proc_name, const char *cuda_strs);
 
 #endif /* __PERSIST_H_ */
