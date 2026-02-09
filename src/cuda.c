@@ -134,6 +134,7 @@ force_continue:
 		goto err_retract;
 	}
 
+	/* handshake transfer UDS FD ownership to us, it's now our responsibility to close it */
 	struct cuda_tracee *cuda = add_cuda_tracee(tracee);
 
 	cuda->log_fd = log_fd;
