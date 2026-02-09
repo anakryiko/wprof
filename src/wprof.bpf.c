@@ -278,7 +278,7 @@ static void fill_task_name(struct task_struct *t, char *comm, int max_len)
 	}
 }
 
-static void fill_task_info(struct task_struct *t, struct wprof_task *info)
+static void fill_task_info(struct task_struct *t, struct wprof_thread *info)
 {
 	info->tid = t->pid;
 	if (info->tid == 0) /* idle thread */

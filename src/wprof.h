@@ -120,12 +120,20 @@ struct stack_trace {
 	u64 addrs[MAX_STACK_DEPTH * 2];
 };
 
-struct wprof_task {
+struct wprof_thread {
 	u32 tid;
 	u32 pid;
 	u32 flags;
 	char comm[TASK_COMM_FULL_LEN];
 	char pcomm[TASK_COMM_LEN];
+};
+
+struct wprof_task {
+	u32 tid;
+	u32 pid;
+	u32 flags;
+	const char *comm;
+	const char *pcomm;
 };
 
 struct perf_counters {
@@ -185,14 +193,14 @@ struct wprof_event {
 
 	u32 cpu;
 	u32 numa_node;
-	struct wprof_task task;
+	struct wprof_thread task;
 
 	char __wprof_data[0]; /* marker field */
 
 	union {
 		struct wprof_switch {
-			struct wprof_task next;
-			struct wprof_task waker;
+			struct wprof_thread next;
+			struct wprof_thread waker;
 			struct perf_counters ctrs;
 			u64 waking_ts;
 			u32 prev_task_state;
@@ -208,10 +216,10 @@ struct wprof_event {
 		struct wprof_timer {
 		} timer;
 		struct wprof_waking {
-			struct wprof_task wakee;
+			struct wprof_thread wakee;
 		} waking;
 		struct wprof_wakeup_new {
-			struct wprof_task wakee;
+			struct wprof_thread wakee;
 		} wakeup_new;
 		struct wprof_hardirq {
 			u64 hardirq_ts;
@@ -233,7 +241,7 @@ struct wprof_event {
 			char new_comm[TASK_COMM_LEN];
 		} rename;
 		struct wprof_fork {
-			struct wprof_task child;
+			struct wprof_thread child;
 		} fork;
 		struct wprof_exec {
 			int old_tid;

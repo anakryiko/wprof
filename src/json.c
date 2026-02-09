@@ -226,7 +226,7 @@ static void emit_cleanup(struct emit_rec *r)
  * USAGE
  */
 
-static void emit_thread_meta(const struct wprof_task *t, const char *name)
+static void emit_thread_meta(const struct wprof_thread *t, const char *name)
 {
 	int tid, pid;
 

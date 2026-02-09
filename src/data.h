@@ -125,6 +125,18 @@ static inline struct wevent_task *wevent_task(struct wprof_data_hdr *hdr, u32 id
 	return &threads[id];
 }
 
+static inline struct wprof_task wevent_resolve_task(struct wprof_data_hdr *hdr, u32 task_id)
+{
+	struct wevent_task *t = wevent_task(hdr, task_id);
+	return (struct wprof_task) {
+		.tid = t->tid,
+		.pid = t->pid,
+		.flags = t->flags,
+		.comm = wevent_str(hdr, t->comm_stroff),
+		.pcomm = wevent_str(hdr, t->pcomm_stroff),
+	};
+}
+
 static inline struct wevent_pmu_def *wevent_pmu_def(const struct wprof_data_hdr *hdr, u32 idx)
 {
 	struct wevent_pmu_def *defs = (void *)hdr + hdr->hdr_sz + hdr->pmu_defs_off;
@@ -133,6 +145,9 @@ static inline struct wevent_pmu_def *wevent_pmu_def(const struct wprof_data_hdr 
 
 static inline u64 *wevent_pmu_vals(struct wprof_data_hdr *hdr, u32 id)
 {
+	if (id == 0)
+		return NULL;
+
 	u64 *vals = (void *)hdr + hdr->hdr_sz + hdr->pmu_vals_off;
 	return &vals[id * hdr->cfg.pmu_event_cnt];
 }
@@ -224,7 +239,7 @@ static inline struct wevent_record *wevent_iter_next(struct wevent_iter *it)
 	it->rec.e = it->next;
 	it->rec.idx = it->next_idx;
 
-	it->next += it->rec.e->hdr.sz;
+	it->next += it->rec.e->sz;
 	it->next_idx += 1;
 
 	return &it->rec;
