@@ -1059,6 +1059,7 @@ int main(int argc, char **argv)
 		}
 		struct wprof_data_hdr *dump_hdr = worker->dump_hdr;
 		const struct wprof_data_cfg *cfg = &dump_hdr->cfg;
+		env.data_hdr = dump_hdr;
 
 		if (env.replay_info) {
 			const int w = 26;

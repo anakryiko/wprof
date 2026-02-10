@@ -146,14 +146,14 @@ int persist_task_id(struct persist_state *ps, const struct wprof_thread *task)
 	return (int)task_id;
 }
 
-int persist_pmu_vals_id(struct persist_state *ps, const struct perf_counters *ctrs)
+int persist_pmu_vals_id(struct persist_state *ps, const u64 *vals)
 {
-	if (!ctrs || ps->pmu_vals.pmu_cnt == 0)
+	if (!vals || ps->pmu_vals.pmu_cnt == 0)
 		return 0;
 
 	size_t sz = ps->pmu_vals.pmu_cnt * sizeof(u64);
 
-	if (fwrite(ctrs->val, sz, 1, ps->pmu_vals.dump) != 1) {
+	if (fwrite(vals, sz, 1, ps->pmu_vals.dump) != 1) {
 		eprintf("Failed to write PMU values: %d\n", -errno);
 		exit(1);
 	}
@@ -209,7 +209,7 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 
 		dst->swtch.next_task_id = persist_task_id(ps, &e->swtch.next);
 		dst->swtch.waker_task_id = persist_task_id(ps, &e->swtch.waker);
-		dst->swtch.pmu_vals_id = persist_pmu_vals_id(ps, &e->swtch.ctrs);
+		dst->swtch.pmu_vals_id = persist_pmu_vals_id(ps, bpf_event_pmu_vals(e));
 		dst->swtch.waking_flags = e->swtch.waking_flags;
 		dst->swtch.waking_ts = e->swtch.waking_ts;
 		dst->swtch.prev_task_state = e->swtch.prev_task_state;
@@ -248,7 +248,7 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 		dst->hardirq.hardirq_ts = e->hardirq.hardirq_ts;
 		dst->hardirq.irq = e->hardirq.irq;
 		dst->hardirq.name_stroff = persist_stroff(ps, e->hardirq.name);
-		dst->hardirq.pmu_vals_id = persist_pmu_vals_id(ps, &e->hardirq.ctrs);
+		dst->hardirq.pmu_vals_id = persist_pmu_vals_id(ps, bpf_event_pmu_vals(e));
 		break;
 	}
 	case EV_SOFTIRQ_EXIT: {
@@ -256,7 +256,7 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 
 		dst->softirq.softirq_ts = e->softirq.softirq_ts;
 		dst->softirq.vec_nr = e->softirq.vec_nr;
-		dst->softirq.pmu_vals_id = persist_pmu_vals_id(ps, &e->softirq.ctrs);
+		dst->softirq.pmu_vals_id = persist_pmu_vals_id(ps, bpf_event_pmu_vals(e));
 		break;
 	}
 	case EV_WQ_END: {
@@ -264,7 +264,7 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 
 		dst->wq.wq_ts = e->wq.wq_ts;
 		dst->wq.desc_stroff = persist_stroff(ps, e->wq.desc);
-		dst->wq.pmu_vals_id = persist_pmu_vals_id(ps, &e->wq.ctrs);
+		dst->wq.pmu_vals_id = persist_pmu_vals_id(ps, bpf_event_pmu_vals(e));
 		break;
 	}
 	case EV_FORK: {
@@ -310,7 +310,7 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 		dst->ipi.ipi_id = e->ipi.ipi_id;
 		dst->ipi.kind = e->ipi.kind;
 		dst->ipi.send_cpu = e->ipi.send_cpu;
-		dst->ipi.pmu_vals_id = persist_pmu_vals_id(ps, &e->ipi.ctrs);
+		dst->ipi.pmu_vals_id = persist_pmu_vals_id(ps, bpf_event_pmu_vals(e));
 		break;
 	}
 	case EV_REQ_EVENT:

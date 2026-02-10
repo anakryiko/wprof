@@ -149,7 +149,8 @@ enum waking_flags {
 
 enum event_flags {
 	EF_NONE = 0x00,
-	EF_STACK_TRACE_MSK = ST_ALL, /* bit mask of all captured stack traces */
+	EF_STACK_TRACE_MSK = ST_ALL,	/* bit mask of all captured stack traces */
+	EF_PMU_VALS = 0x1000,		/* PMU counter values follow fixed event data */
 };
 
 enum wprof_ipi_kind {
@@ -201,7 +202,6 @@ struct wprof_event {
 		struct wprof_switch {
 			struct wprof_thread next;
 			struct wprof_thread waker;
-			struct perf_counters ctrs;
 			u64 waking_ts;
 			u32 prev_task_state;
 			u32 last_next_task_state;
@@ -225,17 +225,14 @@ struct wprof_event {
 			u64 hardirq_ts;
 			int irq;
 			char name[WORKER_DESC_LEN + TASK_COMM_LEN];
-			struct perf_counters ctrs;
 		} hardirq;
 		struct wprof_softirq {
 			u64 softirq_ts;
 			int vec_nr;
-			struct perf_counters ctrs;
 		} softirq;
 		struct wprof_wq_info {
 			u64 wq_ts;
 			char desc[WORKER_DESC_LEN];
-			struct perf_counters ctrs;
 		} wq;
 		struct wprof_task_rename {
 			char new_comm[TASK_COMM_LEN];
@@ -258,7 +255,6 @@ struct wprof_event {
 			u64 ipi_id; /* 0, if unknown */
 			enum wprof_ipi_kind kind;
 			int send_cpu; /* -1, if multicast IPI or unknown */
-			struct perf_counters ctrs;
 		} ipi;
 		struct wprof_req_ctx {
 			u64 req_ts; /* request start timestamp */

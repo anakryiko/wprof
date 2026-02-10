@@ -27,9 +27,8 @@ struct task_state {
 	u64 hardirq_ts;
 	u64 wq_ts;
 	char wq_name[WORKER_DESC_LEN];
-	struct perf_counters hardirq_ctrs;
-	struct perf_counters softirq_ctrs;
-	struct perf_counters wq_ctrs;
+	/* start counters for current duration event */
+	struct perf_counters ctrs;
 	/* SCX-related fields, used by scx.bpf.c */
 	struct wprof_scx_dsq scx_dsq;
 };

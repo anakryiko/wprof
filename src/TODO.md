@@ -1,1 +1,1 @@
-- emit PMU counters as dynamically sized appendix for wprof_event, similarly to stack traces
+- add per-event stats

@@ -598,6 +598,7 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 		return err;
 	}
 	w->dump_hdr = w->dump_mem;
+	env.data_hdr = w->dump_hdr;
 
 	err = fseek(data_dump, dump_sz, SEEK_SET);
 	if (err) {
