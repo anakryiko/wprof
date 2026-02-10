@@ -190,6 +190,7 @@ static void fill_wevent_hdr(struct wevent *dst, const struct wprof_event *e, u32
 
 struct tid_cache_value {
 	int host_tid;
+	int task_id;
 	char thread_name[16];
 };
 
@@ -394,6 +395,19 @@ static struct tid_cache_value *resolve_cuda_host_tid(struct persist_state *ps,
 cache:
 	hashmap__add(ps->tid_cache, key, ti);
 
+	if (ti->host_tid <= 0)
+		return 0;
+
+	struct wprof_thread task = {
+		.tid = ti->host_tid,
+		.pid = host_pid,
+		.flags = 0,
+	};
+	snprintf(task.comm, sizeof(task.comm), "%s", ti->thread_name);
+	snprintf(task.pcomm, sizeof(task.pcomm), "%s", proc_name);
+
+	ti->task_id = persist_task_id(ps, &task);
+
 	return ti;
 }
 
@@ -412,30 +426,17 @@ static void fill_cuda_wevent_hdr(struct wevent *dst, const struct wcuda_event *e
 int persist_cuda_event(struct persist_state *ps, const struct wcuda_event *e, struct wevent *dst,
 		       int host_pid, const char *proc_name, const char *cuda_strs)
 {
+	struct tid_cache_value *ti;
+
 	switch (e->kind) {
 	case WCK_CUDA_API: {
-		int task_id = 0;
-		struct tid_cache_value *ti;
-
 		ti = resolve_cuda_host_tid(ps, host_pid, proc_name, e->cuda_api.pid, e->cuda_api.tid);
-		if (ti->host_tid > 0) {
-			struct wprof_thread task = {
-				.tid = ti->host_tid,
-				.pid = host_pid,
-				.flags = 0,
-			};
-			snprintf(task.comm, sizeof(task.comm), "%s", ti->thread_name);
-			snprintf(task.pcomm, sizeof(task.pcomm), "%s", proc_name);
-
-			task_id = persist_task_id(ps, &task);
-		}
-
-		fill_cuda_wevent_hdr(dst, e, EV_CUDA_API, task_id, WEVENT_SZ(cuda_api));
+		fill_cuda_wevent_hdr(dst, e, EV_CUDA_API, ti->task_id, WEVENT_SZ(cuda_api));
 
 		dst->cuda_api.end_ts = e->cuda_api.end_ts;
 		dst->cuda_api.corr_id = e->cuda_api.corr_id;
 		dst->cuda_api.cbid = e->cuda_api.cbid;
-		dst->cuda_api.task_id = task_id;
+		dst->cuda_api.task_id = ti->task_id;
 		dst->cuda_api.ret_val = e->cuda_api.ret_val;
 		dst->cuda_api.cuda_stack_id = 0;
 		dst->cuda_api.kind = e->cuda_api.kind;
@@ -460,7 +461,8 @@ int persist_cuda_event(struct persist_state *ps, const struct wcuda_event *e, st
 	}
 
 	case WCK_CUDA_KERNEL:
-		fill_cuda_wevent_hdr(dst, e, EV_CUDA_KERNEL, 0, WEVENT_SZ(cuda_kernel));
+		ti = resolve_cuda_host_tid(ps, host_pid, proc_name, host_pid, host_pid);
+		fill_cuda_wevent_hdr(dst, e, EV_CUDA_KERNEL, ti->task_id, WEVENT_SZ(cuda_kernel));
 
 		dst->cuda_kernel.end_ts = e->cuda_kernel.end_ts;
 		dst->cuda_kernel.name_stroff = persist_stroff(ps, cuda_strs + e->cuda_kernel.name_off);
@@ -477,7 +479,8 @@ int persist_cuda_event(struct persist_state *ps, const struct wcuda_event *e, st
 		break;
 
 	case WCK_CUDA_MEMCPY:
-		fill_cuda_wevent_hdr(dst, e, EV_CUDA_MEMCPY, 0, WEVENT_SZ(cuda_memcpy));
+		ti = resolve_cuda_host_tid(ps, host_pid, proc_name, host_pid, host_pid);
+		fill_cuda_wevent_hdr(dst, e, EV_CUDA_MEMCPY, ti->task_id, WEVENT_SZ(cuda_memcpy));
 
 		dst->cuda_memcpy.end_ts = e->cuda_memcpy.end_ts;
 		dst->cuda_memcpy.byte_cnt = e->cuda_memcpy.byte_cnt;
@@ -491,7 +494,8 @@ int persist_cuda_event(struct persist_state *ps, const struct wcuda_event *e, st
 		break;
 
 	case WCK_CUDA_MEMSET:
-		fill_cuda_wevent_hdr(dst, e, EV_CUDA_MEMSET, 0, WEVENT_SZ(cuda_memset));
+		ti = resolve_cuda_host_tid(ps, host_pid, proc_name, host_pid, host_pid);
+		fill_cuda_wevent_hdr(dst, e, EV_CUDA_MEMSET, ti->task_id, WEVENT_SZ(cuda_memset));
 
 		dst->cuda_memset.end_ts = e->cuda_memset.end_ts;
 		dst->cuda_memset.byte_cnt = e->cuda_memset.byte_cnt;
@@ -504,7 +508,8 @@ int persist_cuda_event(struct persist_state *ps, const struct wcuda_event *e, st
 		break;
 
 	case WCK_CUDA_SYNC:
-		fill_cuda_wevent_hdr(dst, e, EV_CUDA_SYNC, 0, WEVENT_SZ(cuda_sync));
+		ti = resolve_cuda_host_tid(ps, host_pid, proc_name, host_pid, host_pid);
+		fill_cuda_wevent_hdr(dst, e, EV_CUDA_SYNC, ti->task_id, WEVENT_SZ(cuda_sync));
 
 		dst->cuda_sync.end_ts = e->cuda_sync.end_ts;
 		dst->cuda_sync.corr_id = e->cuda_sync.corr_id;
