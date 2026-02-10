@@ -121,6 +121,9 @@ struct env {
 	int cuda_cnt;
 	bool cudas_deactivated;
 	bool cudas_retracted;
+
+	/* persisted data header, set after merge or before replay */
+	struct wprof_data_hdr *data_hdr;
 };
 
 extern struct env env;

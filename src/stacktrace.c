@@ -218,7 +218,7 @@ static int process_stack_trace(struct symb_state *state, const struct wprof_even
 	enum stack_trace_kind st_mask = e->flags & EF_STACK_TRACE_MSK;
 	u32 pid = e->task.pid;
 
-	struct stack_trace *tr = (void *)e + e->sz;
+	struct stack_trace *tr = (void *)e + e->sz + bpf_event_pmu_vals_sz(e);
 	while (st_mask) {
 		kaddrs = NULL;
 		uaddrs = NULL;
@@ -927,7 +927,7 @@ u32 bpf_event_stack_id(const struct wprof_event *e, enum stack_trace_kind kind)
 	if (!(st_mask & kind))
 		return 0;
 
-	tr = (void *)e + e->sz;
+	tr = (void *)e + e->sz + bpf_event_pmu_vals_sz(e);
 	while (st_mask) {
 		if (tr->kind == kind && tr->stack_id > 0)
 			return tr->stack_id;

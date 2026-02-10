@@ -41,6 +41,21 @@ static inline int stack_trace_sz(const struct stack_trace *tr)
 	       (tr->ustack_sz < 0 ? 0 : tr->ustack_sz);
 }
 
+static inline size_t bpf_event_pmu_vals_sz(const struct wprof_event *e)
+{
+	if (!(e->flags & EF_PMU_VALS))
+		return 0;
+	int pmu_cnt = env.data_hdr ? env.data_hdr->cfg.pmu_event_cnt : env.pmu_event_cnt;
+	return pmu_cnt * sizeof(u64);
+}
+
+static inline const u64 *bpf_event_pmu_vals(const struct wprof_event *e)
+{
+	if (!(e->flags & EF_PMU_VALS))
+		return NULL;
+	return (const u64 *)((void *)e + e->sz);
+}
+
 u32 bpf_event_stack_id(const struct wprof_event *e, enum stack_trace_kind kind);
 
 int process_stack_traces(struct worker_state *workers, int worker_cnt, FILE *stacks_file);
