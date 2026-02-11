@@ -10,6 +10,7 @@
 
 #include "pmu.h"
 #include "utils.h"
+#include "env.h"
 #include "protobuf.h"
 
 /*
@@ -384,51 +385,130 @@ void deserialized_pmu_event(const struct pmu_event_stored *stored, struct pmu_ev
 	snprintf(ev->name, sizeof(ev->name), "%s", stored->name);
 }
 
-static int find_counter_by_name(const struct pmu_event *events, int count, const char *name)
+static int find_real_counter_by_name(const struct pmu_event *reals, int real_cnt, const char *name)
 {
-	for (int i = 0; i < count; i++) {
-		if (events[i].perf_type != PERF_TYPE_DERIVED && strcmp(events[i].name, name) == 0)
+	for (int i = 0; i < real_cnt; i++) {
+		if (strcmp(reals[i].name, name) == 0)
 			return i;
 	}
 	return -1;
 }
 
 /*
- * Resolve derived metrics: convert numerator/denominator names to indices.
- *
- * For each derived event, looks up the numerator and denominator
- * counter names in the events array and stores their indices in config/config1.
- *
- * Returns 0 on success, negative error code on failure.
+ * Resolve derived metrics: convert numerator/denominator names to indices
+ * into the reals array.
  */
-int pmu_resolve_derived(struct pmu_event *events, int count)
+int pmu_resolve_derived(struct pmu_event *reals, int real_cnt,
+			struct pmu_event *derivs, int deriv_cnt)
 {
-	for (int i = 0; i < count; i++) {
-		if (events[i].perf_type != PERF_TYPE_DERIVED || events[i].config != UINT64_MAX)
+	for (int i = 0; i < deriv_cnt; i++) {
+		struct pmu_event *pmu = &derivs[i];
+
+		/* we can have derived PMUs taked from recorded definition, fully resolved */
+		if (!pmu->num_name)
 			continue;
 
-		int num_idx, denom_idx;
-
-		if((num_idx = find_counter_by_name(events, count, events[i].num_name)) < 0) {
+		int num_idx = find_real_counter_by_name(reals, real_cnt, pmu->num_name);
+		if (num_idx < 0) {
 			eprintf("derived metric '%s': numerator counter '%s' not found\n",
-				events[i].name, events[i].num_name);
+				pmu->name, pmu->num_name);
 			return -ENOENT;
 		}
 
-		if((denom_idx = find_counter_by_name(events, count, events[i].denom_name)) < 0) {
+		int denom_idx = find_real_counter_by_name(reals, real_cnt, pmu->denom_name);
+		if (denom_idx < 0) {
 			eprintf("derived metric '%s': denominator counter '%s' not found\n",
-				events[i].name, events[i].denom_name);
+				pmu->name, pmu->denom_name);
 			return -ENOENT;
 		}
 
-		/* Store resolved indices */
-		events[i].config = num_idx;
-		events[i].config1 = denom_idx;
-
-		/* Clear temporary storage */
-		free(events[i].num_name);
-		free(events[i].denom_name);
+		pmu->config1 = num_idx;
+		pmu->config2 = denom_idx;
 	}
 
 	return 0;
+}
+
+int pmu_resolve_replay_defs(struct wprof_data_hdr *hdr)
+{
+	/* Default replay behavior: load all stored counters unless we have explicit --pmu */
+	if (env.pmu_real_cnt == -1 && env.pmu_deriv_cnt == -1 && env.pmu_unresolved_cnt == -1) {
+		env.pmu_real_cnt = hdr->pmu_def_real_cnt;
+		env.pmu_reals = calloc(env.pmu_real_cnt, sizeof(*env.pmu_reals));
+		for (int i = 0; i < env.pmu_real_cnt; i++)
+			wevent_pmu_to_event(hdr, i, &env.pmu_reals[i]);
+
+		env.pmu_deriv_cnt = hdr->pmu_def_deriv_cnt;
+		env.pmu_derivs = calloc(env.pmu_deriv_cnt, sizeof(*env.pmu_derivs));
+		for (int i = 0; i < env.pmu_deriv_cnt; i++)
+			wevent_pmu_to_event(hdr, hdr->pmu_def_real_cnt + i, &env.pmu_derivs[i]);
+
+		env.pmu_unresolved_cnt = 0;
+	}
+
+	/* Resolve unresolved events against stored real or derived defs */
+	for (int i = 0; i < env.pmu_unresolved_cnt; i++) {
+		struct pmu_event *pmu = &env.pmu_unresolveds[i];
+		bool resolved = false;
+
+		for (int j = 0; j < hdr->pmu_def_real_cnt; j++) {
+			struct wevent_pmu_def *def = wevent_pmu_def(hdr, j);
+			if (strcmp(pmu->name, wevent_str(hdr, def->name_stroff)) != 0)
+				continue;
+
+			if (env.pmu_real_cnt >= MAX_REAL_PMU_COUNTERS) {
+				eprintf("replay: too many real PMU counters (max %d)\n", MAX_REAL_PMU_COUNTERS);
+				return -E2BIG;
+			}
+
+			env.pmu_reals = realloc(env.pmu_reals, (env.pmu_real_cnt + 1) * sizeof(*env.pmu_reals));
+			wevent_pmu_to_event(hdr, j, &env.pmu_reals[env.pmu_real_cnt]);
+			env.pmu_real_cnt += 1;
+			resolved = true;
+			break;
+		}
+
+		if (resolved)
+			continue;
+
+		for (int j = 0; j < hdr->pmu_def_deriv_cnt; j++) {
+			struct wevent_pmu_def *def = wevent_pmu_def(hdr, hdr->pmu_def_real_cnt + j);
+			if (strcmp(pmu->name, wevent_str(hdr, def->name_stroff)) != 0)
+				continue;
+
+			env.pmu_derivs = realloc(env.pmu_derivs, (env.pmu_deriv_cnt + 1) * sizeof(*env.pmu_derivs));
+			wevent_pmu_to_event(hdr, hdr->pmu_def_real_cnt + j, &env.pmu_derivs[env.pmu_deriv_cnt]);
+			env.pmu_deriv_cnt += 1;
+			resolved = true;
+			break;
+		}
+
+		if (!resolved) {
+			eprintf("replay: counter '%s' not found in captured data\n", pmu->name);
+			return -ENOENT;
+		}
+	}
+
+	/* Resolve real event stored_idx against stored data */
+	for (int i = 0; i < env.pmu_real_cnt; i++) {
+		struct pmu_event *pmu = &env.pmu_reals[i];
+
+		pmu->stored_idx = -1;
+
+		for (int j = 0; j < hdr->pmu_def_real_cnt; j++) {
+			struct wevent_pmu_def *def = wevent_pmu_def(hdr, j);
+			if (strcmp(pmu->name, wevent_str(hdr, def->name_stroff)) != 0)
+				continue;
+			pmu->stored_idx = j;
+			break;
+		}
+
+		if (pmu->stored_idx < 0) {
+			eprintf("replay: counter '%s' requested, but wasn't captured\n", pmu->name);
+			return -ENOENT;
+		}
+	}
+
+	/* Resolve derived metric indices against reals */
+	return pmu_resolve_derived(env.pmu_reals, env.pmu_real_cnt, env.pmu_derivs, env.pmu_deriv_cnt);
 }

@@ -129,13 +129,14 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 	struct persist_state ps;
 	int err;
 
-	err = persist_state_init(&ps, env.pmu_event_cnt);
+	err = persist_state_init(&ps, env.pmu_real_cnt);
 	if (err)
 		return err;
 
-	for (int i = 0; i < env.pmu_event_cnt; i++) {
-		persist_add_pmu_def(&ps, &env.pmu_events[i]);
-	}
+	for (int i = 0; i < env.pmu_real_cnt; i++)
+		persist_add_pmu_def(&ps, &env.pmu_reals[i]);
+	for (int i = 0; i < env.pmu_deriv_cnt; i++)
+		persist_add_pmu_def(&ps, &env.pmu_derivs[i]);
 
 	/* Finalize and mmap() per-ringbuf dumps */
 	for (int i = 0; i < env.ringbuf_cnt; i++) {
@@ -178,7 +179,7 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 	/* Create PMU values dump file */
 	FILE *pmu_vals_dump = NULL;
 	char pmu_vals_path[PATH_MAX] = "";
-	if (env.pmu_event_cnt > 0) {
+	if (env.pmu_real_cnt > 0) {
 		snprintf(pmu_vals_path, sizeof(pmu_vals_path), "%s/pmu_vals.data", workdir_name);
 		pmu_vals_dump = fopen_buffered(pmu_vals_path, "w+");
 		if (!pmu_vals_dump) {
@@ -187,8 +188,8 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 			return err;
 		}
 		/* write null entry (index 0 reserved) */
-		u64 zeros[MAX_PMU_COUNTERS] = {};
-		if (fwrite(zeros, env.pmu_event_cnt * sizeof(u64), 1, pmu_vals_dump) != 1) {
+		u64 zeros[MAX_REAL_PMU_COUNTERS] = {};
+		if (fwrite(zeros, env.pmu_real_cnt * sizeof(u64), 1, pmu_vals_dump) != 1) {
 			err = -errno;
 			eprintf("Failed to write null PMU values entry: %d\n", err);
 			return err;
@@ -454,7 +455,7 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 	/* Write PMU definitions section */
 	file_pad(data_dump, 8);
 	long pmu_defs_off = ftell(data_dump) - sizeof(struct wprof_data_hdr);
-	size_t pmu_def_cnt = ps.pmu_def_cnt;
+	size_t pmu_def_cnt = ps.pmu_def_total_cnt;
 	size_t pmu_defs_sz = pmu_def_cnt * sizeof(struct wevent_pmu_def);
 	if (pmu_def_cnt > 0 && fwrite(ps.pmu_defs, sizeof(struct wevent_pmu_def),
 				      pmu_def_cnt, data_dump) != pmu_def_cnt) {
@@ -545,7 +546,6 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 	}
 
 	hdr.cfg.timer_freq_hz = env.timer_freq_hz;
-	hdr.cfg.pmu_event_cnt = env.pmu_event_cnt;
 
 	hdr.events_off = 0;
 	hdr.events_sz = events_sz;
@@ -557,7 +557,8 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 
 	hdr.pmu_defs_off = pmu_defs_off;
 	hdr.pmu_defs_sz = pmu_defs_sz;
-	hdr.pmu_def_cnt = pmu_def_cnt;
+	hdr.pmu_def_real_cnt = env.pmu_real_cnt;
+	hdr.pmu_def_deriv_cnt = env.pmu_deriv_cnt;
 
 	hdr.pmu_vals_off = pmu_vals_off;
 	hdr.pmu_vals_sz = pmu_vals_sz;

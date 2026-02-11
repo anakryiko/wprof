@@ -26,10 +26,6 @@ struct wprof_data_cfg {
 	enum stack_trace_kind captured_stack_traces;
 
 	int timer_freq_hz;
-
-	/* XXX: adapt code to use wprof_data_hdr::pmu_def_cnt */
-	/* PMU event count (definitions stored in separate section) */
-	int pmu_event_cnt;
 };
 
 struct wprof_data_hdr {
@@ -46,7 +42,8 @@ struct wprof_data_hdr {
 	u64 threads_off, threads_sz, thread_cnt;
 
 	/* PMU counter definitions section */
-	u64 pmu_defs_off, pmu_defs_sz, pmu_def_cnt;
+	u64 pmu_defs_off, pmu_defs_sz;
+	u64 pmu_def_real_cnt, pmu_def_deriv_cnt;
 
 	/* PMU counter values section */
 	u64 pmu_vals_off, pmu_vals_sz, pmu_val_cnt;
@@ -149,7 +146,7 @@ static inline u64 *wevent_pmu_vals(struct wprof_data_hdr *hdr, u32 id)
 		return NULL;
 
 	u64 *vals = (void *)hdr + hdr->hdr_sz + hdr->pmu_vals_off;
-	return &vals[id * hdr->cfg.pmu_event_cnt];
+	return &vals[id * hdr->pmu_def_real_cnt];
 }
 
 static inline void wevent_pmu_to_event(struct wprof_data_hdr *hdr, u32 idx, struct pmu_event *ev)

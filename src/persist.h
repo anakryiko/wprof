@@ -22,15 +22,15 @@ struct thread_table {
 struct pmu_vals_table {
 	FILE *dump;			/* file-backed storage for PMU values */
 	u32 count;
-	int pmu_cnt;			/* number of counters per entry */
+	int real_pmu_cnt;		/* number of real PMU counters per entry */
 };
 
 struct persist_state {
 	struct strset *strs;
 	struct thread_table threads;
 	struct pmu_vals_table pmu_vals;
-	struct wevent_pmu_def *pmu_defs;
-	int pmu_def_cnt;
+	struct wevent_pmu_def *pmu_defs;	/* real + derived PMUs */
+	int pmu_def_total_cnt;			/* real + derived PMU count */
 	struct hashmap *tid_cache;	/* (host_pid, ns_tid) -> tid_cache_value for CUDA TID resolution */
 	struct hashmap *thread_states;	/* host TID -> cuda_thread_state (corr_id, stack_id) */
 };

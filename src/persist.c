@@ -62,7 +62,7 @@ int persist_state_init(struct persist_state *ps, int pmu_cnt)
 	ps->threads.capacity = THREAD_TABLE_INIT_CAP;
 	ps->threads.count = 1; /* reserve index 0 as invalid/null */
 
-	ps->pmu_vals.pmu_cnt = pmu_cnt;
+	ps->pmu_vals.real_pmu_cnt = pmu_cnt;
 	ps->pmu_vals.count = 1; /* reserve index 0 as null entry */
 
 	ps->tid_cache = hashmap__new(hash_identity_fn, hash_equal_fn, NULL);
@@ -148,10 +148,10 @@ int persist_task_id(struct persist_state *ps, const struct wprof_thread *task)
 
 int persist_pmu_vals_id(struct persist_state *ps, const u64 *vals)
 {
-	if (!vals || ps->pmu_vals.pmu_cnt == 0)
+	if (!vals || ps->pmu_vals.real_pmu_cnt == 0)
 		return 0;
 
-	size_t sz = ps->pmu_vals.pmu_cnt * sizeof(u64);
+	size_t sz = ps->pmu_vals.real_pmu_cnt * sizeof(u64);
 
 	if (fwrite(vals, sz, 1, ps->pmu_vals.dump) != 1) {
 		eprintf("Failed to write PMU values: %d\n", -errno);
@@ -164,17 +164,17 @@ int persist_pmu_vals_id(struct persist_state *ps, const u64 *vals)
 
 int persist_add_pmu_def(struct persist_state *ps, const struct pmu_event *ev)
 {
-	ps->pmu_defs = realloc(ps->pmu_defs, (ps->pmu_def_cnt + 1) * sizeof(*ps->pmu_defs));
+	ps->pmu_defs = realloc(ps->pmu_defs, (ps->pmu_def_total_cnt + 1) * sizeof(*ps->pmu_defs));
 
-	struct wevent_pmu_def *def = &ps->pmu_defs[ps->pmu_def_cnt];
+	struct wevent_pmu_def *def = &ps->pmu_defs[ps->pmu_def_total_cnt];
 	def->perf_type = ev->perf_type;
 	def->config = ev->config;
 	def->config1 = ev->config1;
 	def->config2 = ev->config2;
 	def->name_stroff = persist_stroff(ps, ev->name);
 
-	ps->pmu_def_cnt += 1;
-	return ps->pmu_def_cnt - 1;
+	ps->pmu_def_total_cnt += 1;
+	return ps->pmu_def_total_cnt - 1;
 }
 
 static void fill_wevent_hdr(struct wevent *dst, const struct wprof_event *e, u32 task_id, u16 sz)

@@ -48,7 +48,9 @@ struct env env = {
 	.capture_req_experimental = UNSET,
 	.capture_scx_layer_info = UNSET,
 	.capture_cuda = UNSET,
-	.pmu_event_cnt = -1,
+	.pmu_real_cnt = -1,
+	.pmu_deriv_cnt = -1,
+	.pmu_unresolved_cnt = -1,
 };
 
 enum {
@@ -64,6 +66,7 @@ enum {
 	OPT_REPLAY_OFFSET_END = 1014,
 	OPT_NO_STACK_TRACES = 1015,
 	OPT_PMU_COUNTER = 1016,
+	OPT_NO_PMU = 1017,
 
 	OPT_ALLOW_TID = 2000,
 	OPT_DENY_TID = 2001,
@@ -92,7 +95,7 @@ static const struct argp_option opts[] = {
 	{ "replay-info", 'I', NULL, 0, "Print recorded data information" },
 
 	{ "stacks", 'S', "KIND", OPTION_ARG_OPTIONAL, "Capture stack traces (supported kinds: timer, offcpu, waker, cuda, all; default = timer + offcpu)" },
-	{ "no-stacks", OPT_NO_STACK_TRACES, "KIND", OPTION_ARG_OPTIONAL, "Don't capture stack traces" },
+	{ "no-stacks", OPT_NO_STACK_TRACES, "KIND", OPTION_ARG_OPTIONAL, "Don't capture or emit stack traces" },
 	{ "symbolize-frugal", OPT_SYMBOLIZE_FRUGALLY, NULL, 0, "Symbolize frugally (slower, but less memory hungry)" },
 
 	/* allow/deny filters */
@@ -127,6 +130,7 @@ static const struct argp_option opts[] = {
 	  "raw (r003c), PMU (cpu/event=0x3c/ or cpu/cpu-cycles/), "
 	  "software (sw:page-faults), cache (L1-icache-loads), "
 	  "derived (derived:ipc=cpu_instructions/cpu_cpu-cycles)" },
+	{ "no-pmu", OPT_NO_PMU, NULL, 0, "Don't capture or emit PMUs" },
 	{},
 };
 
@@ -463,22 +467,14 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		env.ringbuf_cnt = ringbuf_cnt;
 		break;
 	}
+	case OPT_NO_PMU:
+		env.pmu_real_cnt = 0;
+		env.pmu_deriv_cnt = 0;
+		env.pmu_unresolved_cnt = 0;
+		break;
 	case OPT_PMU_COUNTER: {
 		struct pmu_event ev;
 		int err;
-
-		if (env.pmu_event_cnt < 0)
-			env.pmu_event_cnt = 0;
-
-		if (strcmp(arg, "clear") == 0) {
-			env.pmu_event_cnt = 0;
-			break;
-		}
-
-		if (env.pmu_event_cnt >= MAX_PMU_COUNTERS) {
-			eprintf("Too many counters requested, only %d are supported!\n", MAX_PMU_COUNTERS);
-			return -E2BIG;
-		}
 
 		err = parse_perf_counter(arg, &ev);
 		if (err) {
@@ -492,27 +488,50 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			snprintf(ev.name, sizeof(ev.name), "%s", arg);
 		}
 
-		/* Check for duplicates (by name) */
-		for (int i = 0; i < env.pmu_event_cnt; i++) {
-			if (strcmp(env.pmu_events[i].name, ev.name) == 0) {
+		/* First counter specified resets all arrays from sentinel */
+		if (env.pmu_real_cnt < 0)
+			env.pmu_real_cnt = 0;
+		if (env.pmu_deriv_cnt < 0)
+			env.pmu_deriv_cnt = 0;
+		if (env.pmu_unresolved_cnt < 0)
+			env.pmu_unresolved_cnt = 0;
+
+		/* Check for duplicates (by name) across all arrays */
+		for (int i = 0; i < env.pmu_real_cnt; i++) {
+			if (strcmp(env.pmu_reals[i].name, ev.name) == 0) {
+				eprintf("Duplicate counter '%s' specified\n", ev.name);
+				argp_usage(state);
+			}
+		}
+		for (int i = 0; i < env.pmu_deriv_cnt; i++) {
+			if (strcmp(env.pmu_derivs[i].name, ev.name) == 0) {
+				eprintf("Duplicate counter '%s' specified\n", ev.name);
+				argp_usage(state);
+			}
+		}
+		for (int i = 0; i < env.pmu_unresolved_cnt; i++) {
+			if (strcmp(env.pmu_unresolveds[i].name, ev.name) == 0) {
 				eprintf("Duplicate counter '%s' specified\n", ev.name);
 				argp_usage(state);
 			}
 		}
 
-		env.pmu_events[env.pmu_event_cnt] = ev;
-		/* For non-derived events, stored_idx = position; for derived, set later */
-		if (ev.perf_type != PERF_TYPE_DERIVED) {
-			int hw_idx = 0;
-			for (int i = 0; i < env.pmu_event_cnt; i++) {
-				if (env.pmu_events[i].perf_type != PERF_TYPE_DERIVED)
-					hw_idx++;
-			}
-			env.pmu_events[env.pmu_event_cnt].stored_idx = hw_idx;
+		if (ev.perf_type == PERF_TYPE_UNRESOLVED) {
+			env.pmu_unresolveds = realloc(env.pmu_unresolveds, (env.pmu_unresolved_cnt + 1) * sizeof(*env.pmu_unresolveds));
+			env.pmu_unresolveds[env.pmu_unresolved_cnt++] = ev;
+		} else if (ev.perf_type == PERF_TYPE_DERIVED) {
+			ev.stored_idx = -1;
+			env.pmu_derivs = realloc(env.pmu_derivs, (env.pmu_deriv_cnt + 1) * sizeof(*env.pmu_derivs));
+			env.pmu_derivs[env.pmu_deriv_cnt++] = ev;
 		} else {
-			env.pmu_events[env.pmu_event_cnt].stored_idx = -1;
+			if (env.pmu_real_cnt >= MAX_REAL_PMU_COUNTERS) {
+				eprintf("Too many real PMU counters requested, only %d are supported!\n", MAX_REAL_PMU_COUNTERS);
+				return -E2BIG;
+			}
+			ev.stored_idx = env.pmu_real_cnt;
+			env.pmu_reals = realloc(env.pmu_reals, (env.pmu_real_cnt + 1) * sizeof(*env.pmu_reals));
+			env.pmu_reals[env.pmu_real_cnt++] = ev;
 		}
-		env.pmu_event_cnt++;
 		break;
 	}
 	case ARGP_KEY_ARG:

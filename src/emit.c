@@ -842,26 +842,18 @@ static void emit_perf_counters(struct worker_state *w, const u64 *st_ctrs, const
 	if (!diffs && !st_ctrs)
 		return;
 
-	for (int i = 0; i < env.pmu_event_cnt; i++) {
-		const struct pmu_event *ev = &env.pmu_events[i];
-		double value;
-
-		if (ev->perf_type == PERF_TYPE_DERIVED) {
-			/* Derived metric: compute ratio of two hw counters */
-			int num_ev_idx = (int)ev->config;    /* pmu_events array index */
-			int denom_ev_idx = (int)ev->config1; /* pmu_events array index */
-			int num_stored = env.pmu_events[num_ev_idx].stored_idx;
-			int denom_stored = env.pmu_events[denom_ev_idx].stored_idx;
-			double num = diffs ? ev_ctrs[num_stored] : ev_ctrs[num_stored] - st_ctrs[num_stored];
-			double denom = diffs ? ev_ctrs[denom_stored] : ev_ctrs[denom_stored] - st_ctrs[denom_stored];
-
-			value = num / denom;
-		} else {
-			/* Hardware counter: emit recorded value */
-			value = diffs ? ev_ctrs[ev->stored_idx] : ev_ctrs[ev->stored_idx] - st_ctrs[ev->stored_idx];
-		}
-
+	for (int i = 0; i < env.pmu_real_cnt; i++) {
+		const struct pmu_event *ev = &env.pmu_reals[i];
+		double value = diffs ? ev_ctrs[ev->stored_idx] : ev_ctrs[ev->stored_idx] - st_ctrs[ev->stored_idx];
 		emit_kv_float(iid_str(emit_intern_str(w, ev->name), ev->name), "%.6lf", value);
+	}
+	for (int i = 0; i < env.pmu_deriv_cnt; i++) {
+		const struct pmu_event *ev = &env.pmu_derivs[i];
+		int num_idx = (int)ev->config1;
+		int denom_idx = (int)ev->config2;
+		double num = diffs ? ev_ctrs[num_idx] : ev_ctrs[num_idx] - st_ctrs[num_idx];
+		double denom = diffs ? ev_ctrs[denom_idx] : ev_ctrs[denom_idx] - st_ctrs[denom_idx];
+		emit_kv_float(iid_str(emit_intern_str(w, ev->name), ev->name), "%.6lf", num / denom);
 	}
 }
 
