@@ -67,12 +67,12 @@ enum event_kind {
 
 	EV_TIMER = 1,
 	EV_SWITCH = 2,
-	EV_WAKEUP_NEW = 3,
-	EV_WAKEUP = 4,
-	EV_WAKING = 5,
-	EV_HARDIRQ_EXIT = 6,
-	EV_SOFTIRQ_EXIT = 7,
-	EV_WQ_END = 8,
+	EV_WAKEUP = 3,
+	EV_WAKING = 4,
+	EV_HARDIRQ_EXIT = 5,
+	EV_SOFTIRQ_EXIT = 6,
+	EV_WQ_END = 7,
+	EV_WAKEUP_NEW = 8,
 	EV_FORK = 9,
 	EV_EXEC = 10,
 	EV_TASK_RENAME = 11,
@@ -83,7 +83,8 @@ enum event_kind {
 	EV_REQ_EVENT = 16,
 	EV_REQ_TASK_EVENT = 17,
 	EV_SCX_DSQ_END = 18,
-	EV_CUDA_CALL = 19,
+
+	EV_CUDA_CALL = 49,
 
 	/* CUDA GPU activity events (from CUPTI) */
 	EV_CUDA_KERNEL = 50,
@@ -91,6 +92,8 @@ enum event_kind {
 	EV_CUDA_MEMSET = 52,
 	EV_CUDA_SYNC = 53,
 	EV_CUDA_API = 54,
+
+	__EV_KIND_MAX,
 };
 
 enum stack_trace_kind {

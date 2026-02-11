@@ -1063,50 +1063,87 @@ int main(int argc, char **argv)
 
 		if (env.replay_info) {
 			const int w = 26;
+			const double MB = 1024.0 * 1024.0;
+			const double S = 1000000000.0;
+			const double ms = 1000000.0;
 
 			wprintf("Replay info:\n");
 			wprintf("============\n");
 			wprintf("%-*s%u.%u\n", w, "Data version:", dump_hdr->version_major, dump_hdr->version_minor);
-			wprintf("%-*s%.3lfs (%.3lfms)\n", w, "Duration:",
-				cfg->duration_ns / 1000000000.0, cfg->duration_ns / 1000000.0);
-			wprintf("%-*s%llu (%.3lfMBs)\n", w, "Events:",
-				dump_hdr->event_cnt, dump_hdr->events_sz / 1024.0 / 1024.0);
+			wprintf("%-*s%.3lfs (%.3lfms)\n", w, "Duration:", cfg->duration_ns / S, cfg->duration_ns / ms);
 			if (cfg->captured_stack_traces) {
-				const struct wprof_stacks_hdr *shdr = (void *)dump_hdr + dump_hdr->hdr_sz + dump_hdr->stacks_off;
-				wprintf("%-*s%u (%.3lfMBs data, %.3lfMBs strings): ", w, "Stack traces:",
-					shdr->stack_cnt,
-					(dump_hdr->stacks_sz - shdr->strs_sz) / 1024.0 / 1024.0,
-					shdr->strs_sz / 1024.0 / 1024.0);
+				wprintf("%-*s\n", w, "Stack traces:");
 				if (cfg->captured_stack_traces & ST_TIMER)
-					wprintf("timer, ");
+					wprintf("%-*s%s\n", w, "", "timer");
 				if (cfg->captured_stack_traces & ST_OFFCPU)
-					wprintf("offcpu, ");
+					wprintf("%-*s%s\n", w,"",  "offcpu");
 				if (cfg->captured_stack_traces & ST_WAKER)
-					wprintf("waker, ");
-				wprintf("\n");
+					wprintf("%-*s%s\n", w, "", "waker");
+				if (cfg->captured_stack_traces & ST_CUDA)
+					wprintf("%-*s%s\n", w, "", "cuda");
+
 			} else {
 				wprintf("%-*s%s\n", w, "Stack traces:", "NONE");
 			}
-			wprintf("%-*s%dHz\n", w, "Timer frequency:", cfg->timer_freq_hz);
-			int total_pmu_cnt = dump_hdr->pmu_def_real_cnt + dump_hdr->pmu_def_deriv_cnt;
-			if (total_pmu_cnt == 0) {
-				wprintf("%-*s%s\n", w, "Perf counters:", "NONE");
-			} else {
-				wprintf("%-*s%d (%llu real, %llu derived)\n", w, "Perf counters:",
-					total_pmu_cnt, dump_hdr->pmu_def_real_cnt, dump_hdr->pmu_def_deriv_cnt);
+			if (cfg->captured_stack_traces & ST_TIMER)
+				wprintf("%-*s%dHz\n", w, "Timer frequency:", cfg->timer_freq_hz);
+
+			if (dump_hdr->pmu_def_real_cnt + dump_hdr->pmu_def_deriv_cnt) {
+				wprintf("%-*s\n", w, "PMU counters:");
 				for (int i = 0; i < dump_hdr->pmu_def_real_cnt; i++) {
 					struct wevent_pmu_def *def = wevent_pmu_def(dump_hdr, i);
-					wprintf("%*s%s\n", w, "", wevent_str(dump_hdr, def->name_stroff));
+					wprintf("%-*s%s\n", w, "", wevent_str(dump_hdr, def->name_stroff));
 				}
 				for (int i = 0; i < dump_hdr->pmu_def_deriv_cnt; i++) {
 					struct wevent_pmu_def *def = wevent_pmu_def(dump_hdr, dump_hdr->pmu_def_real_cnt + i);
-					wprintf("%*s%s (derived)\n", w, "", wevent_str(dump_hdr, def->name_stroff));
+					wprintf("%-*s%s (derived)\n", w, "", wevent_str(dump_hdr, def->name_stroff));
 				}
+			} else {
+				wprintf("%-*s%s\n", w, "PMU counters:", "NONE");
 			}
+
 			for (int i = 0; i < ARRAY_SIZE(capture_features); i++) {
 				const struct capture_feature *f = &capture_features[i];
 				wprintf("%-*s%s\n", w, f->header, f->cfg_get_flag(cfg) ? "YES" : "NO");
 			}
+
+			u64 kind_cnt[__EV_KIND_MAX] = {};
+			u64 kind_sz[__EV_KIND_MAX] = {};
+			struct wevent_record *rec;
+			wevent_for_each_event(rec, dump_hdr) {
+				if (rec->e->kind) {
+					kind_cnt[rec->e->kind]++;
+					kind_sz[rec->e->kind] += rec->e->sz;
+				}
+			}
+			wprintf("%-*s%.3lfMB total\n", w, "Data:", worker->dump_sz / MB);
+			wprintf("    %-*s%.3lfMB (%llu entries)\n", w - 4, "Thread info:", dump_hdr->threads_sz / MB, dump_hdr->thread_cnt);
+
+			u64 str_cnt = 0;
+			for (const char *s = (void *)dump_hdr + sizeof(*dump_hdr) + dump_hdr->strs_off,
+					*end = s + dump_hdr->strs_sz;
+			     s < end; s++) {
+				if (*s == '\0')
+					str_cnt++;
+			}
+			wprintf("    %-*s%.3lfMB (%llu unique strings)\n", w - 4, "Strings:", dump_hdr->strs_sz / MB, str_cnt);
+
+			wprintf("    %-*s%.3lfMB (%llu records)\n", w - 4, "Events:", dump_hdr->events_sz / MB, dump_hdr->event_cnt);
+			for (int i = 0; i < __EV_KIND_MAX; i++) {
+				if (kind_cnt[i] == 0)
+					continue;
+				wprintf("        %-*s%.3lfMB (%llu records)\n", w - 8, wevent_kind_name(i), kind_sz[i] / MB, kind_cnt[i]);
+			}
+			if (cfg->captured_stack_traces) {
+				const struct wprof_stacks_hdr *shdr = wprof_stacks_hdr(dump_hdr);
+				wprintf("    %-*s%.3lfMB (%u unique stacks)\n", w - 4, "Stack traces:", dump_hdr->stacks_sz / MB, shdr->stack_cnt);
+				wprintf("        %-*s%.3lfMB (%u entries)\n", w - 8, "Call stacks:", shdr->stack_cnt * sizeof(struct wprof_stack_trace) / MB, shdr->stack_cnt);
+				wprintf("        %-*s%.3lfMB (%u entries)\n", w - 8, "Frames:", shdr->frame_cnt * sizeof(struct wprof_stack_frame) / MB, shdr->frame_cnt);
+				wprintf("        %-*s%.3lfMB\n", w - 8, "Strings:", shdr->strs_sz / MB);
+			}
+			if (dump_hdr->pmu_def_real_cnt + dump_hdr->pmu_def_deriv_cnt)
+				wprintf("    %-*s%.3lfMB (%llu entries)\n", w - 4, "PMU data:", dump_hdr->pmu_vals_sz / MB, dump_hdr->pmu_val_cnt);
+
 			goto cleanup;
 		}
 

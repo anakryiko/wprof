@@ -244,4 +244,34 @@ static inline size_t wevent_fixed_sz(const struct wevent *e)
 	}
 }
 
+static inline const char *wevent_kind_name(enum event_kind kind)
+{
+	switch (kind) {
+	case EV_SWITCH:		return "switch";
+	case EV_TIMER:		return "timer";
+	case EV_WAKING:		return "waking";
+	case EV_WAKEUP_NEW:	return "wakeup_new";
+	case EV_HARDIRQ_EXIT:	return "hardirq";
+	case EV_SOFTIRQ_EXIT:	return "softirq";
+	case EV_WQ_END:		return "wq";
+	case EV_FORK:		return "fork";
+	case EV_EXEC:		return "exec";
+	case EV_TASK_RENAME:	return "task_rename";
+	case EV_TASK_EXIT:	return "task_exit";
+	case EV_TASK_FREE:	return "task_free";
+	case EV_IPI_SEND:	return "ipi_send";
+	case EV_IPI_EXIT:	return "ipi_exit";
+	case EV_REQ_EVENT:	return "req_event";
+	case EV_REQ_TASK_EVENT:	return "req_task_event";
+	case EV_SCX_DSQ_END:	return "scx_dsq_end";
+	case EV_CUDA_CALL:	return "cuda_call";
+	case EV_CUDA_KERNEL:	return "cuda_kernel";
+	case EV_CUDA_MEMCPY:	return "cuda_memcpy";
+	case EV_CUDA_MEMSET:	return "cuda_memset";
+	case EV_CUDA_SYNC:	return "cuda_sync";
+	case EV_CUDA_API:	return "cuda_api";
+	default:		return "unknown";
+	}
+}
+
 #endif /* __WEVENT_H_ */
