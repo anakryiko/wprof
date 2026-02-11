@@ -69,8 +69,12 @@ struct env {
 
 	int timer_freq_hz;
 
-	int pmu_event_cnt;
-	struct pmu_event pmu_events[MAX_PMU_COUNTERS];
+	int pmu_real_cnt;
+	struct pmu_event *pmu_reals;
+	int pmu_deriv_cnt;
+	struct pmu_event *pmu_derivs;
+	int pmu_unresolved_cnt;
+	struct pmu_event *pmu_unresolveds;
 
 	int ringbuf_sz;
 	int task_state_sz;

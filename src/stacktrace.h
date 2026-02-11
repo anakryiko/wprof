@@ -45,7 +45,7 @@ static inline size_t bpf_event_pmu_vals_sz(const struct wprof_event *e)
 {
 	if (!(e->flags & EF_PMU_VALS))
 		return 0;
-	int pmu_cnt = env.data_hdr ? env.data_hdr->cfg.pmu_event_cnt : env.pmu_event_cnt;
+	int pmu_cnt = env.data_hdr ? env.data_hdr->pmu_def_real_cnt : env.pmu_real_cnt;
 	return pmu_cnt * sizeof(u64);
 }
 

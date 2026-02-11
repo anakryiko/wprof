@@ -28,15 +28,15 @@
  * - PERF_TYPE_DERIVED (UINT32_MAX - 1): Derived metrics
  *
  * For derived events (after resolution):
- * - config  = numerator counter index into pmu_events[]
- * - config1 = denominator counter index into pmu_events[]
+ * - config1 = numerator counter index into pmu_reals[]
+ * - config2 = denominator counter index into pmu_reals[]
  */
 struct pmu_event {
-	/* perf_event_attr fields (for derived: config=num_idx, config1=denom_idx) */
+	/* perf_event_attr fields (for derived: config1=num_idx, config2=denom_idx) */
 	__u32 perf_type;       /* PERF_TYPE_* or dynamic PMU type */
-	__u64 config;          /* event config (or numerator index for derived) */
-	__u64 config1;         /* extended config (or denominator index for derived) */
-	__u64 config2;         /* extended config */
+	__u64 config;          /* event config */
+	__u64 config1;         /* extended config (or numerator index for derived) */
+	__u64 config2;         /* extended config (or denominator index for derived) */
 
 	/* Output configuration */
 	char name[PMU_NAME_LEN]; /* trace output name (user-specified or auto) */
@@ -110,14 +110,30 @@ void deserialized_pmu_event(const struct pmu_event_stored *stored, struct pmu_ev
 
 /**
  * pmu_resolve_derived - Resolve derived metric indices
- * @events: Array of pmu_events
- * @count: Number of events in array
+ * @reals: Array of real (hardware) pmu_events
+ * @real_cnt: Number of real events
+ * @derivs: Array of derived pmu_events
+ * @deriv_cnt: Number of derived events
  *
- * For each derived event (perf_type == PERF_TYPE_DERIVED), resolves
- * numerator/denominator names to indices and stores them in config/config1.
+ * For each derived event, resolves numerator/denominator names to indices
+ * into the reals array and stores them in config/config1.
  *
  * Returns 0 on success, negative error code on failure.
  */
-int pmu_resolve_derived(struct pmu_event *events, int count);
+int pmu_resolve_derived(struct pmu_event *reals, int real_cnt,
+			struct pmu_event *derivs, int deriv_cnt);
+
+/**
+ * pmu_collect_replay_defs - Collect and resolve PMU definitions for replay mode
+ * @hdr: Data header from the stored capture
+ *
+ * If no --pmu was specified, loads all stored counters. Otherwise, resolves
+ * unresolved (name-only) events against stored real/derived defs, pulls in
+ * derived counter dependencies, and resolves all indices.
+ *
+ * Returns 0 on success, negative error code on failure.
+ */
+struct wprof_data_hdr;
+int pmu_resolve_replay_defs(struct wprof_data_hdr *hdr);
 
 #endif /* __PMU_H_ */
