@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause)
 /* Copyright (c) 2025 Meta Platforms, Inc. */
-#include "wevent.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -14,11 +13,11 @@
 #include "utils.h"
 #include "protobuf.h"
 #include "wprof.h"
-#include "data.h"
 #include "env.h"
+#include "data.h"
+#include "wevent.h"
 #include "stacktrace.h"
 #include "cuda_data.h"
-#include "wprof_cupti.h"
 #include "demangle.h"
 #include "requests.h"
 
@@ -553,42 +552,6 @@ static inline u64 trackid_cuda_proc_gpu(int pid, u32 dev_id)
 static inline u64 trackid_cuda_proc_stream(int pid, u32 stream_id)
 {
 	return TRACK_UUID(TK_CUDA_PROC_STREAM, pid | ((u64)stream_id << 32));
-}
-
-static const char *event_kind_str_map[] = {
-	/* BPF-produced events */
-	[EV_TIMER] = "TIMER",
-	[EV_SWITCH] = "SWITCH",
-	[EV_WAKEUP_NEW] = "WAKEUP_NEW",
-	//[EV_WAKEUP] = "WAKEUP",
-	[EV_WAKING] = "WAKING",
-	[EV_HARDIRQ_EXIT] = "HARDIRQ_EXIT",
-	[EV_SOFTIRQ_EXIT] = "SOFTIRQ_EXIT",
-	[EV_WQ_END] = "WQ_END",
-	[EV_FORK] = "FORK",
-	[EV_EXEC] = "EXEC",
-	[EV_TASK_RENAME] = "TASK_RENAME",
-	[EV_TASK_EXIT] = "TASK_EXIT",
-	[EV_TASK_FREE] = "TASK_FREE",
-	[EV_IPI_SEND] = "IPI_SEND",
-	[EV_IPI_EXIT] = "IPI_EXIT",
-	[EV_REQ_EVENT] = "REQ_EVENT",
-	[EV_SCX_DSQ_END] = "SCX_DSQ_END",
-
-	/* CUDA/CUPTI-produced events */
-	[EV_CUDA_KERNEL] = "CUDA_KERNEL",
-	[EV_CUDA_MEMCPY] = "CUDA_MEMCPY",
-	[EV_CUDA_MEMSET] = "CUDA_MEMSET",
-	[EV_CUDA_SYNC] = "CUDA_SYNC",
-	[EV_CUDA_API] = "CUDA_API",
-};
-
-__unused
-static const char *event_kind_str(enum event_kind kind)
-{
-	if (kind >= 0 && kind < ARRAY_SIZE(event_kind_str_map))
-		return event_kind_str_map[kind] ?: "UNKNOWN";
-	return "UNKNOWN";
 }
 
 enum instant_scope {
@@ -1545,25 +1508,6 @@ skip_emit:
 	return 0;
 }
 
-/* EV_WAKEUP */
-/*
-static int process_wakeup(struct worker_state *w, struct wprof_event *e, size_t size)
-{
-	if (!should_trace_task(&e->task))
-		return 0;
-
-	(void)task_state(w, &e->task);
-
-	emit_instant(e->ts, &e->task, IID_NAME_WAKEUP, IID_CAT_WAKEUP) {
-		emit_kv_int(IID_ANNK_CPU, e->cpu);
-		if (env.emit_numa)
-			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
-	}
-
-	return 0;
-}
-*/
-
 /* EV_WAKEUP_NEW */
 static int process_wakeup_new(struct worker_state *w, const struct wevent *e)
 {
@@ -2470,13 +2414,10 @@ static int process_cuda_api(struct worker_state *w, const struct wevent *e)
 	return 0;
 }
 
-typedef int (*event_fn)(struct worker_state *w, const struct wevent *e);
-
-static event_fn ev_fns[] = {
+static handle_event_fn emit_fns[] = {
 	[EV_TIMER] = process_timer,
 	[EV_SWITCH] = process_switch,
 	[EV_WAKEUP_NEW] = process_wakeup_new,
-	//[EV_WAKEUP] = process_wakeup,
 	[EV_WAKING] = process_waking,
 	[EV_HARDIRQ_EXIT] = process_hardirq_exit,
 	[EV_SOFTIRQ_EXIT] = process_softirq_exit,
@@ -2498,22 +2439,6 @@ static event_fn ev_fns[] = {
 	[EV_CUDA_API] = process_cuda_api,
 };
 
-static int process_event(struct worker_state *w, const struct wevent *e)
-{
-	event_fn ev_fn;
-
-	if (!is_ts_in_range(e->ts))
-		return 0;
-
-	if (e->kind >= ARRAY_SIZE(ev_fns) || !(ev_fn = ev_fns[e->kind])) {
-		eprintf("UNHANDLED EVENT %d\n", e->kind);
-		exit(1);
-		return 0;
-	}
-
-	return ev_fn(w, e);
-}
-
 int emit_trace(struct worker_state *w)
 {
 	int err;
@@ -2533,15 +2458,9 @@ int emit_trace(struct worker_state *w)
 		w->frames_used = calloc((shdr->frame_cnt + 63) / 64, sizeof(u64));
 	}
 
-	struct wevent_record *rec;
-	wevent_for_each_event(rec, w->dump_hdr) {
-		err = process_event(w, rec->e);
-		if (err) {
-			eprintf("Failed to process event #%d (kind %d, offset %zu): %d\n",
-				rec->idx, rec->e->kind, (void *)rec->e - (void *)w->dump_hdr, err);
-			return err; /* YEAH, I know about all the clean up, whatever */
-		}
-	}
+	err = process_events(w, emit_fns, ARRAY_SIZE(emit_fns));
+	if (err)
+		return err;
 
 	if (env.emit_sched_view) {
 		for (int cpu = 0; cpu < w->ftrace_bundle_cnt; cpu++) {

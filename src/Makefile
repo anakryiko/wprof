@@ -178,12 +178,12 @@ $(OUTPUT)/wprof.skel.h: $(OUTPUT)/wprof.bpf.o $(OUTPUT)/utils.bpf.o $(OUTPUT)/sc
 	$(Q)$(BPFTOOL) gen object $(OUTPUT)/wprof-final.bpf.o $^
 	$(Q)$(BPFTOOL) gen skeleton $(OUTPUT)/wprof-final.bpf.o name wprof_bpf > $@
 
-WPROF_SRCS := wprof.c utils.c env.c protobuf.c emit.c stacktrace.c pmu.c			\
+WPROF_SRCS := wprof.c utils.c env.c protobuf.c data.c emit.c stacktrace.c pmu.c			\
 	      pb_common.c pb_encode.c perfetto_trace.pb.c topology.c proc.c			\
 	      requests.c cuda.c inject.c sys.c elf_utils.c merge.c persist.c			\
 	      cupti_driver_cbid_map.gen.c cupti_runtime_cbid_map.gen.c		\
 				pystacks.c pydisc.c pysym.c pyline.c
-WPROF_HDRS := wprof.h utils.h env.h protobuf.h emit.h stacktrace.h data.h topology.h pmu.h	\
+WPROF_HDRS := wprof.h utils.h env.h protobuf.h data.h emit.h stacktrace.h topology.h pmu.h	\
 	      proc.h requests.h cuda.h inj_common.h inject.h sys.h elf_utils.h cuda_data.h 	\
 	      wprof_types.h demangle.h merge.h wevent.h persist.h		\
 				pystacks.h pyoffsets.h pysym.h pyline.h
