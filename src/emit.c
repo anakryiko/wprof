@@ -826,16 +826,52 @@ static pb_iid emit_intern_str(struct worker_state *w, const char *s)
 	return iid;
 }
 
+static void emit_pmu_intern_names(struct worker_state *w, pb_ostream_t *stream)
+{
+	if (env.pmu_real_cnt + env.pmu_deriv_cnt == 0)
+		return;
+
+	struct pb_str_iids iids = {};
+	char buf[256];
+	const char *s;
+
+	for (int i = 0; i < env.pmu_real_cnt; i++) {
+		struct pmu_event *pmu = &env.pmu_reals[i];
+		snprintf(buf, sizeof(buf), "pmu:%s", pmu->name);
+		pmu->name_iid = str_iid_for(&w->name_iids, buf, NULL, &s);
+		append_str_iid(&iids, pmu->name_iid, s);
+	}
+	for (int i = 0; i < env.pmu_deriv_cnt; i++) {
+		struct pmu_event *pmu = &env.pmu_derivs[i];
+		snprintf(buf, sizeof(buf), "pmu:%s", pmu->name);
+		pmu->name_iid = str_iid_for(&w->name_iids, buf, NULL, &s);
+		append_str_iid(&iids, pmu->name_iid, s);
+	}
+
+	TracePacket pkt = {
+		PB_INIT(timestamp) = 0,
+		PB_TRUST_SEQ_ID(PB_SEQ_ID_THREADS),
+		PB_INIT(interned_data) = {
+			.event_names = PB_STR_IIDS(&iids),
+			.debug_annotation_names = PB_STR_IIDS(&iids),
+			.debug_annotation_string_values = PB_STR_IIDS(&iids),
+		},
+	};
+	enc_trace_packet(stream, &pkt);
+
+	free(iids.iids);
+	free(iids.strs);
+}
+
 /**
  * emit_perf_counters - Emit perf counter with derived metrics support
- * @w: Worker state (for string interning)
  * @st_ctrs: start counter value (may be null)
  * @ev_ctrs: end counter value (may be null)
  *
  * Context switch has a pair of values, the rest of entries (e.g. ipi, wq) have just one perf
  * value. For the latter case, diffs should be set to true and ev_ctrs used for final values.
  */
-static void emit_perf_counters(struct worker_state *w, const u64 *st_ctrs, const u64 *ev_ctrs, bool diffs)
+static void emit_perf_counters(const u64 *st_ctrs, const u64 *ev_ctrs, bool diffs)
 {
 	if (!ev_ctrs)
 		return;
@@ -845,7 +881,7 @@ static void emit_perf_counters(struct worker_state *w, const u64 *st_ctrs, const
 	for (int i = 0; i < env.pmu_real_cnt; i++) {
 		const struct pmu_event *ev = &env.pmu_reals[i];
 		double value = diffs ? ev_ctrs[ev->stored_idx] : ev_ctrs[ev->stored_idx] - st_ctrs[ev->stored_idx];
-		emit_kv_float(iid_str(emit_intern_str(w, ev->name), ev->name), "%.6lf", value);
+		emit_kv_float(iid_str(ev->name_iid, ev->name), "%.6lf", value);
 	}
 	for (int i = 0; i < env.pmu_deriv_cnt; i++) {
 		const struct pmu_event *ev = &env.pmu_derivs[i];
@@ -853,7 +889,7 @@ static void emit_perf_counters(struct worker_state *w, const u64 *st_ctrs, const
 		int denom_idx = (int)ev->config2;
 		double num = diffs ? ev_ctrs[num_idx] : ev_ctrs[num_idx] - st_ctrs[num_idx];
 		double denom = diffs ? ev_ctrs[denom_idx] : ev_ctrs[denom_idx] - st_ctrs[denom_idx];
-		emit_kv_float(iid_str(emit_intern_str(w, ev->name), ev->name), "%.6lf", num / denom);
+		emit_kv_float(iid_str(ev->name_iid, ev->name), "%.6lf", num / denom);
 	}
 }
 
@@ -1179,7 +1215,7 @@ skip_waker_task:
 		}
 
 		const u64 *pmu_vals = wevent_pmu_vals(hdr, e->swtch.pmu_vals_id);
-		emit_perf_counters(w, prev_st->oncpu_ctrs, pmu_vals, false /* !diffs */);
+		emit_perf_counters(prev_st->oncpu_ctrs, pmu_vals, false /* !diffs */);
 
 		if (prev_st->rename_ts)
 			emit_kv_str(IID_ANNK_RENAMED_TO, task.comm);
@@ -1594,7 +1630,7 @@ static int process_hardirq_exit(struct worker_state *w, const struct wevent *e)
 	}
 	emit_slice_end(e->ts, &task, IID_NAME_HARDIRQ, IID_CAT_HARDIRQ) {
 		const u64 *pmu_vals = wevent_pmu_vals(hdr, e->hardirq.pmu_vals_id);
-		emit_perf_counters(w, NULL, pmu_vals, true /* diffs */);
+		emit_perf_counters(NULL, pmu_vals, true /* diffs */);
 	}
 
 	return 0;
@@ -1634,7 +1670,7 @@ static int process_softirq_exit(struct worker_state *w, const struct wevent *e)
 		       iid_str(name_iid, sfmt("%s:%s", "SOFTIRQ", softirq_str(e->softirq.vec_nr))),
 		       IID_CAT_SOFTIRQ) {
 		const u64 *pmu_vals = wevent_pmu_vals(hdr, e->softirq.pmu_vals_id);
-		emit_perf_counters(w, NULL, pmu_vals, true /* diffs */);
+		emit_perf_counters(NULL, pmu_vals, true /* diffs */);
 	}
 
 	return 0;
@@ -1666,7 +1702,7 @@ static int process_wq_end(struct worker_state *w, const struct wevent *e)
 		       iid_str(IID_NONE, sfmt("%s:%s", "WQ", desc)),
 		       IID_CAT_WQ) {
 		const u64 *pmu_vals = wevent_pmu_vals(hdr, e->wq.pmu_vals_id);
-		emit_perf_counters(w, NULL, pmu_vals, true /* diffs */);
+		emit_perf_counters(NULL, pmu_vals, true /* diffs */);
 	}
 
 	return 0;
@@ -1783,7 +1819,7 @@ static int process_ipi_exit(struct worker_state *w, const struct wevent *e)
 				      "%.3lf", (e->ipi.ipi_ts - e->ipi.send_ts) / 1000.0);
 		}
 		const u64 *pmu_vals = wevent_pmu_vals(hdr, e->ipi.pmu_vals_id);
-		emit_perf_counters(w, NULL, pmu_vals, true /* diffs */);
+		emit_perf_counters(NULL, pmu_vals, true /* diffs */);
 	}
 
 	return 0;
@@ -2478,6 +2514,9 @@ int emit_trace(struct worker_state *w)
 	int err;
 
 	wprintf("Generating trace...\n");
+
+	emit_pmu_intern_names(w, cur_stream);
+
 	if (env.capture_requests)
 		emit_track_descr(cur_stream, TRACK_UUID_REQUESTS, 0, "REQUESTS", 1000);
 	if (env.capture_cuda)

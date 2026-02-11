@@ -169,8 +169,8 @@ static int pmu_dev_field_mapping(const char *key, __u64 val, __u64 *config,
 }
 
 /* Parse the format like "event=0x24,umask=0x01,name=foo" */
-static int perf_event_parsing(char *attrs, __u64 *config, __u64 *config1,
-															__u64 *config2, char *name, int max_len)
+static int perf_event_parsing(char *attrs, __u64 *config, __u64 *config1, __u64 *config2,
+			      char *name, int max_len)
 {
 	char *saveptr, *token;
 	int err = -ENOENT;
@@ -212,7 +212,7 @@ static int perf_event_parsing(char *attrs, __u64 *config, __u64 *config1,
 
 /* Lookup event values from sysfs */
 int pmu_resolve_symbolic_event(const char *pmu, const char *event_name,
-															 __u64 *config, __u64 *config1, __u64 *config2)
+			       __u64 *config, __u64 *config1, __u64 *config2)
 {
 	char path[256];
 	char buf[256];
@@ -263,9 +263,9 @@ static int lookup_hw_cache_event(const char *name, struct pmu_event *ev)
  * This is the perf-style format for specifying PMU events directly.
  *
  * Examples:
- *   cpu/event=0x3c/														- raw event code
+ *   cpu/event=0x3c/					- raw event code
  *   cpu/event=0x3c,umask=0x01,name=my_event/		- with name
- *   cpu/L1-icache-load-misses/									- symbolic event
+ *   cpu/L1-icache-load-misses/				- symbolic event
  */
 static int parse_pmu_style_event(const char *spec, struct pmu_event *ev)
 {
