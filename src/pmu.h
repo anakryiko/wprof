@@ -40,6 +40,7 @@ struct pmu_event {
 
 	/* Output configuration */
 	char name[PMU_NAME_LEN]; /* trace output name (user-specified or auto) */
+	u32 name_iid;            /* pre-interned Perfetto annotation key IID */
 
 	/* For replay: index into stored counter data (ctrs.val[]) */
 	int stored_idx;        /* -1 if unset, resolved during replay */
