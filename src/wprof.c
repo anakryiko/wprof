@@ -508,6 +508,8 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 		bpf_map__set_max_entries(skel->maps.req_states, max(16 * 1024, env.task_state_sz));
 	} else {
 		bpf_map__set_autocreate(skel->maps.req_states, false);
+		env.capture_requests = false;
+		env.capture_req_experimental = false;
 	}
 
 	if (env.cuda_pid_cnt > 0 || env.cuda_discovery) {
