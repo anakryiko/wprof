@@ -1386,6 +1386,12 @@ int main(int argc, char **argv)
 	wprintf("Draining...\n");
 	drain_bpf(&bpf_state, num_cpus);
 
+	if (env.cuda_cnt == 0) {
+		/* ensure we don't record CUDA data as available in wprof.data */
+		env.requested_stack_traces &= ~ST_CUDA;
+		env.capture_cuda = false;
+	}
+
 	err = wprof_merge_data(workdir_name, workers);
 	if (err) {
 		eprintf("Failed to finalize data dump: %d\n", err);

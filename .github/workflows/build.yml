@@ -76,7 +76,7 @@ jobs:
           sudo ./wprof -d500 -T trace.pb -D wprof.data -f cuda || { echo "✗ Failed: wprof trace capture failed"; exit 1; }
           # Validate binary dump with replay mode
           ./wprof -R -I -D wprof.data || { echo "✗ Failed: wprof.data validation failed"; exit 1; }
-          ./wprof -R -I -D wprof.data | grep -q "CUDA:.*YES" || { echo "✗ Failed: CUDA not detected in trace"; exit 1; }
+
           # Validate Perfetto trace and count packets
           PACKET_COUNT=$(protoc --decode=perfetto.protos.Trace perfetto_trace.proto < trace.pb 2>/dev/null | grep -c "packet {" || echo "0")
           TRACE_SIZE=$(ls -lh trace.pb | awk '{print $5}')
@@ -93,7 +93,6 @@ jobs:
           sudo ./wprof -d500 -T trace-stacks.pb -D wprof-stacks.data -S -f cuda || { echo "✗ Failed: wprof trace with stacks failed"; exit 1; }
           # Validate binary dump with replay mode
           ./wprof -R -I -D wprof-stacks.data || { echo "✗ Failed: wprof-stacks.data validation failed"; exit 1; }
-          ./wprof -R -I -D wprof-stacks.data | grep -q "CUDA:.*YES" || { echo "✗ Failed: CUDA not detected in trace"; exit 1; }
           # Validate stack traces were captured
           ./wprof -R -I -D wprof-stacks.data | grep -q "Stack traces:.*[1-9]" || { echo "✗ Failed: No stack traces captured"; exit 1; }
           # Validate Perfetto trace and count packets
