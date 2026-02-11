@@ -91,6 +91,12 @@ struct wprof_stack_trace {
 	u32 frame_mapping_cnt;
 };
 
+struct worker_state;
+typedef int (*handle_event_fn)(struct worker_state *w, const struct wevent *e);
+int process_events(struct worker_state *w, handle_event_fn *handlers, size_t handler_cnt);
+
+const char *event_kind_str(enum event_kind kind);
+
 /* ==================== ACCESSOR FUNCTIONS ==================== */
 
 static inline struct wprof_stacks_hdr *wprof_stacks_hdr(struct wprof_data_hdr *hdr)

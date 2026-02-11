@@ -69,7 +69,7 @@ enum event_kind {
 
 	EV_TIMER = 1,
 	EV_SWITCH = 2,
-	EV_WAKEUP = 3,
+	/* EV_WAKEUP = 3, */
 	EV_WAKING = 4,
 	EV_HARDIRQ_EXIT = 5,
 	EV_SOFTIRQ_EXIT = 6,
