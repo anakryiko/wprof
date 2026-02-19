@@ -61,7 +61,7 @@ static int discover_pid_req_binaries(int pid)
 	int err = 0;
 
 	wprof_for_each(vma, vma, pid,
-		       PROCMAP_QUERY_VMA_EXECUTABLE | PROCMAP_QUERY_FILE_BACKED_VMA) {
+		       VMA_QUERY_VMA_EXECUTABLE | VMA_QUERY_FILE_BACKED_VMA) {
 		if (vma->vma_name[0] != '/')
 			continue; /* special file, ignore */
 
