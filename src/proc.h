@@ -52,6 +52,9 @@ struct vma_info {
 enum vma_query_flags {
 	VMA_QUERY_FILE_BACKED_VMA = 0x01,
 	VMA_QUERY_VMA_EXECUTABLE = 0x02,
+
+	__VMA_QUERY_MAX,
+	__VMA_QUERY_MASK = (__VMA_QUERY_MAX - 1) * 2 - 1,
 };
 
 struct vma_iter {

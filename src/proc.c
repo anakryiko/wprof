@@ -174,6 +174,11 @@ int vma_iter_new(struct vma_iter *it, int pid, enum vma_query_flags query_flags)
 	char proc_path[64];
 	int err = 0;
 
+	if (query_flags & ~__VMA_QUERY_MASK) {
+		eprintf("Invalid VMA_QUERY flags: %x\n", query_flags);
+		exit(1);
+	}
+
 	memset(it, 0, sizeof(*it));
 	it->procmap_fd = -1;
 	it->pid = pid;
