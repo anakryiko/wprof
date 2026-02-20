@@ -1085,22 +1085,93 @@ static int process_switch(struct worker_state *w, const struct wevent *e)
 	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
 	struct wprof_task next = wevent_resolve_task(hdr, e->swtch.next_task_id);
 	struct wprof_task waker = wevent_resolve_task(hdr, e->swtch.waker_task_id);
+
+	bool has_waking = e->swtch.waking_ts != 0 && is_ts_in_range(e->swtch.waking_ts);
+	bool trace_waker = has_waking && should_trace_task(&waker);
+	bool trace_prev = should_trace_task(&task);
+	bool trace_next = should_trace_task(&next);
+
+	/* ===== STATE ===== */
+
 	struct task_state *waker_st = NULL;
-
-	if (e->swtch.waking_ts == 0 || !is_ts_in_range(e->swtch.waking_ts) ||
-	    !should_trace_task(&waker))
-		goto skip_waker_task;
-
-	/* STATE */
-	waker_st = task_state(w, &waker);
-	struct task_state *wakee_st = task_state_try_get(w, &next);
 	int waker_callstack_id = 0;
-	if (wakee_st) {
-		waker_callstack_id = wakee_st->waker_callstack_id;
-		wakee_st->waker_callstack_id = 0;
+	if (trace_waker) {
+		waker_st = task_state(w, &waker);
+		struct task_state *wakee_st = task_state_try_get(w, &next);
+		if (wakee_st) {
+			waker_callstack_id = wakee_st->waker_callstack_id;
+			wakee_st->waker_callstack_id = 0;
+		}
 	}
 
-	/* EMIT */
+	struct task_state *prev_st = NULL;
+	bool prev_preempted = false;
+	const char *prev_name = NULL;
+	pb_iid prev_name_iid = 0;
+	bool prev_renamed = false;
+	bool prev_fake_begin = false;
+	const u64 *prev_oncpu_ctrs = NULL;
+	const u64 *pmu_vals = NULL;
+	if (trace_prev) {
+		prev_st = task_state(w, &task);
+		prev_preempted = e->swtch.prev_task_state == TASK_RUNNING;
+		/* take into account task rename for switched-out task to maintain consistently named trace slice */
+		prev_name = prev_st->rename_ts ? prev_st->old_comm : prev_st->comm;
+		prev_name_iid = prev_st->rename_ts ? prev_st->old_name_iid : prev_st->name_iid;
+		prev_renamed = prev_st->rename_ts != 0;
+		prev_fake_begin = prev_st->oncpu_ts == 0;
+		prev_oncpu_ctrs = prev_st->oncpu_ctrs;
+		pmu_vals = wevent_pmu_vals(hdr, e->swtch.pmu_vals_id);
+
+		prev_st->rename_ts = 0;
+		prev_st->oncpu_ctrs = NULL;
+		prev_st->oncpu_ts = 0;
+		prev_st->offcpu_ts = e->ts;
+		prev_st->run_state = prev_preempted ? TASK_STATE_PREEMPTED : TASK_STATE_WAITING;
+	}
+
+	struct task_state *next_st = NULL;
+	u64 next_offcpu_dur_ns = 0;
+	bool next_was_preempted = false;
+	if (trace_next) {
+		next_st = task_state(w, &next);
+		next_st->oncpu_ctrs = wevent_pmu_vals(hdr, e->swtch.pmu_vals_id);
+		next_st->oncpu_ts = e->ts;
+
+		next_offcpu_dur_ns = next_st->offcpu_ts ? e->ts - next_st->offcpu_ts : e->ts - env.sess_start_ts;
+		next_st->offcpu_ts = 0;
+
+		if (e->swtch.waking_ts) {
+			if (e->swtch.waking_flags == WF_PREEMPTED) {
+				/*
+				 * for preemption case, we just accummulate preempted time,
+				 * without paying attention to compound delay of our preemptor
+				 */
+				next_st->compound_delay_ns += e->ts - e->swtch.waking_ts;
+				next_st->compound_chain_len += 1;
+			} else {
+				/*
+				 * for non-preemption, we "inherit" our waker's compound chain
+				 * and delay, and add our own wakeup delay to it to keep the
+				 * chain going
+				 */
+				next_st->compound_delay_ns = e->ts - e->swtch.waking_ts;
+				next_st->compound_chain_len = 1;
+
+				next_st->compound_delay_ns += waker_st ? waker_st->compound_delay_ns : 0;
+				next_st->compound_chain_len += waker_st ? waker_st->compound_chain_len : 0;
+			}
+		}
+
+		next_was_preempted = e->swtch.last_next_task_state == TASK_RUNNING;
+		next_st->run_state = TASK_STATE_RUNNING;
+	}
+
+	/* ===== EMIT ===== */
+
+	if (!trace_waker)
+		goto skip_waker_task;
+
 	emit_track_descrs(w, &waker);
 
 	/* event on awaker's timeline */
@@ -1136,27 +1207,9 @@ static int process_switch(struct worker_state *w, const struct wevent *e)
 	}
 
 skip_waker_task:
-	if (!should_trace_task(&task))
+	if (!trace_prev)
 		goto skip_prev_task;
 
-	/* STATE */
-	struct task_state *prev_st = task_state(w, &task);
-	bool preempted = e->swtch.prev_task_state == TASK_RUNNING;
-	/* take into account task rename for switched-out task to maintain consistently named trace slice */
-	const char *cur_name = prev_st->rename_ts ? prev_st->old_comm : prev_st->comm;
-	pb_iid cur_name_iid = prev_st->rename_ts ? prev_st->old_name_iid : prev_st->name_iid;
-	bool was_renamed = prev_st->rename_ts != 0;
-	bool need_fake_begin = prev_st->oncpu_ts == 0;
-	const u64 *prev_oncpu_ctrs = prev_st->oncpu_ctrs;
-	const u64 *pmu_vals = wevent_pmu_vals(hdr, e->swtch.pmu_vals_id);
-
-	prev_st->rename_ts = 0;
-	prev_st->oncpu_ctrs = NULL;
-	prev_st->oncpu_ts = 0;
-	prev_st->offcpu_ts = e->ts;
-	prev_st->run_state = preempted ? TASK_STATE_PREEMPTED : TASK_STATE_WAITING;
-
-	/* EMIT */
 	emit_track_descrs(w, &task);
 
 	/* We are about to emit SLICE_END without corresponding SLICE_BEGIN ever being emitted;
@@ -1164,23 +1217,23 @@ skip_waker_task:
 	 * annoying and confusing. We want to avoid this, so we'll emit a fake SLICE_BEGIN with
 	 * fake timestamp ZERO.
 	 */
-	if (need_fake_begin) {
+	if (prev_fake_begin) {
 		emit_slice_begin(env.sess_start_ts, &task,
-				 iid_str(cur_name_iid, cur_name), IID_CAT_ONCPU) {
+				 iid_str(prev_name_iid, prev_name), IID_CAT_ONCPU) {
 			emit_kv_int(IID_ANNK_CPU, e->cpu);
 			if (env.emit_numa)
 				emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
 		}
 	}
 
-	emit_slice_end(e->ts, &task, iid_str(cur_name_iid, cur_name), IID_CAT_ONCPU) {
+	emit_slice_end(e->ts, &task, iid_str(prev_name_iid, prev_name), IID_CAT_ONCPU) {
 		emit_kv_int(IID_ANNK_CPU, e->cpu);
 		if (env.emit_numa)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
 
 		/* IDLE threads always go off-cpu to run something else */
 		if (prev_st->pid != 0)
-			emit_kv_str(IID_ANNK_OFFCPU_REASON, preempted ? IID_ANNV_OFFCPU_PREEMPTED : IID_ANNV_OFFCPU_BLOCKED);
+			emit_kv_str(IID_ANNK_OFFCPU_REASON, prev_preempted ? IID_ANNV_OFFCPU_PREEMPTED : IID_ANNV_OFFCPU_BLOCKED);
 
 		emit_kv_str(IID_ANNK_SWITCH_TO,
 			    iid_str(emit_intern_str(w, next.comm), next.comm));
@@ -1191,7 +1244,7 @@ skip_waker_task:
 
 		emit_perf_counters(prev_oncpu_ctrs, pmu_vals, false /* !diffs */);
 
-		if (was_renamed)
+		if (prev_renamed)
 			emit_kv_str(IID_ANNK_RENAMED_TO, task.comm);
 
 		if (env.requested_stack_traces & ST_OFFCPU) {
@@ -1205,50 +1258,18 @@ skip_waker_task:
 		emit_track_slice_end(e->ts, trackid_req_thread(prev_st->req_id, &task),
 				     IID_NAME_RUNNING, IID_CAT_REQUEST_ONCPU);
 		emit_track_slice_start(e->ts, trackid_req_thread(prev_st->req_id, &task),
-				       preempted ? IID_NAME_PREEMPTED : IID_NAME_WAITING,
+				       prev_preempted ? IID_NAME_PREEMPTED : IID_NAME_WAITING,
 				       IID_CAT_REQUEST_OFFCPU);
 	}
 
 skip_prev_task:
-	if (!should_trace_task(&next))
+	if (!trace_next)
 		goto skip_next_task;
 
-	/* STATE */
-	struct task_state *next_st = task_state(w, &next);
-	next_st->oncpu_ctrs = wevent_pmu_vals(hdr, e->swtch.pmu_vals_id);
-	next_st->oncpu_ts = e->ts;
-
-	u64 offcpu_dur_ns = next_st->offcpu_ts ? e->ts - next_st->offcpu_ts : e->ts - env.sess_start_ts;
-	next_st->offcpu_ts = 0;
-
-	bool was_previously_preempted = e->swtch.last_next_task_state == TASK_RUNNING;
-	next_st->run_state = TASK_STATE_RUNNING;
-
-	/* EMIT */
 	emit_track_descrs(w, &next);
 
 	if (!e->swtch.waking_ts)
 		goto skip_waking;
-
-	if (e->swtch.waking_flags == WF_PREEMPTED) {
-		/*
-		 * for preemption case, we just accummulate preempted time,
-		 * without paying attention to compound delay of our preemptor
-		 */
-		next_st->compound_delay_ns += e->ts - e->swtch.waking_ts;
-		next_st->compound_chain_len += 1;
-	} else  {
-		/*
-		 * for non-preemption, we "inherit" our waker's compound chain
-		 * and delay, and add our own wakeup delay to it to keep the
-		 * chain going
-		 */
-		next_st->compound_delay_ns = e->ts - e->swtch.waking_ts;
-		next_st->compound_chain_len = 1;
-
-		next_st->compound_delay_ns += waker_st ? waker_st->compound_delay_ns : 0;
-		next_st->compound_chain_len += waker_st ? waker_st->compound_chain_len : 0;
-	}
 
 	if (is_ts_in_range(e->swtch.waking_ts)/* && e->swtch.waker_cpu != e->cpu*/) {
 		/* event on wakee's timeline */
@@ -1281,8 +1302,8 @@ skip_waking:
 		if (env.emit_numa)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
 
-		if (offcpu_dur_ns)
-			emit_kv_float(IID_ANNK_OFFCPU_DUR_US, "%.3lf", offcpu_dur_ns / 1000.0);
+		if (next_offcpu_dur_ns)
+			emit_kv_float(IID_ANNK_OFFCPU_DUR_US, "%.3lf", next_offcpu_dur_ns / 1000.0);
 
 		if (e->swtch.waking_ts) {
 			emit_kv_str(IID_ANNK_WAKER,
@@ -1322,7 +1343,7 @@ skip_waking:
 
 	if (next_st->req_id) {
 		emit_track_slice_end(e->ts, trackid_req_thread(next_st->req_id, &next),
-				     was_previously_preempted ? IID_NAME_PREEMPTED : IID_NAME_WAITING,
+				     next_was_preempted ? IID_NAME_PREEMPTED : IID_NAME_WAITING,
 				     IID_CAT_REQUEST_OFFCPU);
 		emit_track_slice_start(e->ts, trackid_req_thread(next_st->req_id, &next),
 				       IID_NAME_RUNNING, IID_CAT_REQUEST_ONCPU);
@@ -1332,7 +1353,7 @@ skip_next_task:
 	if (!env.emit_sched_view)
 		goto skip_sched_view;
 
-	if (should_trace_task(&task) || should_trace_task(&next)) {
+	if (trace_prev || trace_next) {
 		FtraceEvent *fev = add_ftrace_event(w, e->cpu, e->ts, task_tid(&task));
 
 		fev->which_event = perfetto_protos_FtraceEvent_sched_switch_tag;
@@ -1347,9 +1368,7 @@ skip_next_task:
 		};
 	}
 
-	if (e->swtch.waking_ts &&
-	    is_ts_in_range(e->swtch.waking_ts) &&
-	    should_trace_task(&waker)) {
+	if (trace_waker) {
 		FtraceEvent *fev = add_ftrace_event(w, e->swtch.waker_cpu, e->swtch.waking_ts,
 						    task_tid(&task));
 		fev->which_event = e->swtch.waking_flags == WF_WOKEN_NEW
