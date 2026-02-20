@@ -1748,8 +1748,8 @@ static int process_scx_dsq_end(struct worker_state *w, const struct wevent *e)
 		emit_kv_str(IID_ANNK_ACTION, iid_str(insert_type_str_iid, insert_type_str));
 	}
 	emit_slice_end(e->ts, &task, iid_str(name_iid, name), IID_CAT_SCX_DSQ) {
-		emit_kv_int(iid_str(IID_NONE, "dsq_id"), e->scx_dsq.scx_dsq_id);
-		emit_kv_int(iid_str(IID_NONE, "layer_id"), e->scx_dsq.scx_layer_id);
+		emit_kv_int(IID_ANNK_SCX_DSQ_ID, e->scx_dsq.scx_dsq_id);
+		emit_kv_int(IID_ANNK_SCX_LAYER_ID, e->scx_dsq.scx_layer_id);
 	}
 
 	return 0;
