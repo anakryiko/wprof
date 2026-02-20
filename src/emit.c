@@ -1091,7 +1091,16 @@ static int process_switch(struct worker_state *w, const struct wevent *e)
 	    !should_trace_task(&waker))
 		goto skip_waker_task;
 
+	/* STATE */
 	waker_st = task_state(w, &waker);
+	struct task_state *wakee_st = task_state_try_get(w, &next);
+	int waker_callstack_id = 0;
+	if (wakee_st) {
+		waker_callstack_id = wakee_st->waker_callstack_id;
+		wakee_st->waker_callstack_id = 0;
+	}
+
+	/* EMIT */
 	emit_track_descrs(w, &waker);
 
 	/* event on awaker's timeline */
@@ -1123,35 +1132,39 @@ static int process_switch(struct worker_state *w, const struct wevent *e)
 
 		emit_flow_id(e->swtch.waking_ts);
 
-		struct task_state *wakee_st = task_state_try_get(w, &next);
-		if (wakee_st) {
-			emit_callstack(w, wakee_st->waker_callstack_id);
-			wakee_st->waker_callstack_id = 0;
-		}
+		emit_callstack(w, waker_callstack_id);
 	}
 
 skip_waker_task:
 	if (!should_trace_task(&task))
 		goto skip_prev_task;
 
-	/* take into account task rename for switched-out task
-	 * to maintain consistently named trace slice
-	 */
+	/* STATE */
 	struct task_state *prev_st = task_state(w, &task);
-	emit_track_descrs(w, &task);
-
+	bool preempted = e->swtch.prev_task_state == TASK_RUNNING;
+	/* take into account task rename for switched-out task to maintain consistently named trace slice */
 	const char *cur_name = prev_st->rename_ts ? prev_st->old_comm : prev_st->comm;
 	pb_iid cur_name_iid = prev_st->rename_ts ? prev_st->old_name_iid : prev_st->name_iid;
-	bool preempted = e->swtch.prev_task_state == TASK_RUNNING;
+	bool was_renamed = prev_st->rename_ts != 0;
+	bool need_fake_begin = prev_st->oncpu_ts == 0;
+	const u64 *prev_oncpu_ctrs = prev_st->oncpu_ctrs;
+	const u64 *pmu_vals = wevent_pmu_vals(hdr, e->swtch.pmu_vals_id);
 
-	/* We are about to emit SLICE_END without
-	 * corresponding SLICE_BEGIN ever being emitted;
-	 * normally, Perfetto will just skip such SLICE_END
-	 * and won't render anything, which is annoying and
-	 * confusing. We want to avoid this, so we'll emit
-	 * a fake SLICE_BEGIN with fake timestamp ZERO.
+	prev_st->rename_ts = 0;
+	prev_st->oncpu_ctrs = NULL;
+	prev_st->oncpu_ts = 0;
+	prev_st->offcpu_ts = e->ts;
+	prev_st->run_state = preempted ? TASK_STATE_PREEMPTED : TASK_STATE_WAITING;
+
+	/* EMIT */
+	emit_track_descrs(w, &task);
+
+	/* We are about to emit SLICE_END without corresponding SLICE_BEGIN ever being emitted;
+	 * normally, Perfetto will just skip such SLICE_END and won't render anything, which is
+	 * annoying and confusing. We want to avoid this, so we'll emit a fake SLICE_BEGIN with
+	 * fake timestamp ZERO.
 	 */
-	if (prev_st->oncpu_ts == 0) {
+	if (need_fake_begin) {
 		emit_slice_begin(env.sess_start_ts, &task,
 				 iid_str(cur_name_iid, cur_name), IID_CAT_ONCPU) {
 			emit_kv_int(IID_ANNK_CPU, e->cpu);
@@ -1176,10 +1189,9 @@ skip_waker_task:
 			emit_kv_int(IID_ANNK_SWITCH_TO_PID, next.pid);
 		}
 
-		const u64 *pmu_vals = wevent_pmu_vals(hdr, e->swtch.pmu_vals_id);
-		emit_perf_counters(prev_st->oncpu_ctrs, pmu_vals, false /* !diffs */);
+		emit_perf_counters(prev_oncpu_ctrs, pmu_vals, false /* !diffs */);
 
-		if (prev_st->rename_ts)
+		if (was_renamed)
 			emit_kv_str(IID_ANNK_RENAMED_TO, task.comm);
 
 		if (env.requested_stack_traces & ST_OFFCPU) {
@@ -1197,27 +1209,23 @@ skip_waker_task:
 				       IID_CAT_REQUEST_OFFCPU);
 	}
 
-	if (prev_st->rename_ts)
-		prev_st->rename_ts = 0;
-
-	/* reset perf counters */
-	prev_st->oncpu_ctrs = NULL;
-	prev_st->oncpu_ts = 0;
-	prev_st->offcpu_ts = e->ts;
-	prev_st->run_state = preempted ? TASK_STATE_PREEMPTED : TASK_STATE_WAITING;
-
 skip_prev_task:
 	if (!should_trace_task(&next))
 		goto skip_next_task;
 
+	/* STATE */
 	struct task_state *next_st = task_state(w, &next);
-	emit_track_descrs(w, &next);
-
 	next_st->oncpu_ctrs = wevent_pmu_vals(hdr, e->swtch.pmu_vals_id);
 	next_st->oncpu_ts = e->ts;
 
 	u64 offcpu_dur_ns = next_st->offcpu_ts ? e->ts - next_st->offcpu_ts : e->ts - env.sess_start_ts;
 	next_st->offcpu_ts = 0;
+
+	bool was_previously_preempted = e->swtch.last_next_task_state == TASK_RUNNING;
+	next_st->run_state = TASK_STATE_RUNNING;
+
+	/* EMIT */
+	emit_track_descrs(w, &next);
 
 	if (!e->swtch.waking_ts)
 		goto skip_waking;
@@ -1313,15 +1321,12 @@ skip_waking:
 	}
 
 	if (next_st->req_id) {
-		bool was_preempted = e->swtch.last_next_task_state == TASK_RUNNING;
 		emit_track_slice_end(e->ts, trackid_req_thread(next_st->req_id, &next),
-				     was_preempted ? IID_NAME_PREEMPTED : IID_NAME_WAITING,
+				     was_previously_preempted ? IID_NAME_PREEMPTED : IID_NAME_WAITING,
 				     IID_CAT_REQUEST_OFFCPU);
 		emit_track_slice_start(e->ts, trackid_req_thread(next_st->req_id, &next),
 				       IID_NAME_RUNNING, IID_CAT_REQUEST_ONCPU);
 	}
-
-	next_st->run_state = TASK_STATE_RUNNING;
 
 skip_next_task:
 	if (!env.emit_sched_view)
