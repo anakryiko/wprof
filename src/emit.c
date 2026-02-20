@@ -48,6 +48,7 @@ struct task_state {
 };
 
 static struct hashmap *tasks;
+static struct hashmap *emitted_descrs;
 static __thread pb_ostream_t *cur_stream;
 
 enum track_kind {
@@ -209,6 +210,10 @@ int init_emit(struct worker_state *w)
 
 	cuda_corrs = hashmap__new(hash_identity_fn, hash_equal_fn, NULL);
 	if (!cuda_corrs)
+		return -ENOMEM;
+
+	emitted_descrs = hashmap__new(hash_identity_fn, hash_equal_fn, NULL);
+	if (!emitted_descrs)
 		return -ENOMEM;
 
 	cur_stream = &w->stream;
@@ -884,46 +889,41 @@ static struct task_state *task_state(struct worker_state *w, const struct wprof_
 
 	hashmap__set(tasks, key, st, NULL, NULL);
 
-	/* Proactively setup process group leader tasks info */
+	return st;
+}
+
+enum { TDK_THREAD = 0, TDK_PROCESS = 1 };
+
+static bool track_descr_emitted(int kind, u32 id)
+{
+	unsigned long key = (unsigned long)kind << 32 | id;
+	return hashmap__find(emitted_descrs, key, NULL);
+}
+
+static void track_descr_mark_emitted(int kind, u32 id)
+{
+	unsigned long key = (unsigned long)kind << 32 | id;
+	hashmap__set(emitted_descrs, key, (void *)1, NULL, NULL);
+}
+
+static void emit_track_descrs(struct worker_state *w, const struct wprof_task *t)
+{
 	enum task_kind tkind = task_kind(t);
+
 	if (tkind == TASK_NORMAL) {
-		unsigned long pkey = t->pid;
-		struct task_state *pst = NULL;
-
-		if (t->tid == t->pid) {
-			/* we are the new task group leader */
-			(void)emit_intern_str(w, t->pcomm);
+		if (!track_descr_emitted(TDK_PROCESS, t->pid)) {
+			track_descr_mark_emitted(TDK_PROCESS, t->pid);
 			emit_process_track_descr(&w->stream, t);
-		} else if (!hashmap__find(tasks, pkey, &pst)) {
-			/* no task group leader task yet */
-			pst = calloc(1, sizeof(*st));
-			pst->tid = pst->pid = t->pid;
-			wprof_strlcpy(pst->comm, t->pcomm, sizeof(pst->comm));
-			pst->name_iid = emit_intern_str(w, pst->comm);
-
-			hashmap__set(tasks, pkey, pst, NULL, NULL);
-
-			struct wprof_task pt = {
-				.tid = t->pid,
-				.pid = t->pid,
-				.flags = 0,
-				.comm = t->pcomm,
-				.pcomm = t->pcomm,
-			};
-
-			emit_process_track_descr(&w->stream, &pt);
-			emit_thread_track_descr(&w->stream, &pt, pst->comm);
-		} else {
-			/* otherwise someone already emitted descriptors */
 		}
 	} else if (!kind_track_emitted[tkind]) {
 		emit_kind_track_descr(&w->stream, tkind);
 		kind_track_emitted[tkind] = true;
 	}
 
-	emit_thread_track_descr(&w->stream, t, t->comm);
-
-	return st;
+	if (!track_descr_emitted(TDK_THREAD, t->tid)) {
+		track_descr_mark_emitted(TDK_THREAD, t->tid);
+		emit_thread_track_descr(&w->stream, t, t->comm);
+	}
 }
 
 static void task_state_delete(struct wprof_task *t)
@@ -1004,7 +1004,7 @@ static int process_timer(struct worker_state *w, const struct wevent *e)
 	if (!should_trace_task(&task))
 		return 0;
 
-	(void)task_state(w, &task);
+	emit_track_descrs(w, &task);
 
 	int tr_id = (env.requested_stack_traces & ST_TIMER) ? e->timer.timer_stack_id : 0;
 
@@ -1092,6 +1092,7 @@ static int process_switch(struct worker_state *w, const struct wevent *e)
 		goto skip_waker_task;
 
 	waker_st = task_state(w, &waker);
+	emit_track_descrs(w, &waker);
 
 	/* event on awaker's timeline */
 	pb_iid waker_ev_name, waker_ev_cat;
@@ -1137,6 +1138,8 @@ skip_waker_task:
 	 * to maintain consistently named trace slice
 	 */
 	struct task_state *prev_st = task_state(w, &task);
+	emit_track_descrs(w, &task);
+
 	const char *cur_name = prev_st->rename_ts ? prev_st->old_comm : prev_st->comm;
 	pb_iid cur_name_iid = prev_st->rename_ts ? prev_st->old_name_iid : prev_st->name_iid;
 	bool preempted = e->swtch.prev_task_state == TASK_RUNNING;
@@ -1208,6 +1211,8 @@ skip_prev_task:
 		goto skip_next_task;
 
 	struct task_state *next_st = task_state(w, &next);
+	emit_track_descrs(w, &next);
+
 	next_st->oncpu_ctrs = wevent_pmu_vals(hdr, e->swtch.pmu_vals_id);
 	next_st->oncpu_ts = e->ts;
 
@@ -1365,7 +1370,7 @@ static int process_fork(struct worker_state *w, const struct wevent *e)
 	struct wprof_task child = wevent_resolve_task(hdr, e->fork.child_task_id);
 
 	if (should_trace_task(&task)) {
-		(void)task_state(w, &task);
+		emit_track_descrs(w, &task);
 
 		emit_instant(e->ts, &task, IID_NAME_FORKING, IID_CAT_FORKING) {
 			emit_kv_int(IID_ANNK_CPU, e->cpu);
@@ -1383,7 +1388,7 @@ static int process_fork(struct worker_state *w, const struct wevent *e)
 	}
 
 	if (should_trace_task(&child)) {
-		(void)task_state(w, &child);
+		emit_track_descrs(w, &child);
 
 		emit_instant(e->ts, &child, IID_NAME_FORKED, IID_CAT_FORKED) {
 			emit_kv_int(IID_ANNK_CPU, e->cpu);
@@ -1412,7 +1417,7 @@ static int process_exec(struct worker_state *w, const struct wevent *e)
 	if (!should_trace_task(&task))
 		return 0;
 
-	(void)task_state(w, &task);
+	emit_track_descrs(w, &task);
 
 	emit_instant(e->ts, &task, IID_NAME_EXEC, IID_CAT_EXEC) {
 		emit_kv_int(IID_ANNK_CPU, e->cpu);
@@ -1437,7 +1442,7 @@ static int process_task_rename(struct worker_state *w, const struct wevent *e)
 		return 0;
 
 	struct task_state *st = task_state(w, &task);
-
+	emit_track_descrs(w, &task);
 
 	if (st->rename_ts == 0) {
 		wprof_strlcpy(st->old_comm, task.comm, sizeof(st->old_comm));
@@ -1472,7 +1477,7 @@ static int process_task_exit(struct worker_state *w, const struct wevent *e)
 	if (!should_trace_task(&task))
 		return 0;
 
-	(void)task_state(w, &task);
+	emit_track_descrs(w, &task);
 
 	emit_instant(e->ts, &task, IID_NAME_EXIT, IID_CAT_EXIT) {
 		emit_kv_int(IID_ANNK_CPU, e->cpu);
@@ -1493,7 +1498,7 @@ static int process_task_free(struct worker_state *w, const struct wevent *e)
 	if (!should_trace_task(&task))
 		goto skip_emit;
 
-	(void)task_state(w, &task);
+	emit_track_descrs(w, &task);
 
 	emit_instant(e->ts, &task, IID_NAME_FREE, IID_CAT_FREE) {
 		emit_kv_int(IID_ANNK_CPU, e->cpu);
@@ -1517,7 +1522,7 @@ static int process_wakeup_new(struct worker_state *w, const struct wevent *e)
 	if (!should_trace_task(&task))
 		return 0;
 
-	(void)task_state(w, &task);
+	emit_track_descrs(w, &task);
 
 	int tr_id = (env.requested_stack_traces & ST_WAKER) ? e->wakeup_new.waker_stack_id : 0;
 	if (tr_id <= 0)
@@ -1525,6 +1530,8 @@ static int process_wakeup_new(struct worker_state *w, const struct wevent *e)
 
 	struct wprof_task wakee = wevent_resolve_task(hdr, e->wakeup_new.wakee_task_id);
 	struct task_state *wakee_st = task_state(w, &wakee);
+	emit_track_descrs(w, &wakee);
+
 	wakee_st->waker_callstack_id = tr_id;
 
 	return 0;
@@ -1539,7 +1546,7 @@ static int process_waking(struct worker_state *w, const struct wevent *e)
 	if (!should_trace_task(&task))
 		return 0;
 
-	(void)task_state(w, &task);
+	emit_track_descrs(w, &task);
 
 	int tr_id = (env.requested_stack_traces & ST_WAKER) ? e->waking.waker_stack_id : 0;
 	if (tr_id <= 0)
@@ -1547,6 +1554,8 @@ static int process_waking(struct worker_state *w, const struct wevent *e)
 
 	struct wprof_task wakee = wevent_resolve_task(hdr, e->waking.wakee_task_id);
 	struct task_state *wakee_st = task_state(w, &wakee);
+	emit_track_descrs(w, &wakee);
+
 	wakee_st->waker_callstack_id = tr_id;
 
 	return 0;
@@ -1561,7 +1570,7 @@ static int process_hardirq_exit(struct worker_state *w, const struct wevent *e)
 	if (!should_trace_task(&task))
 		return 0;
 
-	(void)task_state(w, &task);
+	emit_track_descrs(w, &task);
 
 	u64 start_ts = is_ts_in_range(e->hardirq.hardirq_ts) ? e->hardirq.hardirq_ts : env.sess_start_ts;
 	emit_slice_begin(start_ts, &task, IID_NAME_HARDIRQ, IID_CAT_HARDIRQ) {
@@ -1588,7 +1597,7 @@ static int process_softirq_exit(struct worker_state *w, const struct wevent *e)
 	if (!should_trace_task(&task))
 		return 0;
 
-	(void)task_state(w, &task);
+	emit_track_descrs(w, &task);
 
 	pb_iid name_iid, act_iid;
 	if (e->softirq.vec_nr >= 0 && e->softirq.vec_nr < NR_SOFTIRQS) {
@@ -1628,7 +1637,7 @@ static int process_wq_end(struct worker_state *w, const struct wevent *e)
 	if (!should_trace_task(&task))
 		return 0;
 
-	(void)task_state(w, &task);
+	emit_track_descrs(w, &task);
 
 	const char *desc = wevent_str(hdr, e->wq.desc_stroff);
 
@@ -1675,7 +1684,7 @@ static int process_scx_dsq_end(struct worker_state *w, const struct wevent *e)
 	if (!should_trace_task(&task))
 		return 0;
 
-	(void)task_state(w, &task);
+	emit_track_descrs(w, &task);
 
 	const char *insert_type_str = scx_dsq_insert_type_str(e->scx_dsq.scx_dsq_insert_type);
 	pb_iid insert_type_str_iid = emit_intern_str(w, insert_type_str);
@@ -1707,7 +1716,7 @@ static int process_ipi_send(struct worker_state *w, const struct wevent *e)
 	if (!should_trace_task(&task))
 		return 0;
 
-	(void)task_state(w, &task);
+	emit_track_descrs(w, &task);
 
 	pb_iid name_iid;
 	if (e->ipi_send.kind >= 0 && e->ipi_send.kind < NR_IPIS)
@@ -1738,7 +1747,7 @@ static int process_ipi_exit(struct worker_state *w, const struct wevent *e)
 	if (!should_trace_task(&task))
 		return 0;
 
-	(void)task_state(w, &task);
+	emit_track_descrs(w, &task);
 
 	pb_iid name_iid;
 	if (e->ipi.kind >= 0 && e->ipi.kind < NR_IPIS)
@@ -1829,6 +1838,7 @@ static int process_req_event(struct worker_state *w, const struct wevent *e)
 		return 0;
 
 	struct task_state *st = task_state(w, &task);
+	emit_track_descrs(w, &task);
 
 	u64 req_id = e->req.req_id;
 	const char *req_name = wevent_str(hdr, e->req.req_name_stroff);
@@ -2383,7 +2393,7 @@ static int process_cuda_api(struct worker_state *w, const struct wevent *e)
 	if (task.tid == 0)
 		return 0;
 
-	(void)task_state(w, &task);
+	emit_track_descrs(w, &task);
 
 	/* remember host-side API call timestamp */
 	struct cuda_corr_info *ci = cuda_corr_get(task.pid, e->cuda_api.corr_id);
