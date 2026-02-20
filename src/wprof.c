@@ -551,7 +551,70 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 			}
 			btf__free(vmlinux_btf);
 		}
+
+		/*
+		 * Try to find scx_layered's task_ctxs map for reliable layer_id.
+		 * If found, we reuse its fd so our BPF code can look up layer_id
+		 * directly from scx_layered's task-local storage.
+		 */
+		u32 next_id = 0;
+		bool found = false;
+
+		while (true) {
+			err = bpf_map_get_next_id(next_id, &next_id);
+			if (err == -ENOENT)
+				break;
+			if (err < 0) {
+				eprintf("Failed to iterate BPF maps: %d\n", err);
+				return err;
+			}
+
+			int map_fd = bpf_map_get_fd_by_id(next_id);
+			if (map_fd == -ENOENT)
+				continue;
+			if (map_fd < 0) {
+				eprintf("Failed to fetch map FD for map #%d: %d\n", next_id, map_fd);
+				continue;
+			}
+
+			struct bpf_map_info info;
+			u32 info_len = sizeof(info);
+
+			memset(&info, 0, sizeof(info));
+			err = bpf_obj_get_info_by_fd(map_fd, &info, &info_len);
+			if (err) {
+				eprintf("Failed to fetch map info for map #%d: %d\n", next_id, err);
+				close(map_fd);
+				continue;
+			}
+
+			if (strcmp(info.name, "task_ctxs") != 0) {
+				close(map_fd);
+				continue;
+			}
+
+			if (found) {
+				close(map_fd);
+				eprintf("Found multiple 'task_ctxs' BPF maps, unsure which one to use!\n");
+				return -EINVAL;
+			}
+
+			err = bpf_map__reuse_fd(skel->maps.scx_task_ctxs, map_fd);
+			close(map_fd);
+			if (err) {
+				eprintf("Failed to reuse map #%d ('%s'): %d\n",
+					next_id, info.name, err);
+				continue;
+			}
+			found = true;
+		}
+
+		if (!found)
+			eprintf("WARNING: scx_layered's 'task_ctxs' map not found; layer_id will not be available\n");
+		else
+			skel->rodata->capture_scx_layer_id = true;
 	}
+	bpf_map__set_autocreate(skel->maps.scx_task_ctxs, skel->rodata->capture_scx_layer_id);
 
 	skel->rodata->capture_scx = env.capture_scx == TRUE;
 

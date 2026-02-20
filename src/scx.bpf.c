@@ -11,13 +11,26 @@
 #include "wprof.h"
 #include "wprof.bpf.h"
 
-/* DSQ ID parsing macros for scx_layered scheduler */
-#define DSQ_ID_SPECIAL_MASK 0xc0000000
-#define DSQ_ID_LAYER_SHIFT  16
-#define DSQ_ID_LLC_MASK	    ((1LLU << DSQ_ID_LAYER_SHIFT) - 1) /* 0x0000ffff */
-#define DSQ_ID_LAYER_MASK   (~DSQ_ID_LLC_MASK & ~DSQ_ID_SPECIAL_MASK) /* 0x3fff0000 */
-
 extern const volatile bool capture_scx;
+extern const volatile bool capture_scx_layer_id;
+
+/*
+ * Partial definition of scx_layered's task_ctx – we only need the first
+ * three fields (pid, last_cpu, layer_id).  The real struct is much larger
+ * but BPF task-local-storage lookups return a pointer we can read from.
+ */
+struct scx_task_ctx {
+	int pid;
+	int last_cpu;
+	u32 layer_id;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_TASK_STORAGE);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, int);
+	__type(value, struct scx_task_ctx);
+} scx_task_ctxs SEC(".maps");
 
 /* handlers for tracking DSQ insertions - modeled after scxtop's on_insert() */
 static int on_dsq_insert(struct task_struct *p, u64 dsq, enum scx_dsq_insert_type insert_type)
@@ -33,8 +46,14 @@ static int on_dsq_insert(struct task_struct *p, u64 dsq, enum scx_dsq_insert_typ
 
 	scur->scx_dsq.scx_dsq_insert_ts = bpf_ktime_get_ns();
 	scur->scx_dsq.scx_dsq_id = dsq;
-	/* NB: layer_id may be bogus if we're not running scx_layered scheduler */
-	scur->scx_dsq.scx_layer_id = (dsq & DSQ_ID_LAYER_MASK) >> DSQ_ID_LAYER_SHIFT;
+	/* read layer_id from scx_layered's task_ctx if available */
+	scur->scx_dsq.scx_layer_id = -1;
+	if (capture_scx_layer_id) {
+		struct scx_task_ctx *sctx = bpf_task_storage_get(&scx_task_ctxs, p, NULL, 0);
+
+		if (sctx)
+			scur->scx_dsq.scx_layer_id = sctx->layer_id;
+	}
 	scur->scx_dsq.scx_dsq_insert_type = insert_type;
 
 	return 0;
@@ -94,8 +113,14 @@ static int on_dsq_move(struct task_struct *p, u64 dsq, enum scx_dsq_insert_type 
 
 	scur->scx_dsq.scx_dsq_insert_ts = now_ts;
 	scur->scx_dsq.scx_dsq_id = dsq;
-	/* NB: layer_id may be bogus if we're not running scx_layered scheduler */
-	scur->scx_dsq.scx_layer_id = (dsq & DSQ_ID_LAYER_MASK) >> DSQ_ID_LAYER_SHIFT;
+	/* read layer_id from scx_layered's task_ctx if available */
+	scur->scx_dsq.scx_layer_id = -1;
+	if (capture_scx_layer_id) {
+		struct scx_task_ctx *sctx = bpf_task_storage_get(&scx_task_ctxs, p, NULL, 0);
+
+		if (sctx)
+			scur->scx_dsq.scx_layer_id = sctx->layer_id;
+	}
 	scur->scx_dsq.scx_dsq_insert_type = insert_type;
 
 	return 0;
