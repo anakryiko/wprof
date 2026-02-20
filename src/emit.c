@@ -1466,17 +1466,19 @@ static int process_task_rename(struct worker_state *w, const struct wevent *e)
 		return 0;
 
 	struct task_state *st = task_state(w, &task);
-	emit_track_descrs(w, &task);
 
 	if (st->rename_ts == 0) {
 		wprof_strlcpy(st->old_comm, task.comm, sizeof(st->old_comm));
 		st->rename_ts = e->ts;
 		st->old_name_iid = st->name_iid;
 	}
-	;
+
 	const char *new_comm = wevent_str(hdr, e->rename.new_comm_stroff);
 	wprof_strlcpy(st->comm, new_comm, sizeof(st->comm));
+
 	st->name_iid = emit_intern_str(w, new_comm);
+
+	emit_track_descrs(w, &task);
 
 	emit_instant(e->ts, &task, IID_NAME_RENAME, IID_CAT_RENAME) {
 		emit_kv_int(IID_ANNK_CPU, e->cpu);
@@ -1875,6 +1877,27 @@ static int process_req_event(struct worker_state *w, const struct wevent *e)
 
 	switch (e->req.req_event) {
 	case REQ_BEGIN:
+		st->req_id = e->req.req_id;
+		break;
+	case REQ_SET:
+		st->req_id = e->req.req_id;
+		break;
+	case REQ_UNSET:
+		st->req_id = 0;
+		break;
+	case REQ_CLEAR:
+		break;
+	case REQ_END:
+		st->req_id = 0;
+		clear_req_tracks(&task, req_id);
+		break;
+	default:
+		eprintf("UNHANDLED REQ EVENT %d\n", e->req.req_event);
+		exit(1);
+	}
+
+	switch (e->req.req_event) {
+	case REQ_BEGIN:
 		emit_track_slice_start(e->ts, req_track_uuid,
 				       iid_str(req_name_iid, req_name),
 				       IID_CAT_REQUEST) {
@@ -1890,8 +1913,6 @@ static int process_req_event(struct worker_state *w, const struct wevent *e)
 				emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
 			}
 		}
-
-		st->req_id = e->req.req_id;
 		break;
 	case REQ_SET:
 		emit_track_slice_start(e->ts, track_uuid,
@@ -1912,8 +1933,6 @@ static int process_req_event(struct worker_state *w, const struct wevent *e)
 				emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
 			}
 		}
-
-		st->req_id = e->req.req_id;
 		break;
 	case REQ_UNSET:
 		if (env.emit_req_extras) {
@@ -1931,11 +1950,8 @@ static int process_req_event(struct worker_state *w, const struct wevent *e)
 
 		emit_track_slice_end(e->ts, track_uuid,
 				     IID_NAME_RUNNING, IID_CAT_REQUEST_ONCPU);
-
-		st->req_id = 0;
 		break;
 	case REQ_CLEAR:
-		/* don't care */
 		break;
 	case REQ_END:
 		emit_track_slice_end(e->ts, req_track_uuid,
@@ -1956,10 +1972,6 @@ static int process_req_event(struct worker_state *w, const struct wevent *e)
 				emit_kv_float(IID_ANNK_REQ_LATENCY_US, "%.6lf", (e->ts - e->req.req_ts) / 1000);
 			}
 		}
-
-		st->req_id = 0;
-
-		clear_req_tracks(&task, req_id);
 		break;
 	default:
 		eprintf("UNHANDLED REQ EVENT %d\n", e->req.req_event);
