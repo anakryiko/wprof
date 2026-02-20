@@ -15,7 +15,7 @@
 #define DSQ_ID_SPECIAL_MASK 0xc0000000
 #define DSQ_ID_LAYER_SHIFT  16
 #define DSQ_ID_LLC_MASK	    ((1LLU << DSQ_ID_LAYER_SHIFT) - 1) /* 0x0000ffff */
-#define DSQ_ID_LAYER_MASK   (~DSQ_ID_LAYER_SHIFT & ~DSQ_ID_SPECIAL_MASK) /* 0x3fff0000 */
+#define DSQ_ID_LAYER_MASK   (~DSQ_ID_LLC_MASK & ~DSQ_ID_SPECIAL_MASK) /* 0x3fff0000 */
 
 extern const volatile bool capture_scx_layer_id;
 
