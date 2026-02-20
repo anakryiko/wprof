@@ -103,7 +103,7 @@ const volatile u64 rb_cnt;
 const volatile u64 rb_submit_threshold_bytes;
 
 const volatile enum stack_trace_kind requested_stack_traces = ST_ALL;
-const volatile bool capture_scx_layer_id = true;
+const volatile bool capture_scx = true;
 
 static int zero = 0;
 static struct task_state empty_task_state;
@@ -599,7 +599,7 @@ int BPF_PROG(wprof_task_switch,
 
 	int scx_layer_id = -1;
 	u64 scx_dsq_id = 0;
-	if (capture_scx_layer_id) {
+	if (capture_scx) {
 		scx_layer_id = snext->scx_dsq.scx_layer_id;
 		scx_dsq_id = snext->scx_dsq.scx_dsq_id;
 		handle_dsq(now_ts, next, snext);

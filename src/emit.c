@@ -1336,7 +1336,7 @@ skip_waking:
 			emit_kv_int(IID_ANNK_SWITCH_FROM_PID, task.pid);
 		}
 
-		if (env.capture_scx_layer_info && e->swtch.next_task_scx_layer_id >= 0) {
+		if (env.capture_scx && e->swtch.next_task_scx_layer_id >= 0) {
 			emit_kv_int(IID_ANNK_SCX_LAYER_ID, e->swtch.next_task_scx_layer_id);
 			emit_kv_int(IID_ANNK_SCX_DSQ_ID, e->swtch.next_task_scx_dsq_id);
 		}
