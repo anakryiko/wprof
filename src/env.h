@@ -19,7 +19,7 @@
 #define DEFAULT_REQUESTED_STACK_TRACES ST_NONE
 #define DEFAULT_CAPTURE_IPIS FALSE
 #define DEFAULT_CAPTURE_REQUESTS FALSE
-#define DEFAULT_CAPTURE_SCX_LAYER_INFO FALSE
+#define DEFAULT_CAPTURE_SCX FALSE
 #define DEFAULT_CAPTURE_CUDA FALSE
 
 extern bool env_verbose;
@@ -56,7 +56,7 @@ struct env {
 	enum tristate capture_ipis;
 	enum tristate capture_requests;
 	enum tristate capture_req_experimental; /* experimental extra request-related events */
-	enum tristate capture_scx_layer_info;
+	enum tristate capture_scx;
 	enum tristate capture_cuda;
 
 	/* trace visualization features */
@@ -142,8 +142,8 @@ static inline void cfg_set_capture_reqs(struct wprof_data_cfg *cfg, bool val) { 
 static inline bool cfg_get_capture_req_experimental(const struct wprof_data_cfg *cfg) { return cfg->capture_req_experimental; }
 static inline void cfg_set_capture_req_experimental(struct wprof_data_cfg *cfg, bool val) { cfg->capture_req_experimental = val; }
 
-static inline bool cfg_get_capture_scx_layer_info(const struct wprof_data_cfg *cfg) { return cfg->capture_scx_layer_info; }
-static inline void cfg_set_capture_scx_layer_info(struct wprof_data_cfg *cfg, bool val) { cfg->capture_scx_layer_info = val; }
+static inline bool cfg_get_capture_scx(const struct wprof_data_cfg *cfg) { return cfg->capture_scx; }
+static inline void cfg_set_capture_scx(struct wprof_data_cfg *cfg, bool val) { cfg->capture_scx = val; }
 
 static inline bool cfg_get_capture_cuda(const struct wprof_data_cfg *cfg) { return cfg->capture_cuda; }
 static inline void cfg_set_capture_cuda(struct wprof_data_cfg *cfg, bool val) { cfg->capture_cuda = val; }

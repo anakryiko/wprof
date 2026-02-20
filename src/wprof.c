@@ -70,9 +70,9 @@ const struct capture_feature capture_features[] = {
 	 offsetof(struct env, capture_requests), cfg_get_capture_reqs, cfg_set_capture_reqs},
 	{"request experimental extras", "Requests (experimental):", FALSE,
 	 offsetof(struct env, capture_req_experimental), cfg_get_capture_req_experimental, cfg_set_capture_req_experimental},
-	{"sched-ext layer info", "SCX layer info:", DEFAULT_CAPTURE_SCX_LAYER_INFO,
-	  offsetof(struct env, capture_scx_layer_info),
-	  cfg_get_capture_scx_layer_info, cfg_set_capture_scx_layer_info},
+	{"sched-ext info", "SCX info:", DEFAULT_CAPTURE_SCX,
+	  offsetof(struct env, capture_scx),
+	  cfg_get_capture_scx, cfg_set_capture_scx},
 	{"CUDA", "CUDA:", DEFAULT_CAPTURE_CUDA,
 	 offsetof(struct env, capture_cuda), cfg_get_capture_cuda, cfg_set_capture_cuda},
 };
@@ -522,12 +522,12 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 			bpf_program__set_autoload(skel->progs.wprof_cuda_call, true);
 	}
 
-	if (env.capture_scx_layer_info) {
+	if (env.capture_scx) {
 		struct btf *vmlinux_btf = btf__parse("/sys/kernel/btf/vmlinux", NULL);
 
 		if (!vmlinux_btf) {
 			eprintf("Failed to parse /sys/kernel/btf/vmlinux, disabling SCX layer/DSQ capture\n");
-			env.capture_scx_layer_info = FALSE;
+			env.capture_scx = FALSE;
 		} else {
 			if (btf__find_by_name_kind(vmlinux_btf, "scx_bpf_dsq_insert", BTF_KIND_FUNC) < 0) {
 				bpf_program__set_autoload(skel->progs.wprof_dispatch, true);
@@ -553,7 +553,7 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 		}
 	}
 
-	skel->rodata->capture_scx_layer_id = env.capture_scx_layer_info == TRUE;
+	skel->rodata->capture_scx = env.capture_scx == TRUE;
 
 	skel->rodata->rb_cnt = env.ringbuf_cnt;
 	bpf_map__set_max_entries(skel->maps.rbs, env.ringbuf_cnt);

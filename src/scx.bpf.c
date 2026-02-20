@@ -17,14 +17,14 @@
 #define DSQ_ID_LLC_MASK	    ((1LLU << DSQ_ID_LAYER_SHIFT) - 1) /* 0x0000ffff */
 #define DSQ_ID_LAYER_MASK   (~DSQ_ID_LLC_MASK & ~DSQ_ID_SPECIAL_MASK) /* 0x3fff0000 */
 
-extern const volatile bool capture_scx_layer_id;
+extern const volatile bool capture_scx;
 
 /* handlers for tracking DSQ insertions - modeled after scxtop's on_insert() */
 static int on_dsq_insert(struct task_struct *p, u64 dsq, enum scx_dsq_insert_type insert_type)
 {
 	struct task_state *scur;
 
-	if (!capture_scx_layer_id)
+	if (!capture_scx)
 		return 0;
 
 	scur = task_state(p->pid);
@@ -81,7 +81,7 @@ static int on_dsq_move(struct task_struct *p, u64 dsq, enum scx_dsq_insert_type 
 	struct task_state *scur;
 	u64 now_ts;
 
-	if (!capture_scx_layer_id)
+	if (!capture_scx)
 		return 0;
 
 	scur = task_state(p->pid);
