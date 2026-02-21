@@ -8,6 +8,7 @@
 #include "wprof.h"
 #include "data.h"
 #include "cuda.h"
+#include "requests.h"
 
 #define WPROF_VERSION "0.3-dev"
 
@@ -197,6 +198,9 @@ struct worker_state {
 	/* ftrace event buffering per-CPU */
 	struct ftrace_cpu_bundle *ftrace_bundles;
 	int ftrace_bundle_cnt;
+
+	/* request filtering for trace output */
+	struct req_allowlist req_allowlist;
 
 	/* stats */
 	u64 rb_handled_cnt;
