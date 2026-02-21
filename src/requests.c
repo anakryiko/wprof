@@ -460,6 +460,91 @@ int req_list_output(struct worker_state *w)
 	return 0;
 }
 
+static int req_id_cmp(const void *_a, const void *_b)
+{
+	const struct req_id *a = _a, *b = _b;
+
+	if (a->pid != b->pid)
+		return a->pid < b->pid ? -1 : 1;
+	if (a->req_id != b->req_id)
+		return a->req_id < b->req_id ? -1 : 1;
+	return 0;
+}
+
+int req_filter_build_allowlist(struct worker_state *w, struct req_allowlist *al)
+{
+	struct req_list_cfg *cfg = env.req_list_cfg;
+	struct wprof_data_hdr *hdr = w->dump_hdr;
+	struct wevent_record *rec;
+	struct req_id *ids = NULL;
+	int cnt = 0, cap = 0;
+
+	wevent_for_each_event(rec, hdr) {
+		const struct wevent *e = rec->e;
+
+		if (e->kind != EV_REQ_EVENT || e->req.req_event != REQ_END)
+			continue;
+		if (!is_ts_in_range(e->ts))
+			continue;
+
+		struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
+		struct req_entry ent = {
+			.id = e->req.req_id,
+			.name = wevent_str(hdr, e->req.req_name_stroff),
+			.comm = task.comm,
+			.pid = task.pid,
+			.start_ns = e->req.req_ts - env.sess_start_ts,
+			.end_ns = e->ts - env.sess_start_ts,
+		};
+
+		bool pass = true;
+		for (int i = 0; i < cfg->filter_cnt; i++) {
+			if (!req_entry_matches(&ent, &cfg->filters[i])) {
+				pass = false;
+				break;
+			}
+		}
+		if (!pass)
+			continue;
+
+		if (cnt >= cap) {
+			cap = cap ? cap * 3 / 2 : 64;
+			ids = realloc(ids, cap * sizeof(*ids));
+		}
+		ids[cnt++] = (struct req_id){ .pid = task.pid, .req_id = e->req.req_id };
+	}
+
+	if (cnt > 1)
+		qsort(ids, cnt, sizeof(*ids), req_id_cmp);
+
+	al->ids = ids;
+	al->cnt = cnt;
+	return 0;
+}
+
+bool req_allowlist_has(const struct req_allowlist *al, int pid, u64 req_id)
+{
+	int lo = 0, hi = al->cnt - 1;
+
+	while (lo <= hi) {
+		int mid = lo + (hi - lo) / 2;
+		const struct req_id *m = &al->ids[mid];
+
+		if (m->pid < pid) {
+			lo = mid + 1;
+		} else if (m->pid > pid) {
+			hi = mid - 1;
+		} else if (m->req_id < req_id) {
+			lo = mid + 1;
+		} else if (m->req_id > req_id) {
+			hi = mid - 1;
+		} else {
+			return true;
+		}
+	}
+	return false;
+}
+
 int attach_req_tracking_usdts(struct bpf_state *st)
 {
 	struct hashmap_entry *entry;

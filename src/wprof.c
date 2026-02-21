@@ -1040,6 +1040,7 @@ static void cleanup_workers(struct worker_state *workers, int worker_cnt)
 			fclose(w->dump);
 
 		free(w->dump_path);
+		free(w->req_allowlist.ids);
 
 		w->dump_mem = NULL;
 		w->dump = NULL;
@@ -1073,9 +1074,16 @@ int main(int argc, char **argv)
 			goto cleanup;
 		}
 		if (env.req_list_cfg && !env.req_list) {
-			eprintf("Request list options (--req-sort, --req-filter, etc.) require --req-list!\n");
-			err = -EINVAL;
-			goto cleanup;
+			if (env.req_list_cfg->sort_cnt > 0 || env.req_list_cfg->top_n > 0 || env.req_list_cfg->bottom_n > 0) {
+				eprintf("--req-sort, --req-top-n, and --req-bottom-n require --req-list!\n");
+				err = -EINVAL;
+				goto cleanup;
+			}
+			if (env.req_list_cfg->filter_cnt > 0 && !env.trace_path) {
+				eprintf("--req-filter requires --req-list or -T!\n");
+				err = -EINVAL;
+				goto cleanup;
+			}
 		}
 	}
 
@@ -1502,6 +1510,9 @@ skip_data_collection:
 
 	if (env.trace_path) {
 		struct worker_state *w = &workers[0];
+
+		if (env.req_list_cfg && env.req_list_cfg->filter_cnt > 0)
+			req_filter_build_allowlist(w, &w->req_allowlist);
 
 		w->trace = fopen_buffered(env.trace_path, "w+");
 		if (!w->trace) {

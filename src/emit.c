@@ -20,6 +20,7 @@
 #include "cuda_data.h"
 #include "wprof_cupti.h"
 #include "demangle.h"
+#include "requests.h"
 
 enum task_run_state {
 	TASK_STATE_RUNNING,
@@ -1871,6 +1872,9 @@ static int process_req_event(struct worker_state *w, const struct wevent *e)
 	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
 
 	if (!should_trace_task(&task))
+		return 0;
+
+	if (w->req_allowlist.ids && !req_allowlist_has(&w->req_allowlist, task.pid, e->req.req_id))
 		return 0;
 
 	struct task_state *st = task_state(w, &task);

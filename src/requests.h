@@ -91,8 +91,20 @@ struct req_list_cfg {
 	int bottom_n;
 };
 
+struct req_id {
+	int pid;
+	u64 req_id;
+};
+
+struct req_allowlist {
+	struct req_id *ids;
+	int cnt;
+};
+
 struct worker_state;
 int req_list_output(struct worker_state *w);
+int req_filter_build_allowlist(struct worker_state *w, struct req_allowlist *al);
+bool req_allowlist_has(const struct req_allowlist *al, int pid, u64 req_id);
 
 /* parsing helpers called from env.c */
 int req_list_parse_sort(const char *field_name, enum req_sort_order order);
