@@ -16,6 +16,7 @@
 #include "wprof.h"
 #include "env.h"
 #include "data.h"
+#include "requests.h"
 
 const char *argp_program_version = "wprof v" WPROF_VERSION;
 
@@ -76,6 +77,14 @@ enum {
 	OPT_DENY_IDLE = 2005,
 	OPT_ALLOW_KTHREAD = 2006,
 	OPT_DENY_KTHREAD = 2007,
+
+	OPT_REQ_LIST = 3000,
+	OPT_REQ_SORT = 3001,
+	OPT_REQ_SORT_ASC = 3002,
+	OPT_REQ_SORT_DESC = 3003,
+	OPT_REQ_FILTER = 3004,
+	OPT_REQ_TOP_N = 3005,
+	OPT_REQ_BOTTOM_N = 3006,
 };
 
 static const struct argp_option opts[] = {
@@ -121,16 +130,27 @@ static const struct argp_option opts[] = {
 	{ "emit-feature", 'e', "FEAT", 0,
 	  "Trace visualization feature. Supported: sched, sched-extras, numa, tidpid, timer-ticks, req-extras" },
 
+	/* tuning */
 	{ "ringbuf-size", OPT_RINGBUF_SZ, "SIZE", 0, "BPF ringbuf size (in KBs)" },
 	{ "task-state-size", OPT_TASK_STATE_SZ, "SIZE", 0, "BPF task state map size (in threads)" },
 	{ "ringbuf-cnt", OPT_RINGBUF_CNT, "N", 0, "Number of BPF ringbufs to use" },
 
+	/* PMUs */
 	{ "pmu", OPT_PMU_COUNTER, "EVENT", 0,
 	  "Capture pmu counter. Formats: "
 	  "raw (r003c), PMU (cpu/event=0x3c/ or cpu/cpu-cycles/), "
 	  "software (sw:page-faults), cache (L1-icache-loads), "
 	  "derived (derived:ipc=cpu_instructions/cpu_cpu-cycles)" },
 	{ "no-pmu", OPT_NO_PMU, NULL, 0, "Don't capture or emit PMUs" },
+
+	/* request listing */
+	{ "req-list", OPT_REQ_LIST, NULL, 0, "List all completed requests" },
+	{ "req-sort", OPT_REQ_SORT, "FIELD", 0, "Sort request list by given field. Repeatable." },
+	{ "req-sort-asc", OPT_REQ_SORT_ASC, "FIELD", 0, "Sort request list by field, ascending. Repeatable." },
+	{ "req-sort-desc", OPT_REQ_SORT_DESC, "FIELD", 0, "Sort request list by field, descending. Repeatable." },
+	{ "req-filter", OPT_REQ_FILTER, "EXPR", 0, "Filter requests: <field><op><value> (e.g., latency>1ms, pid=1234, name=foo). Repeatable." },
+	{ "req-top-n", OPT_REQ_TOP_N, "N", 0, "Show only the first N requests" },
+	{ "req-bottom-n", OPT_REQ_BOTTOM_N, "N", 0, "Show only the last N requests" },
 	{},
 };
 
@@ -222,14 +242,14 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		env.replay_info = true;
 		break;
 	case OPT_REPLAY_OFFSET_START:
-		env.replay_start_offset_ns = parse_time_offset(arg);
+		env.replay_start_offset_ns = parse_time_units(arg);
 		if (env.replay_start_offset_ns < 0) {
 			eprintf("Failed to parse replay start time offset '%s'\n", arg);
 			return -EINVAL;
 		}
 		break;
 	case OPT_REPLAY_OFFSET_END:
-		env.replay_end_offset_ns = parse_time_offset(arg);
+		env.replay_end_offset_ns = parse_time_units(arg);
 		if (env.replay_end_offset_ns < 0) {
 			eprintf("Failed to parse replay end time offset '%s'\n", arg);
 			return -EINVAL;
@@ -531,6 +551,57 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			ev.stored_idx = env.pmu_real_cnt;
 			env.pmu_reals = realloc(env.pmu_reals, (env.pmu_real_cnt + 1) * sizeof(*env.pmu_reals));
 			env.pmu_reals[env.pmu_real_cnt++] = ev;
+		}
+		break;
+	}
+	/* REQUESTS QUERYING */
+	case OPT_REQ_LIST:
+		env.req_list_cfg = env.req_list_cfg ?: calloc(1, sizeof(*env.req_list_cfg));
+		env.req_list = true;
+		break;
+	case OPT_REQ_SORT:
+		env.req_list_cfg = env.req_list_cfg ?: calloc(1, sizeof(*env.req_list_cfg));
+		err = req_list_parse_sort(arg, REQ_ORDER_DEFAULT);
+		if (err)
+			return err;
+		break;
+	case OPT_REQ_SORT_ASC:
+		env.req_list_cfg = env.req_list_cfg ?: calloc(1, sizeof(*env.req_list_cfg));
+		err = req_list_parse_sort(arg, REQ_ORDER_ASC);
+		if (err)
+			return err;
+		break;
+	case OPT_REQ_SORT_DESC:
+		env.req_list_cfg = env.req_list_cfg ?: calloc(1, sizeof(*env.req_list_cfg));
+		err = req_list_parse_sort(arg, REQ_ORDER_DESC);
+		if (err)
+			return err;
+		break;
+	case OPT_REQ_FILTER:
+		env.req_list_cfg = env.req_list_cfg ?: calloc(1, sizeof(*env.req_list_cfg));
+		err = req_list_parse_filter(arg);
+		if (err)
+			return err;
+		break;
+	case OPT_REQ_TOP_N: {
+		char *end;
+		env.req_list_cfg = env.req_list_cfg ?: calloc(1, sizeof(*env.req_list_cfg));
+		errno = 0;
+		env.req_list_cfg->top_n = strtol(arg, &end, 0);
+		if (errno || *end || env.req_list_cfg->top_n <= 0) {
+			eprintf("Invalid --req-top-n value: '%s'\n", arg);
+			return -EINVAL;
+		}
+		break;
+	}
+	case OPT_REQ_BOTTOM_N: {
+		char *end;
+		env.req_list_cfg = env.req_list_cfg ?: calloc(1, sizeof(*env.req_list_cfg));
+		errno = 0;
+		env.req_list_cfg->bottom_n = strtol(arg, &end, 0);
+		if (errno || *end || env.req_list_cfg->bottom_n <= 0) {
+			eprintf("Invalid --req-bottom-n value: '%s'\n", arg);
+			return -EINVAL;
 		}
 		break;
 	}
