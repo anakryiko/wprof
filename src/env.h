@@ -131,6 +131,16 @@ struct env {
 };
 
 extern struct env env;
+
+static inline bool is_ts_in_range(u64 ts)
+{
+	if ((long long)(ts - env.sess_start_ts) < 0)
+		return false;
+	if ((long long)(ts - env.sess_end_ts) >= 0)
+		return false;
+	return true;
+}
+
 extern const struct argp argp;
 
 static inline bool cfg_get_capture_ipis(const struct wprof_data_cfg *cfg) { return cfg->capture_ipis; }

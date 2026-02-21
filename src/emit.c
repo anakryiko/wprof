@@ -1031,15 +1031,6 @@ static bool should_trace_task(const struct wprof_task *task)
 	return true;
 }
 
-static bool is_ts_in_range(u64 ts)
-{
-	if ((long long)(ts - env.sess_start_ts) < 0)
-		return false;
-	if ((long long)(ts - env.sess_end_ts) >= 0)
-		return false;
-	return true;
-}
-
 /* EV_TIMER */
 static int process_timer(struct worker_state *w, const struct wevent *e)
 {
