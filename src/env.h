@@ -32,6 +32,8 @@ enum cuda_discover_strategy {
 	CUDA_DISCOVER_PROC, /* find processes with libcupti.so */
 };
 
+struct req_list_cfg;
+
 struct env {
 	bool verbose;
 	int debug_level;
@@ -75,6 +77,10 @@ struct env {
 	struct pmu_event *pmu_derivs;
 	int pmu_unresolved_cnt;
 	struct pmu_event *pmu_unresolveds;
+
+	/* request listing */
+	bool req_list;
+	struct req_list_cfg *req_list_cfg;
 
 	int ringbuf_sz;
 	int task_state_sz;

@@ -373,7 +373,7 @@ bool wprof_glob_match(char const *pat, char const *str)
 	}
 }
 
-s64 parse_time_offset(const char *arg)
+s64 parse_time_units(const char *arg)
 {
 	double s;
 	int n, len = strlen(arg), ret;

@@ -1065,6 +1065,20 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
+	{
+		int output_modes = !!env.trace_path + env.req_list + !!env.replay_info;
+		if (output_modes > 1) {
+			eprintf("Only one of -T, --req-list, and --replay-info (-RI) can be specified at a time!\n");
+			err = -EINVAL;
+			goto cleanup;
+		}
+		if (env.req_list_cfg && !env.req_list) {
+			eprintf("Request list options (--req-sort, --req-filter, etc.) require --req-list!\n");
+			err = -EINVAL;
+			goto cleanup;
+		}
+	}
+
 	vprintf("wprof v%s (PID %d) started!\n", WPROF_VERSION, getpid());
 
 	num_cpus = libbpf_num_possible_cpus();
@@ -1480,6 +1494,12 @@ int main(int argc, char **argv)
 	}
 
 skip_data_collection:
+	if (env.req_list) {
+		err = req_list_output(&workers[0]);
+		if (err)
+			goto cleanup;
+	}
+
 	if (env.trace_path) {
 		struct worker_state *w = &workers[0];
 
