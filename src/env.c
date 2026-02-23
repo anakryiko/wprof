@@ -98,6 +98,7 @@ static const struct argp_option opts[] = {
 
 	{ "data", 'D', "FILE", 0, "Data dump path (defaults to 'wprof.data' in current directory)" },
 	{ "trace", 'T', "FILE", 0, "Emit trace to specified file" },
+	{ "json", 'j', NULL, 0, "Output JSON events instead of Perfetto trace (use with -T)" },
 
 	{ "replay", 'R', NULL, 0, "Re-process raw dump (no actual BPF data gathering)" },
 	{ "replay-start", OPT_REPLAY_OFFSET_START, "TIME_OFFSET", 0, "Session start time offset (replay mode only). Supported syntax: 2s, 1.03s, 10.5ms, 12us, 101213ns" },
@@ -262,6 +263,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			return -EINVAL;
 		}
 		env.trace_path = strdup(arg);
+		break;
+	case 'j':
+		env.json = true;
 		break;
 	case 'S': {
 		enum stack_trace_kind kinds;

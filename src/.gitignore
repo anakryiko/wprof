@@ -2,6 +2,7 @@
 /wprof
 /sim
 /*.pb
+/*.json
 /*.log
 /dump.txt
 /wprof.data
