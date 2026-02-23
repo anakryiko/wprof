@@ -1103,6 +1103,11 @@ int main(int argc, char **argv)
 				goto cleanup;
 			}
 		}
+		if (env.json && !env.trace_path) {
+			eprintf("--json/-j requires -T to specify the output file!\n");
+			err = -EINVAL;
+			goto cleanup;
+		}
 	}
 
 	vprintf("wprof v%s (PID %d) started!\n", WPROF_VERSION, getpid());
@@ -1552,7 +1557,6 @@ skip_data_collection:
 			eprintf("Failed to create trace file '%s': %d\n", env.trace_path, err);
 			goto cleanup;
 		}
-		w->stream = (pb_ostream_t){&file_stream_cb, w->trace, SIZE_MAX, 0};
 
 		err = init_emit(w);
 		if (err) {
@@ -1560,16 +1564,20 @@ skip_data_collection:
 			goto cleanup;
 		}
 
-		if (init_pb_trace(&w->stream)) {
-			err = -1;
-			eprintf("Failed to init protobuf!\n");
-			goto cleanup;
+		if (!env.json) {
+			w->stream = (pb_ostream_t){&file_stream_cb, w->trace, SIZE_MAX, 0};
+
+			if (init_pb_trace(&w->stream)) {
+				err = -1;
+				eprintf("Failed to init protobuf!\n");
+				goto cleanup;
+			}
 		}
 
 		/* process dumped events, and generate trace */
 		err = emit_trace(w);
 		if (err) {
-			eprintf("Failed to generate Perfetto trac: %d\n", err);
+			eprintf("Failed to generate trace: %d\n", err);
 			goto cleanup;
 		}
 

@@ -102,6 +102,7 @@ struct env {
 
 	char *data_path;
 	char *trace_path;
+	bool json;
 
 	bool pb_debug_interns;
 	bool pb_disable_interns;
