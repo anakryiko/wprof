@@ -1511,8 +1511,11 @@ skip_data_collection:
 	if (env.trace_path) {
 		struct worker_state *w = &workers[0];
 
-		if (env.req_list_cfg && env.req_list_cfg->filter_cnt > 0)
-			req_filter_build_allowlist(w, &w->req_allowlist);
+		if (env.req_list_cfg && env.req_list_cfg->filter_cnt > 0) {
+			err = req_filter_build_allowlist(w, &w->req_allowlist);
+			if (err)
+				goto cleanup;
+		}
 
 		w->trace = fopen_buffered(env.trace_path, "w+");
 		if (!w->trace) {
