@@ -1996,6 +1996,9 @@ static int process_req_task_event(struct worker_state *w, const struct wevent *e
 	if (!should_trace_task(&task))
 		return 0;
 
+	if (w->req_allowlist.ids && !req_allowlist_has(&w->req_allowlist, task.pid, e->req_task.req_id))
+		return 0;
+
 	u64 req_id = e->req_task.req_id;
 
 	ensure_process_reqs_track(&task);
