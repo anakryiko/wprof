@@ -514,6 +514,11 @@ int req_filter_build_allowlist(struct worker_state *w, struct req_allowlist *al)
 		ids[cnt++] = (struct req_id){ .pid = task.pid, .req_id = e->req.req_id };
 	}
 
+	if (cnt == 0) {
+		eprintf("No requests match the given --req-filter criteria!\n");
+		return -ENOENT;
+	}
+
 	if (cnt > 1)
 		qsort(ids, cnt, sizeof(*ids), req_id_cmp);
 
