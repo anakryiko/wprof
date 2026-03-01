@@ -51,6 +51,7 @@
 #include "inj_common.h"
 #include "merge.h"
 #include "../libbpf/src/strset.h"
+#include "pystacks.h"
 
 static bool ignore_libbpf_warns;
 
@@ -820,6 +821,14 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 		err = setup_perf_counters(st, num_cpus);
 		if (err) {
 			eprintf("Failed to setup perf counters: %d\n", err);
+			return err;
+		}
+	}
+
+	if (env.capture_pystacks) {
+		err = pystacks_init(skel);
+		if (err) {
+			eprintf("Failed to initialize pystacks: %d\n", err);
 			return err;
 		}
 	}

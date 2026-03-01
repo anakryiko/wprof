@@ -149,6 +149,8 @@ struct elf_sym *elf_sym_iter_next(struct elf_sym_iter *it)
 			continue;
 		if (GELF_ST_TYPE(sym->st_info) != it->st_type)
 			continue;
+		if (sym->st_shndx == SHN_UNDEF)
+			continue;
 		name = elf_strptr(it->elf, it->strtabidx, sym->st_name);
 		if (!name)
 			continue;
@@ -175,12 +177,57 @@ struct elf_sym *elf_sym_iter_next(struct elf_sym_iter *it)
 	return NULL;
 }
 
+int elf_read_sym_value(const char *binary_path, const char *sym_name,
+		       int st_type, void *buf, size_t buf_sz)
+{
+	int sh_types[2] = { SHT_DYNSYM, SHT_SYMTAB };
+	struct elf_fd elf_fd;
+	int err;
+
+	err = elf_open(binary_path, &elf_fd);
+	if (err)
+		return err;
+
+	for (int i = 0; i < ARRAY_SIZE(sh_types); i++) {
+		struct elf_sym *sym;
+
+		wprof_for_each(elf_sym, sym, elf_fd.elf, binary_path, sh_types[i], st_type) {
+			if (strcmp(sym->name, sym_name) != 0)
+				continue;
+
+			Elf_Scn *scn = elf_getscn(elf_fd.elf, sym->sym.st_shndx);
+			if (!scn)
+				continue;
+
+			GElf_Shdr shdr;
+			if (!gelf_getshdr(scn, &shdr))
+				continue;
+
+			Elf_Data *data = elf_getdata(scn, NULL);
+			if (!data || !data->d_buf)
+				continue;
+
+			size_t offset = sym->sym.st_value - shdr.sh_addr;
+			if (offset + buf_sz > data->d_size)
+				continue;
+
+			memcpy(buf, (char *)data->d_buf + offset, buf_sz);
+			elf_close(&elf_fd);
+			return 0;
+		}
+	}
+
+	elf_close(&elf_fd);
+	return -ENOENT;
+}
+
 int elf_find_syms(const char *binary_path, int st_type,
 		  const char **syms, long *addrs, size_t cnt)
 {
-	int sh_types[2] = { SHT_DYNSYM, SHT_SYMTAB }, sh_type_idx = -1;
-	int err = 0, cnt_done = 0;
+	int sh_types[2] = { SHT_DYNSYM, SHT_SYMTAB };
+	int cnt_done = 0;
 	struct elf_fd elf_fd;
+	int err;
 
 	err = elf_open(binary_path, &elf_fd);
 	if (err)
@@ -188,43 +235,49 @@ int elf_find_syms(const char *binary_path, int st_type,
 
 	memset(addrs, 0, sizeof(*addrs) * cnt);
 
-again:
-	if (++sh_type_idx >= ARRAY_SIZE(sh_types))
-		goto done;
-
-	struct elf_sym *sym;
-	wprof_for_each(elf_sym, sym, elf_fd.elf, binary_path, sh_types[sh_type_idx], st_type) {
-		int bind = GELF_ST_BIND(sym->sym.st_info);
-		unsigned long addr = sym->sym.st_value;
-
-		for (int i = 0; i < cnt; i++) {
-			if (strcmp(syms[i], sym->name) != 0)
-				continue;
-
-			/* override weak symbols */
-			if (addrs[i] && bind == STB_WEAK)
-				continue;
-
-			if (addrs[i] == 0)
-				cnt_done++;
-
-			addrs[i] = addr;
+	/* Find the ELF base virtual address (first PT_LOAD p_vaddr - p_offset).
+	 * For ET_DYN (shared libs / PIE), symbol st_value includes this base.
+	 * Subtracting it gives the offset from the load bias, so
+	 * (vma_start - vma_offset) + offset = correct runtime address. */
+	unsigned long elf_base_vaddr = 0;
+	GElf_Ehdr ehdr;
+	size_t phnum;
+	if (!gelf_getehdr(elf_fd.elf, &ehdr) || ehdr.e_type != ET_DYN || elf_getphdrnum(elf_fd.elf, &phnum) != 0)
+		goto find;
+	for (size_t i = 0; i < phnum; i++) {
+		GElf_Phdr phdr;
+		if (gelf_getphdr(elf_fd.elf, i, &phdr) && phdr.p_type == PT_LOAD) {
+			elf_base_vaddr = phdr.p_vaddr - phdr.p_offset;
 			break;
 		}
-
-		if (cnt_done == cnt)
-			goto out;
-	}
-	goto again;
-
-done:
-	if (cnt != cnt_done) {
-		err = -ENOENT;
-		goto out;
 	}
 
-out:
+find:
+
+	for (int ti = 0; ti < ARRAY_SIZE(sh_types) && cnt_done < cnt; ti++) {
+		struct elf_sym *sym;
+
+		wprof_for_each(elf_sym, sym, elf_fd.elf, binary_path, sh_types[ti], st_type) {
+			int bind = GELF_ST_BIND(sym->sym.st_info);
+			unsigned long addr = sym->sym.st_value - elf_base_vaddr;
+
+			for (int i = 0; i < cnt; i++) {
+				if (strcmp(syms[i], sym->name) != 0)
+					continue;
+				if (addrs[i] && bind == STB_WEAK)
+					continue;
+				if (addrs[i] == 0)
+					cnt_done++;
+				addrs[i] = addr;
+				break;
+			}
+
+			if (cnt_done == cnt)
+				break;
+		}
+	}
+
 	elf_close(&elf_fd);
-	return err;
+	return cnt_done == cnt ? 0 : -ENOENT;
 }
 

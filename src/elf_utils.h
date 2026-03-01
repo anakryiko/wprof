@@ -41,6 +41,9 @@ struct elf_sym *elf_sym_iter_next(struct elf_sym_iter *it);
 
 static inline void elf_sym_iter_destroy(struct elf_sym_iter *it) {}
 
+int elf_read_sym_value(const char *binary_path, const char *sym_name,
+		       int st_type, void *buf, size_t buf_sz);
+
 int elf_find_syms(const char *binary_path, int st_type,
 		  const char **syms, long *addrs, size_t cnt);
 
