@@ -22,6 +22,7 @@
 #define DEFAULT_CAPTURE_REQUESTS FALSE
 #define DEFAULT_CAPTURE_SCX FALSE
 #define DEFAULT_CAPTURE_CUDA FALSE
+#define DEFAULT_CAPTURE_PYSTACKS FALSE
 
 extern bool env_verbose;
 extern int env_debug_level;
@@ -31,6 +32,12 @@ enum cuda_discover_strategy {
 	CUDA_DISCOVER_NONE, /* no automatic discovery */
 	CUDA_DISCOVER_SMI,  /* use nvidia-smi (default) */
 	CUDA_DISCOVER_PROC, /* find processes with libcupti.so */
+};
+
+enum pystacks_discover_strategy {
+	PYSTACKS_DISCOVER_NONE,      /* no automatic discovery */
+	PYSTACKS_DISCOVER_PROC,      /* find Python processes via /proc scan (default) */
+	PYSTACKS_DISCOVER_NVIDIA_SMI, /* use nvidia-smi to find GPU Python processes */
 };
 
 struct req_list_cfg;
@@ -61,6 +68,7 @@ struct env {
 	enum tristate capture_req_experimental; /* experimental extra request-related events */
 	enum tristate capture_scx;
 	enum tristate capture_cuda;
+	enum tristate capture_pystacks;
 
 	/* trace visualization features */
 	bool emit_sched_view;
@@ -133,6 +141,11 @@ struct env {
 	bool cudas_deactivated;
 	bool cudas_retracted;
 
+	/* EXPERIMENTAL (Python stacks) */
+	int *pystacks_pids;
+	int pystacks_pid_cnt;
+	enum pystacks_discover_strategy pystacks_discovery;
+
 	/* persisted data header, set after merge or before replay */
 	struct wprof_data_hdr *data_hdr;
 };
@@ -164,6 +177,9 @@ static inline void cfg_set_capture_scx(struct wprof_data_cfg *cfg, bool val) { c
 
 static inline bool cfg_get_capture_cuda(const struct wprof_data_cfg *cfg) { return cfg->capture_cuda; }
 static inline void cfg_set_capture_cuda(struct wprof_data_cfg *cfg, bool val) { cfg->capture_cuda = val; }
+
+static inline bool cfg_get_capture_pystacks(const struct wprof_data_cfg *cfg) { return cfg->capture_pystacks; }
+static inline void cfg_set_capture_pystacks(struct wprof_data_cfg *cfg, bool val) { cfg->capture_pystacks = val; }
 
 struct capture_feature {
 	const char *name;

@@ -49,6 +49,7 @@ struct env env = {
 	.capture_req_experimental = UNSET,
 	.capture_scx = UNSET,
 	.capture_cuda = UNSET,
+	.capture_pystacks = UNSET,
 	.pmu_real_cnt = -1,
 	.pmu_deriv_cnt = -1,
 	.pmu_unresolved_cnt = -1,
@@ -123,7 +124,7 @@ static const struct argp_option opts[] = {
 
 	/* event subset targeting */
 	{ "feature", 'f', "FEAT", 0,
-	  "Data capture feature selector. Supported: ipi, req[=PATH|PID], scx, req-experimental, cuda.\n"
+	  "Data capture feature selector. Supported: ipi, req[=PATH|PID], scx, req-experimental, cuda, py-stacks[=nvidia-smi|PID].\n"
 	  "All features can be prefixed with 'no-' to disable them explicitly." },
 
 	/* trace emitting options */
@@ -358,6 +359,32 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 				return -EINVAL;
 			}
 			env.capture_cuda = val;
+		} else if (strcasecmp(arg, "py-stacks") == 0) {
+			env.pystacks_discovery = (val == TRUE) ? PYSTACKS_DISCOVER_PROC : PYSTACKS_DISCOVER_NONE;
+			env.capture_pystacks = val;
+		} else if (strcasecmp(arg, "py-stacks=nvidia-smi") == 0) {
+			env.pystacks_discovery = (val == TRUE) ? PYSTACKS_DISCOVER_NVIDIA_SMI : PYSTACKS_DISCOVER_NONE;
+			env.capture_pystacks = val;
+		} else if (strncasecmp(arg, "py-stacks=", 10) == 0) {
+			const char *py_arg = arg + 10;
+			int pid, n;
+
+			if (val == FALSE) {
+				eprintf("-f no-py-stacks=... feature form doesn't make much sense!\n");
+				return -EINVAL;
+			}
+
+			if (sscanf(py_arg, "%d %n", &pid, &n) == 1 && py_arg[n] == '\0') {
+				err = append_num(&env.pystacks_pids, &env.pystacks_pid_cnt, py_arg);
+				if (err) {
+					eprintf("Failed to record PID '%s' for Python stack tracking!\n", py_arg);
+					return err;
+				}
+			} else {
+				eprintf("Use -fpy-stacks, -fpy-stacks=nvidia-smi, or -fpy-stacks=<PID>!\n");
+				return -EINVAL;
+			}
+			env.capture_pystacks = val;
 		} else {
 			fprintf(stderr, "Unrecognized data feature '%s!\n", arg);
 			return -EINVAL;
