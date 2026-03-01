@@ -75,6 +75,8 @@ const struct capture_feature capture_features[] = {
 	  cfg_get_capture_scx, cfg_set_capture_scx},
 	{"CUDA", "CUDA:", DEFAULT_CAPTURE_CUDA,
 	 offsetof(struct env, capture_cuda), cfg_get_capture_cuda, cfg_set_capture_cuda},
+	{"Python stacks", "Pystacks:", DEFAULT_CAPTURE_PYSTACKS,
+	 offsetof(struct env, capture_pystacks), cfg_get_capture_pystacks, cfg_set_capture_pystacks},
 };
 
 const int capture_feature_cnt = ARRAY_SIZE(capture_features);

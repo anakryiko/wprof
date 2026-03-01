@@ -30,6 +30,7 @@ LIBBLAZESYM_INC := $(abspath $(LIBBLAZESYM_SRC)/capi/include)
 LIBBLAZESYM_OBJ := $(abspath $(OUTPUT)/libblazesym_c.a)
 LIBDEMANGLE_SRC := $(abspath demangle/)
 LIBDEMANGLE_OBJ := $(abspath $(OUTPUT)/libdemangle_c.a)
+STROBELIGHT_LIBS_SRC := $(abspath ../strobelight-libs)
 ARCH ?= $(shell uname -m | sed 's/x86_64/x86/' \
 			 | sed 's/arm.*/arm/' \
 			 | sed 's/aarch64/arm64/' \
@@ -38,15 +39,24 @@ ARCH ?= $(shell uname -m | sed 's/x86_64/x86/' \
 			 | sed 's/riscv64/riscv/' \
 			 | sed 's/loongarch64/loongarch/')
 VMLINUX := ../vmlinux.h/include/$(ARCH)/vmlinux.h
+# Build pystacks BPF code from strobelight-libs
+PYSTACKS_BPF_SRC := $(STROBELIGHT_LIBS_SRC)/strobelight/bpf_lib/python/pystacks/pystacks.bpf.c
+PYSTACKS_COMMON_DIR := $(STROBELIGHT_LIBS_SRC)/strobelight/bpf_lib/common
+PYSTACKS_COMMON_HELPERS := common bpf_read_helpers namespace_helpers pid_target_helpers pthread_helpers task_helpers
+PYSTACKS_INCLUDES := -I$(STROBELIGHT_LIBS_SRC)
+PYSTACKS_CFLAGS := -DWPROF_PYSTACKS
+PYSTACKS_BPF_CFLAGS := -D__$(shell uname -m)__ -Dint8_t=s8
+
 # Use our own libbpf API headers and Linux UAPI headers distributed with
 # libbpf to avoid dependency on system-wide headers, which could be missing or
 # outdated
 INCLUDES := -I$(OUTPUT) -I../include -I../libbpf/include/uapi				\
-	    -I../libbpf/include -I$(dir $(VMLINUX)) -I$(LIBBLAZESYM_INC) -I../usdt
+	    -I../libbpf/include -I$(dir $(VMLINUX)) -I$(LIBBLAZESYM_INC) -I../usdt	\
+			$(PYSTACKS_INCLUDES)
 CFLAGS ?= -g -O$(if $(DEBUG),0,2) -Wall
 ALL_CFLAGS := $(CFLAGS) $(EXTRA_CFLAGS) -fno-omit-frame-pointer				\
 	      -Wno-c23-extensions -Wno-sign-compare -Wno-format-truncation		\
-	      $(if $(LTO),-flto=auto -ffat-lto-objects)
+	      $(if $(LTO),-flto=auto -ffat-lto-objects) $(PYSTACKS_CFLAGS)
 ALL_LDFLAGS := $(LDFLAGS) $(EXTRA_LDFLAGS) -lrt -ldl -lpthread -lm
 
 # Get Clang's default includes on this system. We'll explicitly add these dirs
@@ -136,8 +146,33 @@ $(OUTPUT)/wprof.bpf.o: wprof.h wprof.bpf.h
 $(OUTPUT)/utils.bpf.o: wprof.h wprof.bpf.h
 $(OUTPUT)/scx.bpf.o: wprof.h wprof.bpf.h
 
+# Compile strobelight-libs common BPF helpers
+$(OUTPUT)/sl_%.tmp.bpf.o: $(PYSTACKS_COMMON_DIR)/%.bpf.c $(LIBBPF_OBJ) $(VMLINUX) | $(OUTPUT) $(BPFTOOL)
+	$(call msg,BPF,$@)
+	$(Q)$(CLANG) -g -Wall -O2 -target bpf -mcpu=v4 -D__TARGET_ARCH_$(ARCH)			\
+		     $(PYSTACKS_BPF_CFLAGS)						\
+		     $(INCLUDES) $(PYSTACKS_INCLUDES) $(CLANG_BPF_SYS_INCLUDES)		\
+		     -c $< -o $@
+
+# Compile pystacks BPF
+$(OUTPUT)/sl_pystacks.tmp.bpf.o: $(PYSTACKS_BPF_SRC) $(LIBBPF_OBJ) $(VMLINUX) | $(OUTPUT) $(BPFTOOL)
+	$(call msg,BPF,$@)
+	$(Q)$(CLANG) -g -Wall -O2 -target bpf -mcpu=v4 -D__TARGET_ARCH_$(ARCH)			\
+		     $(PYSTACKS_BPF_CFLAGS)						\
+		     $(INCLUDES) $(PYSTACKS_INCLUDES) $(CLANG_BPF_SYS_INCLUDES)		\
+		     -c $< -o $@
+
+# Link pystacks + common BPF objects
+SL_ALL_TMP_OBJS := $(OUTPUT)/sl_pystacks.tmp.bpf.o \
+		   $(patsubst %,$(OUTPUT)/sl_%.tmp.bpf.o,$(PYSTACKS_COMMON_HELPERS))
+$(OUTPUT)/pystacks.bpf.o: $(SL_ALL_TMP_OBJS) | $(BPFTOOL)
+	$(call msg,BPF-LINK,$@)
+	$(Q)$(BPFTOOL) gen object $@ $^
+
+PYSTACKS_BPF_OBJS := $(OUTPUT)/pystacks.bpf.o
+
 # Generate BPF skeletons
-$(OUTPUT)/wprof.skel.h: $(OUTPUT)/wprof.bpf.o $(OUTPUT)/utils.bpf.o $(OUTPUT)/scx.bpf.o | $(OUTPUT) $(BPFTOOL)
+$(OUTPUT)/wprof.skel.h: $(OUTPUT)/wprof.bpf.o $(OUTPUT)/utils.bpf.o $(OUTPUT)/scx.bpf.o $(PYSTACKS_BPF_OBJS) | $(OUTPUT) $(BPFTOOL)
 	$(call msg,GEN-SKEL,$@)
 	$(Q)$(BPFTOOL) gen object $(OUTPUT)/wprof-final.bpf.o $^
 	$(Q)$(BPFTOOL) gen skeleton $(OUTPUT)/wprof-final.bpf.o name wprof_bpf > $@
@@ -145,10 +180,12 @@ $(OUTPUT)/wprof.skel.h: $(OUTPUT)/wprof.bpf.o $(OUTPUT)/utils.bpf.o $(OUTPUT)/sc
 WPROF_SRCS := wprof.c utils.c env.c protobuf.c emit.c stacktrace.c pmu.c			\
 	      pb_common.c pb_encode.c perfetto_trace.pb.c topology.c proc.c			\
 	      requests.c cuda.c inject.c sys.c elf_utils.c merge.c persist.c			\
-	      cupti_driver_cbid_map.gen.c cupti_runtime_cbid_map.gen.c
+	      cupti_driver_cbid_map.gen.c cupti_runtime_cbid_map.gen.c		\
+				pystacks.c
 WPROF_HDRS := wprof.h utils.h env.h protobuf.h emit.h stacktrace.h data.h topology.h pmu.h	\
 	      proc.h requests.h cuda.h inj_common.h inject.h sys.h elf_utils.h cuda_data.h 	\
-	      wprof_types.h demangle.h merge.h wevent.h persist.h
+	      wprof_types.h demangle.h merge.h wevent.h persist.h		\
+				pystacks.h
 WPROF_OBJS := $(patsubst %.c,$(OUTPUT)/%.o,$(WPROF_SRCS))
 
 WPROFINJ_SRCS := inj_lib.c inj_strset.c inj_hashmap.c inj_cupti.c

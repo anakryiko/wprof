@@ -154,6 +154,7 @@ enum event_flags {
 	EF_NONE = 0x00,
 	EF_STACK_TRACE_MSK = ST_ALL,	/* bit mask of all captured stack traces */
 	EF_PMU_VALS = 0x1000,		/* PMU counter values follow fixed event data */
+	EF_PYSTACK = 0x2000,		/* pystacks_message follows stack traces */
 };
 
 enum wprof_ipi_kind {

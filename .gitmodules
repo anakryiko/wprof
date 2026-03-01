@@ -13,3 +13,6 @@
 [submodule "usdt"]
 	path = usdt
 	url = https://github.com/libbpf/usdt.git
+[submodule "strobelight-libs"]
+	path = strobelight-libs
+	url = https://github.com/facebookincubator/strobelight-libs.git

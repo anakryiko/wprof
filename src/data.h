@@ -22,6 +22,7 @@ struct wprof_data_cfg {
 	u64 capture_scx : 1;
 	u64 capture_req_experimental : 1;
 	u64 capture_cuda : 1;
+	u64 capture_pystacks : 1;
 
 	enum stack_trace_kind captured_stack_traces;
 
@@ -73,6 +74,7 @@ enum wprof_stack_frame_flags {
 	WSF_UNSYMBOLIZED = 0x01,
 	WSF_INLINED = 0x02,
 	WSF_KERNEL = 0x04,
+	WSF_PYTHON = 0x08,
 };
 
 struct wprof_stack_frame {
