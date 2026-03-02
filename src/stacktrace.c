@@ -16,6 +16,7 @@
 #include "env.h"
 #include "stacktrace.h"
 #include "data.h"
+#include "pysym.h"
 
 #include "blazesym.h"
 #include "../libbpf/src/strset.h"
@@ -677,6 +678,96 @@ int process_stack_traces(struct worker_state *workers, int worker_cnt, FILE *sta
 		trace_iid += 1;
 	}
 
+	/*
+	 * Python stack processing: resolve pystacks_message frames into
+	 * human-readable symbols and assign callstack IIDs continuing
+	 * from native stacks.
+	 */
+	struct py_stack {
+		struct pystack_msg *pymsg;
+		u32 start_frame_iid;
+		u32 frame_cnt;
+		u32 mapped_frame_idx;
+		u32 mapped_frame_cnt;
+		u32 callstack_iid;
+	};
+	struct py_stack *py_stacks = NULL;
+	size_t py_stack_cnt = 0, py_stack_cap = 0;
+
+	for (int i = 0; i < worker_cnt; i++) {
+		struct worker_state *w = &workers[i];
+		void *data = w->dump_mem + sizeof(struct wprof_data_hdr);
+		size_t data_sz = w->dump_sz - sizeof(struct wprof_data_hdr);
+
+		const struct bpf_event_record *rec;
+		for_each_bpf_event(rec, data, data_sz) {
+			if (!(rec->e->flags & EF_PYSTACK))
+				continue;
+
+			struct pystack_msg *pymsg = (void *)bpf_event_pystack(rec->e);
+			if (!pymsg || pymsg->stack_len == 0)
+				continue;
+
+			u32 n = pymsg->stack_len;
+			u32 start_iid = hdr.frame_cnt;
+
+			for (u32 fi = 0; fi < n; fi++) {
+				u32 sym_id = pymsg->frames[fi].symbol_id;
+				const char *func_name = pysym_qualname(sym_id);
+				const char *src_path = pysym_filename(sym_id);
+
+				struct wprof_stack_frame frm = {
+					.func_offset = pymsg->frames[fi].inst_idx,
+					.flags = WSF_PYTHON,
+					.func_name_stroff = strset__add_str(strs, func_name ?: ""),
+					.src_path_stroff = strset__add_str(strs, src_path ?: ""),
+					.line_num = pysym_line_number(sym_id, pymsg->frames[fi].inst_idx),
+					.addr = 0,
+				};
+
+				if (fwrite(&frm, sizeof(frm), 1, stacks_dump) != 1) {
+					err = -errno;
+					eprintf("Failed to write Python stack frame: %d\n", err);
+					return err;
+				}
+				hdr.frame_cnt += 1;
+			}
+
+			if (py_stack_cnt == py_stack_cap) {
+				size_t new_cap = py_stack_cnt < 64 ? 64 : py_stack_cnt * 4 / 3;
+				py_stacks = realloc(py_stacks, new_cap * sizeof(*py_stacks));
+				py_stack_cap = new_cap;
+			}
+			py_stacks[py_stack_cnt++] = (struct py_stack){
+				.pymsg = pymsg,
+				.start_frame_iid = start_iid,
+				.frame_cnt = n,
+			};
+		}
+	}
+
+	/* Write Python frame mappings and stack traces */
+	for (size_t i = 0; i < py_stack_cnt; i++) {
+		struct py_stack *ps = &py_stacks[i];
+
+		ps->mapped_frame_idx = hdr.frame_mapping_cnt;
+		ps->mapped_frame_cnt = ps->frame_cnt;
+
+		for (u32 fi = 0; fi < ps->frame_cnt; fi++) {
+			u32 fiid = ps->start_frame_iid + fi;
+			if (fwrite(&fiid, sizeof(fiid), 1, stacks_dump) != 1) {
+				err = -errno;
+				eprintf("Failed to write Python frame mapping: %d\n", err);
+				return err;
+			}
+			hdr.frame_mapping_cnt += 1;
+		}
+
+		ps->callstack_iid = trace_iid;
+		ps->pymsg->pystack_id = trace_iid;
+		trace_iid += 1;
+	}
+
 	hdr.stacks_off = ftell(stacks_dump) - base_off;
 	/* Add dummy all-zero stack trace record to have all the stack IDs
 	 * positive, which matches well Perfetto expectations and is generally
@@ -711,6 +802,22 @@ int process_stack_traces(struct worker_state *workers, int worker_cnt, FILE *sta
 		}
 		hdr.stack_cnt += 1;
 	}
+
+	/* Write Python stack trace records */
+	for (size_t i = 0; i < py_stack_cnt; i++) {
+		struct py_stack *ps = &py_stacks[i];
+		struct wprof_stack_trace stack = {
+			.frame_mapping_idx = ps->mapped_frame_idx,
+			.frame_mapping_cnt = ps->mapped_frame_cnt,
+		};
+		if (fwrite(&stack, sizeof(stack), 1, stacks_dump) != 1) {
+			err = -errno;
+			eprintf("Failed to write Python stack trace: %d\n", err);
+			return err;
+		}
+		hdr.stack_cnt += 1;
+	}
+	free(py_stacks);
 
 	qsort(state->sframe_idx, state->sframe_cnt, sizeof(*state->sframe_idx), stack_frame_cmp_by_orig_idx);
 	qsort(state->strace_idx, state->strace_cnt, sizeof(*state->strace_idx), stack_trace_cmp_by_orig_idx);
@@ -873,10 +980,26 @@ int generate_stack_traces(struct worker_state *w)
 		const char *sym_name = f->func_name_stroff ? wprof_stacks_str(w->dump_hdr, f->func_name_stroff) : NULL;
 
 		if (sym_name) {
-			snprintf(sym_buf, sizeof(sym_buf), "[%c] %s%s",
-				 (f->flags & WSF_KERNEL) ? 'K' : 'U',
-				 sym_name,
-				 (f->flags & WSF_INLINED) ? " (inlined)" : "");
+			const char *prefix = (f->flags & WSF_PYTHON) ? "Py" : (f->flags & WSF_KERNEL) ? "K" : "U";
+			const char *src = f->src_path_stroff ? wprof_stacks_str(w->dump_hdr, f->src_path_stroff) : NULL;
+
+			if ((f->flags & WSF_PYTHON) && src && src[0] && f->line_num > 0) {
+				/* strip container overlay prefix: /dev/shm/.../...-ns-NNNNN/path → path */
+				const char *stripped = strstr(src, "ns-");
+				if (stripped) {
+					stripped = strchr(stripped, '/');
+					if (stripped)
+						src = stripped + 1;
+				}
+				/* strip package link-tree prefix: .../workflow#link-tree/path → path */
+				stripped = strstr(src, "#link-tree/");
+				if (stripped)
+					src = stripped + 11; /* strlen("#link-tree/") == 11 */
+				snprintf(sym_buf, sizeof(sym_buf), "[%s] %s (%s:%u)", prefix, sym_name, src, f->line_num);
+			}
+			else
+				snprintf(sym_buf, sizeof(sym_buf), "[%s] %s%s",
+					 prefix, sym_name, (f->flags & WSF_INLINED) ? " (inlined)" : "");
 			sym_name = sym_buf;
 		}
 

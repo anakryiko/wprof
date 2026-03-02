@@ -45,6 +45,15 @@ static int add_py_tracee(int pid, int major, int minor, const char *binary_path)
 	return 0;
 }
 
+int pydisc_py_minor(int pid)
+{
+	for (int i = 0; i < py_tracee_cnt; i++) {
+		if (py_tracees[i].pid == pid)
+			return py_tracees[i].py_minor;
+	}
+	return -1;
+}
+
 static bool is_py_tracee(int pid)
 {
 	for (int i = 0; i < py_tracee_cnt; i++) {

@@ -59,10 +59,12 @@ struct wevent {
 			u32 waker_numa_node;
 			u32 next_task_scx_layer_id; /* sched-ext specific */
 			u32 next_task_scx_dsq_id; /* sched-ext specific */
+			u32 pystack_id;
 		} swtch;
 
 		struct wevent_timer {
 			u32 timer_stack_id;
+			u32 pystack_id;
 		} timer;
 
 		struct wevent_waking {
