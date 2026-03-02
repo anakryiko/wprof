@@ -30,6 +30,231 @@ struct symb_state {
 	size_t strace_cap, strace_cnt;
 };
 
+struct py_stack {
+	struct pystack_msg *pymsg;
+	u32 start_frame_iid;
+	u32 frame_cnt;
+	u32 mapped_frame_idx;
+	u32 mapped_frame_cnt;
+	u32 callstack_iid;
+	u32 native_id;
+	int pyeval_pos;
+};
+
+struct native_stack_info {
+	int start_frame_idx;
+	int frame_cnt;
+	int kframe_cnt;
+};
+
+/*
+ * Write Python frame records into the frames section of stacks_dump.
+ * Must be called before frame_mappings_off is set, otherwise the
+ * Python frame records end up in the frame_mappings region and
+ * generate_stack_traces() reads garbage when resolving frame IDs.
+ *
+ * Populates py_stacks with one entry per pystack event.
+ */
+static int pystacks_write_frames(struct worker_state *workers, int worker_cnt,
+				 struct strset *strs, FILE *stacks_dump,
+				 struct wprof_stacks_hdr *hdr,
+				 struct py_stack **py_stacks_out, size_t *py_stack_cnt_out)
+{
+	struct py_stack *py_stacks = NULL;
+	size_t py_stack_cnt = 0, py_stack_cap = 0;
+
+	for (int i = 0; i < worker_cnt; i++) {
+		struct worker_state *w = &workers[i];
+		void *data = w->dump_mem + sizeof(struct wprof_data_hdr);
+		size_t data_sz = w->dump_sz - sizeof(struct wprof_data_hdr);
+
+		const struct bpf_event_record *rec;
+		for_each_bpf_event(rec, data, data_sz) {
+			if (!(rec->e->flags & EF_PYSTACK))
+				continue;
+
+			struct pystack_msg *pymsg = (void *)bpf_event_pystack(rec->e);
+			if (!pymsg || pymsg->stack_len == 0)
+				continue;
+
+			u32 n = pymsg->stack_len;
+			u32 start_iid = hdr->frame_cnt;
+
+			for (u32 fi = 0; fi < n; fi++) {
+				u32 sym_id = pymsg->frames[fi].symbol_id;
+				int32_t inst_idx = pymsg->frames[fi].inst_idx;
+				const char *func_name = pysym_qualname(sym_id);
+				const char *src_path = pysym_filename(sym_id);
+
+				struct wprof_stack_frame frm = {
+					.func_offset = inst_idx,
+					.flags = WSF_PYTHON,
+					.func_name_stroff = strset__add_str(strs, func_name ?: ""),
+					.src_path_stroff = strset__add_str(strs, src_path ?: ""),
+					.line_num = pysym_line_number(sym_id, inst_idx),
+					.addr = 0,
+				};
+
+				if (fwrite(&frm, sizeof(frm), 1, stacks_dump) != 1)
+					return -errno;
+				hdr->frame_cnt += 1;
+			}
+
+			if (py_stack_cnt == py_stack_cap) {
+				size_t new_cap = py_stack_cnt < 64 ? 64 : py_stack_cnt * 4 / 3;
+				py_stacks = realloc(py_stacks, new_cap * sizeof(*py_stacks));
+				py_stack_cap = new_cap;
+			}
+			py_stacks[py_stack_cnt++] = (struct py_stack){
+				.pymsg = pymsg,
+				.start_frame_iid = start_iid,
+				.frame_cnt = n,
+				.pyeval_pos = -1,
+			};
+		}
+	}
+
+	*py_stacks_out = py_stacks;
+	*py_stack_cnt_out = py_stack_cnt;
+	return 0;
+}
+
+/*
+ * Resolve native stack IDs and PyEval insertion positions for each py_stack.
+ * Must be called after native callstack IIDs are assigned, so that
+ * bpf_event_stack_id() returns the correct callstack_iid.
+ */
+static void pystacks_resolve_native_ids(struct worker_state *workers, int worker_cnt,
+					struct symb_state *state,
+					struct native_stack_info *native_stacks, u32 trace_iid,
+					struct py_stack *py_stacks, size_t py_stack_cnt)
+{
+	size_t psi = 0;
+	for (int i = 0; i < worker_cnt && psi < py_stack_cnt; i++) {
+		struct worker_state *w = &workers[i];
+		void *data = w->dump_mem + sizeof(struct wprof_data_hdr);
+		size_t data_sz = w->dump_sz - sizeof(struct wprof_data_hdr);
+
+		const struct bpf_event_record *rec;
+		for_each_bpf_event(rec, data, data_sz) {
+			if (!(rec->e->flags & EF_PYSTACK))
+				continue;
+
+			struct pystack_msg *pymsg = (void *)bpf_event_pystack(rec->e);
+			if (!pymsg || pymsg->stack_len == 0)
+				continue;
+
+			struct py_stack *ps = &py_stacks[psi++];
+
+			u32 native_id = bpf_event_any_stack_id(rec->e);
+			ps->native_id = native_id;
+
+			if (native_id > 0 && native_id < trace_iid && native_stacks[native_id].frame_cnt > 0) {
+				struct native_stack_info *ns = &native_stacks[native_id];
+				int uframe_cnt = ns->frame_cnt - ns->kframe_cnt;
+
+				for (int j = 0; j < uframe_cnt; j++) {
+					const struct stack_frame_index *f = &state->sframe_idx[ns->start_frame_idx + j];
+
+					if (f->sym && f->sym->name && strstr(f->sym->name, "PyEval_EvalFrame")) {
+						ps->pyeval_pos = j;
+						break;
+					}
+				}
+			}
+		}
+	}
+}
+
+/*
+ * Write a range of native frame IDs from a stack frame index into stacks_dump.
+ */
+static int write_native_frame_ids(struct symb_state *state, int start_idx, int from, int to,
+				  FILE *stacks_dump, struct wprof_stacks_hdr *hdr, u32 *mapped_cnt)
+{
+	for (int j = from; j < to; j++) {
+		const struct stack_frame_index *f = &state->sframe_idx[start_idx + j];
+
+		for (int k = 0; k < f->frame_cnt; k++) {
+			u32 fiid = f->frame_cnt > 1 ? f->frame_iids[k] : f->frame_iid;
+			if (fwrite(&fiid, sizeof(fiid), 1, stacks_dump) != 1)
+				return -errno;
+			hdr->frame_mapping_cnt += 1;
+			*mapped_cnt += 1;
+		}
+	}
+	return 0;
+}
+
+/*
+ * Write a range of Python frame IDs into stacks_dump.
+ */
+static int write_py_frame_ids(u32 start_iid, u32 cnt, FILE *stacks_dump,
+			      struct wprof_stacks_hdr *hdr, u32 *mapped_cnt)
+{
+	for (u32 fi = 0; fi < cnt; fi++) {
+		u32 fiid = start_iid + fi;
+		if (fwrite(&fiid, sizeof(fiid), 1, stacks_dump) != 1)
+			return -errno;
+		hdr->frame_mapping_cnt += 1;
+		*mapped_cnt += 1;
+	}
+	return 0;
+}
+
+/*
+ * Write stitched frame mappings that interleave native and Python frames.
+ * Python frames are inserted at the PyEval position in the native stack.
+ */
+static int pystacks_write_frame_mappings(struct symb_state *state,
+					 struct native_stack_info *native_stacks, u32 trace_iid,
+					 FILE *stacks_dump, struct wprof_stacks_hdr *hdr,
+					 struct py_stack *py_stacks, size_t py_stack_cnt)
+{
+	int err;
+
+	for (size_t i = 0; i < py_stack_cnt; i++) {
+		struct py_stack *ps = &py_stacks[i];
+
+		ps->mapped_frame_idx = hdr->frame_mapping_cnt;
+		ps->mapped_frame_cnt = 0;
+
+		struct native_stack_info *ns = NULL;
+		if (ps->native_id > 0 && ps->native_id < trace_iid)
+			ns = &native_stacks[ps->native_id];
+
+		if (ns && ns->frame_cnt > 0) {
+			int insert_pos = ps->pyeval_pos >= 0 ? ps->pyeval_pos : 0;
+
+			err = write_native_frame_ids(state, ns->start_frame_idx, 0, insert_pos,
+						     stacks_dump, hdr, &ps->mapped_frame_cnt);
+			if (err)
+				return err;
+
+			err = write_py_frame_ids(ps->start_frame_iid, ps->frame_cnt,
+						 stacks_dump, hdr, &ps->mapped_frame_cnt);
+			if (err)
+				return err;
+
+			err = write_native_frame_ids(state, ns->start_frame_idx, insert_pos, ns->frame_cnt,
+						     stacks_dump, hdr, &ps->mapped_frame_cnt);
+			if (err)
+				return err;
+		} else {
+			err = write_py_frame_ids(ps->start_frame_iid, ps->frame_cnt,
+						 stacks_dump, hdr, &ps->mapped_frame_cnt);
+			if (err)
+				return err;
+		}
+
+		ps->callstack_iid = trace_iid;
+		ps->pymsg->pystack_id = trace_iid;
+		trace_iid += 1;
+	}
+
+	return 0;
+}
+
 /*
  * SYMBOLIZATION
  */
@@ -632,13 +857,20 @@ int process_stack_traces(struct worker_state *workers, int worker_cnt, FILE *sta
 	/* dedup and assign callstack IIDs */
 	qsort_r(state->strace_idx, state->strace_cnt, sizeof(*state->strace_idx), stack_trace_cmp_by_content, state);
 
+	struct py_stack *py_stacks = NULL;
+	size_t py_stack_cnt = 0;
+
+	err = pystacks_write_frames(workers, worker_cnt, strs, stacks_dump, &hdr, &py_stacks, &py_stack_cnt);
+	if (err)
+		return err;
+
 	hdr.frame_mappings_off = ftell(stacks_dump) - base_off;
 
 	int frame_mapping_idx = 0;
 	u32 trace_iid = 1;
 	for (int i = 0; i < state->strace_cnt; i++) {
 		struct stack_trace_index *t = &state->strace_idx[i];
-		
+
 		if (i > 0 && stack_trace_eq(&state->strace_idx[i - 1], t, state)) {
 			t->mapped_frame_idx = state->strace_idx[i - 1].mapped_frame_idx;
 			t->mapped_frame_cnt = state->strace_idx[i - 1].mapped_frame_cnt;
@@ -679,94 +911,33 @@ int process_stack_traces(struct worker_state *workers, int worker_cnt, FILE *sta
 	}
 
 	/*
-	 * Python stack processing: resolve pystacks_message frames into
-	 * human-readable symbols and assign callstack IIDs continuing
-	 * from native stacks.
+	 * Native+Python stack stitching: resolve native stack IDs,
+	 * find PyEval insertion positions, and write stitched frame mappings.
 	 */
-	struct py_stack {
-		struct pystack_msg *pymsg;
-		u32 start_frame_iid;
-		u32 frame_cnt;
-		u32 mapped_frame_idx;
-		u32 mapped_frame_cnt;
-		u32 callstack_iid;
-	};
-	struct py_stack *py_stacks = NULL;
-	size_t py_stack_cnt = 0, py_stack_cap = 0;
+	struct native_stack_info *native_stacks = calloc(trace_iid, sizeof(*native_stacks));
 
-	for (int i = 0; i < worker_cnt; i++) {
-		struct worker_state *w = &workers[i];
-		void *data = w->dump_mem + sizeof(struct wprof_data_hdr);
-		size_t data_sz = w->dump_sz - sizeof(struct wprof_data_hdr);
+	for (int i = 0; i < state->strace_cnt; i++) {
+		struct stack_trace_index *t = &state->strace_idx[i];
+		int iid = t->callstack_iid;
 
-		const struct bpf_event_record *rec;
-		for_each_bpf_event(rec, data, data_sz) {
-			if (!(rec->e->flags & EF_PYSTACK))
-				continue;
-
-			struct pystack_msg *pymsg = (void *)bpf_event_pystack(rec->e);
-			if (!pymsg || pymsg->stack_len == 0)
-				continue;
-
-			u32 n = pymsg->stack_len;
-			u32 start_iid = hdr.frame_cnt;
-
-			for (u32 fi = 0; fi < n; fi++) {
-				u32 sym_id = pymsg->frames[fi].symbol_id;
-				const char *func_name = pysym_qualname(sym_id);
-				const char *src_path = pysym_filename(sym_id);
-
-				struct wprof_stack_frame frm = {
-					.func_offset = pymsg->frames[fi].inst_idx,
-					.flags = WSF_PYTHON,
-					.func_name_stroff = strset__add_str(strs, func_name ?: ""),
-					.src_path_stroff = strset__add_str(strs, src_path ?: ""),
-					.line_num = pysym_line_number(sym_id, pymsg->frames[fi].inst_idx),
-					.addr = 0,
-				};
-
-				if (fwrite(&frm, sizeof(frm), 1, stacks_dump) != 1) {
-					err = -errno;
-					eprintf("Failed to write Python stack frame: %d\n", err);
-					return err;
-				}
-				hdr.frame_cnt += 1;
-			}
-
-			if (py_stack_cnt == py_stack_cap) {
-				size_t new_cap = py_stack_cnt < 64 ? 64 : py_stack_cnt * 4 / 3;
-				py_stacks = realloc(py_stacks, new_cap * sizeof(*py_stacks));
-				py_stack_cap = new_cap;
-			}
-			py_stacks[py_stack_cnt++] = (struct py_stack){
-				.pymsg = pymsg,
-				.start_frame_iid = start_iid,
-				.frame_cnt = n,
+		if (iid > 0 && iid < (int)trace_iid && native_stacks[iid].frame_cnt == 0) {
+			native_stacks[iid] = (struct native_stack_info){
+				.start_frame_idx = t->start_frame_idx,
+				.frame_cnt = t->frame_cnt,
+				.kframe_cnt = t->kframe_cnt,
 			};
 		}
 	}
 
-	/* Write Python frame mappings and stack traces */
-	for (size_t i = 0; i < py_stack_cnt; i++) {
-		struct py_stack *ps = &py_stacks[i];
+	pystacks_resolve_native_ids(workers, worker_cnt, state, native_stacks, trace_iid,
+				    py_stacks, py_stack_cnt);
 
-		ps->mapped_frame_idx = hdr.frame_mapping_cnt;
-		ps->mapped_frame_cnt = ps->frame_cnt;
+	err = pystacks_write_frame_mappings(state, native_stacks, trace_iid, stacks_dump, &hdr,
+					    py_stacks, py_stack_cnt);
+	if (err)
+		return err;
 
-		for (u32 fi = 0; fi < ps->frame_cnt; fi++) {
-			u32 fiid = ps->start_frame_iid + fi;
-			if (fwrite(&fiid, sizeof(fiid), 1, stacks_dump) != 1) {
-				err = -errno;
-				eprintf("Failed to write Python frame mapping: %d\n", err);
-				return err;
-			}
-			hdr.frame_mapping_cnt += 1;
-		}
-
-		ps->callstack_iid = trace_iid;
-		ps->pymsg->pystack_id = trace_iid;
-		trace_iid += 1;
-	}
+	free(native_stacks);
 
 	hdr.stacks_off = ftell(stacks_dump) - base_off;
 	/* Add dummy all-zero stack trace record to have all the stack IDs
@@ -1053,6 +1224,26 @@ u32 bpf_event_stack_id(const struct wprof_event *e, enum stack_trace_kind kind)
 	tr = (void *)e + e->sz + bpf_event_pmu_vals_sz(e);
 	while (st_mask) {
 		if (tr->kind == kind && tr->stack_id > 0)
+			return tr->stack_id;
+
+		st_mask &= ~tr->kind;
+		tr = (void *)tr + stack_trace_sz(tr);
+	}
+
+	return 0;
+}
+
+u32 bpf_event_any_stack_id(const struct wprof_event *e)
+{
+	enum stack_trace_kind st_mask = e->flags & EF_STACK_TRACE_MSK;
+	struct stack_trace *tr;
+
+	if (!st_mask)
+		return 0;
+
+	tr = (void *)e + e->sz + bpf_event_pmu_vals_sz(e);
+	while (st_mask) {
+		if (tr->stack_id > 0)
 			return tr->stack_id;
 
 		st_mask &= ~tr->kind;

@@ -83,6 +83,7 @@ static inline const void *bpf_event_pystack(const struct wprof_event *e)
 }
 
 u32 bpf_event_stack_id(const struct wprof_event *e, enum stack_trace_kind kind);
+u32 bpf_event_any_stack_id(const struct wprof_event *e);
 
 static inline u32 bpf_event_pystack_id(const struct wprof_event *e)
 {
