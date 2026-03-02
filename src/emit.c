@@ -1045,7 +1045,7 @@ static int process_timer(struct worker_state *w, const struct wevent *e)
 
 	int tr_id = (env.requested_stack_traces & ST_TIMER) ? e->timer.timer_stack_id : 0;
 
-	/* TODO: implement proper native+Python stack stitching */
+	/* use stitched native+Python callstack when available */
 	if (e->timer.pystack_id > 0)
 		tr_id = e->timer.pystack_id;
 
@@ -1217,7 +1217,7 @@ skip_waker_task:
 			emit_kv_str(IID_ANNK_RENAMED_TO, task.comm);
 
 		if (env.requested_stack_traces & ST_OFFCPU) {
-			/* TODO: implement proper native+Python stack stitching */
+			/* use stitched native+Python callstack when available */
 			u32 stack_id = e->swtch.pystack_id > 0 ? e->swtch.pystack_id : e->swtch.offcpu_stack_id;
 			emit_callstack(w, stack_id);
 		}
