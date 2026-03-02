@@ -9,6 +9,19 @@
 #include "wprof.h"
 #include "wprof.bpf.h"
 
+#include "strobelight/bpf_lib/python/include/structs.h"
+
+int pystacks_read_stacks(struct pt_regs *ctx, struct task_struct *task,
+			 struct pystacks_message *py_msg_buffer);
+
+/* per-CPU scratch buffer for receiving pystacks data */
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, u32);
+	__type(value, struct pystacks_message);
+} wprof_pymsg_heap SEC(".maps");
+
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 struct cpu_state {
@@ -105,6 +118,8 @@ const volatile u64 rb_submit_threshold_bytes;
 const volatile enum stack_trace_kind requested_stack_traces = ST_ALL;
 const volatile bool capture_scx = true;
 const volatile bool capture_scx_layer_id = false;
+
+bool capture_pystacks = false;
 
 static int zero = 0;
 static struct task_state empty_task_state;
@@ -503,6 +518,32 @@ static __always_inline bool init_wprof_event(struct wprof_event *e, u32 sz, enum
 	     e && __ctx.ev && init_wprof_event(e, fix_sz /*+ dyn_sz*/, kind, ts, task);		\
 	     __ctx.ev = NULL)
 
+static int emit_pystacks(struct pystacks_message *pymsg, int py_sz, struct bpf_dynptr *dptr, size_t offset)
+{
+	if (py_sz <= 0)
+		return -ENODATA;
+	barrier_var(py_sz);
+	if (py_sz > (int)sizeof(*pymsg))
+		return -E2BIG;
+	return bpf_dynptr_write(dptr, offset, pymsg, py_sz, 0);
+}
+
+static struct pystacks_message *capture_pystack(struct task_struct *task, int *py_sz)
+{
+	int key = 0;
+	struct pystacks_message *pymsg = bpf_map_lookup_elem(&wprof_pymsg_heap, &key);
+	if (!pymsg) {
+		*py_sz = 0;
+		return NULL;
+	}
+
+	struct pt_regs *regs = (struct pt_regs *)bpf_task_pt_regs(task);
+	*py_sz = pystacks_read_stacks(regs, task, pymsg);
+	if (*py_sz > 0)
+		(void)inc_stat(pystacks_found);
+	return pymsg;
+}
+
 void emit_scx_dsq_event(u64 end_ts, struct task_struct *task, struct task_state *s)
 {
 	struct wprof_event *e;
@@ -530,16 +571,27 @@ int wprof_timer_tick(void *ctx)
 	struct wprof_event *e;
 	struct bpf_dynptr *dptr;
 	struct stack_trace *tr = NULL;
-	size_t dyn_sz = 0;
+	size_t tr_sz = 0;
 	size_t fix_sz = EV_SZ(timer);
 
 	if (requested_stack_traces & ST_TIMER)
-		tr = grab_stack_trace(ctx, NULL, ST_TIMER, &dyn_sz);
+		tr = grab_stack_trace(ctx, NULL, ST_TIMER, &tr_sz);
 
-	emit_task_event_dyn(e, dptr, fix_sz, dyn_sz, EV_TIMER, now_ts, cur) {
+	struct pystacks_message *pymsg = NULL;
+	int py_sz = 0;
+	if (capture_pystacks) {
+		(void)inc_stat(pystacks_attempted);
+		pymsg = capture_pystack(cur, &py_sz);
+	}
+
+	emit_task_event_dyn(e, dptr, fix_sz, tr_sz + py_sz, EV_TIMER, now_ts, cur) {
 		if (tr) {
-			emit_stack_trace(tr, dyn_sz, dptr, fix_sz);
+			emit_stack_trace(tr, tr_sz, dptr, fix_sz);
 			e->flags |= ST_TIMER;
+		}
+		if (pymsg && py_sz > 0) {
+			emit_pystacks(pymsg, py_sz, dptr, fix_sz + tr_sz);
+			e->flags |= EF_PYSTACK;
 		}
 	}
 
@@ -598,6 +650,13 @@ int BPF_PROG(wprof_task_switch,
 	if (requested_stack_traces & ST_OFFCPU)
 		tr_out = grab_stack_trace(ctx, NULL, ST_OFFCPU, &tr_out_sz);
 
+	struct pystacks_message *pymsg = NULL;
+	int py_sz = 0;
+	if (capture_pystacks) {
+		(void)inc_stat(pystacks_attempted);
+		pymsg = capture_pystack(prev, &py_sz);
+	}
+
 	int scx_layer_id = -1;
 	u64 scx_dsq_id = 0;
 	if (capture_scx) {
@@ -606,7 +665,7 @@ int BPF_PROG(wprof_task_switch,
 		handle_dsq(now_ts, next, snext);
 	}
 
-	emit_task_event_dyn(e, dptr, fix_sz, pmu_sz + tr_out_sz, EV_SWITCH, now_ts, prev) {
+	emit_task_event_dyn(e, dptr, fix_sz, pmu_sz + tr_out_sz + py_sz, EV_SWITCH, now_ts, prev) {
 		e->swtch.prev_task_state = prev->__state;
 		e->swtch.last_next_task_state = snext->last_task_state;
 		e->swtch.prev_prio = prev->prio;
@@ -629,6 +688,10 @@ int BPF_PROG(wprof_task_switch,
 		if (tr_out) {
 			emit_stack_trace(tr_out, tr_out_sz, dptr, fix_sz + pmu_sz);
 			e->flags |= ST_OFFCPU;
+		}
+		if (pymsg && py_sz > 0) {
+			emit_pystacks(pymsg, py_sz, dptr, fix_sz + pmu_sz + tr_out_sz);
+			e->flags |= EF_PYSTACK;
 		}
 
 		e->swtch.next_task_scx_layer_id = scx_layer_id;

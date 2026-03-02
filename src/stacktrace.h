@@ -5,6 +5,7 @@
 
 #include <stddef.h>
 #include "env.h"
+#include "pysym.h"
 
 #define DEBUG_SYMBOLIZATION 0
 
@@ -56,7 +57,41 @@ static inline const u64 *bpf_event_pmu_vals(const struct wprof_event *e)
 	return (const u64 *)((void *)e + e->sz);
 }
 
+static inline size_t bpf_event_stack_traces_sz(const struct wprof_event *e)
+{
+	enum stack_trace_kind st_mask = e->flags & EF_STACK_TRACE_MSK;
+	size_t total = 0;
+
+	if (!st_mask)
+		return 0;
+
+	const struct stack_trace *tr = (void *)e + e->sz + bpf_event_pmu_vals_sz(e);
+	while (st_mask) {
+		size_t sz = stack_trace_sz(tr);
+		total += sz;
+		st_mask &= ~tr->kind;
+		tr = (const void *)tr + sz;
+	}
+	return total;
+}
+
+static inline const void *bpf_event_pystack(const struct wprof_event *e)
+{
+	if (!(e->flags & EF_PYSTACK))
+		return NULL;
+	return (void *)e + e->sz + bpf_event_pmu_vals_sz(e) + bpf_event_stack_traces_sz(e);
+}
+
 u32 bpf_event_stack_id(const struct wprof_event *e, enum stack_trace_kind kind);
+
+static inline u32 bpf_event_pystack_id(const struct wprof_event *e)
+{
+	const struct pystack_msg *pymsg = bpf_event_pystack(e);
+
+	if (!pymsg)
+		return 0;
+	return pymsg->pystack_id;
+}
 
 int process_stack_traces(struct worker_state *workers, int worker_cnt, FILE *stacks_file);
 int generate_stack_traces(struct worker_state *w);

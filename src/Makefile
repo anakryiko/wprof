@@ -138,6 +138,7 @@ $(LIBDEMANGLE_OBJ): $(LIBDEMANGLE_SRC)/target/release/libdemangle_c.a | $(OUTPUT
 $(OUTPUT)/%.bpf.o: %.bpf.c $(LIBBPF_OBJ) $(wildcard %.h) $(VMLINUX) | $(OUTPUT) $(BPFTOOL)
 	$(call msg,BPF,$@)
 	$(Q)$(CLANG) -g -Wall -O2 -target bpf -mcpu=v4 -D__TARGET_ARCH_$(ARCH)			\
+		     $(PYSTACKS_CFLAGS)								\
 		     $(INCLUDES) $(CLANG_BPF_SYS_INCLUDES)		      			\
 		     -c $(filter %.c,$^) -o $(patsubst %.bpf.o,%.tmp.bpf.o,$@)
 	$(Q)$(BPFTOOL) gen object $@ $(patsubst %.bpf.o,%.tmp.bpf.o,$@)
@@ -181,11 +182,11 @@ WPROF_SRCS := wprof.c utils.c env.c protobuf.c emit.c stacktrace.c pmu.c			\
 	      pb_common.c pb_encode.c perfetto_trace.pb.c topology.c proc.c			\
 	      requests.c cuda.c inject.c sys.c elf_utils.c merge.c persist.c			\
 	      cupti_driver_cbid_map.gen.c cupti_runtime_cbid_map.gen.c		\
-				pystacks.c pydisc.c
+				pystacks.c pydisc.c pysym.c pyline.c
 WPROF_HDRS := wprof.h utils.h env.h protobuf.h emit.h stacktrace.h data.h topology.h pmu.h	\
 	      proc.h requests.h cuda.h inj_common.h inject.h sys.h elf_utils.h cuda_data.h 	\
 	      wprof_types.h demangle.h merge.h wevent.h persist.h		\
-				pystacks.h pyoffsets.h
+				pystacks.h pyoffsets.h pysym.h pyline.h
 WPROF_OBJS := $(patsubst %.c,$(OUTPUT)/%.o,$(WPROF_SRCS))
 
 WPROFINJ_SRCS := inj_lib.c inj_strset.c inj_hashmap.c inj_cupti.c

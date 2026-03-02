@@ -60,6 +60,8 @@ struct wprof_stats {
 	u64 rb_misses;
 	u64 task_state_drops;
 	u64 req_state_drops;
+	u64 pystacks_attempted;
+	u64 pystacks_found;
 };
 
 enum event_kind {

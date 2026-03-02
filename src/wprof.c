@@ -52,6 +52,7 @@
 #include "merge.h"
 #include "../libbpf/src/strset.h"
 #include "pystacks.h"
+#include "pysym.h"
 
 static bool ignore_libbpf_warns;
 
@@ -217,6 +218,8 @@ skip_prog_stats:
 	for (int i = 0; i < num_cpus; i++) {
 		s.task_state_drops += stats_by_cpu[i].task_state_drops;
 		s.req_state_drops += stats_by_cpu[i].req_state_drops;
+		s.pystacks_attempted += stats_by_cpu[i].pystacks_attempted;
+		s.pystacks_found += stats_by_cpu[i].pystacks_found;
 
 		s.rb_rescues += stats_by_cpu[i].rb_rescues;
 		s.rb_misses += stats_by_cpu[i].rb_misses;
@@ -329,6 +332,10 @@ skip_rusage:
 		eprintf("!!! Task state drops: %llu\n", s.task_state_drops);
 	if (s.req_state_drops)
 		eprintf("!!! Request state drops: %llu\n", s.req_state_drops);
+	if (s.pystacks_attempted)
+		wprintf("Pystacks: %llu attempted, %llu found (%.1lf%%)\n",
+			s.pystacks_attempted, s.pystacks_found,
+			s.pystacks_found * 100.0 / s.pystacks_attempted);
 
 	wprintf("Exited %s (after %.3lfs).\n",
 		exit_code ? "with errors" : "cleanly",
@@ -1484,6 +1491,15 @@ int main(int argc, char **argv)
 	wprintf("Draining...\n");
 	drain_bpf(&bpf_state, num_cpus);
 
+	if (env.capture_pystacks && bpf_state.skel) {
+		err = pysym_init(bpf_map__fd(bpf_state.skel->maps.pystacks_symbols),
+				 bpf_map__fd(bpf_state.skel->maps.pystacks_linetables));
+		if (err) {
+			eprintf("Failed to initialize Python symbol table: %d\n", err);
+			goto cleanup;
+		}
+	}
+
 	if (env.cuda_cnt == 0) {
 		/* ensure we don't record CUDA data as available in wprof.data */
 		env.requested_stack_traces &= ~ST_CUDA;
@@ -1495,6 +1511,8 @@ int main(int argc, char **argv)
 		eprintf("Failed to finalize data dump: %d\n", err);
 		goto cleanup;
 	}
+
+	pysym_free();
 
 	/* we delayed ptrace retraction to symbolize libwprofinj.so stacks */
 	if (env.requested_stack_traces && env.cuda_cnt > 0)

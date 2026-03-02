@@ -221,11 +221,13 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 		dst->swtch.next_task_scx_layer_id = e->swtch.next_task_scx_layer_id;
 		dst->swtch.next_task_scx_dsq_id = e->swtch.next_task_scx_dsq_id;
 		dst->swtch.offcpu_stack_id = bpf_event_stack_id(e, ST_OFFCPU);
+		dst->swtch.pystack_id = bpf_event_pystack_id(e);
 		break;
 	}
 	case EV_TIMER:
 		fill_wevent_hdr(dst, e, task_id, WEVENT_SZ(timer));
 		dst->timer.timer_stack_id = bpf_event_stack_id(e, ST_TIMER);
+		dst->timer.pystack_id = bpf_event_pystack_id(e);
 		break;
 
 	case EV_WAKING: {
