@@ -1134,7 +1134,11 @@ int generate_stack_traces(struct worker_state *w)
 	wprof_for_each_stack_trace(trec, w->dump_hdr, 0) {
 		if (!bit_is_set(w->stacks_used, trec->idx))
 			continue;
+
 		for (int i = 0; i < trec->frame_cnt; i++) {
+			struct wprof_stack_frame *f = wprof_stacks_frame(w->dump_hdr, trec->frame_ids[i]);
+			if (env.emit_pystacks_only && !(f->flags & WSF_PYTHON))
+				continue;
 			append_callstack_frame_iid(&strace_iids.callstacks, trec->idx, trec->frame_ids[i]);
 		}
 	}
@@ -1166,7 +1170,10 @@ int generate_stack_traces(struct worker_state *w)
 				stripped = strstr(src, "#link-tree/");
 				if (stripped)
 					src = stripped + 11; /* strlen("#link-tree/") == 11 */
-				snprintf(sym_buf, sizeof(sym_buf), "[%s] %s (%s:%u)", prefix, sym_name, src, f->line_num);
+				if (env.emit_pystacks_only)
+					snprintf(sym_buf, sizeof(sym_buf), "%s (%s:%u)", sym_name, src, f->line_num);
+				else
+					snprintf(sym_buf, sizeof(sym_buf), "[%s] %s (%s:%u)", prefix, sym_name, src, f->line_num);
 			}
 			else
 				snprintf(sym_buf, sizeof(sym_buf), "[%s] %s%s",
@@ -1205,11 +1212,20 @@ void mark_stack_trace_used(struct worker_state *w, int stack_id)
 	if (!trec)
 		return;
 
-	if (bit_set(w->stacks_used, stack_id))
+	if (bit_is_set(w->stacks_used, trec->idx))
 		return; /* already marked as used */
 
-	for (int i = 0; i < trec->frame_cnt; i++)
+	bool has_frames = false;
+	for (int i = 0; i < trec->frame_cnt; i++) {
+		struct wprof_stack_frame *f = wprof_stacks_frame(w->dump_hdr, trec->frame_ids[i]);
+		if (env.emit_pystacks_only && !(f->flags & WSF_PYTHON))
+			continue;
 		bit_set(w->frames_used, trec->frame_ids[i]);
+		has_frames = true;
+	}
+
+	if (has_frames)
+		bit_set(w->stacks_used, stack_id);
 }
 
 /* stack_id of the trailing stack trace, already resolved by process_stack_traces() */
