@@ -129,7 +129,7 @@ static const struct argp_option opts[] = {
 
 	/* trace emitting options */
 	{ "emit-feature", 'e', "FEAT", 0,
-	  "Trace visualization feature. Supported: sched, sched-extras, numa, tidpid, timer-ticks, req-extras" },
+	  "Trace visualization feature. Supported: sched, sched-extras, numa, tidpid, timer-ticks, req-extras, py-stacks-only" },
 
 	/* tuning */
 	{ "ringbuf-size", OPT_RINGBUF_SZ, "SIZE", 0, "BPF ringbuf size (in KBs)" },
@@ -404,6 +404,8 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			env.emit_sched_view = true;
 		} else if (strcasecmp(arg, "sched-extras") == 0) {
 			env.emit_sched_extras = true;
+		} else if (strcasecmp(arg, "py-stacks-only") == 0) {
+			env.emit_pystacks_only = true;
 		} else {
 			fprintf(stderr, "Unrecognized emit feature '%s!\n", arg);
 			return -EINVAL;
