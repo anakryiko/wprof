@@ -97,8 +97,13 @@ static inline u32 bpf_event_pystack_id(const struct wprof_event *e)
 int process_stack_traces(struct worker_state *workers, int worker_cnt, FILE *stacks_file);
 int generate_stack_traces(struct worker_state *w);
 
+enum callstack_fmt {
+	CS_FMT_FUNC_OFFSET	= 1 << 0, /* append +0xNNN function offset */
+	CS_FMT_PY_SRC		= 1 << 1, /* embed Python source path:line into name */
+};
+
 const char *format_stack_frame(struct wprof_data_hdr *hdr, const struct wprof_stack_frame *f,
-			       char *buf, size_t buf_sz, bool include_offset);
+			       char *buf, size_t buf_sz, enum callstack_fmt fmt);
 
 void mark_stack_trace_used(struct worker_state *w, int stack_id);
 

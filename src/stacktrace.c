@@ -1114,7 +1114,7 @@ static __always_inline bool bit_is_set(u64 *bitmask, int id)
 }
 
 const char *format_stack_frame(struct wprof_data_hdr *hdr, const struct wprof_stack_frame *f,
-			       char *buf, size_t buf_sz, bool include_offset)
+			       char *buf, size_t buf_sz, enum callstack_fmt fmt)
 {
 	const char *sym_name = f->func_name_stroff ? wprof_stacks_str(hdr, f->func_name_stroff) : NULL;
 	if (!sym_name)
@@ -1123,7 +1123,7 @@ const char *format_stack_frame(struct wprof_data_hdr *hdr, const struct wprof_st
 	const char *prefix = (f->flags & WSF_PYTHON) ? "Py" : (f->flags & WSF_KERNEL) ? "K" : "U";
 	const char *src = f->src_path_stroff ? wprof_stacks_str(hdr, f->src_path_stroff) : NULL;
 
-	if ((f->flags & WSF_PYTHON) && src && src[0] && f->line_num > 0) {
+	if ((f->flags & WSF_PYTHON) && (fmt & CS_FMT_PY_SRC) && src && src[0] && f->line_num > 0) {
 		/* strip container overlay prefix: /dev/shm/.../...-ns-NNNNN/path → path */
 		const char *stripped = strstr(src, "ns-");
 		if (stripped) {
@@ -1141,7 +1141,7 @@ const char *format_stack_frame(struct wprof_data_hdr *hdr, const struct wprof_st
 			snprintf(buf, buf_sz, "[%s] %s (%s:%u)", prefix, sym_name, src, f->line_num);
 	} else {
 		const char *inlined = (f->flags & WSF_INLINED) ? " (inlined)" : "";
-		if (include_offset && f->func_offset)
+		if ((fmt & CS_FMT_FUNC_OFFSET) && f->func_offset)
 			snprintf(buf, buf_sz, "[%s] %s+0x%llx%s", prefix, sym_name, (unsigned long long)f->func_offset, inlined);
 		else
 			snprintf(buf, buf_sz, "[%s] %s%s", prefix, sym_name, inlined);
@@ -1188,7 +1188,7 @@ int generate_stack_traces(struct worker_state *w)
 		struct wprof_stack_frame *f = frec->f;
 		pb_iid fname_iid = f->flags & WSF_KERNEL ? kern_unkn_iid : user_unkn_iid;
 		bool new_iid = false;
-		const char *sym_name = format_stack_frame(w->dump_hdr, f, sym_buf, sizeof(sym_buf), false);
+		const char *sym_name = format_stack_frame(w->dump_hdr, f, sym_buf, sizeof(sym_buf), CS_FMT_PY_SRC);
 
 		if (sym_name && (fname_iid = str_iid_for(&fname_iids, sym_name, &new_iid, &sym_name)) && new_iid)
 			append_str_iid(&strace_iids.func_names, fname_iid, sym_name);

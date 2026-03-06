@@ -215,9 +215,16 @@ $(OUTPUT)/libwprofinj_embed.o: $(OUTPUT)/libwprofinj.so
 		--defsym libwprofinj_so_end=_binary__output_libwprofinj_so_end			\
 		--defsym libwprofinj_so_size=_binary__output_libwprofinj_so_size
 
+$(OUTPUT)/json_schema_embed.o: ../JSON_SCHEMA.md
+	$(call msg,LD,$@)
+	$(Q)$(LD) -r -b binary $< -o $@								\
+		--defsym json_schema_start=_binary____JSON_SCHEMA_md_start			\
+		--defsym json_schema_end=_binary____JSON_SCHEMA_md_end
+
 # Build application binary
 wprof: $(WPROF_HDRS) $(WPROF_OBJS)								\
 		$(OUTPUT)/libwprofinj_embed.o							\
+		$(OUTPUT)/json_schema_embed.o							\
 		$(LIBBPF_OBJ) $(LIBBLAZESYM_OBJ) $(LIBDEMANGLE_OBJ) | $(OUTPUT)
 	$(call msg,BINARY,$@)
 	$(Q)$(CC) $(ALL_CFLAGS) $(filter %.c %.a %.o,$^) $(ALL_LDFLAGS) $(if $(STATIC),--static) -lelf -lz -lzstd -o $@

@@ -94,7 +94,7 @@ jobs:
           # Validate binary dump with replay mode
           ./wprof -R -I -D wprof-stacks.data || { echo "✗ Failed: wprof-stacks.data validation failed"; exit 1; }
           # Validate stack traces were captured
-          ./wprof -R -I -D wprof-stacks.data | grep -q "Stack traces:.*[1-9]" || { echo "✗ Failed: No stack traces captured"; exit 1; }
+          ./wprof -R -I -D wprof-stacks.data 2>&1 | grep -q "Stack traces:.*[1-9]" || { echo "✗ Failed: No stack traces captured"; exit 1; }
           # Validate Perfetto trace and count packets
           PACKET_COUNT=$(protoc --decode=perfetto.protos.Trace perfetto_trace.proto < trace-stacks.pb 2>/dev/null | grep -c "packet {" || echo "0")
           TRACE_SIZE=$(ls -lh trace-stacks.pb | awk '{print $5}')

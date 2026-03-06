@@ -866,6 +866,30 @@ static void emit_perf_counters(const u64 *st_ctrs, const u64 *ev_ctrs, bool diff
 	}
 }
 
+static void json_pmu_counters(struct json_state *j, const u64 *st_ctrs, const u64 *ev_ctrs, bool diffs)
+{
+	if (!ev_ctrs)
+		return;
+	if (!diffs && !st_ctrs)
+		return;
+
+	json_subarr_start(j, "pmus");
+	for (int i = 0; i < env.pmu_real_cnt; i++) {
+		const struct pmu_event *ev = &env.pmu_reals[i];
+		double value = diffs ? ev_ctrs[ev->stored_idx] : ev_ctrs[ev->stored_idx] - st_ctrs[ev->stored_idx];
+		json_arr_float(j, "%.6lf", value);
+	}
+	for (int i = 0; i < env.pmu_deriv_cnt; i++) {
+		const struct pmu_event *ev = &env.pmu_derivs[i];
+		int num_idx = (int)ev->config1;
+		int denom_idx = (int)ev->config2;
+		double num = diffs ? ev_ctrs[num_idx] : ev_ctrs[num_idx] - st_ctrs[num_idx];
+		double denom = diffs ? ev_ctrs[denom_idx] : ev_ctrs[denom_idx] - st_ctrs[denom_idx];
+		json_arr_float(j, "%.6lf", num / denom);
+	}
+	json_arr_end(j);
+}
+
 static struct task_state *task_state_try_get(struct worker_state *w, const struct wprof_task *t)
 {
 	unsigned long key = t->tid;
@@ -1061,7 +1085,7 @@ static int process_timer(struct worker_state *w, const struct wevent *e)
 	if (!should_trace_task(&task))
 		return 0;
 
-	if (env.json)
+	if (env.json_path)
 		emit_timer_json(w, e);
 	else
 		emit_timer(w, e);
@@ -1381,18 +1405,27 @@ static void emit_switch_json(struct worker_state *w, const struct wevent *e, str
 	if (env.emit_numa)
 		json_kv_int(j, "numa", e->numa_node);
 	json_kv_str(j, "prev_state", s->prev_preempted ? "preempted" : "blocked");
+	json_kv_int(j, "prev_prio", e->swtch.prev_prio);
+	json_kv_int(j, "next_prio", e->swtch.next_prio);
 	if (e->swtch.waking_ts) {
 		json_kv_ts(j, "waking_ts", e->swtch.waking_ts - env.sess_start_ts);
 		json_kv_str(j, "waking_reason", wreason_str(e->swtch.waking_flags));
 		json_task(j, "waker", &waker);
 		json_kv_int(j, "waking_cpu", e->swtch.waker_cpu);
 	}
-	if (s->next_offcpu_dur_ns)
+	if (s->next_offcpu_dur_ns) {
 		json_kv_ts(j, "offcpu_dur", s->next_offcpu_dur_ns);
+		json_kv_str(j, "next_state", s->next_was_preempted ? "preempted" : "blocked");
+	}
 	if ((env.requested_stack_traces & ST_OFFCPU) && e->swtch.offcpu_stack_id > 0)
 		json_kv_int(j, "offcpu_stack_id", e->swtch.offcpu_stack_id);
 	if (s->waker_callstack_id > 0)
 		json_kv_int(j, "waker_stack_id", s->waker_callstack_id);
+	if (s->next_st && s->next_st->compound_delay_ns) {
+		json_kv_ts(j, "compound_delay", s->next_st->compound_delay_ns);
+		json_kv_int(j, "compound_chain_len", s->next_st->compound_chain_len);
+	}
+	json_pmu_counters(j, s->prev_oncpu_ctrs, s->pmu_vals, false);
 	json_obj_end(j);
 }
 
@@ -1473,7 +1506,7 @@ static int process_switch(struct worker_state *w, const struct wevent *e)
 		s.next_st->run_state = TASK_STATE_RUNNING;
 	}
 
-	if (env.json) {
+	if (env.json_path) {
 		if (s.trace_prev || s.trace_next)
 			emit_switch_json(w, e, &s);
 	} else {
@@ -1553,7 +1586,7 @@ static int process_fork(struct worker_state *w, const struct wevent *e)
 	if (!should_trace_task(&task) && !should_trace_task(&child))
 		return 0;
 
-	if (env.json)
+	if (env.json_path)
 		emit_fork_json(w, e);
 	else
 		emit_fork(w, e);
@@ -1605,7 +1638,7 @@ static int process_exec(struct worker_state *w, const struct wevent *e)
 	if (!should_trace_task(&task))
 		return 0;
 
-	if (env.json)
+	if (env.json_path)
 		emit_exec_json(w, e);
 	else
 		emit_exec(w, e);
@@ -1664,7 +1697,7 @@ static int process_task_rename(struct worker_state *w, const struct wevent *e)
 	if (!should_trace_task(&task))
 		return 0;
 
-	if (env.json) {
+	if (env.json_path) {
 		emit_task_rename_json(w, e);
 		return 0;
 	}
@@ -1722,7 +1755,7 @@ static int process_task_exit(struct worker_state *w, const struct wevent *e)
 	if (!should_trace_task(&task))
 		return 0;
 
-	if (env.json)
+	if (env.json_path)
 		emit_task_exit_json(w, e);
 	else
 		emit_task_exit(w, e);
@@ -1766,7 +1799,7 @@ static int process_task_free(struct worker_state *w, const struct wevent *e)
 	if (!should_trace_task(&task))
 		goto skip_emit;
 
-	if (env.json)
+	if (env.json_path)
 		emit_task_free_json(w, e);
 	else
 		emit_task_free(w, e);
@@ -1806,7 +1839,7 @@ static int process_wakeup_new(struct worker_state *w, const struct wevent *e)
 	struct task_state *wakee_st = task_state(w, &wakee);
 	wakee_st->waker_callstack_id = tr_id;
 
-	if (!env.json)
+	if (!env.json_path)
 		emit_wakeup_new(w, e);
 	return 0;
 }
@@ -1839,7 +1872,7 @@ static int process_waking(struct worker_state *w, const struct wevent *e)
 	struct task_state *wakee_st = task_state(w, &wakee);
 	wakee_st->waker_callstack_id = tr_id;
 
-	if (!env.json)
+	if (!env.json_path)
 		emit_waking(w, e);
 	return 0;
 }
@@ -1894,6 +1927,7 @@ static void emit_hardirq_exit_json(struct worker_state *w, const struct wevent *
 		json_kv_int(j, "numa", e->numa_node);
 	json_kv_int(j, "irq", e->hardirq.irq);
 	json_kv_str(j, "action", wevent_str(hdr, e->hardirq.name_stroff));
+	json_pmu_counters(j, NULL, wevent_pmu_vals(hdr, e->hardirq.pmu_vals_id), true);
 	json_obj_end(j);
 }
 
@@ -1904,7 +1938,7 @@ static int process_hardirq_exit(struct worker_state *w, const struct wevent *e)
 	if (!should_trace_task(&task))
 		return 0;
 
-	if (env.json)
+	if (env.json_path)
 		emit_hardirq_exit_json(w, e);
 	else
 		emit_hardirq_exit(w, e);
@@ -1963,6 +1997,7 @@ static void emit_softirq_exit_json(struct worker_state *w, const struct wevent *
 	if (env.emit_numa)
 		json_kv_int(j, "numa", e->numa_node);
 	json_kv_str(j, "action", softirq_str(e->softirq.vec_nr));
+	json_pmu_counters(j, NULL, wevent_pmu_vals(w->dump_hdr, e->softirq.pmu_vals_id), true);
 	json_obj_end(j);
 }
 
@@ -1973,7 +2008,7 @@ static int process_softirq_exit(struct worker_state *w, const struct wevent *e)
 	if (!should_trace_task(&task))
 		return 0;
 
-	if (env.json)
+	if (env.json_path)
 		emit_softirq_exit_json(w, e);
 	else
 		emit_softirq_exit(w, e);
@@ -2025,6 +2060,7 @@ static void emit_wq_end_json(struct worker_state *w, const struct wevent *e)
 	if (env.emit_numa)
 		json_kv_int(j, "numa", e->numa_node);
 	json_kv_str(j, "desc", wevent_str(hdr, e->wq.desc_stroff));
+	json_pmu_counters(j, NULL, wevent_pmu_vals(hdr, e->wq.pmu_vals_id), true);
 	json_obj_end(j);
 }
 
@@ -2035,7 +2071,7 @@ static int process_wq_end(struct worker_state *w, const struct wevent *e)
 	if (!should_trace_task(&task))
 		return 0;
 
-	if (env.json)
+	if (env.json_path)
 		emit_wq_end_json(w, e);
 	else
 		emit_wq_end(w, e);
@@ -2113,7 +2149,7 @@ static int process_scx_dsq_end(struct worker_state *w, const struct wevent *e)
 	if (!should_trace_task(&task))
 		return 0;
 
-	if (env.json)
+	if (env.json_path)
 		emit_scx_dsq_end_json(w, e);
 	else
 		emit_scx_dsq_end(w, e);
@@ -2170,7 +2206,7 @@ static int process_ipi_send(struct worker_state *w, const struct wevent *e)
 	if (!should_trace_task(&task))
 		return 0;
 
-	if (env.json)
+	if (env.json_path)
 		emit_ipi_send_json(w, e);
 	else
 		emit_ipi_send(w, e);
@@ -2232,6 +2268,7 @@ static void emit_ipi_exit_json(struct worker_state *w, const struct wevent *e)
 		json_kv_int(j, "sender_cpu", e->ipi.send_cpu);
 		json_kv_ts(j, "ipi_delay", e->ipi.ipi_ts - e->ipi.send_ts);
 	}
+	json_pmu_counters(j, NULL, wevent_pmu_vals(w->dump_hdr, e->ipi.pmu_vals_id), true);
 	json_obj_end(j);
 }
 
@@ -2242,7 +2279,7 @@ static int process_ipi_exit(struct worker_state *w, const struct wevent *e)
 	if (!should_trace_task(&task))
 		return 0;
 
-	if (env.json)
+	if (env.json_path)
 		emit_ipi_exit_json(w, e);
 	else
 		emit_ipi_exit(w, e);
@@ -2467,7 +2504,7 @@ static int process_req_event(struct worker_state *w, const struct wevent *e)
 		exit(1);
 	}
 
-	if (env.json)
+	if (env.json_path)
 		emit_req_event_json(w, e);
 	else
 		emit_req_event(w, e);
@@ -2579,7 +2616,7 @@ static int process_req_task_event(struct worker_state *w, const struct wevent *e
 	if (w->req_allowlist.ids && !req_allowlist_has(&w->req_allowlist, task.pid, e->req_task.req_id))
 		return 0;
 
-	if (env.json)
+	if (env.json_path)
 		emit_req_task_event_json(w, e);
 	else
 		emit_req_task_event(w, e);
@@ -2761,6 +2798,7 @@ static void emit_cuda_kernel_json(struct worker_state *w, const struct wevent *e
 	json_arr_int(j, cu->block_y);
 	json_arr_int(j, cu->block_z);
 	json_arr_end(j);
+	json_kv_int(j, "corr_id", cu->corr_id);
 	json_obj_end(j);
 }
 
@@ -2772,7 +2810,7 @@ static int process_cuda_kernel(struct worker_state *w, const struct wevent *e)
 	if (!is_time_range_in_session(e->ts, e->cuda_kernel.end_ts))
 		return 0;
 
-	if (env.json)
+	if (env.json_path)
 		emit_cuda_kernel_json(w, e);
 	else
 		emit_cuda_kernel(w, e);
@@ -2845,6 +2883,7 @@ static void emit_cuda_memcpy_json(struct worker_state *w, const struct wevent *e
 	json_kv_str(j, "dst_kind", cuda_memory_kind_str(cu->dst_kind));
 	json_kv_int(j, "device_id", cu->device_id);
 	json_kv_int(j, "stream_id", cu->stream_id);
+	json_kv_int(j, "corr_id", cu->corr_id);
 	json_obj_end(j);
 }
 
@@ -2856,7 +2895,7 @@ static int process_cuda_memcpy(struct worker_state *w, const struct wevent *e)
 	if (!is_time_range_in_session(e->ts, e->cuda_memcpy.end_ts))
 		return 0;
 
-	if (env.json)
+	if (env.json_path)
 		emit_cuda_memcpy_json(w, e);
 	else
 		emit_cuda_memcpy(w, e);
@@ -2918,6 +2957,7 @@ static void emit_cuda_memset_json(struct worker_state *w, const struct wevent *e
 	json_kv_str(j, "kind", cuda_memory_kind_str(cu->mem_kind));
 	json_kv_int(j, "device_id", cu->device_id);
 	json_kv_int(j, "stream_id", cu->stream_id);
+	json_kv_int(j, "corr_id", cu->corr_id);
 	json_obj_end(j);
 }
 
@@ -2929,7 +2969,7 @@ static int process_cuda_memset(struct worker_state *w, const struct wevent *e)
 	if (!is_time_range_in_session(e->ts, e->cuda_memset.end_ts))
 		return 0;
 
-	if (env.json)
+	if (env.json_path)
 		emit_cuda_memset_json(w, e);
 	else
 		emit_cuda_memset(w, e);
@@ -3009,6 +3049,7 @@ static void emit_cuda_sync_json(struct worker_state *w, const struct wevent *e)
 		json_kv_int(j, "numa", e->numa_node);
 	json_kv_str(j, "kind", cuda_sync_type_str(cu->sync_type));
 	json_kv_int(j, "stream_id", cu->stream_id);
+	json_kv_int(j, "corr_id", cu->corr_id);
 	json_obj_end(j);
 }
 
@@ -3020,7 +3061,7 @@ static int process_cuda_sync(struct worker_state *w, const struct wevent *e)
 	if (!is_time_range_in_session(e->ts, e->cuda_sync.end_ts))
 		return 0;
 
-	if (env.json)
+	if (env.json_path)
 		emit_cuda_sync_json(w, e);
 	else
 		emit_cuda_sync(w, e);
@@ -3105,6 +3146,7 @@ static void emit_cuda_api_json(struct worker_state *w, const struct wevent *e)
 	if (env.emit_numa)
 		json_kv_int(j, "numa", e->numa_node);
 	json_kv_str(j, "name", name);
+	json_kv_int(j, "corr_id", e->cuda_api.corr_id);
 	if (env.requested_stack_traces && e->cuda_api.cuda_stack_id > 0)
 		json_kv_int(j, "stack_id", e->cuda_api.cuda_stack_id);
 	json_obj_end(j);
@@ -3128,7 +3170,7 @@ static int process_cuda_api(struct worker_state *w, const struct wevent *e)
 	struct cuda_corr_info *ci = cuda_corr_get(task.pid, e->cuda_api.corr_id);
 	ci->api_ts = e->ts;
 
-	if (env.json)
+	if (env.json_path)
 		emit_cuda_api_json(w, e);
 	else
 		emit_cuda_api(w, e);
@@ -3166,20 +3208,18 @@ static void emit_header_json(struct worker_state *w)
 	struct wprof_data_hdr *hdr = w->dump_hdr;
 	struct wprof_data_cfg *cfg = &hdr->cfg;
 
+	struct wprof_stacks_hdr *shdr = wprof_stacks_hdr(hdr);
+	int stack_cnt = shdr ? shdr->stack_cnt - 1 : 0; /* exclude the dummy zero-entry */
+
 	json_obj_start(j);
 	json_kv_fmt(j, "version", "%d.%d", hdr->version_major, hdr->version_minor);
 	json_kv_float(j, "dur", "%.9lf", (env.sess_end_ts - env.sess_start_ts) / 1e9);
 	json_kv_int(j, "timer_freq_hz", cfg->timer_freq_hz);
-	if (cfg->capture_ipis)
-		json_kv_bool(j, "capture_ipis", true);
-	if (cfg->capture_requests)
-		json_kv_bool(j, "capture_requests", true);
-	if (cfg->capture_scx)
-		json_kv_bool(j, "capture_scx", true);
-	if (cfg->capture_cuda)
-		json_kv_bool(j, "capture_cuda", true);
-	if (cfg->capture_pystacks)
-		json_kv_bool(j, "capture_pystacks", true);
+	json_kv_bool(j, "capture_ipis", cfg->capture_ipis);
+	json_kv_bool(j, "capture_requests", cfg->capture_requests);
+	json_kv_bool(j, "capture_scx", cfg->capture_scx);
+	json_kv_bool(j, "capture_cuda", cfg->capture_cuda);
+	json_kv_bool(j, "capture_pystacks", cfg->capture_pystacks);
 
 	json_subarr_start(j, "stacks");
 	if (cfg->captured_stack_traces & ST_TIMER)
@@ -3192,22 +3232,16 @@ static void emit_header_json(struct worker_state *w)
 		json_arr_str(j, "cuda");
 	json_arr_end(j);
 
-	if (env.requested_stack_traces) {
-		struct wprof_stacks_hdr *shdr = wprof_stacks_hdr(hdr);
-		int stack_cnt = shdr ? shdr->stack_cnt - 1 : 0; /* exclude the dummy zero-entry */
-		json_kv_int(j, "stack_cnt", stack_cnt);
-	}
+	json_kv_int(j, "stack_cnt", stack_cnt);
 	json_kv_int(j, "event_cnt", hdr->event_cnt);
 
+	json_subarr_start(j, "pmus");
 	int pmu_total = hdr->pmu_def_real_cnt + hdr->pmu_def_deriv_cnt;
-	if (pmu_total > 0) {
-		json_subarr_start(j, "pmus");
-		for (int i = 0; i < pmu_total; i++) {
-			struct wevent_pmu_def *def = wevent_pmu_def(hdr, i);
-			json_arr_str(j, wevent_str(hdr, def->name_stroff));
-		}
-		json_arr_end(j);
+	for (int i = 0; i < pmu_total; i++) {
+		struct wevent_pmu_def *def = wevent_pmu_def(hdr, i);
+		json_arr_str(j, wevent_str(hdr, def->name_stroff));
 	}
+	json_arr_end(j);
 
 	json_obj_end(j);
 }
@@ -3227,7 +3261,7 @@ static void emit_stacks_json(struct worker_state *w)
 		bool has_src = false;
 		for (int i = 0; i < trec->frame_cnt; i++) {
 			const struct wprof_stack_frame *f = wprof_stacks_frame(hdr, trec->frame_ids[i]);
-			const char *name = format_stack_frame(hdr, f, frame_buf, sizeof(frame_buf), true);
+			const char *name = format_stack_frame(hdr, f, frame_buf, sizeof(frame_buf), CS_FMT_FUNC_OFFSET);
 			json_arr_str(j, name);
 			if (!has_src && f->src_path_stroff) {
 				const char *src = wprof_stacks_str(hdr, f->src_path_stroff);
@@ -3260,9 +3294,9 @@ int emit_trace(struct worker_state *w)
 
 	wprintf("Generating trace...\n");
 
-	js = (struct json_state)JSON_STATE_INIT(env.json ? w->trace : NULL);
+	js = (struct json_state)JSON_STATE_INIT(env.json_path ? w->trace : NULL);
 
-	if (env.json) {
+	if (env.json_path) {
 		emit_header_json(w);
 		if (env.requested_stack_traces)
 			emit_stacks_json(w);
@@ -3285,7 +3319,7 @@ int emit_trace(struct worker_state *w)
 	if (err)
 		return err;
 
-	if (!env.json) {
+	if (!env.json_path) {
 		if (env.emit_sched_view) {
 			for (int cpu = 0; cpu < w->ftrace_bundle_cnt; cpu++) {
 				flush_ftrace_bundle(w, cpu);
