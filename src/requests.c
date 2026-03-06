@@ -432,9 +432,9 @@ int req_list_output(struct worker_state *w)
 		qsort_r(entries, entry_cnt, sizeof(*entries), req_entry_cmp, cfg);
 
 	/* print */
-	printf("%12s %9s %8s %-15s %20s  %s\n",
+	fprintf(stderr, "%12s %9s %8s %-15s %20s  %s\n",
 	       "START", "LATENCY", "PID", "COMM", "ID", "NAME");
-	printf("%12s %9s %8s %-15s %20s  %s\n",
+	fprintf(stderr, "%12s %9s %8s %-15s %20s  %s\n",
 	       "------------",
 	       "---------", "--------", "---------------",
 	       "--------------------", "----");
@@ -445,13 +445,13 @@ int req_list_output(struct worker_state *w)
 		bool in_bottom = cfg->bottom_n > 0 && i >= entry_cnt - cfg->bottom_n;
 		if (show_all || in_top || in_bottom) {
 			char ts1[32];
-			printf("%12s %9.6f %8d %-15s %20llu  %s\n",
+			fprintf(stderr, "%12s %9.6f %8d %-15s %20llu  %s\n",
 			       fmt_ts(entries[i].start_ns, ts1, sizeof(ts1)),
 			       (entries[i].end_ns - entries[i].start_ns) / 1000000000.0,
 			       entries[i].pid, entries[i].comm,
 			       entries[i].id, entries[i].name);
 		} else if (!skipped) {
-			printf("  ... (%d entries skipped) ...\n", entry_cnt - cfg->top_n - cfg->bottom_n);
+			fprintf(stderr, "  ... (%d entries skipped) ...\n", entry_cnt - cfg->top_n - cfg->bottom_n);
 			skipped = true;
 		}
 	}

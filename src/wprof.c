@@ -1043,7 +1043,7 @@ static void cleanup_workers(struct worker_state *workers, int worker_cnt)
 		if (!w)
 			return;
 
-		if (w->trace)
+		if (w->trace && w->trace != stdout)
 			fclose(w->trace);
 
 		if (w->dump_mem && w->dump_mem != MAP_FAILED) {
@@ -1551,11 +1551,16 @@ skip_data_collection:
 				goto cleanup;
 		}
 
-		w->trace = fopen_buffered(env.trace_path, "w+");
-		if (!w->trace) {
-			err = -errno;
-			eprintf("Failed to create trace file '%s': %d\n", env.trace_path, err);
-			goto cleanup;
+		if (strcmp(env.trace_path, "-") == 0) {
+			w->trace = stdout;
+			signal(SIGPIPE, SIG_IGN);
+		} else {
+			w->trace = fopen_buffered(env.trace_path, "w+");
+			if (!w->trace) {
+				err = -errno;
+				eprintf("Failed to create trace file '%s': %d\n", env.trace_path, err);
+				goto cleanup;
+			}
 		}
 
 		err = init_emit(w);
@@ -1582,9 +1587,11 @@ skip_data_collection:
 		}
 
 		fflush(w->trace);
-		ssize_t file_sz = file_size(w->trace);
-		wprintf("Produced %.3lfMB trace file at '%s'.\n",
-			file_sz / (1024.0 * 1024.0), env.trace_path);
+		if (w->trace != stdout) {
+			ssize_t file_sz = file_size(w->trace);
+			wprintf("Produced %.3lfMB trace file at '%s'.\n",
+				file_sz / (1024.0 * 1024.0), env.trace_path);
+		}
 	}
 cleanup:
 	if (env.cuda_cnt > 0)

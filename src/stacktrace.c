@@ -263,22 +263,22 @@ static void print_frame(const char *name, uintptr_t input_addr, uintptr_t addr, 
 {
 	/* If we have an input address we have a new symbol. */
 	if (input_addr != 0) {
-		printf("%016lx: %s @ 0x%lx+0x%lx", input_addr, name, addr, offset);
+		fprintf(stderr, "%016lx: %s @ 0x%lx+0x%lx", input_addr, name, addr, offset);
 		if (code_info != NULL && code_info->dir != NULL && code_info->file != NULL) {
-			printf(" %s/%s:%u\n", code_info->dir, code_info->file, code_info->line);
+			fprintf(stderr, " %s/%s:%u\n", code_info->dir, code_info->file, code_info->line);
 		} else if (code_info != NULL && code_info->file != NULL) {
-			printf(" %s:%u\n", code_info->file, code_info->line);
+			fprintf(stderr, " %s:%u\n", code_info->file, code_info->line);
 		} else {
-			printf("\n");
+			fprintf(stderr, "\n");
 		}
 	} else {
-		printf("%16s  %s", "", name);
+		fprintf(stderr, "%16s  %s", "", name);
 		if (code_info != NULL && code_info->dir != NULL && code_info->file != NULL) {
-			printf("@ %s/%s:%u [inlined]\n", code_info->dir, code_info->file, code_info->line);
+			fprintf(stderr, "@ %s/%s:%u [inlined]\n", code_info->dir, code_info->file, code_info->line);
 		} else if (code_info != NULL && code_info->file != NULL) {
-			printf("@ %s:%u [inlined]\n", code_info->file, code_info->line);
+			fprintf(stderr, "@ %s:%u [inlined]\n", code_info->file, code_info->line);
 		} else {
-			printf("[inlined]\n");
+			fprintf(stderr, "[inlined]\n");
 		}
 	}
 }
@@ -307,13 +307,13 @@ static void show_stack_trace(struct blaze_symbolizer *symbolizer, u64 *stack, in
 	}
 
 	if (!syms) {
-		printf("  failed to symbolize addresses: %s\n", blaze_err_str(blaze_err_last()));
+		fprintf(stderr, "  failed to symbolize addresses: %s\n", blaze_err_str(blaze_err_last()));
 		return;
 	}
 
 	for (i = 0; i < stack_sz; i++) {
 		if (!syms || syms->cnt <= i || syms->syms[i].name == NULL) {
-			printf("%016llx: <no-symbol>\n", stack[i]);
+			fprintf(stderr, "%016llx: <no-symbol>\n", stack[i]);
 			continue;
 		}
 
@@ -746,18 +746,18 @@ int process_stack_traces(struct worker_state *workers, int worker_cnt, FILE *sta
 				continue;
 
 			if (!f->sym) {
-				printf("FAILED SYMBOLIZATION PID %d (ORIG PID %d): %s\n",
+				fprintf(stderr, "FAILED SYMBOLIZATION PID %d (ORIG PID %d): %s\n",
 					f->pid, f->orig_pid, blaze_err_str(blaze_err_last()));
 			} else {
 				if (f->sym->name == NULL) {
-					printf("[PID %d] %016llx: <no-symbol>\n", f->orig_pid, f->addr);
+					fprintf(stderr, "[PID %d] %016llx: <no-symbol>\n", f->orig_pid, f->addr);
 					continue;
 				}
 
 				print_frame(f->sym->name, f->addr, f->sym->addr, f->sym->offset, &f->sym->code_info);
 
 				for (int j = 0; j < f->sym->inlined_cnt; j++) {
-					printf("[PID %d] ", f->orig_pid);
+					fprintf(stderr, "[PID %d] ", f->orig_pid);
 					print_frame(f->sym->name, 0, 0, 0, &f->sym->inlined[j].code_info);
 				}
 			}
