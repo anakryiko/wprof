@@ -97,6 +97,9 @@ static inline u32 bpf_event_pystack_id(const struct wprof_event *e)
 int process_stack_traces(struct worker_state *workers, int worker_cnt, FILE *stacks_file);
 int generate_stack_traces(struct worker_state *w);
 
+const char *format_stack_frame(struct wprof_data_hdr *hdr, const struct wprof_stack_frame *f,
+			       char *buf, size_t buf_sz, bool include_offset);
+
 void mark_stack_trace_used(struct worker_state *w, int stack_id);
 
 #if DEBUG_SYMBOLIZATION

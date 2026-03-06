@@ -1113,6 +1113,42 @@ static __always_inline bool bit_is_set(u64 *bitmask, int id)
 	return bitmask[id / 64] & (1ULL << (id % 64));
 }
 
+const char *format_stack_frame(struct wprof_data_hdr *hdr, const struct wprof_stack_frame *f,
+			       char *buf, size_t buf_sz, bool include_offset)
+{
+	const char *sym_name = f->func_name_stroff ? wprof_stacks_str(hdr, f->func_name_stroff) : NULL;
+	if (!sym_name)
+		return (f->flags & WSF_KERNEL) ? "[K] <unknown>" : "[U] <unknown>";
+
+	const char *prefix = (f->flags & WSF_PYTHON) ? "Py" : (f->flags & WSF_KERNEL) ? "K" : "U";
+	const char *src = f->src_path_stroff ? wprof_stacks_str(hdr, f->src_path_stroff) : NULL;
+
+	if ((f->flags & WSF_PYTHON) && src && src[0] && f->line_num > 0) {
+		/* strip container overlay prefix: /dev/shm/.../...-ns-NNNNN/path → path */
+		const char *stripped = strstr(src, "ns-");
+		if (stripped) {
+			stripped = strchr(stripped, '/');
+			if (stripped)
+				src = stripped + 1;
+		}
+		/* strip package link-tree prefix: .../workflow#link-tree/path → path */
+		stripped = strstr(src, "#link-tree/");
+		if (stripped)
+			src = stripped + 11; /* strlen("#link-tree/") == 11 */
+		if (env.emit_pystacks_only)
+			snprintf(buf, buf_sz, "%s (%s:%u)", sym_name, src, f->line_num);
+		else
+			snprintf(buf, buf_sz, "[%s] %s (%s:%u)", prefix, sym_name, src, f->line_num);
+	} else {
+		const char *inlined = (f->flags & WSF_INLINED) ? " (inlined)" : "";
+		if (include_offset && f->func_offset)
+			snprintf(buf, buf_sz, "[%s] %s+0x%llx%s", prefix, sym_name, (unsigned long long)f->func_offset, inlined);
+		else
+			snprintf(buf, buf_sz, "[%s] %s%s", prefix, sym_name, inlined);
+	}
+	return buf;
+}
+
 int generate_stack_traces(struct worker_state *w)
 {
 	struct stack_trace_iids strace_iids = {};
@@ -1152,34 +1188,7 @@ int generate_stack_traces(struct worker_state *w)
 		struct wprof_stack_frame *f = frec->f;
 		pb_iid fname_iid = f->flags & WSF_KERNEL ? kern_unkn_iid : user_unkn_iid;
 		bool new_iid = false;
-		const char *sym_name = f->func_name_stroff ? wprof_stacks_str(w->dump_hdr, f->func_name_stroff) : NULL;
-
-		if (sym_name) {
-			const char *prefix = (f->flags & WSF_PYTHON) ? "Py" : (f->flags & WSF_KERNEL) ? "K" : "U";
-			const char *src = f->src_path_stroff ? wprof_stacks_str(w->dump_hdr, f->src_path_stroff) : NULL;
-
-			if ((f->flags & WSF_PYTHON) && src && src[0] && f->line_num > 0) {
-				/* strip container overlay prefix: /dev/shm/.../...-ns-NNNNN/path → path */
-				const char *stripped = strstr(src, "ns-");
-				if (stripped) {
-					stripped = strchr(stripped, '/');
-					if (stripped)
-						src = stripped + 1;
-				}
-				/* strip package link-tree prefix: .../workflow#link-tree/path → path */
-				stripped = strstr(src, "#link-tree/");
-				if (stripped)
-					src = stripped + 11; /* strlen("#link-tree/") == 11 */
-				if (env.emit_pystacks_only)
-					snprintf(sym_buf, sizeof(sym_buf), "%s (%s:%u)", sym_name, src, f->line_num);
-				else
-					snprintf(sym_buf, sizeof(sym_buf), "[%s] %s (%s:%u)", prefix, sym_name, src, f->line_num);
-			}
-			else
-				snprintf(sym_buf, sizeof(sym_buf), "[%s] %s%s",
-					 prefix, sym_name, (f->flags & WSF_INLINED) ? " (inlined)" : "");
-			sym_name = sym_buf;
-		}
+		const char *sym_name = format_stack_frame(w->dump_hdr, f, sym_buf, sizeof(sym_buf), false);
 
 		if (sym_name && (fname_iid = str_iid_for(&fname_iids, sym_name, &new_iid, &sym_name)) && new_iid)
 			append_str_iid(&strace_iids.func_names, fname_iid, sym_name);
