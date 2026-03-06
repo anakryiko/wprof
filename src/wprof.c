@@ -1085,7 +1085,7 @@ int main(int argc, char **argv)
 	}
 
 	{
-		int output_modes = !!env.trace_path + env.req_list + !!env.replay_info;
+		int output_modes = !!(env.trace_path || env.json_path) + env.req_list + !!env.replay_info;
 		if (output_modes > 1) {
 			eprintf("Only one of -T, --req-list, and --replay-info (-RI) can be specified at a time!\n");
 			err = -EINVAL;
@@ -1097,16 +1097,11 @@ int main(int argc, char **argv)
 				err = -EINVAL;
 				goto cleanup;
 			}
-			if (env.req_list_cfg->filter_cnt > 0 && !env.trace_path) {
-				eprintf("--req-filter requires --req-list or -T!\n");
+			if (env.req_list_cfg->filter_cnt > 0 && !env.trace_path && !env.json_path) {
+				eprintf("--req-filter requires --req-list or -T/-J!\n");
 				err = -EINVAL;
 				goto cleanup;
 			}
-		}
-		if (env.json && !env.trace_path) {
-			eprintf("--json/-j requires -T to specify the output file!\n");
-			err = -EINVAL;
-			goto cleanup;
 		}
 	}
 
@@ -1542,7 +1537,8 @@ skip_data_collection:
 			goto cleanup;
 	}
 
-	if (env.trace_path) {
+	const char *output_path = env.trace_path ?: env.json_path;
+	if (output_path) {
 		struct worker_state *w = &workers[0];
 
 		if (env.req_list_cfg && env.req_list_cfg->filter_cnt > 0) {
@@ -1551,14 +1547,14 @@ skip_data_collection:
 				goto cleanup;
 		}
 
-		if (strcmp(env.trace_path, "-") == 0) {
+		if (strcmp(output_path, "-") == 0) {
 			w->trace = stdout;
 			signal(SIGPIPE, SIG_IGN);
 		} else {
-			w->trace = fopen_buffered(env.trace_path, "w+");
+			w->trace = fopen_buffered(output_path, "w+");
 			if (!w->trace) {
 				err = -errno;
-				eprintf("Failed to create trace file '%s': %d\n", env.trace_path, err);
+				eprintf("Failed to create trace file '%s': %d\n", output_path, err);
 				goto cleanup;
 			}
 		}
@@ -1569,7 +1565,7 @@ skip_data_collection:
 			goto cleanup;
 		}
 
-		if (!env.json) {
+		if (!env.json_path) {
 			w->stream = (pb_ostream_t){&file_stream_cb, w->trace, SIZE_MAX, 0};
 
 			if (init_pb_trace(&w->stream)) {
@@ -1590,7 +1586,7 @@ skip_data_collection:
 		if (w->trace != stdout) {
 			ssize_t file_sz = file_size(w->trace);
 			wprintf("Produced %.3lfMB trace file at '%s'.\n",
-				file_sz / (1024.0 * 1024.0), env.trace_path);
+				file_sz / (1024.0 * 1024.0), output_path);
 		}
 	}
 cleanup:

@@ -87,7 +87,6 @@ static void json_kv_ts(struct json_state *js, const char *key, u64 ns)
 	json_kv_float(js, key, "%.9lf", ns / 1e9);
 }
 
-__unused
 static void json_kv_bool(struct json_state *js, const char *key, bool value)
 {
 	json_key(js, key);
@@ -149,7 +148,6 @@ static void json_arr_int(struct json_state *js, long long value)
 	fprintf(js->f, "%lld", value);
 }
 
-__unused
 static void json_arr_float(struct json_state *js, const char *fmt, double value)
 {
 	json_arr_elem(js);

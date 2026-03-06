@@ -31,6 +31,8 @@ const char argp_program_doc[] =
 "        $ wprof -R --replay-end 1s --no-idle -T subtrace.pb\n"
 "    Check information about recorded data dump:\n"
 "        $ wprof -RI [-D wprof.data]\n"
+"    Generate JSON output (use --json-schema to see the data model):\n"
+"        $ wprof -R -J trace.json\n"
 "\n"
 "See `wprof --help` for more information.\n";
 
@@ -69,6 +71,7 @@ enum {
 	OPT_NO_STACK_TRACES = 1015,
 	OPT_PMU_COUNTER = 1016,
 	OPT_NO_PMU = 1017,
+	OPT_JSON_SCHEMA = 1018,
 
 	OPT_ALLOW_TID = 2000,
 	OPT_DENY_TID = 2001,
@@ -97,8 +100,9 @@ static const struct argp_option opts[] = {
 	{ "timer-freq", OPT_TIMER_FREQ, "HZ", 0, "On-CPU timer interrupt frequency (default: 100Hz, i.e., every 10ms)" },
 
 	{ "data", 'D', "FILE", 0, "Data dump path (defaults to 'wprof.data' in current directory)" },
-	{ "trace", 'T', "FILE", 0, "Emit trace to specified file" },
-	{ "json", 'j', NULL, 0, "Output JSON events instead of Perfetto trace (use with -T)" },
+	{ "trace", 'T', "FILE", 0, "Emit Perfetto trace to specified file (use '-' for stdout)" },
+	{ "json-trace", 'J', "FILE", 0, "Emit JSON trace to specified file (use '-' for stdout; see --json-schema)" },
+	{ "json-schema", OPT_JSON_SCHEMA, NULL, 0, "Print JSON output schema and exit" },
 
 	{ "replay", 'R', NULL, 0, "Re-process raw dump (no actual BPF data gathering)" },
 	{ "replay-start", OPT_REPLAY_OFFSET_START, "TIME_OFFSET", 0, "Session start time offset (replay mode only). Supported syntax: 2s, 1.03s, 10.5ms, 12us, 101213ns" },
@@ -258,15 +262,25 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		}
 		break;
 	case 'T':
-		if (env.trace_path) {
-			fprintf(stderr, "Only one trace file can be specified!\n");
+		if (env.trace_path || env.json_path) {
+			fprintf(stderr, "Only one trace output can be specified (-T and -J are mutually exclusive)!\n");
 			return -EINVAL;
 		}
 		env.trace_path = strdup(arg);
 		break;
-	case 'j':
-		env.json = true;
+	case 'J':
+		if (env.trace_path || env.json_path) {
+			fprintf(stderr, "Only one trace output can be specified (-T and -J are mutually exclusive)!\n");
+			return -EINVAL;
+		}
+		env.json_path = strdup(arg);
 		break;
+	case OPT_JSON_SCHEMA: {
+		extern const char json_schema_start[];
+		extern const char json_schema_end[];
+		fwrite(json_schema_start, 1, json_schema_end - json_schema_start, stdout);
+		exit(0);
+	}
 	case 'S': {
 		enum stack_trace_kind kinds;
 
