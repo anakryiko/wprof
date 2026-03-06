@@ -25,15 +25,6 @@
 
 static __thread struct json_state js;
 
-static void json_task(struct json_state *j, const char *key, const struct wprof_task *t)
-{
-	json_subobj_start(j, key);
-	json_kv_int(j, "tid", t->tid);
-	json_kv_int(j, "pid", t->pid);
-	json_kv_str(j, "comm", t->comm);
-	json_obj_end(j);
-}
-
 enum task_run_state {
 	TASK_STATE_RUNNING,
 	TASK_STATE_WAITING,
@@ -1008,6 +999,18 @@ static bool should_trace_task(const struct wprof_task *task)
 	return true;
 }
 
+static void json_task(struct json_state *j, const char *key, const struct wprof_task *t)
+{
+	int tid = task_tid(t);
+
+	json_subobj_start(j, key);
+	if (tid)
+		json_kv_int(j, "tid", tid);
+	json_kv_int(j, "pid", t->pid);
+	json_kv_str(j, "comm", t->comm);
+	json_obj_end(j);
+}
+
 /* EV_TIMER */
 static void emit_timer(struct worker_state *w, const struct wevent *e)
 {
@@ -1641,7 +1644,8 @@ static void emit_task_rename_json(struct worker_state *w, const struct wevent *e
 	json_kv_ts(j, "ts", e->ts - env.sess_start_ts);
 	json_kv_str(j, "t", "task_rename");
 	json_subobj_start(j, "task");
-		json_kv_int(j, "tid", task.tid);
+		if (task_tid(&task))
+			json_kv_int(j, "tid", task_tid(&task));
 		json_kv_int(j, "pid", task.pid);
 		json_kv_str(j, "old_comm", task.comm);
 		json_kv_str(j, "comm", new_comm);

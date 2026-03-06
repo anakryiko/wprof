@@ -468,7 +468,7 @@ void log_printf(int verbosity, const char *fmt, ...)
 		buf[len++] = '\0';
 	}
 
-	fputs(buf, verbosity == 0 ? stdout : stderr);
+	fputs(buf, stderr);
 
 	errno = old_errno;
 }
