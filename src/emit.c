@@ -58,18 +58,18 @@ static __thread pb_ostream_t *cur_stream;
 enum track_kind {
 	TK_THREAD = 1,		/* thread track (by TID) */
 	TK_THREAD_IDLE = 2,     /* idle "thread" (by CPU) */
-	TK_PROCESS = 2,		/* process track (by PID) */
-	TK_SPECIAL = 3,		/* special and fake groups (idle, kthread, kworker, requests folder) */
+	TK_PROCESS = 3,		/* process track (by PID) */
+	TK_SPECIAL = 4,		/* special and fake groups (idle, kthread, kworker, requests folder) */
 
-	TK_PROC_REQS = 4,	/* requests of given PID (by PID) */
-	TK_REQ = 5,		/* single request of given PID (by REQ_ID + PID) */
-	TK_REQ_THREAD = 6,	/* request-participating thread (by REQ_ID + TID) */
+	TK_PROC_REQS = 5,	/* requests of given PID (by PID) */
+	TK_REQ = 6,		/* single request of given PID (by REQ_ID + PID) */
+	TK_REQ_THREAD = 7,	/* request-participating thread (by REQ_ID + TID) */
 
-	TK_CUDA_PROC = 7, 	/* CUDA-using process track (by PID) */
-	TK_CUDA_PROC_GPU = 8, 	/* CUDA-using process's GPU track (by PID + GPU ID) */
-	TK_CUDA_PROC_STREAM = 9,/* CUDA-using process's GPU stream track (by PID + CUDA stream ID) */
+	TK_CUDA_PROC = 8, 	/* CUDA-using process track (by PID) */
+	TK_CUDA_PROC_GPU = 9, 	/* CUDA-using process's GPU track (by PID + GPU ID) */
+	TK_CUDA_PROC_STREAM = 10,/* CUDA-using process's GPU stream track (by PID + CUDA stream ID) */
 
-	TK_MULT = 10,
+	TK_MULT,
 };
 
 enum track_special {
