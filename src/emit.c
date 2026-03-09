@@ -56,18 +56,23 @@ static struct hashmap *emitted_descrs;
 static __thread pb_ostream_t *cur_stream;
 
 enum track_kind {
-	TK_THREAD = 1,		/* thread track (by TID) */
-	TK_THREAD_IDLE = 2,     /* idle "thread" (by CPU) */
-	TK_PROCESS = 3,		/* process track (by PID) */
-	TK_SPECIAL = 4,		/* special and fake groups (idle, kthread, kworker, requests folder) */
+	TK_PROCESS_META,	/* process metadata track (by PID), empty anchor */
+	TK_THREAD_META,		/* thread metadata track (by TID), empty anchor */
+	TK_THREAD_IDLE_META,	/* idle thread track (by CPU), empty anchoe */
 
-	TK_PROC_REQS = 5,	/* requests of given PID (by PID) */
-	TK_REQ = 6,		/* single request of given PID (by REQ_ID + PID) */
-	TK_REQ_THREAD = 7,	/* request-participating thread (by REQ_ID + TID) */
+	TK_THREAD,		/* thread event track (by TID), child of thread metadata */
+	TK_THREAD_CUDA,		/* CUDA API calls track (by TID), child of thread meta track */
+	TK_THREAD_KERNEL,	/* kernel activity track (by TID), child of thread meta track*/
 
-	TK_CUDA_PROC = 8, 	/* CUDA-using process track (by PID) */
-	TK_CUDA_PROC_GPU = 9, 	/* CUDA-using process's GPU track (by PID + GPU ID) */
-	TK_CUDA_PROC_STREAM = 10,/* CUDA-using process's GPU stream track (by PID + CUDA stream ID) */
+	TK_SPECIAL,		/* special and fake groups (idle, kthread, kworker, requests folder) */
+
+	TK_PROC_REQS,		/* requests of given PID (by PID) */
+	TK_REQ,			/* single request of given PID (by REQ_ID + PID) */
+	TK_REQ_THREAD,		/* request-participating thread (by REQ_ID + TID) */
+
+	TK_CUDA_PROC, 		/* CUDA-using process track (by PID) */
+	TK_CUDA_PROC_GPU, 	/* CUDA-using process's GPU track (by PID + GPU ID) */
+	TK_CUDA_PROC_STREAM,	/* CUDA-using process's GPU stream track (by PID + CUDA stream ID) */
 
 	TK_MULT,
 };
@@ -513,14 +518,22 @@ static const int kind_track_rank(enum task_kind kind)
 	}
 }
 
+static uint64_t trackid_thread_meta(const struct wprof_task *t)
+{
+	if (task_kind(t) == TASK_IDLE)
+		return TRACK_UUID(TK_THREAD_IDLE_META, track_tid(t));
+	else
+		return TRACK_UUID(TK_THREAD_META, track_tid(t));
+}
+
 static uint64_t trackid_thread(const struct wprof_task *t)
 {
-	enum task_kind k = task_kind(t);
+	return TRACK_UUID(TK_THREAD, track_tid(t));
+}
 
-	if (k == TASK_IDLE)
-		return TRACK_UUID(TK_THREAD_IDLE, track_tid(t));
-	else
-		return TRACK_UUID(TK_THREAD, track_tid(t));
+static uint64_t trackid_thread_kernel(const struct wprof_task *t)
+{
+	return TRACK_UUID(TK_THREAD_KERNEL, track_tid(t));
 }
 
 static uint64_t trackid_process(const struct wprof_task *t)
@@ -528,7 +541,7 @@ static uint64_t trackid_process(const struct wprof_task *t)
 	enum task_kind k = task_kind(t);
 
 	if (k == TASK_NORMAL)
-		return TRACK_UUID(TK_PROCESS, t->pid);
+		return TRACK_UUID(TK_PROCESS_META, t->pid);
 	else
 		return kind_track_uuid(k);
 }
@@ -585,17 +598,16 @@ static const char *scope_str(enum instant_scope scope)
 enum emit_flags {
 	EM_START = 0x01,
 	EM_END = 0x02,
-	EM_THREAD = 0x04, /* thread-associated */
 };
 
 __unused
-static struct emit_rec emit_instant_pre(u64 ts, __u64 track_uuid,
+static struct emit_rec emit_instant_pre(u64 track_uuid, u64 ts,
 					struct pb_str name, struct pb_str cat,
 					enum emit_flags flags)
 {
 	em.pb = (TracePacket) {
 		PB_INIT(timestamp) = ts - env.sess_start_ts,
-		PB_TRUST_SEQ_ID((flags & EM_THREAD) ? PB_SEQ_ID_THREADS : PB_SEQ_ID_GENERIC),
+		PB_TRUST_SEQ_ID(PB_SEQ_ID_GENERIC),
 		PB_ONEOF(data, TracePacket_track_event) = { .track_event = {
 			PB_INIT(track_uuid) = track_uuid,
 			PB_INIT(type) = perfetto_protos_TrackEvent_Type_TYPE_INSTANT,
@@ -611,19 +623,19 @@ static struct emit_rec emit_instant_pre(u64 ts, __u64 track_uuid,
 	return (struct emit_rec){};
 }
 
-#define emit_instant(ts, t, name, cat)					\
+#define emit_instant(track, ts, name, cat)							\
 	for (struct emit_rec ___r __cleanup(emit_cleanup) =					\
-	     emit_instant_pre(ts, trackid_thread(t), __pb_str(name), __pb_str(cat), EM_THREAD);	\
+	     emit_instant_pre(track, ts, __pb_str(name), __pb_str(cat), 0);			\
 	     !___r.done; ___r.done = true)
 
 __unused
-static struct emit_rec emit_slice_point_pre(u64 ts, u64 track_uuid,
+static struct emit_rec emit_slice_point_pre(u64 track_uuid, u64 ts,
 					    struct pb_str name, struct pb_str cat,
 					    enum emit_flags flags)
 {
 	em.pb = (TracePacket) {
 		PB_INIT(timestamp) = ts - env.sess_start_ts,
-		PB_TRUST_SEQ_ID((flags & EM_THREAD) ? PB_SEQ_ID_THREADS : PB_SEQ_ID_GENERIC),
+		PB_TRUST_SEQ_ID(PB_SEQ_ID_GENERIC),
 		PB_ONEOF(data, TracePacket_track_event) = { .track_event = {
 			PB_INIT(track_uuid) = track_uuid,
 			PB_INIT(type) = (flags & EM_END)
@@ -661,32 +673,16 @@ static inline struct pb_str __pb_str_iidstr(struct pb_str str) { return str; }
 	struct pb_str: __pb_str_iidstr								\
 )((arg))
 
-#define emit_slice_begin(ts, t, name, cat)							\
+#define emit_slice_begin(track, ts, name, cat)							\
 	for (struct emit_rec ___r __cleanup(emit_cleanup) =					\
-	     emit_slice_point_pre(ts, trackid_thread(t), __pb_str(name), __pb_str(cat), 	\
-				  EM_START | EM_THREAD);					\
+	     emit_slice_point_pre(track, ts, __pb_str(name), __pb_str(cat), EM_START);		\
 	     !___r.done; ___r.done = true)
 
-#define emit_slice_end(ts, t, name, cat)							\
+#define emit_slice_end(track, ts, name, cat)							\
 	for (struct emit_rec ___r __cleanup(emit_cleanup) =					\
-	     emit_slice_point_pre(ts, trackid_thread(t), __pb_str(name), __pb_str(cat), 	\
-				  EM_END | EM_THREAD); 						\
+	     emit_slice_point_pre(track, ts, __pb_str(name), __pb_str(cat), EM_END);		\
 	     !___r.done; ___r.done = true)
 
-#define emit_track_slice_start(ts, track, name, cat)						\
-	for (struct emit_rec ___r __cleanup(emit_cleanup) =					\
-	     emit_slice_point_pre(ts, track, __pb_str(name), __pb_str(cat), EM_START);		\
-	     !___r.done; ___r.done = true)
-
-#define emit_track_slice_end(ts, track, name, cat)						\
-	for (struct emit_rec ___r __cleanup(emit_cleanup) =					\
-	     emit_slice_point_pre(ts, track, __pb_str(name), __pb_str(cat), EM_END);		\
-	     !___r.done; ___r.done = true)
-
-#define emit_track_instant(ts, track, name, cat)						\
-	for (struct emit_rec ___r __cleanup(emit_cleanup) =					\
-	     emit_instant_pre(ts, track, __pb_str(name), __pb_str(cat), 0);			\
-	     !___r.done; ___r.done = true)
 
 __unused
 static struct emit_rec emit_counter_pre(u64 ts, const struct wprof_task *t,
@@ -774,7 +770,7 @@ static void emit_thread_track_descr(pb_ostream_t *stream, const struct wprof_tas
 	TracePacket thread_desc = {
 		PB_TRUST_SEQ_ID(PB_SEQ_ID_THREADS),
 		PB_ONEOF(data, TracePacket_track_descriptor) = { .track_descriptor = {
-			PB_INIT(uuid) = trackid_thread(t),
+			PB_INIT(uuid) = trackid_thread_meta(t),
 			PB_INIT(thread) = {
 				PB_INIT(tid) = track_tid(t),
 				PB_INIT(pid) = track_pid(t),
@@ -948,9 +944,11 @@ static void emit_track_descrs(struct worker_state *w, const struct wprof_task *t
 		kind_track_emitted[tkind] = true;
 	}
 
-	if (!track_descr_emitted(TDK_THREAD, t->tid)) {
-		track_descr_mark_emitted(TDK_THREAD, t->tid);
+	if (!track_descr_emitted(TDK_THREAD, track_tid(t))) {
+		track_descr_mark_emitted(TDK_THREAD, track_tid(t));
 		emit_thread_track_descr(&w->stream, t, t->comm);
+		emit_track_descr(&w->stream, trackid_thread(t), trackid_thread_meta(t), t->comm, TK_THREAD);
+		emit_track_descr(&w->stream, trackid_thread_kernel(t), trackid_thread_meta(t), t->comm, TK_THREAD_KERNEL);
 	}
 }
 
@@ -1050,7 +1048,7 @@ static void emit_timer(struct worker_state *w, const struct wevent *e)
 
 	if (env.emit_timer_ticks || tr_id > 0) {
 		/* task keeps running on CPU */
-		emit_instant(e->ts, &task, IID_NAME_TIMER, IID_CAT_TIMER) {
+		emit_instant(trackid_thread_kernel(&task), e->ts, IID_NAME_TIMER, IID_CAT_TIMER) {
 			emit_kv_int(IID_ANNK_CPU, e->cpu);
 			if (env.emit_numa)
 				emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
@@ -1191,7 +1189,8 @@ static void emit_switch(struct worker_state *w, const struct wevent *e, struct s
 		waker_ev_name = IID_NAME_WAKER_UNKN;
 		waker_ev_cat = IID_CAT_WAKER_UNKN;
 	}
-	emit_instant(e->swtch.waking_ts, &waker, waker_ev_name, waker_ev_cat) {
+	emit_instant(trackid_thread_kernel(&waker),
+		     e->swtch.waking_ts, waker_ev_name, waker_ev_cat) {
 		emit_kv_int(IID_ANNK_CPU, e->swtch.waker_cpu);
 		if (env.emit_numa)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->swtch.waker_numa_node);
@@ -1220,7 +1219,8 @@ skip_waker_task:
 	 * fake timestamp ZERO.
 	 */
 	if (s->prev_fake_begin) {
-		emit_slice_begin(env.sess_start_ts, &task,
+		emit_slice_begin(trackid_thread(&task),
+				 env.sess_start_ts,
 				 iid_str(s->prev_name_iid, s->prev_name), IID_CAT_ONCPU) {
 			emit_kv_int(IID_ANNK_CPU, e->cpu);
 			if (env.emit_numa)
@@ -1228,7 +1228,8 @@ skip_waker_task:
 		}
 	}
 
-	emit_slice_end(e->ts, &task, iid_str(s->prev_name_iid, s->prev_name), IID_CAT_ONCPU) {
+	emit_slice_end(trackid_thread(&task),
+		       e->ts, iid_str(s->prev_name_iid, s->prev_name), IID_CAT_ONCPU) {
 		emit_kv_int(IID_ANNK_CPU, e->cpu);
 		if (env.emit_numa)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
@@ -1257,11 +1258,12 @@ skip_waker_task:
 	}
 
 	if (s->prev_st->req_id) {
-		emit_track_slice_end(e->ts, trackid_req_thread(s->prev_st->req_id, &task),
-				     IID_NAME_RUNNING, IID_CAT_REQUEST_ONCPU);
-		emit_track_slice_start(e->ts, trackid_req_thread(s->prev_st->req_id, &task),
-				       s->prev_preempted ? IID_NAME_PREEMPTED : IID_NAME_WAITING,
-				       IID_CAT_REQUEST_OFFCPU);
+		emit_slice_end(trackid_req_thread(s->prev_st->req_id, &task),
+			       e->ts, IID_NAME_RUNNING, IID_CAT_REQUEST_ONCPU);
+		emit_slice_begin(trackid_req_thread(s->prev_st->req_id, &task),
+				e->ts,
+				s->prev_preempted ? IID_NAME_PREEMPTED : IID_NAME_WAITING,
+				IID_CAT_REQUEST_OFFCPU);
 	}
 
 skip_prev_task:
@@ -1289,7 +1291,8 @@ skip_prev_task:
 			wakee_ev_name = IID_NAME_WAKEE_UNKN;
 			wakee_ev_cat = IID_CAT_WAKEE_UNKN;
 		}
-		emit_instant(e->swtch.waking_ts, &next, wakee_ev_name, wakee_ev_cat) {
+		emit_instant(trackid_thread_kernel(&next),
+			     e->swtch.waking_ts, wakee_ev_name, wakee_ev_cat) {
 			emit_kv_int(IID_ANNK_CPU, e->cpu);
 			if (env.emit_numa)
 				emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
@@ -1299,7 +1302,8 @@ skip_prev_task:
 	}
 
 skip_waking:
-	emit_slice_begin(e->ts, &next, iid_str(s->next_st->name_iid, next.comm), IID_CAT_ONCPU) {
+	emit_slice_begin(trackid_thread(&next),
+			 e->ts, iid_str(s->next_st->name_iid, next.comm), IID_CAT_ONCPU) {
 		emit_kv_int(IID_ANNK_CPU, e->cpu);
 		if (env.emit_numa)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
@@ -1344,11 +1348,12 @@ skip_waking:
 	}
 
 	if (s->next_st->req_id) {
-		emit_track_slice_end(e->ts, trackid_req_thread(s->next_st->req_id, &next),
-				     s->next_was_preempted ? IID_NAME_PREEMPTED : IID_NAME_WAITING,
-				     IID_CAT_REQUEST_OFFCPU);
-		emit_track_slice_start(e->ts, trackid_req_thread(s->next_st->req_id, &next),
-				       IID_NAME_RUNNING, IID_CAT_REQUEST_ONCPU);
+		emit_slice_end(trackid_req_thread(s->next_st->req_id, &next),
+			       e->ts,
+			       s->next_was_preempted ? IID_NAME_PREEMPTED : IID_NAME_WAITING,
+			       IID_CAT_REQUEST_OFFCPU);
+		emit_slice_begin(trackid_req_thread(s->next_st->req_id, &next),
+				 e->ts, IID_NAME_RUNNING, IID_CAT_REQUEST_ONCPU);
 	}
 
 skip_next_task:
@@ -1525,7 +1530,7 @@ static void emit_fork(struct worker_state *w, const struct wevent *e)
 	if (should_trace_task(&task)) {
 		emit_track_descrs(w, &task);
 
-		emit_instant(e->ts, &task, IID_NAME_FORKING, IID_CAT_FORKING) {
+		emit_instant(trackid_thread(&task), e->ts, IID_NAME_FORKING, IID_CAT_FORKING) {
 			emit_kv_int(IID_ANNK_CPU, e->cpu);
 			if (env.emit_numa)
 				emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
@@ -1543,7 +1548,7 @@ static void emit_fork(struct worker_state *w, const struct wevent *e)
 	if (should_trace_task(&child)) {
 		emit_track_descrs(w, &child);
 
-		emit_instant(e->ts, &child, IID_NAME_FORKED, IID_CAT_FORKED) {
+		emit_instant(trackid_thread(&child), e->ts, IID_NAME_FORKED, IID_CAT_FORKED) {
 			emit_kv_int(IID_ANNK_CPU, e->cpu);
 			if (env.emit_numa)
 				emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
@@ -1601,7 +1606,7 @@ static void emit_exec(struct worker_state *w, const struct wevent *e)
 
 	emit_track_descrs(w, &task);
 
-	emit_instant(e->ts, &task, IID_NAME_EXEC, IID_CAT_EXEC) {
+	emit_instant(trackid_thread(&task), e->ts, IID_NAME_EXEC, IID_CAT_EXEC) {
 		emit_kv_int(IID_ANNK_CPU, e->cpu);
 		if (env.emit_numa)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
@@ -1653,8 +1658,11 @@ static void emit_task_rename(struct worker_state *w, const struct wevent *e)
 	const char *new_comm = wevent_str(hdr, e->rename.new_comm_stroff);
 
 	emit_track_descrs(w, &task);
+	u64 sched_track = trackid_thread(&task);
+	u64 kern_track = trackid_thread_kernel(&task);
+	u64 meta_track = trackid_thread_meta(&task);
 
-	emit_instant(e->ts, &task, IID_NAME_RENAME, IID_CAT_RENAME) {
+	emit_instant(sched_track, e->ts, IID_NAME_RENAME, IID_CAT_RENAME) {
 		emit_kv_int(IID_ANNK_CPU, e->cpu);
 		if (env.emit_numa)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
@@ -1664,6 +1672,8 @@ static void emit_task_rename(struct worker_state *w, const struct wevent *e)
 	}
 
 	emit_thread_track_descr(&w->stream, &task, new_comm);
+	emit_track_descr(&w->stream, sched_track, meta_track, new_comm, TK_THREAD);
+	emit_track_descr(&w->stream, kern_track, meta_track, new_comm, TK_THREAD_KERNEL);
 }
 
 static void emit_task_rename_json(struct worker_state *w, const struct wevent *e)
@@ -1725,8 +1735,9 @@ static void emit_task_exit(struct worker_state *w, const struct wevent *e)
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
 
 	emit_track_descrs(w, &task);
+	u64 sched_track = trackid_thread(&task);
 
-	emit_instant(e->ts, &task, IID_NAME_EXIT, IID_CAT_EXIT) {
+	emit_instant(sched_track, e->ts, IID_NAME_EXIT, IID_CAT_EXIT) {
 		emit_kv_int(IID_ANNK_CPU, e->cpu);
 		if (env.emit_numa)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
@@ -1769,8 +1780,9 @@ static void emit_task_free(struct worker_state *w, const struct wevent *e)
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
 
 	emit_track_descrs(w, &task);
+	u64 sched_track = trackid_thread(&task);
 
-	emit_instant(e->ts, &task, IID_NAME_FREE, IID_CAT_FREE) {
+	emit_instant(sched_track, e->ts, IID_NAME_FREE, IID_CAT_FREE) {
 		emit_kv_int(IID_ANNK_CPU, e->cpu);
 		if (env.emit_numa)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
@@ -1895,14 +1907,16 @@ static void emit_hardirq_exit(struct worker_state *w, const struct wevent *e)
 	emit_track_descrs(w, &task);
 
 	u64 start_ts = clamp_ts(e->hardirq.hardirq_ts);
-	emit_slice_begin(start_ts, &task, IID_NAME_HARDIRQ, IID_CAT_HARDIRQ) {
+	emit_slice_begin(trackid_thread_kernel(&task),
+			 start_ts, IID_NAME_HARDIRQ, IID_CAT_HARDIRQ) {
 		emit_kv_int(IID_ANNK_CPU, e->cpu);
 		if (env.emit_numa)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
 		emit_kv_int(IID_ANNK_IRQ, e->hardirq.irq);
 		emit_kv_str(IID_ANNK_ACTION, wevent_str(hdr, e->hardirq.name_stroff));
 	}
-	emit_slice_end(e->ts, &task, IID_NAME_HARDIRQ, IID_CAT_HARDIRQ) {
+	emit_slice_end(trackid_thread_kernel(&task),
+		       e->ts, IID_NAME_HARDIRQ, IID_CAT_HARDIRQ) {
 		const u64 *pmu_vals = wevent_pmu_vals(hdr, e->hardirq.pmu_vals_id);
 		emit_perf_counters(NULL, pmu_vals, true /* diffs */);
 	}
@@ -1963,16 +1977,18 @@ static void emit_softirq_exit(struct worker_state *w, const struct wevent *e)
 	}
 
 	u64 start_ts = clamp_ts(e->softirq.softirq_ts);
-	emit_slice_begin(start_ts, &task,
-			     iid_str(name_iid, sfmt("%s:%s", "SOFTIRQ", softirq_str(e->softirq.vec_nr))),
-			     IID_CAT_SOFTIRQ) {
+	emit_slice_begin(trackid_thread_kernel(&task),
+			 start_ts,
+			 iid_str(name_iid, sfmt("%s:%s", "SOFTIRQ", softirq_str(e->softirq.vec_nr))),
+			 IID_CAT_SOFTIRQ) {
 		emit_kv_int(IID_ANNK_CPU, e->cpu);
 		if (env.emit_numa)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
 		emit_kv_str(IID_ANNK_ACTION, iid_str(act_iid, softirq_str(e->softirq.vec_nr)));
 	}
 
-	emit_slice_end(e->ts, &task,
+	emit_slice_end(trackid_thread_kernel(&task),
+		       e->ts,
 		       iid_str(name_iid, sfmt("%s:%s", "SOFTIRQ", softirq_str(e->softirq.vec_nr))),
 		       IID_CAT_SOFTIRQ) {
 		const u64 *pmu_vals = wevent_pmu_vals(hdr, e->softirq.pmu_vals_id);
@@ -2026,7 +2042,8 @@ static void emit_wq_end(struct worker_state *w, const struct wevent *e)
 	const char *desc = wevent_str(hdr, e->wq.desc_stroff);
 
 	u64 start_ts = clamp_ts(e->wq.wq_ts);
-	emit_slice_begin(start_ts, &task,
+	emit_slice_begin(trackid_thread_kernel(&task),
+			 start_ts,
 			 iid_str(IID_NONE, sfmt("%s:%s", "WQ", desc)),
 			 IID_CAT_WQ) {
 		emit_kv_int(IID_ANNK_CPU, e->cpu);
@@ -2034,7 +2051,8 @@ static void emit_wq_end(struct worker_state *w, const struct wevent *e)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
 		emit_kv_str(IID_ANNK_ACTION, desc);
 	}
-	emit_slice_end(e->ts, &task,
+	emit_slice_end(trackid_thread_kernel(&task),
+		       e->ts,
 		       iid_str(IID_NONE, sfmt("%s:%s", "WQ", desc)),
 		       IID_CAT_WQ) {
 		const u64 *pmu_vals = wevent_pmu_vals(hdr, e->wq.pmu_vals_id);
@@ -2108,13 +2126,15 @@ static void emit_scx_dsq_end(struct worker_state *w, const struct wevent *e)
 	pb_iid name_iid = emit_intern_str(w, name);
 
 	u64 start_ts = clamp_ts(e->scx_dsq.scx_dsq_insert_ts);
-	emit_slice_begin(start_ts, &task, iid_str(name_iid, name), IID_CAT_SCX_DSQ) {
+	emit_slice_begin(trackid_thread_kernel(&task),
+			 start_ts, iid_str(name_iid, name), IID_CAT_SCX_DSQ) {
 		emit_kv_int(IID_ANNK_CPU, e->cpu);
 		if (env.emit_numa)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
 		emit_kv_str(IID_ANNK_ACTION, iid_str(insert_type_str_iid, insert_type_str));
 	}
-	emit_slice_end(e->ts, &task, iid_str(name_iid, name), IID_CAT_SCX_DSQ) {
+	emit_slice_end(trackid_thread_kernel(&task),
+		       e->ts, iid_str(name_iid, name), IID_CAT_SCX_DSQ) {
 		emit_kv_int(IID_ANNK_SCX_DSQ_ID, e->scx_dsq.scx_dsq_id);
 		emit_kv_int(IID_ANNK_SCX_LAYER_ID, e->scx_dsq.scx_layer_id);
 	}
@@ -2162,6 +2182,7 @@ static void emit_ipi_send(struct worker_state *w, const struct wevent *e)
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
 
 	emit_track_descrs(w, &task);
+	u64 kern_track = trackid_thread_kernel(&task);
 
 	pb_iid name_iid;
 	if (e->ipi_send.kind >= 0 && e->ipi_send.kind < NR_IPIS)
@@ -2170,7 +2191,7 @@ static void emit_ipi_send(struct worker_state *w, const struct wevent *e)
 		name_iid = IID_NAME_IPI_SEND + IPI_INVALID;
 	const char *name = sfmt("%s:%s", "IPI_SEND", ipi_kind_str(e->ipi_send.kind));
 
-	emit_instant(e->ts, &task, iid_str(name_iid, name), IID_CAT_IPI_SEND) {
+	emit_instant(kern_track, e->ts, iid_str(name_iid, name), IID_CAT_IPI_SEND) {
 		emit_kv_int(IID_ANNK_CPU, e->cpu);
 		if (env.emit_numa)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
@@ -2229,12 +2250,14 @@ static void emit_ipi_exit(struct worker_state *w, const struct wevent *e)
 	const char *name = sfmt("%s:%s", "IPI", ipi_kind_str(e->ipi.kind));
 
 	u64 start_ts = clamp_ts(e->ipi.ipi_ts);
-	emit_slice_begin(start_ts, &task, iid_str(name_iid, name), IID_CAT_IPI) {
+	emit_slice_begin(trackid_thread_kernel(&task),
+			 start_ts, iid_str(name_iid, name), IID_CAT_IPI) {
 		emit_kv_int(IID_ANNK_CPU, e->cpu);
 		if (env.emit_numa)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
 	}
-	emit_slice_end(e->ts, &task, iid_str(name_iid, name), IID_CAT_IPI) {
+	emit_slice_end(trackid_thread_kernel(&task),
+		       e->ts, iid_str(name_iid, name), IID_CAT_IPI) {
 		if (e->ipi.ipi_id > 0)
 			emit_flow_id(e->ipi.ipi_id);
 		if (e->ipi.send_ts > 0) {
@@ -2352,16 +2375,13 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e)
 
 	switch (e->req.req_event) {
 	case REQ_BEGIN:
-		emit_track_slice_start(e->ts, req_track_uuid,
-				       iid_str(req_name_iid, req_name),
-				       IID_CAT_REQUEST) {
+		emit_slice_begin(req_track_uuid, e->ts, iid_str(req_name_iid, req_name), IID_CAT_REQUEST) {
 			emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
 			emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
 		}
 
 		if (env.emit_req_extras) {
-			emit_track_instant(e->ts, track_uuid,
-					   IID_NAME_REQUEST_BEGIN, IID_CAT_REQUEST_BEGIN) {
+			emit_instant(track_uuid, e->ts, IID_NAME_REQUEST_BEGIN, IID_CAT_REQUEST_BEGIN) {
 				emit_kv_int(IID_ANNK_CPU, e->cpu);
 				emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
 				emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
@@ -2369,19 +2389,16 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e)
 		}
 		break;
 	case REQ_SET:
-		emit_track_slice_start(e->ts, track_uuid,
-				       iid_str(st->name_iid, st->comm),
-				       IID_CAT_REQUEST_THREAD) {
+		emit_slice_begin(track_uuid,
+				 e->ts, iid_str(st->name_iid, st->comm), IID_CAT_REQUEST_THREAD) {
 			emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
 			emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
 		}
 
-		emit_track_slice_start(e->ts, track_uuid,
-				       IID_NAME_RUNNING, IID_CAT_REQUEST_ONCPU);
+		emit_slice_begin(track_uuid, e->ts, IID_NAME_RUNNING, IID_CAT_REQUEST_ONCPU);
 
 		if (env.emit_req_extras) {
-			emit_track_instant(e->ts, track_uuid,
-					   IID_NAME_REQUEST_SET, IID_CAT_REQUEST_SET) {
+			emit_instant(track_uuid, e->ts, IID_NAME_REQUEST_SET, IID_CAT_REQUEST_SET) {
 				emit_kv_int(IID_ANNK_CPU, e->cpu);
 				emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
 				emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
@@ -2390,36 +2407,29 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e)
 		break;
 	case REQ_UNSET:
 		if (env.emit_req_extras) {
-			emit_track_instant(e->ts, track_uuid,
-					   IID_NAME_REQUEST_UNSET, IID_CAT_REQUEST_UNSET) {
+			emit_instant(track_uuid, e->ts, IID_NAME_REQUEST_UNSET, IID_CAT_REQUEST_UNSET) {
 				emit_kv_int(IID_ANNK_CPU, e->cpu);
 				emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
 				emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
 			}
 		}
 
-		emit_track_slice_end(e->ts, track_uuid,
-				     iid_str(st->name_iid, st->comm),
-				     IID_CAT_REQUEST_THREAD);
+		emit_slice_end(track_uuid, e->ts, iid_str(st->name_iid, st->comm), IID_CAT_REQUEST_THREAD);
 
-		emit_track_slice_end(e->ts, track_uuid,
-				     IID_NAME_RUNNING, IID_CAT_REQUEST_ONCPU);
+		emit_slice_end(track_uuid, e->ts, IID_NAME_RUNNING, IID_CAT_REQUEST_ONCPU);
 		break;
 	case REQ_CLEAR:
 		break;
 	case REQ_END:
-		emit_track_slice_end(e->ts, req_track_uuid,
-				     iid_str(req_name_iid, req_name), IID_CAT_REQUEST) {
+		emit_slice_end(req_track_uuid, e->ts, iid_str(req_name_iid, req_name), IID_CAT_REQUEST) {
 			emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
 			emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
 			emit_kv_float(IID_ANNK_REQ_LATENCY_US, "%.6lf", (e->ts - e->req.req_ts) / 1000);
 		}
-		emit_track_slice_end(e->ts, track_uuid,
-				     IID_NAME_RUNNING, IID_CAT_REQUEST_ONCPU);
+		emit_slice_end(track_uuid, e->ts, IID_NAME_RUNNING, IID_CAT_REQUEST_ONCPU);
 
 		if (env.emit_req_extras) {
-			emit_track_instant(e->ts, track_uuid,
-					   IID_NAME_REQUEST_END, IID_CAT_REQUEST_END) {
+			emit_instant(track_uuid, e->ts, IID_NAME_REQUEST_END, IID_CAT_REQUEST_END) {
 				emit_kv_int(IID_ANNK_CPU, e->cpu);
 				emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
 				emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
@@ -2525,7 +2535,7 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e)
 
 	switch (e->req_task.req_task_event) {
 	case REQ_TASK_ENQUEUE:
-		emit_track_instant(e->ts, track_uuid,
+		emit_instant(track_uuid, e->ts,
 				   IID_NAME_REQUEST_TASK_ENQUEUE, IID_CAT_REQUEST_TASK_ENQUEUE) {
 			emit_kv_int(IID_ANNK_REQ_ID, e->req_task.req_id);
 			emit_kv_int(IID_ANNK_REQ_TASK_ID, e->req_task.req_task_id);
@@ -2538,7 +2548,7 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e)
 		}
 		break;
 	case REQ_TASK_DEQUEUE:
-		emit_track_instant(e->ts, track_uuid,
+		emit_instant(track_uuid, e->ts,
 				   IID_NAME_REQUEST_TASK_DEQUEUE, IID_CAT_REQUEST_TASK_DEQUEUE) {
 			emit_kv_int(IID_ANNK_REQ_ID, e->req_task.req_id);
 			emit_kv_int(IID_ANNK_REQ_TASK_ID, e->req_task.req_task_id);
@@ -2552,7 +2562,7 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e)
 		}
 		break;
 	case REQ_TASK_STATS:
-		emit_track_instant(e->ts, track_uuid,
+		emit_instant(track_uuid, e->ts,
 				   IID_NAME_REQUEST_TASK_COMPLETE, IID_CAT_REQUEST_TASK_COMPLETE) {
 			emit_kv_int(IID_ANNK_REQ_ID, e->req_task.req_id);
 			emit_kv_int(IID_ANNK_REQ_TASK_ID, e->req_task.req_task_id);
@@ -2662,6 +2672,19 @@ static u64 ensure_cuda_proc_stream_track(int pid, u32 gpu_id, u32 stream_id)
 	return track_uuid;
 }
 
+static u64 ensure_cuda_api_track(int tid, const char *comm)
+{
+	struct track_state *s = track_state_get_or_add(TK_THREAD_CUDA, tid, 0);
+	u64 track_uuid = TRACK_UUID(TK_THREAD_CUDA, tid);
+
+	if (!s->exists) {
+		emit_track_descr(cur_stream, track_uuid, TRACK_UUID(TK_THREAD_META, tid),
+				 comm, TK_THREAD_CUDA);
+		s->exists = true;
+	}
+	return track_uuid;
+}
+
 static bool is_time_range_in_session(u64 start_ts, u64 end_ts)
 {
 	if ((long)(end_ts - env.sess_start_ts) < 0)
@@ -2745,8 +2768,7 @@ static void emit_cuda_kernel(struct worker_state *w, const struct wevent *e)
 	const char *name = cuda_kern_name_demangled ?: cuda_kern_name;
 	pb_iid name_iid = emit_intern_str(w, name);
 
-	emit_track_slice_start(clamp_ts(e->ts), track_uuid,
-			       iid_str(name_iid, name), IID_CAT_CUDA_KERNEL) {
+	emit_slice_begin(track_uuid, clamp_ts(e->ts), iid_str(name_iid, name), IID_CAT_CUDA_KERNEL) {
 		if (name != cuda_kern_name) {
 			pb_iid mangled_name_iid = emit_intern_str(w, cuda_kern_name);
 			emit_kv_str(IID_ANNK_CUDA_MANGLED_NAME, iid_str(mangled_name_iid, cuda_kern_name));
@@ -2767,8 +2789,7 @@ static void emit_cuda_kernel(struct worker_state *w, const struct wevent *e)
 		emit_flow_id(((u64)task.pid << 32) | cu->corr_id);
 	}
 
-	emit_track_slice_end(clamp_ts(cu->end_ts), track_uuid,
-			     iid_str(name_iid, name), IID_CAT_CUDA_KERNEL);
+	emit_slice_end(track_uuid, clamp_ts(cu->end_ts), iid_str(name_iid, name), IID_CAT_CUDA_KERNEL);
 }
 
 static void emit_cuda_kernel_json(struct worker_state *w, const struct wevent *e)
@@ -2840,7 +2861,7 @@ static void emit_cuda_memcpy(struct worker_state *w, const struct wevent *e)
 	const char *copy_kind_str = cuda_memcpy_kind_str(cu->copy_kind);
 	struct pb_str name = iid_str(name_iid, sfmt("%s:%s", "memcpy", copy_kind_str));
 
-	emit_track_slice_start(clamp_ts(e->ts), track_uuid, name, IID_CAT_CUDA_MEMCPY) {
+	emit_slice_begin(track_uuid, clamp_ts(e->ts), name, IID_CAT_CUDA_MEMCPY) {
 		emit_gpu_delay(e->ts, task.pid, cu->corr_id);
 
 		emit_kv_int(IID_ANNK_CUDA_BYTE_CNT, cu->byte_cnt);
@@ -2860,7 +2881,7 @@ static void emit_cuda_memcpy(struct worker_state *w, const struct wevent *e)
 		emit_flow_id(((u64)task.pid << 32) | cu->corr_id);
 	}
 
-	emit_track_slice_end(clamp_ts(cu->end_ts), track_uuid, name, IID_CAT_CUDA_MEMCPY);
+	emit_slice_end(track_uuid, clamp_ts(cu->end_ts), name, IID_CAT_CUDA_MEMCPY);
 }
 
 static void emit_cuda_memcpy_json(struct worker_state *w, const struct wevent *e)
@@ -2924,7 +2945,7 @@ static void emit_cuda_memset(struct worker_state *w, const struct wevent *e)
 	const char *mem_kind_str = cuda_memory_kind_str(cu->mem_kind);
 	struct pb_str name = iid_str(name_iid, sfmt("%s:%s", "memset", mem_kind_str));
 
-	emit_track_slice_start(clamp_ts(e->ts), track_uuid, name, IID_CAT_CUDA_MEMSET) {
+	emit_slice_begin(track_uuid, clamp_ts(e->ts), name, IID_CAT_CUDA_MEMSET) {
 		emit_gpu_delay(e->ts, task.pid, cu->corr_id);
 
 		emit_kv_int(IID_ANNK_CUDA_BYTE_CNT, cu->byte_cnt);
@@ -2936,7 +2957,7 @@ static void emit_cuda_memset(struct worker_state *w, const struct wevent *e)
 		emit_flow_id(((u64)task.pid << 32) | cu->corr_id);
 	}
 
-	emit_track_slice_end(clamp_ts(cu->end_ts), track_uuid, name, IID_CAT_CUDA_MEMSET);
+	emit_slice_end(track_uuid, clamp_ts(cu->end_ts), name, IID_CAT_CUDA_MEMSET);
 }
 
 static void emit_cuda_memset_json(struct worker_state *w, const struct wevent *e)
@@ -3019,7 +3040,7 @@ static void emit_cuda_sync(struct worker_state *w, const struct wevent *e)
 	const char *sync_type_str = cuda_sync_type_str(cu->sync_type);
 	struct pb_str name = iid_str(name_iid, sfmt("%s:%s", "sync", sync_type_str));
 
-	emit_track_slice_start(clamp_ts(e->ts), track_uuid, name, IID_CAT_CUDA_SYNC) {
+	emit_slice_begin(track_uuid, clamp_ts(e->ts), name, IID_CAT_CUDA_SYNC) {
 		emit_gpu_delay(e->ts, task.pid, cu->corr_id);
 
 		emit_kv_str(IID_ANNK_CUDA_KIND, iid_str(kind_iid, sync_type_str));
@@ -3030,7 +3051,7 @@ static void emit_cuda_sync(struct worker_state *w, const struct wevent *e)
 		emit_flow_id(((u64)task.pid << 32) | cu->corr_id);
 	}
 
-	emit_track_slice_end(clamp_ts(cu->end_ts), track_uuid, name, IID_CAT_CUDA_SYNC);
+	emit_slice_end(track_uuid, clamp_ts(cu->end_ts), name, IID_CAT_CUDA_SYNC);
 }
 
 static void emit_cuda_sync_json(struct worker_state *w, const struct wevent *e)
@@ -3103,7 +3124,7 @@ static void emit_cuda_api(struct worker_state *w, const struct wevent *e)
 
 	emit_track_descrs(w, &task);
 
-	u64 track_uuid = TRACK_UUID(TK_THREAD, task.tid);
+	u64 track_uuid = ensure_cuda_api_track(task.tid, task.comm);
 
 	const char *name;
 	switch (e->cuda_api.kind) {
@@ -3114,15 +3135,13 @@ static void emit_cuda_api(struct worker_state *w, const struct wevent *e)
 
 	pb_iid name_iid = emit_intern_str(w, name);
 
-	emit_track_slice_start(clamp_ts(e->ts), track_uuid,
-			       iid_str(name_iid, name), IID_CAT_CUDA_API) {
+	emit_slice_begin(track_uuid, clamp_ts(e->ts), iid_str(name_iid, name), IID_CAT_CUDA_API) {
 		emit_callstack(w, e->cuda_api.cuda_stack_id);
 
 		emit_flow_id(((u64)task.pid << 32) | e->cuda_api.corr_id);
 	}
 
-	emit_track_slice_end(clamp_ts(e->cuda_api.end_ts), track_uuid,
-			     iid_str(name_iid, name), IID_CAT_CUDA_API);
+	emit_slice_end(track_uuid, clamp_ts(e->cuda_api.end_ts), iid_str(name_iid, name), IID_CAT_CUDA_API);
 }
 
 static void emit_cuda_api_json(struct worker_state *w, const struct wevent *e)
