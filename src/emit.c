@@ -58,21 +58,22 @@ static __thread pb_ostream_t *cur_stream;
 enum track_kind {
 	TK_PROCESS_META,	/* process metadata track (by PID), empty anchor */
 	TK_THREAD_META,		/* thread metadata track (by TID), empty anchor */
-	TK_THREAD_IDLE_META,	/* idle thread track (by CPU), empty anchoe */
+	TK_IDLE_META,		/* idle thread track (by CPU), empty anchoe */
 
 	TK_THREAD,		/* thread event track (by TID), child of thread metadata */
 	TK_THREAD_CUDA,		/* CUDA API calls track (by TID), child of thread meta track */
 	TK_THREAD_KERNEL,	/* kernel activity track (by TID), child of thread meta track*/
 
-	TK_SPECIAL,		/* special and fake groups (idle, kthread, kworker, requests folder) */
+	TK_IDLE,		/* idle thread event track (by CPU), child of idle thread metadata */
+	TK_IDLE_KERNEL,		/* idle thread kernel activity (by CPU), child of idle thread metadata */
 
-	TK_PROC_REQS,		/* requests of given PID (by PID) */
-	TK_REQ,			/* single request of given PID (by REQ_ID + PID) */
-	TK_REQ_THREAD,		/* request-participating thread (by REQ_ID + TID) */
+	TK_SPECIAL,		/* special and fake groups (idle, kthread, kworker, requests folder) */
 
 	TK_CUDA_PROC, 		/* CUDA-using process track (by PID) */
 	TK_CUDA_PROC_GPU, 	/* CUDA-using process's GPU track (by PID + GPU ID) */
 	TK_CUDA_PROC_STREAM,	/* CUDA-using process's GPU stream track (by PID + CUDA stream ID) */
+
+	TK_DYNAMIC,		/* dynamically allocated track UUIDs (idle threads, requests, etc.) */
 
 	TK_MULT,
 };
@@ -94,14 +95,21 @@ enum track_special {
 #define TRACK_UUID_REQUESTS	TRACK_UUID(TK_SPECIAL, TKS_REQUESTS)
 #define TRACK_UUID_CUDA		TRACK_UUID(TK_SPECIAL, TKS_CUDA)
 
+enum dyn_track_kind {
+	DTK_PROC_REQS = 1,	/* requests of given PID (by PID) */
+	DTK_REQ,		/* single request of given PID (id1 = pid, id2 = req_id) */
+	DTK_REQ_THREAD,		/* request-participating thread (id1 = tid, id2 = req_id) */
+};
+
 struct track_key {
-	enum track_kind kind;
+	enum dyn_track_kind kind;
 	u32 id1;
 	u64 id2;
 };
 
 struct track_state {
 	bool exists;
+	u32 track_id;
 };
 
 static inline size_t track_hash_fn(long key, void *ctx)
@@ -122,13 +130,14 @@ static inline bool track_equal_fn(long k1, long k2, void *ctx)
 }
 
 static struct hashmap *tracks;
+static u64 dyn_track_next_id = 1;
 
-static inline struct track_key track_key(enum track_kind kind, u32 id1, u64 id2)
+static inline struct track_key track_key(enum dyn_track_kind kind, u32 id1, u64 id2)
 {
 	return (struct track_key) { .kind = kind, .id1 = id1, .id2 = id2 };
 }
 
-static struct track_state *track_state_get_or_add(enum track_kind kind, u32 id1, u64 id2)
+static struct track_state *track_state_get_or_add(enum dyn_track_kind kind, u32 id1, u64 id2)
 {
 	struct track_key k = track_key(kind, id1, id2);
 	struct track_state *s;
@@ -139,13 +148,15 @@ static struct track_state *track_state_get_or_add(enum track_kind kind, u32 id1,
 	struct track_key *pk = calloc(1, sizeof(struct track_key));
 	struct track_state *ps = calloc(1, sizeof(struct track_state));
 
+	ps->track_id = TRACK_UUID(TK_DYNAMIC, dyn_track_next_id++);
+
 	*pk = k;
 	hashmap__add(tracks, pk, ps);
 
 	return ps;
 }
 
-static struct track_state *track_state_find(enum track_kind kind, u32 id1, u64 id2)
+static struct track_state *track_state_find(enum dyn_track_kind kind, u32 id1, u64 id2)
 {
 	struct track_key k = track_key(kind, id1, id2);
 	struct track_state *s;
@@ -156,7 +167,7 @@ static struct track_state *track_state_find(enum track_kind kind, u32 id1, u64 i
 	return NULL;
 }
 
-static bool track_state_delete(enum track_kind kind, u32 id1, u64 id2)
+static bool track_state_delete(enum dyn_track_kind kind, u32 id1, u64 id2)
 {
 	struct track_key k = track_key(kind, id1, id2);
 	struct track_key *old_k;
@@ -521,19 +532,25 @@ static const int kind_track_rank(enum task_kind kind)
 static uint64_t trackid_thread_meta(const struct wprof_task *t)
 {
 	if (task_kind(t) == TASK_IDLE)
-		return TRACK_UUID(TK_THREAD_IDLE_META, track_tid(t));
+		return TRACK_UUID(TK_IDLE_META, track_tid(t));
 	else
 		return TRACK_UUID(TK_THREAD_META, track_tid(t));
 }
 
 static uint64_t trackid_thread(const struct wprof_task *t)
 {
-	return TRACK_UUID(TK_THREAD, track_tid(t));
+	if (task_kind(t) == TASK_IDLE)
+		return TRACK_UUID(TK_IDLE, track_tid(t));
+	else
+		return TRACK_UUID(TK_THREAD, track_tid(t));
 }
 
 static uint64_t trackid_thread_kernel(const struct wprof_task *t)
 {
-	return TRACK_UUID(TK_THREAD_KERNEL, track_tid(t));
+	if (task_kind(t) == TASK_IDLE)
+		return TRACK_UUID(TK_IDLE_KERNEL, track_tid(t));
+	else
+		return TRACK_UUID(TK_THREAD_KERNEL, track_tid(t));
 }
 
 static uint64_t trackid_process(const struct wprof_task *t)
@@ -548,17 +565,17 @@ static uint64_t trackid_process(const struct wprof_task *t)
 
 static inline u64 trackid_req_thread(u64 req_id, const struct wprof_task *t)
 {
-	return TRACK_UUID(TK_REQ_THREAD, hash_combine(req_id, t->tid));
+	return track_state_get_or_add(DTK_REQ_THREAD, t->tid, req_id)->track_id;
 }
 
 static inline u64 trackid_req(u64 req_id, const struct wprof_task *t)
 {
-	return TRACK_UUID(TK_REQ, hash_combine(req_id, t->pid));
+	return track_state_get_or_add(DTK_REQ, t->pid, req_id)->track_id;
 }
 
 static inline u64 trackid_process_reqs(const struct wprof_task *t)
 {
-	return TRACK_UUID(TK_PROC_REQS, t->pid);
+	return track_state_get_or_add(DTK_PROC_REQS, t->pid, 0)->track_id;
 }
 
 static inline u64 trackid_cuda_proc(int pid)
@@ -916,7 +933,7 @@ static struct task_state *task_state(struct worker_state *w, const struct wprof_
 	return st;
 }
 
-enum { TDK_THREAD = 0, TDK_PROCESS = 1 };
+enum { TDK_THREAD = 0, TDK_PROCESS = 1, TDK_THREAD_IDLE = 2 };
 
 static bool track_descr_emitted(int kind, u32 id)
 {
@@ -944,8 +961,9 @@ static void emit_track_descrs(struct worker_state *w, const struct wprof_task *t
 		kind_track_emitted[tkind] = true;
 	}
 
-	if (!track_descr_emitted(TDK_THREAD, track_tid(t))) {
-		track_descr_mark_emitted(TDK_THREAD, track_tid(t));
+	int tdk = tkind == TASK_IDLE ? TDK_THREAD_IDLE : TDK_THREAD;
+	if (!track_descr_emitted(tdk, t->tid)) {
+		track_descr_mark_emitted(tdk, t->tid);
 		emit_thread_track_descr(&w->stream, t, t->comm);
 		emit_track_descr(&w->stream, trackid_thread(t), trackid_thread_meta(t), t->comm, TK_THREAD);
 		emit_track_descr(&w->stream, trackid_thread_kernel(t), trackid_thread_meta(t), t->comm, TK_THREAD_KERNEL);
@@ -2311,7 +2329,7 @@ static int process_ipi_exit(struct worker_state *w, const struct wevent *e)
 
 static u64 ensure_process_reqs_track(const struct wprof_task *t)
 {
-	struct track_state *s = track_state_get_or_add(TK_PROC_REQS, t->pid, 0);
+	struct track_state *s = track_state_get_or_add(DTK_PROC_REQS, t->pid, 0);
 	u64 track_uuid = trackid_process_reqs(t);
 
 	if (!s->exists) {
@@ -2324,7 +2342,7 @@ static u64 ensure_process_reqs_track(const struct wprof_task *t)
 
 static u64 ensure_req_track(const struct wprof_task *t, u64 req_id, const char *req_name)
 {
-	struct track_state *s = track_state_get_or_add(TK_REQ, t->pid, req_id);
+	struct track_state *s = track_state_get_or_add(DTK_REQ, t->pid, req_id);
 	u64 track_uuid = trackid_req(req_id, t);
 
 	if (!s->exists) {
@@ -2337,7 +2355,7 @@ static u64 ensure_req_track(const struct wprof_task *t, u64 req_id, const char *
 
 static u64 ensure_req_thread_track(const struct wprof_task *t, u64 req_id, const char *req_name)
 {
-	struct track_state *s = track_state_get_or_add(TK_REQ_THREAD, t->tid, req_id);
+	struct track_state *s = track_state_get_or_add(DTK_REQ_THREAD, t->tid, req_id);
 	u64 track_uuid = trackid_req_thread(req_id, t);
 
 	if (!s->exists) {
@@ -2350,8 +2368,8 @@ static u64 ensure_req_thread_track(const struct wprof_task *t, u64 req_id, const
 
 static void clear_req_tracks(const struct wprof_task *t, u64 req_id)
 {
-	track_state_delete(TK_REQ, t->pid, req_id);
-	track_state_delete(TK_REQ_THREAD, t->tid, req_id);
+	track_state_delete(DTK_REQ, t->pid, req_id);
+	track_state_delete(DTK_REQ_THREAD, t->tid, req_id);
 }
 
 /* EV_REQ_EVENT */
