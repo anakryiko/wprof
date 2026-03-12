@@ -2572,7 +2572,7 @@ static void emit_req_task_event_json(struct worker_state *w, const struct wevent
 
 static int process_req_task_event(struct worker_state *w, const struct wevent *e)
 {
-	if (env.capture_req_experimental != TRUE)
+	if (env.capture_requests != TRUE)
 		return 0;
 
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
