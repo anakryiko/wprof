@@ -567,31 +567,29 @@ int attach_req_tracking_usdts(struct bpf_state *st)
 		if (err)
 			return err;
 
-		if (env.capture_req_experimental) {
-			err = attach_usdt_probe(st, st->skel->progs.wprof_req_task_enqueue,
+		err = attach_usdt_probe(st, st->skel->progs.wprof_req_task_enqueue,
 					binary->path, binary->attach_path,
-						"folly", "thread_pool_executor_task_enqueued");
-			if (err == -ENOENT)
-				continue;
-			if (err)
-				return err;
+					"folly", "thread_pool_executor_task_enqueued");
+		if (err == -ENOENT)
+			continue;
+		if (err)
+			return err;
 
-			err = attach_usdt_probe(st, st->skel->progs.wprof_req_task_dequeue,
+		err = attach_usdt_probe(st, st->skel->progs.wprof_req_task_dequeue,
 					binary->path, binary->attach_path,
-						"folly", "thread_pool_executor_task_dequeued");
-			if (err == -ENOENT)
-				continue;
-			if (err)
-				return err;
+					"folly", "thread_pool_executor_task_dequeued");
+		if (err == -ENOENT)
+			continue;
+		if (err)
+			return err;
 
-			err = attach_usdt_probe(st, st->skel->progs.wprof_req_task_stats,
-						binary->path, binary->attach_path,
-						"folly", "thread_pool_executor_task_stats");
-			if (err == -ENOENT)
-				continue;
-			if (err)
-				return err;
-		}
+		err = attach_usdt_probe(st, st->skel->progs.wprof_req_task_stats,
+					binary->path, binary->attach_path,
+					"folly", "thread_pool_executor_task_stats");
+		if (err == -ENOENT)
+			continue;
+		if (err)
+			return err;
 	}
 
 	return 0;

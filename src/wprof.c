@@ -70,8 +70,6 @@ const struct capture_feature capture_features[] = {
 	 offsetof(struct env, capture_ipis), cfg_get_capture_ipis, cfg_set_capture_ipis},
 	{"requests", "Requests:", DEFAULT_CAPTURE_REQUESTS,
 	 offsetof(struct env, capture_requests), cfg_get_capture_reqs, cfg_set_capture_reqs},
-	{"request experimental extras", "Requests (experimental):", FALSE,
-	 offsetof(struct env, capture_req_experimental), cfg_get_capture_req_experimental, cfg_set_capture_req_experimental},
 	{"sched-ext info", "SCX info:", DEFAULT_CAPTURE_SCX,
 	  offsetof(struct env, capture_scx),
 	  cfg_get_capture_scx, cfg_set_capture_scx},
@@ -510,16 +508,13 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 
 	if (env.req_binaries) {
 		bpf_program__set_autoload(skel->progs.wprof_req_ctx, true);
-		if (env.capture_req_experimental) {
-			bpf_program__set_autoload(skel->progs.wprof_req_task_enqueue, true);
-			bpf_program__set_autoload(skel->progs.wprof_req_task_dequeue, true);
-			bpf_program__set_autoload(skel->progs.wprof_req_task_stats, true);
-		}
+		bpf_program__set_autoload(skel->progs.wprof_req_task_enqueue, true);
+		bpf_program__set_autoload(skel->progs.wprof_req_task_dequeue, true);
+		bpf_program__set_autoload(skel->progs.wprof_req_task_stats, true);
 		bpf_map__set_max_entries(skel->maps.req_states, max(16 * 1024, env.task_state_sz));
 	} else {
 		bpf_map__set_autocreate(skel->maps.req_states, false);
 		env.capture_requests = false;
-		env.capture_req_experimental = false;
 	}
 
 	if (env.cuda_pid_cnt > 0 || env.cuda_discovery) {

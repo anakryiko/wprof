@@ -20,7 +20,6 @@ struct wprof_data_cfg {
 	u64 capture_ipis : 1;
 	u64 capture_requests : 1;
 	u64 capture_scx : 1;
-	u64 capture_req_experimental : 1;
 	u64 capture_cuda : 1;
 	u64 capture_pystacks : 1;
 

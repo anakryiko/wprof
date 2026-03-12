@@ -48,7 +48,6 @@ struct env env = {
 	.requested_stack_traces = ST_UNSET,
 	.capture_ipis = UNSET,
 	.capture_requests = UNSET,
-	.capture_req_experimental = UNSET,
 	.capture_scx = UNSET,
 	.capture_cuda = UNSET,
 	.capture_pystacks = UNSET,
@@ -129,12 +128,12 @@ static const struct argp_option opts[] = {
 
 	/* event subset targeting */
 	{ "feature", 'f', "FEAT", 0,
-	  "Data capture feature selector. Supported: ipi, req[=PATH|PID], scx, req-experimental, cuda, py-stacks[=nvidia-smi|PID].\n"
+	  "Data capture feature selector. Supported: ipi, req[=PATH|PID], scx, cuda, py-stacks[=nvidia-smi|PID].\n"
 	  "All features can be prefixed with 'no-' to disable them explicitly." },
 
 	/* trace emitting options */
 	{ "emit-feature", 'e', "FEAT", 0,
-	  "Trace visualization feature. Supported: sched, sched-extras, numa, tidpid, timer-ticks, req-extras, py-stacks-only" },
+	  "Trace visualization feature. Supported: sched, sched-extras, numa, tidpid, timer-ticks, py-stacks-only" },
 
 	/* tuning */
 	{ "ringbuf-size", OPT_RINGBUF_SZ, "SIZE", 0, "BPF ringbuf size (in KBs)" },
@@ -347,8 +346,6 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 				}
 			}
 			env.capture_requests = val;
-		} else if (strcasecmp(arg, "req-experimental") == 0) {
-			env.capture_req_experimental = val;
 		} else if (strcasecmp(arg, "scx") == 0 || strcasecmp(arg, "scx-layer") == 0) {
 			env.capture_scx = val;
 		} else if (strcasecmp(arg, "cuda") == 0) {
@@ -416,8 +413,6 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			env.emit_tidpid = true;
 		} else if (strcasecmp(arg, "timer-ticks") == 0) {
 			env.emit_timer_ticks = true;
-		} else if (strcasecmp(arg, "req-extras") == 0) {
-			env.emit_req_extras = true;
 		} else if (strcasecmp(arg, "sched") == 0) {
 			env.emit_sched_view = true;
 		} else if (strcasecmp(arg, "sched-extras") == 0) {
