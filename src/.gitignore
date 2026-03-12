@@ -3,6 +3,7 @@
 /sim
 /*.pb
 /*.json
+/*.jsonl
 /*.log
 /dump.txt
 /wprof.data

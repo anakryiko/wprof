@@ -2376,15 +2376,15 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e)
 		struct track_state *rs = track_state_get_or_add(DTK_REQ, task.pid, req_id);
 		if (!rs->start_ts || (long)(e->ts - rs->start_ts) < 0)
 			rs->start_ts = e->ts;
-		u64 begin_ts = rs->start_ts;
 
-		emit_slice_begin(req_track_uuid, begin_ts, iid_str(req_name_iid, req_name), IID_CAT_REQUEST) {
+		emit_slice_begin(req_track_uuid, rs->start_ts, iid_str(req_name_iid, req_name), IID_CAT_REQUEST) {
 			emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
 			emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
 			emit_flow_id(req_id);
 		}
 
-		emit_instant(thread_req_track, e->ts, iid_str(thread_req_name_iid, thread_req_name), IID_CAT_REQUEST) {
+		emit_instant(thread_req_track, e->ts, iid_str(thread_req_name_iid, thread_req_name), IID_CAT_REQUEST_BEGIN) {
+			emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
 			emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
 			emit_flow_id(req_id);
 			emit_callstack(w, req_stack_id);
@@ -2392,14 +2392,15 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e)
 		break;
 	}
 	case REQ_SET:
-		emit_slice_begin(thread_req_track, e->ts, iid_str(thread_req_name_iid, thread_req_name), IID_CAT_REQUEST) {
+		emit_slice_begin(thread_req_track, e->ts, iid_str(thread_req_name_iid, thread_req_name), IID_CAT_REQUEST_THREAD) {
+			emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
+			emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
 			emit_flow_id(req_id);
 			emit_callstack(w, req_stack_id);
 		}
 		break;
 	case REQ_UNSET:
-		emit_slice_end(thread_req_track, e->ts, iid_str(thread_req_name_iid, thread_req_name), IID_CAT_REQUEST) {
-			emit_flow_id(req_id);
+		emit_slice_end(thread_req_track, e->ts, iid_str(thread_req_name_iid, thread_req_name), IID_CAT_REQUEST_THREAD) {
 			emit_callstack(w, req_stack_id);
 		}
 		break;
@@ -2409,16 +2410,19 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e)
 		struct track_state *rs = track_state_find(DTK_REQ, task.pid, req_id);
 		u64 req_start_ts = rs && rs->start_ts ? rs->start_ts : e->req.req_ts;
 
+		emit_instant(thread_req_track, e->ts, iid_str(thread_req_name_iid, thread_req_name), IID_CAT_REQUEST_END) {
+			emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
+			emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
+			emit_kv_float(IID_ANNK_REQ_LATENCY_US, "%.6lf", (e->ts - req_start_ts) / 1000);
+			emit_flow_id(req_id);
+			emit_callstack(w, req_stack_id);
+		}
+
 		emit_slice_end(req_track_uuid, e->ts, iid_str(req_name_iid, req_name), IID_CAT_REQUEST) {
 			emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
 			emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
 			emit_kv_float(IID_ANNK_REQ_LATENCY_US, "%.6lf", (e->ts - req_start_ts) / 1000);
 			emit_flow_id(req_id);
-		}
-
-		emit_slice_end(thread_req_track, e->ts, iid_str(thread_req_name_iid, thread_req_name), IID_CAT_REQUEST) {
-			emit_flow_id(req_id);
-			emit_callstack(w, req_stack_id);
 		}
 
 		clear_req_tracks(&task, req_id);
@@ -2527,35 +2531,31 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e)
 			rs->start_ts = e->ts;
 
 		emit_instant(thread_req_track, e->ts,
-				   IID_NAME_REQUEST_TASK_ENQUEUE, IID_CAT_REQUEST_TASK_ENQUEUE) {
+			     IID_NAME_REQUEST_TASK_ENQUEUE, IID_CAT_REQUEST_TASK_ENQUEUE) {
 			emit_kv_int(IID_ANNK_REQ_ID, e->req_task.req_id);
 			emit_kv_int(IID_ANNK_REQ_TASK_ID, e->req_task.req_task_id);
-			//emit_kv_int("enqueue_ts", e->req_task.enqueue_ts);
 			emit_flow_id(req_id);
+			emit_flow_id(hash_combine(req_id, e->req_task.req_task_id));
 		}
 		break;
 	}
 	case REQ_TASK_DEQUEUE:
 		emit_instant(thread_req_track, e->ts,
-				   IID_NAME_REQUEST_TASK_DEQUEUE, IID_CAT_REQUEST_TASK_DEQUEUE) {
+			     IID_NAME_REQUEST_TASK_DEQUEUE, IID_CAT_REQUEST_TASK_DEQUEUE) {
 			emit_kv_int(IID_ANNK_REQ_ID, e->req_task.req_id);
 			emit_kv_int(IID_ANNK_REQ_TASK_ID, e->req_task.req_task_id);
-			//emit_kv_int("enqueue_ts", e->req_task.enqueue_ts);
 			emit_kv_int(IID_ANNK_REQ_WAIT_TIME_NS, e->req_task.wait_time_ns);
 			emit_flow_id(req_id);
+			emit_flow_id(hash_combine(req_id, e->req_task.req_task_id));
 		}
 		break;
 	case REQ_TASK_STATS:
 		emit_instant(thread_req_track, e->ts,
-				   IID_NAME_REQUEST_TASK_COMPLETE, IID_CAT_REQUEST_TASK_COMPLETE) {
+			     IID_NAME_REQUEST_TASK_COMPLETE, IID_CAT_REQUEST_TASK_COMPLETE) {
 			emit_kv_int(IID_ANNK_REQ_ID, e->req_task.req_id);
 			emit_kv_int(IID_ANNK_REQ_TASK_ID, e->req_task.req_task_id);
 			emit_kv_int(IID_ANNK_REQ_WAIT_TIME_NS, e->req_task.wait_time_ns);
-
-			//emit_kv_int("enqueue_ts", e->req_task.enqueue_ts);
-			//emit_kv_int("run_time_ns", e->req_task.run_time_ns);
-
-			emit_flow_id(req_id);
+			emit_flow_id(hash_combine(req_id, e->req_task.req_task_id));
 		}
 		break;
 	default:
