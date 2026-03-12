@@ -2369,6 +2369,8 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e)
 	const char *thread_req_name = sfmt("REQ:%s (%llu)", req_name, req_id);
 	pb_iid thread_req_name_iid = emit_intern_str(w, thread_req_name);
 
+	int req_stack_id = (env.requested_stack_traces & ST_REQ) ? e->req.req_stack_id : 0;
+
 	switch (e->req.req_event) {
 	case REQ_BEGIN: {
 		struct track_state *rs = track_state_get_or_add(DTK_REQ, task.pid, req_id);
@@ -2385,17 +2387,20 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e)
 		emit_instant(thread_req_track, e->ts, iid_str(thread_req_name_iid, thread_req_name), IID_CAT_REQUEST) {
 			emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
 			emit_flow_id(req_id);
+			emit_callstack(w, req_stack_id);
 		}
 		break;
 	}
 	case REQ_SET:
 		emit_slice_begin(thread_req_track, e->ts, iid_str(thread_req_name_iid, thread_req_name), IID_CAT_REQUEST) {
 			emit_flow_id(req_id);
+			emit_callstack(w, req_stack_id);
 		}
 		break;
 	case REQ_UNSET:
 		emit_slice_end(thread_req_track, e->ts, iid_str(thread_req_name_iid, thread_req_name), IID_CAT_REQUEST) {
 			emit_flow_id(req_id);
+			emit_callstack(w, req_stack_id);
 		}
 		break;
 	case REQ_CLEAR:
@@ -2413,6 +2418,7 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e)
 
 		emit_slice_end(thread_req_track, e->ts, iid_str(thread_req_name_iid, thread_req_name), IID_CAT_REQUEST) {
 			emit_flow_id(req_id);
+			emit_callstack(w, req_stack_id);
 		}
 
 		clear_req_tracks(&task, req_id);
@@ -2454,6 +2460,8 @@ static void emit_req_event_json(struct worker_state *w, const struct wevent *e)
 	json_kv_str(j, "req_name", wevent_str(hdr, e->req.req_name_stroff));
 	if (e->req.req_event == REQ_END && e->req.req_ts)
 		json_kv_ts(j, "latency", e->ts - e->req.req_ts);
+	if ((env.requested_stack_traces & ST_REQ) && e->req.req_stack_id > 0)
+		json_kv_int(j, "stack_id", e->req.req_stack_id);
 	json_obj_end(j);
 }
 

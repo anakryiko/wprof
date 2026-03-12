@@ -1391,12 +1391,24 @@ int BPF_USDT(wprof_req_ctx, u64 req_id, const char *endpoint, enum wprof_req_eve
 	}
 
 	struct wprof_event *e;
-	emit_task_event(e, EV_SZ(req), 0, EV_REQ_EVENT, now_ts, task) {
+	struct bpf_dynptr *dptr;
+	struct stack_trace *tr = NULL;
+	size_t dyn_sz = 0;
+	size_t fix_sz = EV_SZ(req);
+
+	if (requested_stack_traces & ST_REQ)
+		tr = grab_stack_trace_user(ctx, NULL, ST_REQ, &dyn_sz);
+
+	emit_task_event_dyn(e, dptr, fix_sz, dyn_sz, EV_REQ_EVENT, now_ts, task) {
 		e->req.req_id = req_id;
 		e->req.req_ts = s->start_ts;
 		e->req.req_event = event_kind;
 		if (bpf_probe_read_user(&e->req.req_name, sizeof(e->req.req_name), endpoint))
 			e->req.req_name[0] = '\0';
+		if (tr) {
+			emit_stack_trace(tr, dyn_sz, dptr, fix_sz);
+			e->flags |= ST_REQ;
+		}
 	}
 
 	if (event_kind == REQ_END)
