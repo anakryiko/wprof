@@ -76,6 +76,8 @@ struct env {
 	bool emit_timer_ticks;
 	bool emit_sched_extras;
 	bool emit_pystacks_only;
+	bool emit_req_split;
+	bool emit_req_embed;
 
 	int timer_freq_hz;
 

@@ -51,6 +51,7 @@ struct env env = {
 	.capture_scx = UNSET,
 	.capture_cuda = UNSET,
 	.capture_pystacks = UNSET,
+	.emit_req_split = true,
 	.pmu_real_cnt = -1,
 	.pmu_deriv_cnt = -1,
 	.pmu_unresolved_cnt = -1,
@@ -133,7 +134,8 @@ static const struct argp_option opts[] = {
 
 	/* trace emitting options */
 	{ "emit-feature", 'e', "FEAT", 0,
-	  "Trace visualization feature. Supported: sched, sched-extras, numa, tidpid, timer-ticks, py-stacks-only" },
+	  "Trace visualization feature. Supported: sched, sched-extras, numa, tidpid, timer-ticks, py-stacks-only, "
+	  "req-split (on by default), no-req-split, req-embed, no-req-embed" },
 
 	/* tuning */
 	{ "ringbuf-size", OPT_RINGBUF_SZ, "SIZE", 0, "BPF ringbuf size (in KBs)" },
@@ -421,6 +423,14 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			env.emit_sched_extras = true;
 		} else if (strcasecmp(arg, "py-stacks-only") == 0) {
 			env.emit_pystacks_only = true;
+		} else if (strcasecmp(arg, "req-split") == 0) {
+			env.emit_req_split = true;
+		} else if (strcasecmp(arg, "no-req-split") == 0) {
+			env.emit_req_split = false;
+		} else if (strcasecmp(arg, "req-embed") == 0) {
+			env.emit_req_embed = true;
+		} else if (strcasecmp(arg, "no-req-embed") == 0) {
+			env.emit_req_embed = false;
 		} else {
 			fprintf(stderr, "Unrecognized emit feature '%s!\n", arg);
 			return -EINVAL;
