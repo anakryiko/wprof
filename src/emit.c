@@ -1044,6 +1044,7 @@ static void json_task(struct json_state *j, const char *key, const struct wprof_
 		json_kv_int(j, "tid", tid);
 	json_kv_int(j, "pid", t->pid);
 	json_kv_str(j, "comm", t->comm);
+	json_kv_str(j, "pcomm", t->pcomm);
 	json_obj_end(j);
 }
 
