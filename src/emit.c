@@ -1555,7 +1555,7 @@ static void emit_fork(struct worker_state *w, const struct wevent *e)
 	if (should_trace_task(&task)) {
 		emit_track_descrs(w, &task);
 
-		emit_instant(trackid_thread(&task), e->ts, IID_NAME_FORKING, IID_CAT_FORKING) {
+		emit_instant(trackid_thread_kernel(&task), e->ts, IID_NAME_FORKING, IID_CAT_FORKING) {
 			emit_kv_int(IID_ANNK_CPU, e->cpu);
 			if (env.emit_numa)
 				emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
@@ -1573,7 +1573,7 @@ static void emit_fork(struct worker_state *w, const struct wevent *e)
 	if (should_trace_task(&child)) {
 		emit_track_descrs(w, &child);
 
-		emit_instant(trackid_thread(&child), e->ts, IID_NAME_FORKED, IID_CAT_FORKED) {
+		emit_instant(trackid_thread_kernel(&child), e->ts, IID_NAME_FORKED, IID_CAT_FORKED) {
 			emit_kv_int(IID_ANNK_CPU, e->cpu);
 			if (env.emit_numa)
 				emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
@@ -1631,7 +1631,7 @@ static void emit_exec(struct worker_state *w, const struct wevent *e)
 
 	emit_track_descrs(w, &task);
 
-	emit_instant(trackid_thread(&task), e->ts, IID_NAME_EXEC, IID_CAT_EXEC) {
+	emit_instant(trackid_thread_kernel(&task), e->ts, IID_NAME_EXEC, IID_CAT_EXEC) {
 		emit_kv_int(IID_ANNK_CPU, e->cpu);
 		if (env.emit_numa)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
@@ -1687,7 +1687,7 @@ static void emit_task_rename(struct worker_state *w, const struct wevent *e)
 	u64 kern_track = trackid_thread_kernel(&task);
 	u64 meta_track = trackid_thread_meta(&task);
 
-	emit_instant(sched_track, e->ts, IID_NAME_RENAME, IID_CAT_RENAME) {
+	emit_instant(kern_track, e->ts, IID_NAME_RENAME, IID_CAT_RENAME) {
 		emit_kv_int(IID_ANNK_CPU, e->cpu);
 		if (env.emit_numa)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
@@ -1760,9 +1760,8 @@ static void emit_task_exit(struct worker_state *w, const struct wevent *e)
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
 
 	emit_track_descrs(w, &task);
-	u64 sched_track = trackid_thread(&task);
 
-	emit_instant(sched_track, e->ts, IID_NAME_EXIT, IID_CAT_EXIT) {
+	emit_instant(trackid_thread_kernel(&task), e->ts, IID_NAME_EXIT, IID_CAT_EXIT) {
 		emit_kv_int(IID_ANNK_CPU, e->cpu);
 		if (env.emit_numa)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
@@ -1805,9 +1804,8 @@ static void emit_task_free(struct worker_state *w, const struct wevent *e)
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
 
 	emit_track_descrs(w, &task);
-	u64 sched_track = trackid_thread(&task);
 
-	emit_instant(sched_track, e->ts, IID_NAME_FREE, IID_CAT_FREE) {
+	emit_instant(trackid_thread_kernel(&task), e->ts, IID_NAME_FREE, IID_CAT_FREE) {
 		emit_kv_int(IID_ANNK_CPU, e->cpu);
 		if (env.emit_numa)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
