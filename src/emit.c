@@ -2335,40 +2335,37 @@ static int process_ipi_exit(struct worker_state *w, const struct wevent *e)
 static u64 ensure_process_reqs_track(const struct wprof_task *t)
 {
 	struct track_state *s = track_state_get_or_add(DTK_PROC_REQS, t->pid, 0);
-	u64 track_uuid = trackid_process_reqs(t);
 
 	if (!s->exists) {
-		emit_track_descr(cur_stream, track_uuid, TRACK_UUID_REQUESTS,
+		emit_track_descr(cur_stream, s->track_id, TRACK_UUID_REQUESTS,
 				 sfmt("%s %u", t->pcomm, t->pid), 0);
 		s->exists = true;
 	}
-	return track_uuid;
+	return s->track_id;
 }
 
 static u64 ensure_req_track(const struct wprof_task *t, u64 req_id, const char *req_name)
 {
 	struct track_state *s = track_state_get_or_add(DTK_REQ, t->pid, req_id);
-	u64 track_uuid = trackid_req(req_id, t);
 
 	if (!s->exists) {
-		emit_track_descr(cur_stream, track_uuid, trackid_process_reqs(t),
+		emit_track_descr(cur_stream, s->track_id, trackid_process_reqs(t),
 				 sfmt("REQ:%s (%llu)", req_name, req_id), 0);
 		s->exists = true;
 	}
-	return track_uuid;
+	return s->track_id;
 }
 
 static u64 ensure_req_thread_track(const struct wprof_task *t, u64 req_id, const char *req_name)
 {
 	struct track_state *s = track_state_get_or_add(DTK_REQ_THREAD, t->tid, req_id);
-	u64 track_uuid = trackid_req_thread(req_id, t);
 
 	if (!s->exists) {
-		emit_track_descr(cur_stream, track_uuid, trackid_req(req_id, t),
+		emit_track_descr(cur_stream, s->track_id, trackid_req(req_id, t),
 				 sfmt("%s %u", t->comm, t->tid), 0);
 		s->exists = true;
 	}
-	return track_uuid;
+	return s->track_id;
 }
 
 static u64 ensure_thread_req_track(const struct wprof_task *t)
@@ -2381,12 +2378,6 @@ static u64 ensure_thread_req_track(const struct wprof_task *t)
 		s->exists = true;
 	}
 	return track_uuid;
-}
-
-static void clear_req_tracks(const struct wprof_task *t, u64 req_id)
-{
-	track_state_delete(DTK_REQ, t->pid, req_id);
-	track_state_delete(DTK_REQ_THREAD, t->tid, req_id);
 }
 
 /* EV_REQ_EVENT */
@@ -2498,7 +2489,7 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e)
 			emit_flow_id(req_id);
 		}
 
-		clear_req_tracks(&task, req_id);
+		track_state_delete(DTK_REQ, task.pid, req_id);
 		break;
 	}
 	default:
