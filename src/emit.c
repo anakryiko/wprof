@@ -741,6 +741,7 @@ static void emit_kind_track_descr(pb_ostream_t *stream, enum task_kind k)
 				? perfetto_protos_TrackDescriptor_ChildTracksOrdering_LEXICOGRAPHIC
 				: perfetto_protos_TrackDescriptor_ChildTracksOrdering_EXPLICIT,
 			PB_INIT(sibling_order_rank) = track_rank,
+			PB_INIT(sibling_merge_behavior) = perfetto_protos_TrackDescriptor_SiblingMergeBehavior_SIBLING_MERGE_BEHAVIOR_NONE,
 		}},
 	};
 	emit_trace_packet(stream, &desc_pb);
@@ -759,6 +760,7 @@ static void emit_track_descr(pb_ostream_t *stream, __u64 track_uuid, __u64 paren
 			PB_INIT(child_ordering) = perfetto_protos_TrackDescriptor_ChildTracksOrdering_CHRONOLOGICAL,
 			.sibling_order_rank = rank,
 			.has_sibling_order_rank = rank != 0,
+			PB_INIT(sibling_merge_behavior) = perfetto_protos_TrackDescriptor_SiblingMergeBehavior_SIBLING_MERGE_BEHAVIOR_NONE,
 		}},
 	};
 	emit_trace_packet(stream, &desc);
@@ -779,6 +781,7 @@ static void emit_process_track_descr(pb_ostream_t *stream, const struct wprof_ta
 			},
 			PB_INIT(child_ordering) = perfetto_protos_TrackDescriptor_ChildTracksOrdering_EXPLICIT,
 			PB_INIT(sibling_order_rank) = track_process_rank(t),
+			PB_INIT(sibling_merge_behavior) = perfetto_protos_TrackDescriptor_SiblingMergeBehavior_SIBLING_MERGE_BEHAVIOR_NONE,
 		}},
 	};
 	emit_trace_packet(stream, &proc_desc);
@@ -797,6 +800,7 @@ static void emit_thread_track_descr(pb_ostream_t *stream, const struct wprof_tas
 			},
 			PB_INIT(child_ordering) = perfetto_protos_TrackDescriptor_ChildTracksOrdering_EXPLICIT,
 			PB_INIT(sibling_order_rank) = track_thread_rank(t),
+			PB_INIT(sibling_merge_behavior) = perfetto_protos_TrackDescriptor_SiblingMergeBehavior_SIBLING_MERGE_BEHAVIOR_NONE,
 		}},
 	};
 	emit_trace_packet(stream, &thread_desc);
