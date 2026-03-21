@@ -474,6 +474,7 @@ void cuda_trace_deactivate(void)
 			eprintf("Tracee #%d (%s) TIMED OUT DURING TEARDOWN! SKIPPING PTRACE RETRACTION!\n",
 				i, cuda_str(cuda));
 			cuda->state = TRACEE_SHUTDOWN_TIMEOUT;
+			dump_tracee_log(cuda, i);
 		} else {
 			if (cuda->state == TRACEE_IGNORED) {
 				dprintf(1, "Tracee #%d (%s) has shut down cleanly.\n",
