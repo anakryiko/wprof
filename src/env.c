@@ -48,10 +48,10 @@ struct env env = {
 	.requested_stack_traces = ST_UNSET,
 	.capture_ipis = UNSET,
 	.capture_requests = UNSET,
-	.capture_req_experimental = UNSET,
 	.capture_scx = UNSET,
 	.capture_cuda = UNSET,
 	.capture_pystacks = UNSET,
+	.emit_req_split = true,
 	.pmu_real_cnt = -1,
 	.pmu_deriv_cnt = -1,
 	.pmu_unresolved_cnt = -1,
@@ -109,7 +109,7 @@ static const struct argp_option opts[] = {
 	{ "replay-end", OPT_REPLAY_OFFSET_END, "TIME_OFFSET", 0, "Session end time offset (replay mode only). Supported syntax: 2s, 1.03s, 10.5ms, 12us, 101213ns" },
 	{ "replay-info", 'I', NULL, 0, "Print recorded data information" },
 
-	{ "stacks", 'S', "KIND", OPTION_ARG_OPTIONAL, "Capture stack traces (supported kinds: timer, offcpu, waker, cuda, all; default = timer + offcpu)" },
+	{ "stacks", 'S', "KIND", OPTION_ARG_OPTIONAL, "Capture stack traces (supported kinds: timer, offcpu, waker, cuda, req, all; default = timer + offcpu)" },
 	{ "no-stacks", OPT_NO_STACK_TRACES, "KIND", OPTION_ARG_OPTIONAL, "Don't capture or emit stack traces" },
 	{ "symbolize-frugal", OPT_SYMBOLIZE_FRUGALLY, NULL, 0, "Symbolize frugally (slower, but less memory hungry)" },
 
@@ -129,12 +129,13 @@ static const struct argp_option opts[] = {
 
 	/* event subset targeting */
 	{ "feature", 'f', "FEAT", 0,
-	  "Data capture feature selector. Supported: ipi, req[=PATH|PID], scx, req-experimental, cuda, py-stacks[=nvidia-smi|PID].\n"
+	  "Data capture feature selector. Supported: ipi, req[=PATH|PID], scx, cuda, py-stacks[=nvidia-smi|PID].\n"
 	  "All features can be prefixed with 'no-' to disable them explicitly." },
 
 	/* trace emitting options */
 	{ "emit-feature", 'e', "FEAT", 0,
-	  "Trace visualization feature. Supported: sched, sched-extras, numa, tidpid, timer-ticks, req-extras, py-stacks-only" },
+	  "Trace visualization feature. Supported: sched, sched-extras, numa, tidpid, timer-ticks, py-stacks-only, "
+	  "req-split (on by default), no-req-split, req-embed, no-req-embed" },
 
 	/* tuning */
 	{ "ringbuf-size", OPT_RINGBUF_SZ, "SIZE", 0, "BPF ringbuf size (in KBs)" },
@@ -173,6 +174,8 @@ static enum stack_trace_kind parse_stack_kinds(const char *arg)
 		return ST_WAKER;
 	if (strcasecmp(arg, "cuda") == 0)
 		return ST_CUDA;
+	if (strcasecmp(arg, "req") == 0)
+		return ST_REQ;
 
 	if (strcasecmp(arg, "all") == 0)
 		return ST_ALL;
@@ -347,8 +350,6 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 				}
 			}
 			env.capture_requests = val;
-		} else if (strcasecmp(arg, "req-experimental") == 0) {
-			env.capture_req_experimental = val;
 		} else if (strcasecmp(arg, "scx") == 0 || strcasecmp(arg, "scx-layer") == 0) {
 			env.capture_scx = val;
 		} else if (strcasecmp(arg, "cuda") == 0) {
@@ -416,14 +417,20 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			env.emit_tidpid = true;
 		} else if (strcasecmp(arg, "timer-ticks") == 0) {
 			env.emit_timer_ticks = true;
-		} else if (strcasecmp(arg, "req-extras") == 0) {
-			env.emit_req_extras = true;
 		} else if (strcasecmp(arg, "sched") == 0) {
 			env.emit_sched_view = true;
 		} else if (strcasecmp(arg, "sched-extras") == 0) {
 			env.emit_sched_extras = true;
 		} else if (strcasecmp(arg, "py-stacks-only") == 0) {
 			env.emit_pystacks_only = true;
+		} else if (strcasecmp(arg, "req-split") == 0) {
+			env.emit_req_split = true;
+		} else if (strcasecmp(arg, "no-req-split") == 0) {
+			env.emit_req_split = false;
+		} else if (strcasecmp(arg, "req-embed") == 0) {
+			env.emit_req_embed = true;
+		} else if (strcasecmp(arg, "no-req-embed") == 0) {
+			env.emit_req_embed = false;
 		} else {
 			fprintf(stderr, "Unrecognized emit feature '%s!\n", arg);
 			return -EINVAL;

@@ -65,7 +65,6 @@ struct env {
 	/* data capture features */
 	enum tristate capture_ipis;
 	enum tristate capture_requests;
-	enum tristate capture_req_experimental; /* experimental extra request-related events */
 	enum tristate capture_scx;
 	enum tristate capture_cuda;
 	enum tristate capture_pystacks;
@@ -75,9 +74,10 @@ struct env {
 	bool emit_numa;
 	bool emit_tidpid;
 	bool emit_timer_ticks;
-	bool emit_req_extras;
 	bool emit_sched_extras;
 	bool emit_pystacks_only;
+	bool emit_req_split;
+	bool emit_req_embed;
 
 	int timer_freq_hz;
 
@@ -171,8 +171,6 @@ static inline void cfg_set_capture_ipis(struct wprof_data_cfg *cfg, bool val) { 
 static inline bool cfg_get_capture_reqs(const struct wprof_data_cfg *cfg) { return cfg->capture_requests; }
 static inline void cfg_set_capture_reqs(struct wprof_data_cfg *cfg, bool val) { cfg->capture_requests = val; }
 
-static inline bool cfg_get_capture_req_experimental(const struct wprof_data_cfg *cfg) { return cfg->capture_req_experimental; }
-static inline void cfg_set_capture_req_experimental(struct wprof_data_cfg *cfg, bool val) { cfg->capture_req_experimental = val; }
 
 static inline bool cfg_get_capture_scx(const struct wprof_data_cfg *cfg) { return cfg->capture_scx; }
 static inline void cfg_set_capture_scx(struct wprof_data_cfg *cfg, bool val) { cfg->capture_scx = val; }

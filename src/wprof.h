@@ -105,6 +105,7 @@ enum stack_trace_kind {
 	ST_OFFCPU		= 1 << 1, /* context switch out (thread going off-CPU) */
 	ST_WAKER		= 1 << 2, /* thread being marked runnable, waker-side stack trace */
 	ST_CUDA			= 1 << 3, /* CUDA API calls */
+	ST_REQ			= 1 << 4, /* request lifecycle events (begin/end/set/unset) */
 
 	__ST_LAST,
 	ST_ANY = (__ST_LAST - 1) * 2 - 1,
