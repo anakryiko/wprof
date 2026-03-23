@@ -97,9 +97,11 @@ enum track_special {
 #define TRACK_UUID_CUDA		TRACK_UUID(TK_SPECIAL, TKS_CUDA)
 
 enum dyn_track_kind {
-	DTK_PROC_REQS = 1,	/* requests of given PID (by PID) */
-	DTK_REQ,		/* single request of given PID (id1 = pid, id2 = req_id) */
-	DTK_REQ_THREAD,		/* request-participating thread (id1 = tid, id2 = req_id) */
+	__DTK_GAP = TK_MULT - 1,	/* we need to not overlap with enum track_kind */
+
+	DTK_PROC_REQS,			/* requests of given PID (by PID) */
+	DTK_REQ,			/* single request of given PID (id1 = pid, id2 = req_id) */
+	DTK_REQ_THREAD,			/* request-participating thread (id1 = tid, id2 = req_id) */
 };
 
 struct track_key {
