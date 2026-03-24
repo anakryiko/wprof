@@ -206,6 +206,13 @@ struct wevent {
 			u32 event_id;
 			u8 sync_type;
 		} cuda_sync;
+
+		/* Python function tracing events (from PyEval_SetProfile) */
+		struct wevent_pytrace {
+			u32 func_name_stroff;
+			u32 file_name_stroff;
+			u32 lineno;
+		} pytrace;
 	};
 };
 
@@ -241,6 +248,9 @@ static inline size_t wevent_fixed_sz(const struct wevent *e)
 	case EV_CUDA_SYNC:	return WEVENT_SZ(cuda_sync);
 	case EV_CUDA_API:	return WEVENT_SZ(cuda_api);
 
+	case EV_PYTRACE_ENTRY:	return WEVENT_SZ(pytrace);
+	case EV_PYTRACE_EXIT:	return WEVENT_SZ(pytrace);
+
 	case EV_CUDA_CALL:	return 0; /* CUDA_CALL is "merged" into CUDA_API */
 	default:		return 0;
 	}
@@ -272,6 +282,8 @@ static inline const char *wevent_kind_name(enum event_kind kind)
 	case EV_CUDA_MEMSET:	return "cuda_memset";
 	case EV_CUDA_SYNC:	return "cuda_sync";
 	case EV_CUDA_API:	return "cuda_api";
+	case EV_PYTRACE_ENTRY:	return "pytrace_entry";
+	case EV_PYTRACE_EXIT:	return "pytrace_exit";
 	default:		return "unknown";
 	}
 }

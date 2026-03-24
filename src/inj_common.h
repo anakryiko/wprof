@@ -5,10 +5,33 @@
 
 #include "wprof_types.h"
 #include "cuda_data.h"
+#include "pytrace_data.h"
 
 #ifndef MAX_UDS_FD_CNT
 #define MAX_UDS_FD_CNT 16
 #endif
+
+#define PYTRACE_SYM_CNT 15		/* must match ARRAY_SIZE(pytrace_resolve_syms) in inj_pytrace.c */
+
+__attribute__((unused))
+static const char *pytrace_sym_names[PYTRACE_SYM_CNT] = {
+	"PyEval_SetProfile",
+	"PyGILState_Ensure",
+	"PyGILState_Release",
+	"PyFrame_GetCode",
+	"PyFrame_GetLineNumber",
+	"PyUnicode_AsUTF8",
+	"PyInterpreterState_Head",
+	"PyInterpreterState_ThreadHead",
+	"PyThreadState_Next",
+	"PyThreadState_Swap",
+	"Py_DecRef",
+	"Py_IsInitialized",
+	"PyObject_GetAttrString",
+	"PyLong_AsLong",
+	/* optional: 3.12+ only */
+	"PyEval_SetProfileAllThreads",
+};
 
 #define LIBWPROFINJ_SETUP_SYM __libwprof_inj_setup
 #define LIBWPROFINJ_VERSION 1
@@ -60,6 +83,10 @@ struct inj_run_ctx {
 	long cupti_ignore_cnt;		/* ignored records */
 	long cupti_data_sz;		/* total data size, bytes */
 	long cupti_buf_cnt;		/* buffers passed to recording callback */
+
+	/* pytrace stats */
+	long pytrace_event_cnt;		/* captured events */
+	long pytrace_code_cache_cnt;	/* unique code objects cached */
 };
 
 enum inj_msg_kind {
@@ -67,6 +94,7 @@ enum inj_msg_kind {
 	INJ_MSG_SETUP = 1,
 	INJ_MSG_CUDA_SESSION = 2,
 	INJ_MSG_SHUTDOWN = 3,
+	INJ_MSG_PYTRACE_SESSION = 4,
 };
 
 static inline const char *inj_msg_str(enum inj_msg_kind kind)
@@ -75,6 +103,7 @@ static inline const char *inj_msg_str(enum inj_msg_kind kind)
 	case INJ_MSG_SETUP: return "SETUP";
 	case INJ_MSG_CUDA_SESSION: return "CUDA_SESSION";
 	case INJ_MSG_SHUTDOWN: return "SHUTDOWN";
+	case INJ_MSG_PYTRACE_SESSION: return "PYTRACE_SESSION";
 	default: return "???";
 	}
 }
@@ -88,6 +117,11 @@ struct inj_msg {
 		struct inj_msg_cuda_session {
 			long session_timeout_ms;
 		} cuda_session;
+		struct inj_msg_pytrace_session {
+			long session_timeout_ms;
+			int py_version_minor; /* Python 3.x minor version */
+			unsigned long sym_addrs[PYTRACE_SYM_CNT];
+		} pytrace_session;
 		struct inj_msg_shutdown {
 		} shutdown;
 	};
