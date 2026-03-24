@@ -48,6 +48,10 @@ static const char *event_kind_str_map[] = {
 	[EV_CUDA_MEMSET] = "CUDA_MEMSET",
 	[EV_CUDA_SYNC] = "CUDA_SYNC",
 	[EV_CUDA_API] = "CUDA_API",
+
+	/* Python function tracing events */
+	[EV_PYTRACE_ENTRY] = "PYTRACE_ENTRY",
+	[EV_PYTRACE_EXIT] = "PYTRACE_EXIT",
 };
 
 const char *event_kind_str(enum event_kind kind)
