@@ -56,7 +56,8 @@ INCLUDES := -I$(OUTPUT) -I../include -I../libbpf/include/uapi				\
 CFLAGS ?= -g -O$(if $(DEBUG),0,2) -Wall
 ALL_CFLAGS := $(CFLAGS) $(EXTRA_CFLAGS) -fno-omit-frame-pointer				\
 	      -Wno-c23-extensions -Wno-sign-compare -Wno-format-truncation		\
-	      $(if $(LTO),-flto=auto -ffat-lto-objects) $(PYSTACKS_CFLAGS)
+	      $(if $(LTO),-flto=auto -ffat-lto-objects) $(PYSTACKS_CFLAGS)		\
+	      $(if $(DEBUG),-DDEBUG)
 ALL_LDFLAGS := $(LDFLAGS) $(EXTRA_LDFLAGS) -lrt -ldl -lpthread -lm
 
 # Get Clang's default includes on this system. We'll explicitly add these dirs
