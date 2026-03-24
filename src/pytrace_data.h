@@ -24,13 +24,19 @@ struct wpytrace_data_hdr {
 	u64 code_map_cnt;
 } __attribute__((aligned(8)));
 
+/* PyTorch RecordFunction what values — start at 20 to leave room for growth */
+#define WPYTRACE_PYTORCH_ENTRY 20
+#define WPYTRACE_PYTORCH_EXIT  21
+
 /* Raw event recorded in the hot path */
 struct wpytrace_event {
 	u64 ts;
 	u64 code_key;
 	u32 tid;
-	u8  what;		/* PyTrace_CALL=0, PyTrace_RETURN=3 */
-	u8  pad[3];
+	u8  what;		/* PyTrace_CALL=0, PyTrace_RETURN=3, WPYTRACE_RF_ENTRY=20, WPYTRACE_RF_EXIT=21 */
+	u8  padding[3];
+	u32 rf_name_off;
+	u32 padding2;
 };
 
 /* Code object map entry: maps code_key -> string offsets */

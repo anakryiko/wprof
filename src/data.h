@@ -23,7 +23,8 @@ struct wprof_data_cfg {
 	u64 capture_req_experimental : 1;
 	u64 capture_cuda : 1;
 	u64 capture_pystacks : 1;
-	u64 capture_pyfunc : 1;
+	u64 capture_pytrace : 1;
+	u64 capture_pytorch : 1;
 
 	enum stack_trace_kind captured_stack_traces;
 

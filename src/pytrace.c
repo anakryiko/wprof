@@ -6,8 +6,6 @@
 #include <stdio.h>
 #include <linux/fs.h>
 #include <fcntl.h>
-#include <sys/stat.h>
-#include <sys/sysmacros.h>
 
 #include "pytrace.h"
 #include "cuda.h"
@@ -17,9 +15,11 @@
 #include "inj_common.h"
 #include "inject.h"
 #include "elf_utils.h"
+#include "pydisc.h"
 
 #define LIBWPROFINJ_PYTRACE_LOG_PATH_FMT "wprofinj-pytrace-log.%d.%d.log"
 #define LIBWPROFINJ_PYTRACE_DUMP_PATH_FMT "wprofinj-pytrace.%d.%d.data"
+#define LIBWPROFINJ_TORCH_DUMP_PATH_FMT "wprofinj-torch.%d.%d.data"
 
 static const char *pytrace_proc_str(int pid, int ns_pid, const char *proc_name)
 {
@@ -57,6 +57,7 @@ static struct pytrace_tracee *add_pytrace_tracee(struct tracee_state *tracee)
 
 	pf->log_fd = -1;
 	pf->dump_fd = -1;
+	pf->torch_dump_fd = -1;
 
 	env.pytrace_cnt++;
 
@@ -107,11 +108,11 @@ static int try_inject_to_python_process(int pid, int workdir_fd)
 	err = py_find_binary(pid, &bi);
 	if (err) {
 		dlogf(PYTRACE, 1, "PID %d (%s) is not Python, skipping\n", pid, proc_name(pid));
-		return -ENOENT;
+		return 0;
 	}
 
-	vprint("Process %s is Python 3.%d!\n",
-	      pytrace_proc_str(pid, ns_tid_by_host_tid(pid, pid), proc_name(pid)), bi.py_version_minor);
+	vprintf("Process %s is Python 3.%d!\n",
+	      pytrace_proc_str(pid, ns_tid_by_host_tid(pid, pid), proc_name(pid)), bi.py_minor);
 
 	dlogf(PYTRACE, 0, "PID %d: Python binary at '%s', base_addr=0x%lx\n", pid, bi.host_path, bi.base_addr);
 
@@ -134,7 +135,7 @@ static int try_inject_to_python_process(int pid, int workdir_fd)
 	}
 
 	vprintf("Injecting libwprofinj.so into %s (Python 3.%d)...\n",
-		pytrace_proc_str(pid, ns_tid_by_host_tid(pid, pid), proc_name(pid)), bi.py_version_minor);
+		pytrace_proc_str(pid, ns_tid_by_host_tid(pid, pid), proc_name(pid)), bi.py_minor);
 
 	struct tracee_state *tracee = tracee_inject(pid);
 	if (!tracee) {
@@ -159,7 +160,7 @@ static int try_inject_to_python_process(int pid, int workdir_fd)
 
 	pf->log_fd = log_fd;
 	pf->log_path = strdup(log_path);
-	pf->py_version_minor = bi.py_version_minor;
+	pf->py_version_minor = bi.py_minor;
 	memcpy(pf->sym_addrs, sym_addrs, sizeof(sym_addrs));
 	pf->state = TRACEE_INJECTED;
 
@@ -174,8 +175,6 @@ err_retract:
 
 int pytrace_trace_setup(int workdir_fd)
 {
-	int err = 0;
-
 retry:
 	switch (env.pytrace_discovery) {
 	case PYTRACE_DISCOVER_PROC: {
@@ -183,7 +182,7 @@ retry:
 
 		wprof_for_each(proc, pidp) {
 			pid = *pidp;
-			try_inject_to_python_process(pid, workdir_fd, false);
+			try_inject_to_python_process(pid, workdir_fd);
 		}
 		break;
 	}
@@ -203,7 +202,7 @@ retry:
 			if (sscanf(pidbuf, "%d", &pid) != 1)
 				continue;
 
-			try_inject_to_python_process(pid, workdir_fd, false);
+			try_inject_to_python_process(pid, workdir_fd);
 		}
 
 		pclose(f);
@@ -256,15 +255,32 @@ int pytrace_trace_prepare(int workdir_fd, long sess_timeout_ms)
 		vprintf("Sending PYTRACE_SESSION to tracee #%d (%s), Python 3.%d, timeout %ldms...\n",
 			i, pytrace_str(pf), pf->py_version_minor, sess_timeout_ms);
 
+		int torch_dump_fd = -1;
+		if (env.capture_pytorch == TRUE) {
+			char torch_path[128];
+			snprintf(torch_path, sizeof(torch_path), LIBWPROFINJ_TORCH_DUMP_PATH_FMT, getpid(), pf->pid);
+			torch_dump_fd = openat(workdir_fd, torch_path, O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+			if (torch_dump_fd < 0) {
+				eprintf("Failed to create torch dump file at '%s': %d (continuing without torch profiling)\n",
+					torch_path, -errno);
+			} else {
+				pf->torch_dump_fd = torch_dump_fd;
+				pf->torch_dump_path = strdup(torch_path);
+			}
+		}
+
 		struct inj_msg msg = {
 			.kind = INJ_MSG_PYTRACE_SESSION,
 			.pytrace_session = {
 				.session_timeout_ms = sess_timeout_ms,
 				.py_version_minor = pf->py_version_minor,
+				.enable_torch_profiler = (torch_dump_fd >= 0),
 			},
 		};
 		memcpy(msg.pytrace_session.sym_addrs, pf->sym_addrs, sizeof(pf->sym_addrs));
-		int err = uds_send_data(pf->uds_fd, &msg, sizeof(msg), &dump_fd, 1);
+		int fds[2] = { dump_fd, torch_dump_fd };
+		int fd_cnt = (torch_dump_fd >= 0) ? 2 : 1;
+		int err = uds_send_data(pf->uds_fd, &msg, sizeof(msg), fds, fd_cnt);
 		if (err < 0) {
 			eprintf("Failed to start pytrace trace session for tracee %s: %d\n",
 				pytrace_str(pf), err);
@@ -467,6 +483,7 @@ void pytrace_trace_teardown(void)
 
 		zclose(pf->uds_fd);
 		zclose(pf->dump_fd);
+		zclose(pf->torch_dump_fd);
 		zclose(pf->log_fd);
 	}
 }

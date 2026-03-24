@@ -334,11 +334,20 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 		const struct wpytrace_event *next_rec;
 		u64 rec_cnt;
 		u64 rec_idx;
-	} *wpytraces = calloc(env.pytrace_cnt, sizeof(*wpytraces));
+		int tracee_idx; /* index into env.pytraces[] */
+	};
+
+	/*
+	 * Each pytrace tracee can produce up to 2 dump files: the pytrace dump
+	 * and an optional torch profiler dump. We allocate double the entries
+	 * and fill in both when the torch dump exists.
+	 */
+	int wpytrace_cnt = 0;
+	int wpytrace_cap = env.pytrace_cnt * 2;
+	struct wpytrace_state *wpytraces = calloc(wpytrace_cap, sizeof(*wpytraces));
 
 	for (int i = 0; i < env.pytrace_cnt; i++) {
 		struct pytrace_tracee *pf = &env.pytraces[i];
-		struct wpytrace_state *wpf = &wpytraces[i];
 
 		if (pf->state == TRACEE_INACTIVE) {
 			/* expected clean shutdown case */
@@ -431,7 +440,7 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 				ts = r->ts;
 			}
 		}
-		for (int i = 0; i < env.pytrace_cnt; i++) {
+		for (int i = 0; i < wpytrace_cnt; i++) {
 			const struct wpytrace_event *r = wpytraces[i].next_rec;
 			if (!r)
 				continue;
@@ -490,7 +499,7 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 
 			struct wpytrace_state *wpf = &wpytraces[pidx];
 			const struct wpytrace_event *r = wpf->next_rec;
-			struct pytrace_tracee *pf = &env.pytraces[pidx];
+			struct pytrace_tracee *pf = &env.pytraces[wpf->tracee_idx];
 
 			wevent_sz = persist_pytrace_event(&ps, r, &wevent_buf, wpf->dump_hdr,
 							 pf->pid, pf->proc_name,
@@ -523,7 +532,8 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 					cuda_str(cuda), err);
 			} else {
 				int pidx = widx - env.ringbuf_cnt - env.cuda_cnt;
-				struct pytrace_tracee *pf = &env.pytraces[pidx];
+				struct wpytrace_state *wpf = &wpytraces[pidx];
+				struct pytrace_tracee *pf = &env.pytraces[wpf->tracee_idx];
 				eprintf("Failed to fwrite() event from pytrace tracee %s: %d\n",
 					pytrace_str(pf), err);
 			}
@@ -574,25 +584,32 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 	}
 	free(wcudas);
 
-	/* Cleanup pytrace dumps */
-	for (int i = 0; i < env.pytrace_cnt; i++) {
-		struct pytrace_tracee *pf = &env.pytraces[i];
+	/* Cleanup pytrace and torch dumps */
+	for (int i = 0; i < wpytrace_cnt; i++) {
 		struct wpytrace_state *wpf = &wpytraces[i];
 
 		if (wpf->dump_hdr)
 			munmap(wpf->dump_hdr, wpf->dump_sz);
 
-		if (!env.keep_workdir && pf->dump_path)
-			unlink(pf->dump_path);
-
-		free(pf->dump_path);
-		pf->dump_path = NULL;
-
-		zclose(pf->dump_fd);
-
 		free(wpf->recs);
 		wpf->dump_hdr = NULL;
 		wpf->dump_sz = 0;
+	}
+	for (int i = 0; i < env.pytrace_cnt; i++) {
+		struct pytrace_tracee *pf = &env.pytraces[i];
+
+		if (!env.keep_workdir && pf->dump_path)
+			unlink(pf->dump_path);
+		if (!env.keep_workdir && pf->torch_dump_path)
+			unlink(pf->torch_dump_path);
+
+		free(pf->dump_path);
+		pf->dump_path = NULL;
+		free(pf->torch_dump_path);
+		pf->torch_dump_path = NULL;
+
+		zclose(pf->dump_fd);
+		zclose(pf->torch_dump_fd);
 	}
 	free(wpytraces);
 

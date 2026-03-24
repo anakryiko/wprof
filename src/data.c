@@ -52,6 +52,10 @@ static const char *event_kind_str_map[] = {
 	/* Python function tracing events */
 	[EV_PYTRACE_ENTRY] = "PYTRACE_ENTRY",
 	[EV_PYTRACE_EXIT] = "PYTRACE_EXIT",
+
+	/* PyTorch RecordFunction events */
+	[EV_PYTORCH_ENTRY] = "PYTORCH_ENTRY",
+	[EV_PYTORCH_EXIT] = "PYTORCH_EXIT",
 };
 
 const char *event_kind_str(enum event_kind kind)

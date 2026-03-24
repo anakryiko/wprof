@@ -99,6 +99,10 @@ enum event_kind {
 	EV_PYTRACE_ENTRY = 60,
 	EV_PYTRACE_EXIT = 61,
 
+	/* PyTorch RecordFunction events (from at::addGlobalCallback) */
+	EV_PYTORCH_ENTRY = 62,
+	EV_PYTORCH_EXIT = 63,
+
 	__EV_KIND_MAX,
 };
 

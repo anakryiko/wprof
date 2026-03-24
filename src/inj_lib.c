@@ -518,9 +518,9 @@ static int handle_msg(struct inj_msg *msg, int *fds, int fd_cnt)
 		vlog("Shutdown completed successfully.\n");
 		return -ESHUTDOWN;
 	case INJ_MSG_PYTRACE_SESSION: {
-		if (fd_cnt != 1) {
+		if (fd_cnt < 1 || fd_cnt > 2) {
 			err = -EPROTO;
-			elog("Received PYTRACE_SESSION command, but no dump FD!\n");
+			elog("Received PYTRACE_SESSION command with unexpected FD count %d!\n", fd_cnt);
 			return err;
 		}
 
@@ -529,7 +529,8 @@ static int handle_msg(struct inj_msg *msg, int *fds, int fd_cnt)
 		vlog("Setting up pytrace session (timeout %ldms, Python 3.%d)...\n", sess_timeout_ms, py_ver_minor);
 
 		int dump_fd = fds[0];
-		if ((err = pytrace_session_setup(dump_fd, py_ver_minor, msg->pytrace_session.sym_addrs)) < 0) {
+		int torch_fd = (fd_cnt >= 2 && msg->pytrace_session.enable_torch_profiler) ? fds[1] : -1;
+		if ((err = pytrace_session_setup(dump_fd, torch_fd, py_ver_minor, msg->pytrace_session.sym_addrs)) < 0) {
 			elog("Failed to setup pytrace session: %d\n", err);
 			return err;
 		}

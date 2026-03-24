@@ -554,6 +554,13 @@ int persist_pytrace_event(struct persist_state *ps, const struct wpytrace_event 
 	dst->numa_node = 0;
 	dst->ts = e->ts;
 
+	if (e->what == WPYTRACE_PYTORCH_ENTRY || e->what == WPYTRACE_PYTORCH_EXIT) {
+		dst->sz = WEVENT_SZ(rf);
+		dst->kind = (e->what == WPYTRACE_PYTORCH_ENTRY) ? EV_PYTORCH_ENTRY : EV_PYTORCH_EXIT;
+		dst->rf.name_stroff = e->rf_name_off ? persist_stroff(ps, pytrace_strs + e->rf_name_off) : 0;
+		return dst->sz;
+	}
+
 	enum event_kind kind = (e->what == 0) ? EV_PYTRACE_ENTRY : EV_PYTRACE_EXIT;
 	dst->sz = WEVENT_SZ(pytrace);
 	dst->kind = kind;
