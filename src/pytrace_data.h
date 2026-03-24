@@ -89,4 +89,12 @@ static inline struct wpytrace_event_record *wpytrace_event_iter_next(struct wpyt
 	(rec = wpytrace_event_iter_next(&it));						\
 )
 
+static inline int wpytrace_code_entry_cmp(const void *a, const void *b)
+{
+	const struct wpytrace_code_entry *ea = a, *eb = b;
+	if (ea->code_key < eb->code_key) return -1;
+	if (ea->code_key > eb->code_key) return 1;
+	return 0;
+}
+
 #endif /* __PYTRACE_DATA_H_ */

@@ -17,6 +17,8 @@
 #include "pmu.h"
 #include "cuda.h"
 #include "cuda_data.h"
+#include "pytrace.h"
+#include "pytrace_data.h"
 #include "proc.h"
 #include "persist.h"
 #include "stacktrace.h"
@@ -117,6 +119,17 @@ static int wcuda_event_cmp(const void *a, const void *b)
 {
 	const struct wcuda_event *x = *(const struct wcuda_event **)a;
 	const struct wcuda_event *y = *(const struct wcuda_event **)b;
+
+	if (x->ts == y->ts)
+		return 0;
+
+	return (s64)(x->ts - y->ts) < 0 ? -1 : 1;
+}
+
+static int wpytrace_event_cmp(const void *a, const void *b)
+{
+	const struct wpytrace_event *x = *(const struct wpytrace_event **)a;
+	const struct wpytrace_event *y = *(const struct wpytrace_event **)b;
 
 	if (x->ts == y->ts)
 		return 0;
@@ -310,6 +323,88 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 		wcuda->next_rec = wcuda->rec_cnt > 0 ? wcuda->recs[0] : NULL;
 	}
 
+	/* Prepare per-process pytrace event streams */
+	struct wpytrace_state {
+		struct wpytrace_data_hdr *dump_hdr;
+		size_t dump_sz;
+		const char *strs;
+		struct wpytrace_code_entry *code_map;
+		u64 code_map_cnt;
+		const struct wpytrace_event **recs;
+		const struct wpytrace_event *next_rec;
+		u64 rec_cnt;
+		u64 rec_idx;
+	} *wpytraces = calloc(env.pytrace_cnt, sizeof(*wpytraces));
+
+	for (int i = 0; i < env.pytrace_cnt; i++) {
+		struct pytrace_tracee *pf = &env.pytraces[i];
+		struct wpytrace_state *wpf = &wpytraces[i];
+
+		if (pf->state == TRACEE_INACTIVE) {
+			/* expected clean shutdown case */
+		} else if (pf->state == TRACEE_SHUTDOWN_TIMEOUT) {
+			eprintf("PyTrace tracee #%d (%s) timed out its shutdown, but we'll try to collect its data nevertheless!..\n",
+				i, pytrace_str(pf));
+		} else {
+			eprintf("Skipping pytrace tracing data from tracee #%d (%s) as it had problems...\n",
+				i, pytrace_str(pf));
+			continue;
+		}
+
+		/* Load pytrace dump and optionally torch dump into wpytraces[] */
+		int dump_fds[] = { pf->dump_fd, pf->torch_dump_fd };
+		const char *dump_paths[] = { pf->dump_path, pf->torch_dump_path };
+		const char *dump_labels[] = { "pytrace", "torch" };
+
+		for (int d = 0; d < ARRAY_SIZE(dump_fds); d++) {
+			if (dump_fds[d] < 0)
+				continue;
+
+			struct wpytrace_state *wpf = &wpytraces[wpytrace_cnt];
+
+			struct stat st;
+			if (fstat(dump_fds[d], &st) < 0) {
+				err = -errno;
+				eprintf("Failed to fstat() %s data dump for tracee %s at '%s': %d\n",
+					dump_labels[d], pytrace_str(pf), dump_paths[d], err);
+				continue;
+			}
+
+			wpf->dump_sz = st.st_size;
+			wpf->dump_hdr = mmap(NULL, wpf->dump_sz, PROT_READ | PROT_WRITE, MAP_SHARED, dump_fds[d], 0);
+			if (wpf->dump_hdr == MAP_FAILED) {
+				err = -errno;
+				eprintf("Failed to mmap() %s data dump for tracee %s at '%s': %d\n",
+					dump_labels[d], pytrace_str(pf), dump_paths[d], err);
+				wpf->dump_hdr = NULL;
+				continue;
+			}
+
+			wpf->strs = (void *)wpf->dump_hdr + wpf->dump_hdr->hdr_sz + wpf->dump_hdr->strs_off;
+			wpf->code_map = (void *)wpf->dump_hdr + wpf->dump_hdr->hdr_sz + wpf->dump_hdr->code_map_off;
+			wpf->code_map_cnt = wpf->dump_hdr->code_map_cnt;
+			qsort(wpf->code_map, wpf->code_map_cnt, sizeof(*wpf->code_map), wpytrace_code_entry_cmp);
+			wpf->tracee_idx = i;
+
+			/* Collect event pointers and sort by converted timestamp */
+			wpf->rec_idx = 0;
+			wpf->rec_cnt = wpf->dump_hdr->event_cnt;
+			wpf->recs = calloc(wpf->rec_cnt, sizeof(*wpf->recs));
+
+			struct wpytrace_event_record *rec;
+			u64 idx = 0;
+			wpytrace_for_each_event(rec, wpf->dump_hdr) {
+				wpf->recs[idx++] = rec->e;
+			}
+
+			qsort(wpf->recs, wpf->rec_cnt, sizeof(*wpf->recs), wpytrace_event_cmp);
+
+			wpf->next_rec = wpf->rec_cnt > 0 ? wpf->recs[0] : NULL;
+
+			wpytrace_cnt++;
+		}
+	}
+
 	/* Merge and convert events in timestamp order */
 	struct wevent wevent_buf;
 	while (true) {
@@ -333,6 +428,16 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 			/* find event with smallest timestamp */
 			if (widx < 0 || (s64)(r->ts - ts) < 0) {
 				widx = env.ringbuf_cnt + i;
+				ts = r->ts;
+			}
+		}
+		for (int i = 0; i < env.pytrace_cnt; i++) {
+			const struct wpytrace_event *r = wpytraces[i].next_rec;
+			if (!r)
+				continue;
+			/* timestamps already converted to ns in-place */
+			if (widx < 0 || (s64)(r->ts - ts) < 0) {
+				widx = env.ringbuf_cnt + env.cuda_cnt + i;
 				ts = r->ts;
 			}
 		}
@@ -364,7 +469,7 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 			 */
 			if (wevent_sz == 0)
 				continue;
-		} else {
+		} else if (widx < env.ringbuf_cnt + env.cuda_cnt) {
 			int cidx = widx - env.ringbuf_cnt;
 
 			struct wcuda_state *wcuda = &wcudas[cidx];
@@ -380,6 +485,27 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 
 			wcuda->rec_idx++;
 			wcuda->next_rec = wcuda->rec_idx < wcuda->rec_cnt ? wcuda->recs[wcuda->rec_idx] : NULL;
+		} else {
+			int pidx = widx - env.ringbuf_cnt - env.cuda_cnt;
+
+			struct wpytrace_state *wpf = &wpytraces[pidx];
+			const struct wpytrace_event *r = wpf->next_rec;
+			struct pytrace_tracee *pf = &env.pytraces[pidx];
+
+			wevent_sz = persist_pytrace_event(&ps, r, &wevent_buf, wpf->dump_hdr,
+							 pf->pid, pf->proc_name,
+							 wpf->code_map, wpf->code_map_cnt,
+							 wpf->strs);
+			if (wevent_sz < 0) {
+				eprintf("Failed to convert pytrace event for tracee %s: %d\n", pytrace_str(pf), wevent_sz);
+				return wevent_sz;
+			}
+
+			wpf->rec_idx++;
+			wpf->next_rec = wpf->rec_idx < wpf->rec_cnt ? wpf->recs[wpf->rec_idx] : NULL;
+
+			if (wevent_sz == 0)
+				continue;
 		}
 
 		event_cnt += 1;
@@ -390,11 +516,16 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 			if (widx < env.ringbuf_cnt) {
 				eprintf("Failed to fwrite() event from ringbuf #%d ('%s'): %d\n",
 					widx, workers[widx].dump_path, err);
-			} else {
+			} else if (widx < env.ringbuf_cnt + env.cuda_cnt) {
 				int cidx = widx - env.ringbuf_cnt;
 				struct cuda_tracee *cuda = &env.cudas[cidx];
 				eprintf("Failed to fwrite() event from CUDA tracee %s: %d\n",
 					cuda_str(cuda), err);
+			} else {
+				int pidx = widx - env.ringbuf_cnt - env.cuda_cnt;
+				struct pytrace_tracee *pf = &env.pytraces[pidx];
+				eprintf("Failed to fwrite() event from pytrace tracee %s: %d\n",
+					pytrace_str(pf), err);
 			}
 			return err;
 		}
@@ -442,6 +573,28 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 		w->dump_sz = 0;
 	}
 	free(wcudas);
+
+	/* Cleanup pytrace dumps */
+	for (int i = 0; i < env.pytrace_cnt; i++) {
+		struct pytrace_tracee *pf = &env.pytraces[i];
+		struct wpytrace_state *wpf = &wpytraces[i];
+
+		if (wpf->dump_hdr)
+			munmap(wpf->dump_hdr, wpf->dump_sz);
+
+		if (!env.keep_workdir && pf->dump_path)
+			unlink(pf->dump_path);
+
+		free(pf->dump_path);
+		pf->dump_path = NULL;
+
+		zclose(pf->dump_fd);
+
+		free(wpf->recs);
+		wpf->dump_hdr = NULL;
+		wpf->dump_sz = 0;
+	}
+	free(wpytraces);
 
 	/* Write thread table section */
 	file_pad(data_dump, 8);
