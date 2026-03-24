@@ -102,6 +102,7 @@ enum dyn_track_kind {
 	DTK_PROC_REQS,			/* requests of given PID (by PID) */
 	DTK_REQ,			/* single request of given PID (id1 = pid, id2 = req_id) */
 	DTK_REQ_THREAD,			/* request-participating thread (id1 = tid, id2 = req_id) */
+	DTK_REQ_THREAD_EMBED,		/* first-event-per-thread tracking for embed mode (id1 = tid, id2 = req_id) */
 };
 
 struct track_key {
@@ -2382,6 +2383,15 @@ static u64 ensure_thread_req_track(const struct wprof_task *t)
 	return track_uuid;
 }
 
+static bool req_embed_first_event(const struct wprof_task *t, u64 req_id)
+{
+	struct track_state *s = track_state_get_or_add(DTK_REQ_THREAD_EMBED, t->tid, req_id);
+	if (s->exists)
+		return false;
+	s->exists = true;
+	return true;
+}
+
 /* EV_REQ_EVENT */
 static void emit_req_event(struct worker_state *w, const struct wevent *e)
 {
@@ -2409,8 +2419,11 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e)
 		req_thread_track_uuid = ensure_req_thread_track(&task, req_id, req_name);
 
 	u64 thread_req_track = 0;
-	if (env.emit_req_embed)
+	bool first_embed_event = false;
+	if (env.emit_req_embed) {
 		thread_req_track = ensure_thread_req_track(&task);
+		first_embed_event = req_embed_first_event(&task, req_id);
+	}
 
 	switch (e->req.req_event) {
 	case REQ_BEGIN: {
@@ -2428,7 +2441,9 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e)
 			emit_instant(thread_req_track, e->ts, iid_str(thread_req_name_iid, thread_req_name), IID_CAT_REQUEST_BEGIN) {
 				emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
 				emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
-				emit_flow_id(req_id);
+				if (first_embed_event)
+					emit_flow_id(req_id);
+				emit_flow_id(hash_combine(req_id, task.tid));
 				emit_callstack(w, req_stack_id);
 			}
 		}
@@ -2448,7 +2463,9 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e)
 			emit_slice_begin(thread_req_track, e->ts, iid_str(thread_req_name_iid, thread_req_name), IID_CAT_REQUEST_THREAD) {
 				emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
 				emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
-				emit_flow_id(req_id);
+				if (first_embed_event)
+					emit_flow_id(req_id);
+				emit_flow_id(hash_combine(req_id, task.tid));
 				emit_callstack(w, req_stack_id);
 			}
 		}
@@ -2461,6 +2478,7 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e)
 
 		if (env.emit_req_embed) {
 			emit_slice_end(thread_req_track, e->ts, iid_str(thread_req_name_iid, thread_req_name), IID_CAT_REQUEST_THREAD) {
+				emit_flow_id(hash_combine(req_id, task.tid));
 				emit_callstack(w, req_stack_id);
 			}
 		}
@@ -2476,7 +2494,9 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e)
 				emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
 				emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
 				emit_kv_float(IID_ANNK_REQ_LATENCY_US, "%.6lf", (e->ts - req_start_ts) / 1000);
-				emit_flow_id(req_id);
+				if (first_embed_event)
+					emit_flow_id(req_id);
+				emit_flow_id(hash_combine(req_id, task.tid));
 				emit_callstack(w, req_stack_id);
 			}
 		}
@@ -2590,8 +2610,11 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e)
 	u64 req_id = e->req_task.req_id;
 
 	u64 thread_req_track = 0;
-	if (env.emit_req_embed)
+	bool first_embed_event = false;
+	if (env.emit_req_embed) {
 		thread_req_track = ensure_thread_req_track(&task);
+		first_embed_event = req_embed_first_event(&task, req_id);
+	}
 
 	switch (e->req_task.req_task_event) {
 	case REQ_TASK_ENQUEUE: {
@@ -2604,7 +2627,9 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e)
 				     IID_NAME_REQUEST_TASK_ENQUEUE, IID_CAT_REQUEST_TASK_ENQUEUE) {
 				emit_kv_int(IID_ANNK_REQ_ID, e->req_task.req_id);
 				emit_kv_int(IID_ANNK_REQ_TASK_ID, e->req_task.req_task_id);
-				emit_flow_id(req_id);
+				if (first_embed_event)
+					emit_flow_id(req_id);
+				emit_flow_id(hash_combine(req_id, task.tid));
 				emit_flow_id(hash_combine(req_id, e->req_task.req_task_id));
 			}
 		}
@@ -2617,7 +2642,9 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e)
 				emit_kv_int(IID_ANNK_REQ_ID, e->req_task.req_id);
 				emit_kv_int(IID_ANNK_REQ_TASK_ID, e->req_task.req_task_id);
 				emit_kv_int(IID_ANNK_REQ_WAIT_TIME_NS, e->req_task.wait_time_ns);
-				emit_flow_id(req_id);
+				if (first_embed_event)
+					emit_flow_id(req_id);
+				emit_flow_id(hash_combine(req_id, task.tid));
 				emit_flow_id(hash_combine(req_id, e->req_task.req_task_id));
 			}
 		}
@@ -2629,6 +2656,7 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e)
 				emit_kv_int(IID_ANNK_REQ_ID, e->req_task.req_id);
 				emit_kv_int(IID_ANNK_REQ_TASK_ID, e->req_task.req_task_id);
 				emit_kv_int(IID_ANNK_REQ_WAIT_TIME_NS, e->req_task.wait_time_ns);
+				emit_flow_id(hash_combine(req_id, task.tid));
 				emit_flow_id(hash_combine(req_id, e->req_task.req_task_id));
 			}
 		}
