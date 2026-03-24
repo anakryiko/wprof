@@ -95,6 +95,10 @@ enum event_kind {
 	EV_CUDA_SYNC = 53,
 	EV_CUDA_API = 54,
 
+	/* Python function tracing events (from PyEval_SetProfile) */
+	EV_PYTRACE_ENTRY = 60,
+	EV_PYTRACE_EXIT = 61,
+
 	__EV_KIND_MAX,
 };
 
