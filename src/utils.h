@@ -67,6 +67,7 @@ enum log_subset {
 	LOG_TOPOLOGY = 0x04,
 	LOG_INJECTION = 0x08,
 	LOG_TRACEE = 0x10,
+	LOG_PYTRACE = 0x20,
 };
 
 extern bool env_verbose;
