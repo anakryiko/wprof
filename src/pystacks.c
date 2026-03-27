@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause)
 /* Copyright (c) 2026 Meta Platforms, Inc. */
 #include "pystacks.h"
+#include "pydisc.h"
 #include "env.h"
 #include "utils.h"
 
 #include "wprof.skel.h"
-
-int pydisc_discover(struct wprof_bpf *skel);
 
 int pystacks_init(struct wprof_bpf *skel)
 {
