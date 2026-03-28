@@ -350,7 +350,7 @@ static __always_inline struct rb_ctx __rb_event_reserve(struct task_struct *p, u
 	rb_ctx.has_dptr = true;
 
 	if (bpf_ringbuf_reserve_dynptr(rb, fix_sz + dyn_sz, 0, &rb_ctx.dptr)) {
-		bpf_ringbuf_submit_dynptr(&rb_ctx.dptr, 0); /* no-op */
+		bpf_ringbuf_discard_dynptr(&rb_ctx.dptr, 0);
 
 		/*
 		 * If designated ringbuf is full, fallback to picking best (least full) out of two

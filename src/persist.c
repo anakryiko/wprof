@@ -359,8 +359,9 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 	}
 
 	default:
-		eprintf("Unrecognized event type %d while persisting!\n", e->kind);
-		return -EINVAL;
+		/* Skip unrecognized events — can occur if a corrupt ring buffer
+		 * sample slips through (see debug/rb_test/README.md). */
+		return 0;
 	}
 
 	return dst->sz;

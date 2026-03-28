@@ -117,6 +117,15 @@ static int handle_rb_event(void *ctx, void *data, size_t size)
 		return 0;
 	}
 
+	/* Validate ring buffer delivered size against the event's own sz field.
+	 * Under heavy load, the kernel ring buffer can occasionally deliver a
+	 * truncated size (see debug/rb_test/README.md). Skip these events to
+	 * prevent corrupting the dump stream alignment. */
+	if (size < e->sz) {
+		w->rb_ignored_cnt++;
+		return 0;
+	}
+
 	if (fwrite(&size, sizeof(size), 1, w->dump) != 1 ||
 	    fwrite(data, size, 1, w->dump) != 1) {
 		int err = -errno;

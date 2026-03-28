@@ -198,6 +198,12 @@ static inline struct bpf_event_record *bpf_event_iter_next(struct bpf_event_iter
 		return NULL;
 
 	it->rec.sz = *(size_t *)it->next;
+
+	/* Stop on invalid size to prevent cascading misaligned reads */
+	if (it->rec.sz == 0 || it->rec.sz > 65536 ||
+	    it->next + sizeof(size_t) + it->rec.sz > it->last)
+		return NULL;
+
 	it->rec.e = it->next + sizeof(size_t);
 	it->rec.idx = it->next_idx;
 

@@ -240,6 +240,7 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 		for_each_bpf_event(rec, data, data_sz) {
 			wmerge->recs[idx++] = *rec;
 		}
+		wmerge->rec_cnt = idx;
 
 		qsort(wmerge->recs, wmerge->rec_cnt, sizeof(*wmerge->recs), bpf_event_cmp);
 		wmerge->next_rec = wmerge->rec_cnt > 0 ? &wmerge->recs[0] : NULL;
@@ -303,6 +304,7 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 		wcuda_for_each_event(rec, wcuda->dump_hdr) {
 			wcuda->recs[idx++] = rec->e;
 		}
+		wcuda->rec_cnt = idx;
 
 		qsort(wcuda->recs, wcuda->rec_cnt, sizeof(*wcuda->recs), wcuda_event_cmp);
 		wcuda->next_rec = wcuda->rec_cnt > 0 ? wcuda->recs[0] : NULL;
