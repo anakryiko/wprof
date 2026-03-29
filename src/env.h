@@ -8,6 +8,7 @@
 #include "wprof.h"
 #include "data.h"
 #include "cuda.h"
+#include "pytrace.h"
 #include "requests.h"
 
 #define WPROF_VERSION "0.3-dev"
@@ -23,6 +24,8 @@
 #define DEFAULT_CAPTURE_SCX FALSE
 #define DEFAULT_CAPTURE_CUDA FALSE
 #define DEFAULT_CAPTURE_PYSTACKS FALSE
+#define DEFAULT_CAPTURE_PYTRACE FALSE
+#define DEFAULT_CAPTURE_TORCH_PROFILER FALSE
 
 extern bool env_verbose;
 extern int env_debug_level;
@@ -38,6 +41,12 @@ enum pystacks_discover_strategy {
 	PYSTACKS_DISCOVER_NONE,      /* no automatic discovery */
 	PYSTACKS_DISCOVER_PROC,      /* find Python processes via /proc scan (default) */
 	PYSTACKS_DISCOVER_NVIDIA_SMI, /* use nvidia-smi to find GPU Python processes */
+};
+
+enum pytrace_discover_strategy {
+	PYTRACE_DISCOVER_NONE,		/* no automatic discovery */
+	PYTRACE_DISCOVER_PROC,		/* find Python processes via /proc scan (default) */
+	PYTRACE_DISCOVER_NVIDIA_SMI,	/* use nvidia-smi to find GPU Python processes */
 };
 
 struct req_list_cfg;
@@ -69,6 +78,8 @@ struct env {
 	enum tristate capture_scx;
 	enum tristate capture_cuda;
 	enum tristate capture_pystacks;
+	enum tristate capture_pytrace;
+	enum tristate capture_pytorch;
 
 	/* trace visualization features */
 	bool emit_sched_view;
@@ -148,6 +159,16 @@ struct env {
 	int pystacks_pid_cnt;
 	enum pystacks_discover_strategy pystacks_discovery;
 
+	/* EXPERIMENTAL (Python function tracing) */
+	int *pytrace_pids;
+	int pytrace_pid_cnt;
+	enum pytrace_discover_strategy pytrace_discovery;
+
+	struct pytrace_tracee *pytraces;
+	int pytrace_cnt;
+	bool pytraces_deactivated;
+	bool pytraces_retracted;
+
 	/* persisted data header, set after merge or before replay */
 	struct wprof_data_hdr *data_hdr;
 };
@@ -182,6 +203,12 @@ static inline void cfg_set_capture_cuda(struct wprof_data_cfg *cfg, bool val) { 
 
 static inline bool cfg_get_capture_pystacks(const struct wprof_data_cfg *cfg) { return cfg->capture_pystacks; }
 static inline void cfg_set_capture_pystacks(struct wprof_data_cfg *cfg, bool val) { cfg->capture_pystacks = val; }
+
+static inline bool cfg_get_capture_pytrace(const struct wprof_data_cfg *cfg) { return cfg->capture_pytrace; }
+static inline void cfg_set_capture_pytrace(struct wprof_data_cfg *cfg, bool val) { cfg->capture_pytrace = val; }
+
+static inline bool cfg_get_capture_pytorch(const struct wprof_data_cfg *cfg) { return cfg->capture_pytorch; }
+static inline void cfg_set_capture_pytorch(struct wprof_data_cfg *cfg, bool val) { cfg->capture_pytorch = val; }
 
 struct capture_feature {
 	const char *name;

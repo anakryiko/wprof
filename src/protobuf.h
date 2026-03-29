@@ -144,6 +144,7 @@ enum pb_static_iid {
 		IID_CAT_CUDA_MEMSET, 				/* CUDA_MEMSET */
 		IID_CAT_CUDA_SYNC,				/* CUDA_SYNC */
 		IID_CAT_SCX_DSQ,				/* SCX_DSQ */
+		IID_CAT_PYTRACE,				/* PYTRACE */
 	CAT_END_IID,
 
 	NAME_START_IID, __NAME_RESET_IID = NAME_START_IID - 1,
@@ -250,6 +251,8 @@ enum pb_static_iid {
 		IID_ANNK_CUDA_EVENT_ID,				/* event_id */
 		IID_ANNK_CUDA_MANGLED_NAME,			/* mangled_name */
 		IID_ANNK_CUDA_GPU_DELAY_US,			/* gpu_delay_us */
+		IID_ANNK_PYTRACE_FILE,				/* file */
+		IID_ANNK_PYTRACE_LINENO,			/* lineno */
 	ANNK_END_IID,
 
 	ANNV_START_IID, __ANNV_RESET_IID = ANNV_START_IID - 1,

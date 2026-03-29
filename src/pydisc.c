@@ -8,6 +8,8 @@
 #include <errno.h>
 #include <elf.h>
 #include <linux/fs.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
 
 #include <bpf/bpf.h>
 
@@ -15,10 +17,23 @@
 #include "env.h"
 #include "proc.h"
 #include "elf_utils.h"
+#include "pydisc.h"
 
 #include "strobelight/bpf_lib/python/include/PyPidData.h"
 
 #include "wprof.skel.h"
+
+int py_read_elf_version(const char *binary_path, int *major, int *minor)
+{
+	unsigned long ver;
+
+	if (elf_read_sym_value(binary_path, "Py_Version", STT_OBJECT, &ver, sizeof(ver)) != 0)
+		return -ENOENT;
+
+	*major = (ver >> 24) & 0xFF;
+	*minor = (ver >> 16) & 0xFF;
+	return 0;
+}
 
 struct py_tracee {
 	int pid;
@@ -72,99 +87,82 @@ static bool has_pyruntime_sym(const char *binary_path)
 }
 
 /*
- * Extract Python major.minor version from the ELF Py_Version symbol.
- * CPython 3.11+ exports Py_Version as (major << 24) | (minor << 16) | ...
- * If the symbol is absent (Python 3.10 and earlier), default to 3.10 —
- * the only pre-3.11 version we support.
- */
-static void extract_version_from_elf(const char *binary_path, int *major, int *minor)
-{
-	unsigned long ver;
-
-	if (elf_read_sym_value(binary_path, "Py_Version", STT_OBJECT, &ver, sizeof(ver)) == 0) {
-		*major = (ver >> 24) & 0xFF;
-		*minor = (ver >> 16) & 0xFF;
-	} else {
-		*major = 3;
-		*minor = 10;
-	}
-}
-
-/*
- * Find the Python runtime binary for a process. This is the binary or shared
- * library that contains the _PyRuntime symbol. On systems with dynamically
- * linked Python, this is typically libpython3.X.so rather than the python3
- * executable itself.
+ * Find the Python binary for a process and compute its load base address.
+ * Checks the main executable first (statically-linked Python, e.g. fbpython),
+ * then scans loaded libpython*.so shared libraries.
  *
- * Returns 0 if found (binary_path and base_addr set), -ENOENT if not Python.
+ * Returns 0 if found (bi populated), -ENOENT if not Python.
  */
-static int find_python_runtime(int pid, char *binary_path, size_t path_sz,
-			       unsigned long *base_addr, int *py_major, int *py_minor)
+int py_find_binary(int pid, struct py_binary_info *bi)
 {
-	struct vma_info *vma;
 	char exe_path[PATH_MAX];
-	char resolved[PATH_MAX];
-	ssize_t len;
+	struct vma_info *vma;
+	struct stat exe_stat;
 
-	*base_addr = 0;
+	memset(bi, 0, sizeof(*bi));
 
-	/*
-	 * Find where _PyRuntime lives:
-	 * 1. In the executable itself (statically linked Python, e.g. python3)
-	 * 2. In libpython*.so (dynamically linked, covers both python3 and
-	 *    custom binaries like Cinder's trainer_main)
-	 */
-
-	/* try the executable first (statically linked Python) */
 	snprintf(exe_path, sizeof(exe_path), "/proc/%d/exe", pid);
-	len = readlink(exe_path, resolved, sizeof(resolved) - 1);
-	if (len > 0) {
-		resolved[len] = '\0';
-		if (has_pyruntime_sym(exe_path)) {
-			extract_version_from_elf(exe_path, py_major, py_minor);
-			snprintf(binary_path, path_sz, "%s", exe_path);
-			/* Use the first private VMA for this binary to compute
-			 * base_addr. Skip shared VMAs — those are mmap(MAP_SHARED)
-			 * from package managers, not ELF PT_LOAD mappings. The
-			 * first private VMA corresponds to the first PT_LOAD
-			 * segment (offset=0), giving correct load_bias. */
-			wprof_for_each(vma, vma, pid, VMA_QUERY_FILE_BACKED_VMA) {
-				if (vma->vma_flags & PROCMAP_QUERY_VMA_SHARED)
-					continue;
-				if (strcmp(vma->vma_name, resolved) == 0) {
-					*base_addr = vma->vma_start - vma->vma_offset;
-					break;
-				}
-			}
-			return 0;
-		}
+
+	/* Try the main executable (statically-linked Python) */
+	if (py_read_elf_version(exe_path, &bi->py_major, &bi->py_minor) != 0) {
+		if (!has_pyruntime_sym(exe_path))
+			goto scan_libs;
+		/* Py_Version absent but _PyRuntime present → Python 3.10 */
+		bi->py_major = 3;
+		bi->py_minor = 10;
 	}
+	snprintf(bi->host_path, sizeof(bi->host_path), "%s", exe_path);
+	/* Compute base_addr from the first private VMA for this binary.
+	 * Try path matching first (robust across NFS/overlayfs where
+	 * stat() device numbers diverge from PROCMAP_QUERY), then
+	 * inode/device matching (works across mount namespaces where
+	 * readlink fails but stat succeeds via magic symlink). */
+	bool found = false;
+	char real_exe[PATH_MAX];
+	ssize_t link_len = readlink(exe_path, real_exe, sizeof(real_exe) - 1);
+	if (link_len > 0)
+		real_exe[link_len] = '\0';
+	bool have_stat = (stat(exe_path, &exe_stat) == 0);
 
-	/* Scan maps for libpython*.so with _PyRuntime. Don't filter by
-	 * VMA_QUERY_VMA_EXECUTABLE — we want the first VMA (first PT_LOAD)
-	 * for correct base_addr with -z separate-code ELFs. Skip shared VMAs —
-	 * those are mmap(MAP_SHARED) from package managers, not ELF loads. */
 	wprof_for_each(vma, vma, pid, VMA_QUERY_FILE_BACKED_VMA) {
-		char host_path[PATH_MAX];
-
 		if (vma->vma_flags & PROCMAP_QUERY_VMA_SHARED)
 			continue;
+		bool path_match = link_len > 0 && vma->vma_name && strcmp(vma->vma_name, real_exe) == 0;
+		bool inode_match = have_stat && vma->inode == exe_stat.st_ino &&
+				   vma->dev_major == major(exe_stat.st_dev) &&
+				   vma->dev_minor == minor(exe_stat.st_dev);
+		if (path_match || inode_match) {
+			bi->base_addr = vma->vma_start - vma->vma_offset;
+			found = true;
+			break;
+		}
+	}
+	if (!found) {
+		eprintf("PID %d: failed to determine base address for Python binary '%s'\n", pid, exe_path);
+		return -ENOENT;
+	}
+	return 0;
 
+scan_libs:
+	/* Scan loaded libpython*.so for Py_Version (or _PyRuntime for 3.10).
+	 * Use first private VMA for correct base_addr with -z separate-code ELFs. */
+	wprof_for_each(vma, vma, pid, VMA_QUERY_FILE_BACKED_VMA) {
+		if (vma->vma_flags & PROCMAP_QUERY_VMA_SHARED)
+			continue;
 		if (vma->vma_name[0] != '/')
 			continue;
-
 		if (!strstr(vma->vma_name, "/libpython") || !strstr(vma->vma_name, ".so"))
 			continue;
 
-		snprintf(host_path, sizeof(host_path), "/proc/%d/map_files/%llx-%llx",
+		snprintf(bi->host_path, sizeof(bi->host_path), "/proc/%d/map_files/%llx-%llx",
 			 pid, (unsigned long long)vma->vma_start, (unsigned long long)vma->vma_end);
-
-		if (!has_pyruntime_sym(host_path))
-			continue;
-
-		snprintf(binary_path, path_sz, "%s", host_path);
-		*base_addr = vma->vma_start - vma->vma_offset;
-		extract_version_from_elf(host_path, py_major, py_minor);
+		if (py_read_elf_version(bi->host_path, &bi->py_major, &bi->py_minor) != 0) {
+			if (!has_pyruntime_sym(bi->host_path))
+				continue;
+			bi->py_major = 3;
+			bi->py_minor = 10;
+		}
+		bi->base_addr = vma->vma_start - vma->vma_offset;
 		return 0;
 	}
 
@@ -257,43 +255,41 @@ static int setup_pid(int pid, const char *binary_path, unsigned long base_addr,
  */
 static int discover_pid(int pid, struct wprof_bpf *skel, bool force)
 {
-	char binary_path[PATH_MAX];
-	unsigned long base_addr;
-	int py_major, py_minor;
+	struct py_binary_info bi;
 	int err;
 
 	if (is_py_tracee(pid))
 		return 0;
 
-	err = find_python_runtime(pid, binary_path, sizeof(binary_path), &base_addr, &py_major, &py_minor);
+	err = py_find_binary(pid, &bi);
 	if (err) {
 		if (force)
 			eprintf("PID %d (%s) does not appear to be a Python process\n", pid, proc_name(pid));
 		return err == -ENOENT ? 1 : err;
 	}
 
-	if (py_major != 3 || py_minor < 10) {
+	if (bi.py_major != 3 || bi.py_minor < 10) {
 		if (force)
 			eprintf("PID %d (%s): Python %d.%d is not supported (need 3.10+)\n",
-				pid, proc_name(pid), py_major, py_minor);
+				pid, proc_name(pid), bi.py_major, bi.py_minor);
 		else
 			vprintf("PID %d (%s): Python %d.%d is not supported (need 3.10+), skipping\n",
-				pid, proc_name(pid), py_major, py_minor);
+				pid, proc_name(pid), bi.py_major, bi.py_minor);
 		return -EOPNOTSUPP;
 	}
 
-	err = setup_pid(pid, binary_path, base_addr, py_major, py_minor, skel);
+	err = setup_pid(pid, bi.host_path, bi.base_addr, bi.py_major, bi.py_minor, skel);
 	if (err) {
 		eprintf("Failed to set up Python stack tracing for PID %d (%s): %d\n", pid, proc_name(pid), err);
 		return err;
 	}
 
-	err = add_py_tracee(pid, py_major, py_minor, binary_path);
+	err = add_py_tracee(pid, bi.py_major, bi.py_minor, bi.host_path);
 	if (err)
 		return err;
 
 	vprintf("Discovered Python %d.%d process PID=%d (%s) binary='%s'\n",
-		py_major, py_minor, pid, proc_name(pid), binary_path);
+		bi.py_major, bi.py_minor, pid, proc_name(pid), bi.host_path);
 	return 0;
 }
 

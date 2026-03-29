@@ -11,6 +11,7 @@
 #include "utils.h"
 #include "pmu.h"
 #include "cuda_data.h"
+#include "pytrace_data.h"
 #include "proc.h"
 #include "../libbpf/src/strset.h"
 #include "../libbpf/src/hashmap.h"
@@ -359,8 +360,9 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 	}
 
 	default:
-		eprintf("Unrecognized event type %d while persisting!\n", e->kind);
-		return -EINVAL;
+		/* Skip unrecognized events — can occur if a corrupt ring buffer
+		 * sample slips through (see debug/rb_test/README.md). */
+		return 0;
 	}
 
 	return dst->sz;
@@ -524,6 +526,54 @@ int persist_cuda_event(struct persist_state *ps, const struct wcuda_event *e, st
 	default:
 		eprintf("Unrecognized CUDA event type %d while persisting!\n", e->kind);
 		return -EINVAL;
+	}
+
+	return dst->sz;
+}
+
+static const struct wpytrace_code_entry *lookup_pytrace_code(const struct wpytrace_code_entry *code_map,
+							     u64 code_map_cnt, u64 code_key)
+{
+	struct wpytrace_code_entry key = { .code_key = code_key };
+	return bsearch(&key, code_map, code_map_cnt, sizeof(*code_map), wpytrace_code_entry_cmp);
+}
+
+int persist_pytrace_event(struct persist_state *ps, const struct wpytrace_event *e, struct wevent *dst,
+			 const struct wpytrace_data_hdr *hdr, int host_pid, const char *proc_name,
+			 const struct wpytrace_code_entry *code_map, u64 code_map_cnt,
+			 const char *pytrace_strs)
+{
+	/* Resolve TID -- pytrace events use host-level TIDs directly */
+	struct tid_cache_value *ti = resolve_cuda_host_tid(ps, host_pid, proc_name, host_pid, e->tid);
+	if (!ti)
+		return 0;
+
+	dst->flags = 0;
+	dst->task_id = ti->task_id;
+	dst->cpu = 0;
+	dst->numa_node = 0;
+	dst->ts = e->ts;
+
+	if (e->what == WPYTRACE_PYTORCH_ENTRY || e->what == WPYTRACE_PYTORCH_EXIT) {
+		dst->sz = WEVENT_SZ(rf);
+		dst->kind = (e->what == WPYTRACE_PYTORCH_ENTRY) ? EV_PYTORCH_ENTRY : EV_PYTORCH_EXIT;
+		dst->rf.name_stroff = e->rf_name_off ? persist_stroff(ps, pytrace_strs + e->rf_name_off) : 0;
+		return dst->sz;
+	}
+
+	enum event_kind kind = (e->what == 0) ? EV_PYTRACE_ENTRY : EV_PYTRACE_EXIT;
+	dst->sz = WEVENT_SZ(pytrace);
+	dst->kind = kind;
+
+	const struct wpytrace_code_entry *ce = lookup_pytrace_code(code_map, code_map_cnt, e->code_key);
+	if (ce) {
+		dst->pytrace.func_name_stroff = persist_stroff(ps, pytrace_strs + ce->func_name_off);
+		dst->pytrace.file_name_stroff = persist_stroff(ps, pytrace_strs + ce->file_name_off);
+		dst->pytrace.lineno = ce->lineno;
+	} else {
+		dst->pytrace.func_name_stroff = persist_stroff(ps, "<unknown>");
+		dst->pytrace.file_name_stroff = 0;
+		dst->pytrace.lineno = 0;
 	}
 
 	return dst->sz;

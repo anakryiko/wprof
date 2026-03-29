@@ -56,7 +56,8 @@ INCLUDES := -I$(OUTPUT) -I../include -I../libbpf/include/uapi				\
 CFLAGS ?= -g -O$(if $(DEBUG),0,2) -Wall
 ALL_CFLAGS := $(CFLAGS) $(EXTRA_CFLAGS) -fno-omit-frame-pointer				\
 	      -Wno-c23-extensions -Wno-sign-compare -Wno-format-truncation		\
-	      $(if $(LTO),-flto=auto -ffat-lto-objects) $(PYSTACKS_CFLAGS)
+	      $(if $(LTO),-flto=auto -ffat-lto-objects) $(PYSTACKS_CFLAGS)		\
+	      $(if $(DEBUG),-DDEBUG)
 ALL_LDFLAGS := $(LDFLAGS) $(EXTRA_LDFLAGS) -lrt -ldl -lpthread -lm
 
 # Get Clang's default includes on this system. We'll explicitly add these dirs
@@ -182,15 +183,15 @@ WPROF_SRCS := wprof.c utils.c env.c protobuf.c data.c emit.c stacktrace.c pmu.c	
 	      pb_common.c pb_encode.c perfetto_trace.pb.c topology.c proc.c			\
 	      requests.c cuda.c inject.c sys.c elf_utils.c merge.c persist.c			\
 	      cupti_driver_cbid_map.gen.c cupti_runtime_cbid_map.gen.c		\
-				pystacks.c pydisc.c pysym.c pyline.c
+				pystacks.c pydisc.c pysym.c pyline.c pytrace.c
 WPROF_HDRS := wprof.h utils.h env.h protobuf.h data.h emit.h stacktrace.h topology.h pmu.h	\
 	      proc.h requests.h cuda.h inj_common.h inject.h sys.h elf_utils.h cuda_data.h 	\
 	      wprof_types.h demangle.h merge.h wevent.h persist.h		\
-				pystacks.h pyoffsets.h pysym.h pyline.h
+				pystacks.h pyoffsets.h pydisc.h pysym.h pyline.h pytrace.h pytrace_data.h
 WPROF_OBJS := $(patsubst %.c,$(OUTPUT)/%.o,$(WPROF_SRCS))
 
-WPROFINJ_SRCS := inj_lib.c inj_strset.c inj_hashmap.c inj_cupti.c
-WPROFINJ_HDRS := inj_common.h inj.h wprof_cupti.h
+WPROFINJ_SRCS := inj_lib.c inj_strset.c inj_hashmap.c inj_cupti.c inj_pytrace.c inj_torch_profiler.c
+WPROFINJ_HDRS := inj_common.h inj.h wprof_cupti.h pytrace_data.h
 WPROFINJ_OBJS := $(patsubst %.c,$(OUTPUT)/%.o,$(WPROFINJ_SRCS))
 
 $(WPROFINJ_OBJS): ALL_CFLAGS += -fPIC

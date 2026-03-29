@@ -52,6 +52,8 @@ struct env env = {
 	.capture_scx = UNSET,
 	.capture_cuda = UNSET,
 	.capture_pystacks = UNSET,
+	.capture_pytrace = UNSET,
+	.capture_pytorch = UNSET,
 	.pmu_real_cnt = -1,
 	.pmu_deriv_cnt = -1,
 	.pmu_unresolved_cnt = -1,
@@ -95,7 +97,7 @@ static const struct argp_option opts[] = {
 	{ "verbose", 'v', NULL, 0, "Verbose output" },
 	{ "stats", OPT_STATS, NULL, 0, "Print various wprof stats (BPF, resource usage, etc.)" },
 	{ "debug", OPT_DEBUG, "FEAT", 0, "Debug features (pb-debug-interns, pb-disable-interns, keep-workdir)"},
-	{ "log", OPT_LOG, "LOG", 0, "Debug logging subset selector (libbpf, usdt, topology, inject, tracee)"},
+	{ "log", OPT_LOG, "LOG", 0, "Debug logging subset selector (libbpf, usdt, topology, inject, tracee, pytrace)"},
 	{ "dur-ms", 'd', "DURATION", 0, "Limit running duration to given number of ms (default: 1000ms)" },
 	{ "timer-freq", OPT_TIMER_FREQ, "HZ", 0, "On-CPU timer interrupt frequency (default: 100Hz, i.e., every 10ms)" },
 
@@ -129,7 +131,7 @@ static const struct argp_option opts[] = {
 
 	/* event subset targeting */
 	{ "feature", 'f', "FEAT", 0,
-	  "Data capture feature selector. Supported: ipi, req[=PATH|PID], scx, req-experimental, cuda, py-stacks[=nvidia-smi|PID].\n"
+	  "Data capture feature selector. Supported: ipi, req[=PATH|PID], scx, req-experimental, cuda, py-stacks[=nvidia-smi|PID], py-trace[=nvidia-smi|PID], py-torch[=nvidia-smi|PID].\n"
 	  "All features can be prefixed with 'no-' to disable them explicitly." },
 
 	/* trace emitting options */
@@ -220,6 +222,8 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			env.log_set |= LOG_INJECTION;
 		} else if (strcasecmp(arg, "tracee") == 0) {
 			env.log_set |= LOG_TRACEE;
+		} else if (strcasecmp(arg, "pytrace") == 0) {
+			env.log_set |= LOG_PYTRACE;
 		} else {
 			eprintf("Unrecognized log subset '%s'!\n", arg);
 			argp_usage(state);
@@ -351,6 +355,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			env.capture_req_experimental = val;
 		} else if (strcasecmp(arg, "scx") == 0 || strcasecmp(arg, "scx-layer") == 0) {
 			env.capture_scx = val;
+			// TODO(patlu): unified cuda/py-stacks/py-trace
 		} else if (strcasecmp(arg, "cuda") == 0) {
 			env.cuda_discovery = (val == TRUE) ? CUDA_DISCOVER_SMI : CUDA_DISCOVER_NONE;
 			env.capture_cuda = val;
@@ -403,6 +408,65 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 				return -EINVAL;
 			}
 			env.capture_pystacks = val;
+		} else if (strcasecmp(arg, "py-trace") == 0) {
+			env.pytrace_discovery = (val == TRUE) ? PYTRACE_DISCOVER_PROC : PYTRACE_DISCOVER_NONE;
+			env.capture_pytrace = val;
+			if (val == FALSE)
+				env.capture_pytorch = FALSE;
+		} else if (strcasecmp(arg, "py-trace=nvidia-smi") == 0) {
+			env.pytrace_discovery = (val == TRUE) ? PYTRACE_DISCOVER_NVIDIA_SMI : PYTRACE_DISCOVER_NONE;
+			env.capture_pytrace = val;
+			if (val == FALSE)
+				env.capture_pytorch = FALSE;
+		} else if (strncasecmp(arg, "py-trace=", 9) == 0) {
+			const char *pf_arg = arg + 9;
+			int pid, n;
+
+			if (val == FALSE) {
+				eprintf("-f no-py-trace=... feature form doesn't make much sense!\n");
+				return -EINVAL;
+			}
+
+			if (sscanf(pf_arg, "%d %n", &pid, &n) == 1 && pf_arg[n] == '\0') {
+				err = append_num(&env.pytrace_pids, &env.pytrace_pid_cnt, pf_arg);
+				if (err) {
+					eprintf("Failed to record PID '%s' for Python function tracing!\n", pf_arg);
+					return err;
+				}
+			} else {
+				eprintf("Use -fpy-trace, -fpy-trace=nvidia-smi, or -fpy-trace=<PID>!\n");
+				return -EINVAL;
+			}
+			env.capture_pytrace = val;
+		} else if (strcasecmp(arg, "py-torch") == 0) {
+			env.pytrace_discovery = (val == TRUE) ? PYTRACE_DISCOVER_PROC : PYTRACE_DISCOVER_NONE;
+			env.capture_pytrace = val;
+			env.capture_pytorch = val;
+		} else if (strcasecmp(arg, "py-torch=nvidia-smi") == 0) {
+			env.pytrace_discovery = (val == TRUE) ? PYTRACE_DISCOVER_NVIDIA_SMI : PYTRACE_DISCOVER_NONE;
+			env.capture_pytrace = val;
+			env.capture_pytorch = val;
+		} else if (strncasecmp(arg, "py-torch=", 15) == 0) {
+			const char *pf_arg = arg + 15;
+			int pid, n;
+
+			if (val == FALSE) {
+				eprintf("-f no-py-torch=... feature form doesn't make much sense!\n");
+				return -EINVAL;
+			}
+
+			if (sscanf(pf_arg, "%d %n", &pid, &n) == 1 && pf_arg[n] == '\0') {
+				err = append_num(&env.pytrace_pids, &env.pytrace_pid_cnt, pf_arg);
+				if (err) {
+					eprintf("Failed to record PID '%s' for Python function + torch tracing!\n", pf_arg);
+					return err;
+				}
+			} else {
+				eprintf("Use -fpy-torch, -fpy-torch=nvidia-smi, or -fpy-torch=<PID>!\n");
+				return -EINVAL;
+			}
+			env.capture_pytrace = val;
+			env.capture_pytorch = val;
 		} else {
 			fprintf(stderr, "Unrecognized data feature '%s!\n", arg);
 			return -EINVAL;

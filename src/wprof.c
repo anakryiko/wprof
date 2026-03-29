@@ -45,6 +45,8 @@
 #include "requests.h"
 #include "cuda.h"
 #include "cuda_data.h"
+#include "pytrace.h"
+#include "pytrace_data.h"
 #include "bpf_utils.h"
 #include "sys.h"
 #include "inject.h"
@@ -79,6 +81,10 @@ const struct capture_feature capture_features[] = {
 	 offsetof(struct env, capture_cuda), cfg_get_capture_cuda, cfg_set_capture_cuda},
 	{"Python stacks", "Pystacks:", DEFAULT_CAPTURE_PYSTACKS,
 	 offsetof(struct env, capture_pystacks), cfg_get_capture_pystacks, cfg_set_capture_pystacks},
+	{"Python function tracing", "PyTrace:", DEFAULT_CAPTURE_PYTRACE,
+	 offsetof(struct env, capture_pytrace), cfg_get_capture_pytrace, cfg_set_capture_pytrace},
+	{"PyTorch RecordFunction", "Torch:", DEFAULT_CAPTURE_TORCH_PROFILER,
+	 offsetof(struct env, capture_pytorch), cfg_get_capture_pytorch, cfg_set_capture_pytorch},
 };
 
 const int capture_feature_cnt = ARRAY_SIZE(capture_features);
@@ -114,6 +120,15 @@ static int handle_rb_event(void *ctx, void *data, size_t size)
 	if (env.sess_end_ts && (long long)(e->ts - env.sess_end_ts) >= 0) {
 		w->rb_ignored_cnt++;
 		w->rb_ignored_sz += size;
+		return 0;
+	}
+
+	/* Validate ring buffer delivered size against the event's own sz field.
+	 * Under heavy load, the kernel ring buffer can occasionally deliver a
+	 * truncated size (see debug/rb_test/README.md). Skip these events to
+	 * prevent corrupting the dump stream alignment. */
+	if (size < e->sz) {
+		w->rb_ignored_cnt++;
 		return 0;
 	}
 
@@ -530,6 +545,14 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 		}
 		if (env.requested_stack_traces & ST_CUDA)
 			bpf_program__set_autoload(skel->progs.wprof_cuda_call, true);
+	}
+
+	if (env.pytrace_pid_cnt > 0 || env.pytrace_discovery) {
+		err = pytrace_trace_setup(workdir_fd);
+		if (err) {
+			eprintf("pytrace trace setup failed: %d\n", err);
+			return err;
+		}
 	}
 
 	if (env.capture_scx) {
@@ -1434,6 +1457,16 @@ int main(int argc, char **argv)
 		}
 	}
 
+	if (env.pytrace_cnt > 0) {
+		wprintf("Preparing pytrace tracees...\n");
+		err = pytrace_trace_prepare(workdir_fd,
+					   env.duration_ns / 1000000 + LIBWPROFINJ_SESSION_TIMEOUT_MS);
+		if (err) {
+			eprintf("Failed to prepare pytrace tracing sessions: %d\n", err);
+			goto cleanup;
+		}
+	}
+
 	wprintf("Running...\n");
 
 	env.ktime_start_ns = ktime_now_ns();
@@ -1457,6 +1490,15 @@ int main(int argc, char **argv)
 				eprintf("Failed to attach CUDA tracking USDTs: %d\n", err);
 				return err;
 			}
+		}
+	}
+
+	if (env.pytrace_cnt > 0) {
+		wprintf("Activating pytrace tracees...\n");
+		err = pytrace_trace_activate(env.sess_start_ts, env.sess_end_ts);
+		if (err) {
+			eprintf("Failed to activate pytrace tracing sessions: %d\n", err);
+			goto cleanup;
 		}
 	}
 
@@ -1488,6 +1530,9 @@ int main(int argc, char **argv)
 			cuda_trace_retract();
 	}
 
+	if (env.pytrace_cnt > 0)
+		pytrace_trace_deactivate();
+
 	wprintf("Draining...\n");
 	drain_bpf(&bpf_state, num_cpus);
 
@@ -1506,6 +1551,9 @@ int main(int argc, char **argv)
 		env.capture_cuda = false;
 	}
 
+	if (env.pytrace_cnt == 0)
+		env.capture_pytrace = false;
+
 	err = wprof_merge_data(workdir_name, workers);
 	if (err) {
 		eprintf("Failed to finalize data dump: %d\n", err);
@@ -1517,6 +1565,9 @@ int main(int argc, char **argv)
 	/* we delayed ptrace retraction to symbolize libwprofinj.so stacks */
 	if (env.requested_stack_traces && env.cuda_cnt > 0)
 		cuda_trace_retract();
+
+	if (env.pytrace_cnt > 0)
+		pytrace_trace_retract();
 
 	{
 		fflush(workers[0].dump);
@@ -1592,6 +1643,8 @@ skip_data_collection:
 cleanup:
 	if (env.cuda_cnt > 0)
 		cuda_trace_teardown();
+	if (env.pytrace_cnt > 0)
+		pytrace_trace_teardown();
 	cleanup_workers(workers, worker_cnt);
 	detach_bpf(&bpf_state, num_cpus);
 	drain_bpf(&bpf_state, num_cpus);

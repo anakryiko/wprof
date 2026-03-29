@@ -10,6 +10,7 @@
 
 #include "pysym.h"
 #include "pyline.h"
+#include "pydisc.h"
 #include "utils.h"
 
 /* matches strobelight-libs BPF_LIB_DEFAULT_MAP_SIZE */
@@ -19,9 +20,6 @@
 #define PYSYM_QUAL_NAME_LEN 224
 
 #define PYSYM_MAX_LINETABLE_SIZE (1 * 1024 * 1024)
-
-/* declared in pydisc.c */
-int pydisc_py_minor(int pid);
 
 struct pysym_entry {
 	char filename[PYSYM_FILE_NAME_LEN];

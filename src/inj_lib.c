@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <errno.h>
 #include <dlfcn.h>
@@ -27,6 +28,7 @@
 #include "inj_common.h"
 #include "strset.h"
 #include "cuda_data.h"
+#include "pytrace_data.h"
 
 #define WPROFINJ_THREAD_NAME "wprofinj"
 #define WPROFINJ_CUPTI_THREAD_NAME "wprofinj-cupti"
@@ -174,14 +176,16 @@ static void *stack = NULL;
 static int exit_fd = -1;
 static pid_t worker_tid; /* for clone() and futex() only */
 static int epoll_fd = -1;
-static int timer_fd = -1;
+static int cuda_timer_fd = -1;
+static int pytrace_timer_fd = -1;
 
 static char msg_buf[UDS_MAX_MSG_LEN] __attribute__((aligned(8)));
 
 enum epoll_kind {
 	EK_EXIT,
 	EK_UDS,
-	EK_TIMER,
+	EK_TIMER_CUDA,
+	EK_TIMER_PYTRACE,
 };
 
 static int epoll_add(int epoll_fd, int fd, __u32 epoll_events, enum epoll_kind kind)
@@ -210,6 +214,8 @@ static int epoll_del(int epoll_fd, int fd)
 	}
 	return 0;
 }
+
+static bool pytrace_session_active;
 
 #define CUDA_DUMP_BUF_SZ (256 * 1024)
 static FILE *cuda_dump;
@@ -368,15 +374,55 @@ static int handle_session_end(void)
 	finalize_cupti_activities();
 
 	/* exit and timer events are racing each other, we finalize just once */
-	if (!cuda_dump)
-		return 0;
+	if (cuda_dump) {
+		err = cuda_dump_finalize();
+		if (err) {
+			elog("Failed to finalize CUDA data dump: %d\n", err);
+			return err;
+		}
+	}
 
-	err = cuda_dump_finalize();
-	if (err) {
-		elog("Failed to finalize CUDA data dump: %d\n", err);
+	if (pytrace_session_active) {
+		err = pytrace_session_finalize();
+		if (err) {
+			elog("Failed to finalize pytrace data dump: %d\n", err);
+			return err;
+		}
+	}
+
+	return 0;
+}
+
+static int setup_session_timer(int *timer_fd_out, long timeout_ms, enum epoll_kind kind)
+{
+	int err;
+	int fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+	if (fd < 0) {
+		err = -errno;
+		elog("Failed to create timerfd: %d\n", err);
 		return err;
 	}
 
+	struct itimerspec spec = {
+		.it_value = {
+			.tv_sec = timeout_ms / 1000,
+			.tv_nsec = timeout_ms % 1000 * 1000000,
+		},
+	};
+	if (timerfd_settime(fd, 0, &spec, NULL) < 0) {
+		err = -errno;
+		elog("Failed to timerfd_settime(): %d\n", err);
+		zclose(fd);
+		return err;
+	}
+
+	if ((err = epoll_add(epoll_fd, fd, EPOLLIN, kind)) < 0) {
+		elog("Failed to add timerfd into epoll: %d\n", err);
+		zclose(fd);
+		return err;
+	}
+
+	*timer_fd_out = fd;
 	return 0;
 }
 
@@ -408,10 +454,6 @@ static int handle_msg(struct inj_msg *msg, int *fds, int fd_cnt)
 		vlog("Log setup completed successfully! wprof PID is %d. wprofinj TID %d PID %d REAL PID %d\n",
 		     setup_ctx->parent_pid, gettid(), getpid(), setup_ctx->tracee_pid);
 
-		err = init_cupti_activities();
-		if (err)
-			return err;
-
 		zclose(run_ctx_memfd);
 		break;
 	}
@@ -424,6 +466,12 @@ static int handle_msg(struct inj_msg *msg, int *fds, int fd_cnt)
 
 		long sess_timeout_ms = msg->cuda_session.session_timeout_ms;
 		vlog("Setting up CUDA session (timeout %ldms)...\n", sess_timeout_ms);
+
+		err = init_cupti_activities();
+		if (err) {
+			elog("Failed to initialize CUPTI: %d\n", err);
+			return err;
+		}
 
 		int dump_fd = fds[0];
 		if ((err = cuda_dump_setup(dump_fd)) < 0) {
@@ -450,27 +498,8 @@ static int handle_msg(struct inj_msg *msg, int *fds, int fd_cnt)
 
 		run_ctx->setup_state = INJ_SETUP_READY;
 
-		timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
-		if (timer_fd < 0) {
-			err = -errno;
-			elog("Failed to create timerfd: %d\n", err);
-			return err;
-		}
-
-		struct itimerspec spec = {
-			.it_value = {
-				.tv_sec = sess_timeout_ms / 1000,
-				.tv_nsec = sess_timeout_ms % 1000 * 1000000,
-			},
-		};
-		if (timerfd_settime(timer_fd, 0, &spec, NULL) < 0) {
-			err = -errno;
-			elog("Failed to timerfd_settime(): %d\n", err);
-			return err;
-		}
-
-		if ((err = epoll_add(epoll_fd, timer_fd, EPOLLIN, EK_TIMER)) < 0) {
-			elog("Failed to add timerfd into epoll: %d\n", err);
+		if ((err = setup_session_timer(&cuda_timer_fd, sess_timeout_ms, EK_TIMER_CUDA)) < 0) {
+			elog("Failed to set up CUDA session timer: %d\n", err);
 			return err;
 		}
 
@@ -482,12 +511,41 @@ static int handle_msg(struct inj_msg *msg, int *fds, int fd_cnt)
 
 		err = handle_session_end();
 		if (err) {
-			elog("Failed to cleanly handle CUDA session end: %d\n", err);
+			elog("Failed to cleanly handle session end: %d\n", err);
 			return err;
 		}
 
 		vlog("Shutdown completed successfully.\n");
 		return -ESHUTDOWN;
+	case INJ_MSG_PYTRACE_SESSION: {
+		if (fd_cnt < 1 || fd_cnt > 2) {
+			err = -EPROTO;
+			elog("Received PYTRACE_SESSION command with unexpected FD count %d!\n", fd_cnt);
+			return err;
+		}
+
+		long sess_timeout_ms = msg->pytrace_session.session_timeout_ms;
+		int py_ver_minor = msg->pytrace_session.py_version_minor;
+		vlog("Setting up pytrace session (timeout %ldms, Python 3.%d)...\n", sess_timeout_ms, py_ver_minor);
+
+		int dump_fd = fds[0];
+		int torch_fd = (fd_cnt >= 2 && msg->pytrace_session.enable_torch_profiler) ? fds[1] : -1;
+		if ((err = pytrace_session_setup(dump_fd, torch_fd, py_ver_minor, msg->pytrace_session.sym_addrs)) < 0) {
+			elog("Failed to setup pytrace session: %d\n", err);
+			return err;
+		}
+
+		pytrace_session_active = true;
+		run_ctx->setup_state = INJ_SETUP_READY;
+
+		if ((err = setup_session_timer(&pytrace_timer_fd, sess_timeout_ms, EK_TIMER_PYTRACE)) < 0) {
+			elog("Failed to set up pytrace session timer: %d\n", err);
+			return err;
+		}
+
+		vlog("pytrace session setup complete.\n");
+		break;
+	}
 	default:
 		elog("Unexpected message (kind %d)!\n", msg->kind);
 		return -EINVAL;
@@ -604,18 +662,22 @@ event_loop:
 				goto cleanup;
 			}
 			break;
-		case EK_TIMER: {
+		case EK_TIMER_CUDA:
+		case EK_TIMER_PYTRACE: {
 			long long expirations;
-			(void)read(timer_fd, &expirations, sizeof(expirations));
+			enum epoll_kind kind = evs[i].data.u32;
+			int fd = kind == EK_TIMER_CUDA ? cuda_timer_fd : pytrace_timer_fd;
+			const char *kind_str = kind == EK_TIMER_CUDA ? "CUDA" : "PYTRACE";
+			(void)read(fd, &expirations, sizeof(expirations));
 
 			err = handle_session_end();
 			if (err) {
-				elog("Failed to cleanly handle CUDA session end: %d\n", err);
+				elog("Failed to cleanly handle %s session end: %d\n", kind_str, err);
 				goto cleanup;
 			}
 
-			vlog("CUDA session timer expired with %.3lfms delay after planned session end.\n",
-			     (ktime_now_ns() - run_ctx->sess_end_ts) / 1000000.0);
+			vlog("%s session timer expired with %.3lfms delay after planned session end.\n",
+			     kind_str, (ktime_now_ns() - run_ctx->sess_end_ts) / 1000000.0);
 			break;
 		}
 		case EK_EXIT:
@@ -646,7 +708,8 @@ cleanup:
 	zclose(setup_ctx->uds_fd);
 	zclose(run_ctx_memfd);
 	zclose(epoll_fd);
-	zclose(timer_fd);
+	zclose(cuda_timer_fd);
+	zclose(pytrace_timer_fd);
 
 	if (err) {
 		if (run_ctx && run_ctx->setup_state == INJ_SETUP_PENDING) {
