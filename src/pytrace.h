@@ -13,12 +13,6 @@
 struct tracee_state;
 struct inj_run_ctx;
 
-enum pytrace_discover_strategy {
-	PYTRACE_DISCOVER_NONE,		/* no automatic discovery */
-	PYTRACE_DISCOVER_PROC,		/* find Python processes via /proc scan (default) */
-	PYTRACE_DISCOVER_NVIDIA_SMI,	/* use nvidia-smi to find GPU Python processes */
-};
-
 struct pytrace_tracee {
 	int pid;
 	int ns_pid;
@@ -32,6 +26,9 @@ struct pytrace_tracee {
 
 	int dump_fd;
 	char *dump_path;
+
+	int torch_dump_fd;
+	char *torch_dump_path;
 
 	int py_version_minor;	/* detected Python 3.x version */
 	unsigned long sym_addrs[PYTRACE_SYM_CNT];
