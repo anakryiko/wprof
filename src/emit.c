@@ -31,6 +31,12 @@ enum task_run_state {
 	TASK_STATE_PREEMPTED,
 };
 
+enum track_child_order {
+	INVALID,
+	CHRONO,
+	EXPLICIT,
+};
+
 struct task_state {
 	int tid, pid;
 	pb_iid name_iid;
@@ -86,6 +92,7 @@ enum track_special {
 
 	TKS_REQUESTS = 4,
 	TKS_CUDA = 5,
+	TKS_PYTRACE = 6,
 };
 
 #define TRACK_UUID(kind, id) (((u64)(id) * TK_MULT) + (u64)kind)
@@ -95,6 +102,7 @@ enum track_special {
 #define TRACK_UUID_KTHREAD	TRACK_UUID(TK_SPECIAL, TKS_KTHREAD)
 #define TRACK_UUID_REQUESTS	TRACK_UUID(TK_SPECIAL, TKS_REQUESTS)
 #define TRACK_UUID_CUDA		TRACK_UUID(TK_SPECIAL, TKS_CUDA)
+#define TRACK_UUID_PYTRACE	TRACK_UUID(TK_SPECIAL, TKS_PYTRACE)
 
 enum dyn_track_kind {
 	__DTK_GAP = TK_MULT - 1,	/* we need to not overlap with enum track_kind */
@@ -103,6 +111,8 @@ enum dyn_track_kind {
 	DTK_REQ,			/* single request of given PID (id1 = pid, id2 = req_id) */
 	DTK_REQ_THREAD,			/* request-participating thread (id1 = tid, id2 = req_id) */
 	DTK_REQ_THREAD_EMBED,		/* first-event-per-thread tracking for embed mode (id1 = tid, id2 = req_id) */
+	DTK_PYTRACE_PROC,	/* Python-traced process track (by PID) */
+	DTK_PYTRACE_PROC_THREAD,/* Python-traced thread track (by TID) */
 };
 
 struct track_key {
@@ -598,6 +608,16 @@ static inline u64 trackid_cuda_proc_stream(int pid, u32 stream_id)
 	return TRACK_UUID(TK_CUDA_PROC_STREAM, pid | ((u64)stream_id << 32));
 }
 
+static inline u64 trackid_pytrace_proc(int pid)
+{
+	return track_state_get_or_add(DTK_PYTRACE_PROC, pid, 0)->track_id;
+}
+
+static inline u64 trackid_pytrace_thread(int tid)
+{
+	return track_state_get_or_add(DTK_PYTRACE_PROC_THREAD, tid, 0)->track_id;
+}
+
 enum instant_scope {
 	SCOPE_THREAD,
 	SCOPE_PROCESS,
@@ -750,8 +770,20 @@ static void emit_kind_track_descr(pb_ostream_t *stream, enum task_kind k)
 	emit_trace_packet(stream, &desc_pb);
 }
 
-static void emit_track_descr(pb_ostream_t *stream, __u64 track_uuid, __u64 parent_track_uuid, const char *name, int rank)
+static void emit_track_descr_impl(pb_ostream_t *stream, __u64 track_uuid, __u64 parent_track_uuid, const char *name, int rank, enum track_child_order child_order)
 {
+	perfetto_protos_TrackDescriptor_ChildTracksOrdering child_ordering;
+	switch (child_order) {
+		case CHRONO:
+			child_ordering = perfetto_protos_TrackDescriptor_ChildTracksOrdering_CHRONOLOGICAL;
+			break;
+		case EXPLICIT:
+			child_ordering = perfetto_protos_TrackDescriptor_ChildTracksOrdering_EXPLICIT;
+			break;
+		case INVALID:
+			eprintf("BUG: invalid child_order in track_child_order()\n");
+			break;
+	}
 	TracePacket desc = {
 		PB_TRUST_SEQ_ID(PB_SEQ_ID_GENERIC),
 		PB_ONEOF(data, TracePacket_track_descriptor) = { .track_descriptor = {
@@ -760,13 +792,23 @@ static void emit_track_descr(pb_ostream_t *stream, __u64 track_uuid, __u64 paren
 			.parent_uuid = parent_track_uuid,
 			.has_parent_uuid = parent_track_uuid != 0,
 			PB_ONEOF(static_or_dynamic_name, TrackDescriptor_name) = { .name = PB_STRING(name) },
-			PB_INIT(child_ordering) = perfetto_protos_TrackDescriptor_ChildTracksOrdering_CHRONOLOGICAL,
+			PB_INIT(child_ordering) = child_ordering,
 			.sibling_order_rank = rank,
 			.has_sibling_order_rank = rank != 0,
 			PB_INIT(sibling_merge_behavior) = perfetto_protos_TrackDescriptor_SiblingMergeBehavior_SIBLING_MERGE_BEHAVIOR_NONE,
 		}},
 	};
 	emit_trace_packet(stream, &desc);
+}
+
+static void emit_track_descr(pb_ostream_t *stream, __u64 track_uuid, __u64 parent_track_uuid, const char *name, int rank)
+{
+	emit_track_descr_impl(stream, track_uuid, parent_track_uuid, name, rank, CHRONO);
+}
+
+static void emit_track_descr_explicit(pb_ostream_t *stream, __u64 track_uuid, __u64 parent_track_uuid, const char *name, int rank)
+{
+	emit_track_descr_impl(stream, track_uuid, parent_track_uuid, name, rank, EXPLICIT);
 }
 
 static void emit_process_track_descr(pb_ostream_t *stream, const struct wprof_task *t)
@@ -3226,6 +3268,18 @@ static void emit_cuda_api(struct worker_state *w, const struct wevent *e)
 	}
 
 	emit_slice_end(track_uuid, clamp_ts(e->cuda_api.end_ts), iid_str(name_iid, name), IID_CAT_CUDA_API);
+
+	if (env.capture_pytrace) {
+		struct track_state *pf = track_state_get_or_add(DTK_PYTRACE_PROC_THREAD, task.tid, 0);
+		if (pf->exists) {
+			u64 pf_track = trackid_pytrace_thread(task.tid);
+			emit_slice_begin(pf_track, clamp_ts(e->ts), iid_str(name_iid, name), IID_CAT_CUDA_API) {
+				emit_callstack(w, e->cuda_api.cuda_stack_id);
+				emit_flow_id(((u64)task.pid << 32) | e->cuda_api.corr_id);
+			}
+			emit_slice_end(pf_track, clamp_ts(e->cuda_api.end_ts), iid_str(name_iid, name), IID_CAT_CUDA_API);
+		}
+	}
 }
 
 static void emit_cuda_api_json(struct worker_state *w, const struct wevent *e)
@@ -3280,6 +3334,150 @@ static int process_cuda_api(struct worker_state *w, const struct wevent *e)
 	return 0;
 }
 
+/* PYTRACE (Python function tracing) */
+
+static u64 ensure_pytrace_proc_track(int pid, const char *proc_name)
+{
+	struct track_state *s = track_state_get_or_add(DTK_PYTRACE_PROC, pid, 0);
+	u64 track_uuid = trackid_pytrace_proc(pid);
+
+	if (!s->exists) {
+		emit_track_descr_explicit(cur_stream, track_uuid, TRACK_UUID_PYTRACE,
+					  sfmt("%s %d", proc_name, pid), 0);
+		s->exists = true;
+	}
+	return track_uuid;
+}
+
+static u64 ensure_pytrace_thread_track(int pid, int tid, const char *proc_name, const char *comm)
+{
+	ensure_pytrace_proc_track(pid, proc_name);
+
+	struct track_state *s = track_state_get_or_add(DTK_PYTRACE_PROC_THREAD, tid, 0);
+	u64 track_uuid = trackid_pytrace_thread(tid);
+
+	if (!s->exists) {
+		emit_track_descr(cur_stream, track_uuid, trackid_pytrace_proc(pid),
+				 sfmt("%s %d", comm, tid), tid);
+		s->exists = true;
+	}
+	return track_uuid;
+}
+
+static void emit_pytrace_event(struct worker_state *w, const struct wevent *e)
+{
+	struct wprof_data_hdr *hdr = w->dump_hdr;
+	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
+
+	u64 track_uuid = ensure_pytrace_thread_track(task.pid, task.tid, task.pcomm, task.comm);
+
+	const char *func_name = wevent_str(hdr, e->pytrace.func_name_stroff);
+	const char *file = e->pytrace.file_name_stroff ? wevent_str(hdr, e->pytrace.file_name_stroff) : NULL;
+	const char *base = file ? strrchr(file, '/') : NULL;
+	base = base ? base + 1 : file;
+
+	const char *display_name = base ? sfmt("%s(%u):%s", base, e->pytrace.lineno, func_name) : func_name;
+	pb_iid name_iid = emit_intern_str(w, display_name);
+
+	if (e->kind == EV_PYTRACE_ENTRY) {
+		emit_slice_begin(track_uuid, e->ts, iid_str(name_iid, display_name), IID_CAT_PYTRACE) {
+			if (file)
+				emit_kv_str(IID_ANNK_PYTRACE_FILE, file);
+			if (e->pytrace.lineno)
+				emit_kv_int(IID_ANNK_PYTRACE_LINENO, e->pytrace.lineno);
+		}
+	} else {
+		emit_slice_end(track_uuid, e->ts, iid_str(name_iid, display_name), IID_CAT_PYTRACE);
+	}
+}
+
+static void emit_pytrace_event_json(struct worker_state *w, const struct wevent *e)
+{
+	struct json_state *j = &js;
+	struct wprof_data_hdr *hdr = w->dump_hdr;
+	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
+
+	const char *func_name = wevent_str(hdr, e->pytrace.func_name_stroff);
+	const char *file = e->pytrace.file_name_stroff ? wevent_str(hdr, e->pytrace.file_name_stroff) : NULL;
+
+	json_obj_start(j);
+	json_kv_ts(j, "ts", e->ts - env.sess_start_ts);
+	json_kv_str(j, "t", e->kind == EV_PYTRACE_ENTRY ? "pytrace_entry" : "pytrace_exit");
+	json_task(j, "task", &task);
+	json_kv_str(j, "name", func_name);
+
+	if (file)
+		json_kv_str(j, "file", file);
+	if (e->pytrace.lineno)
+		json_kv_int(j, "lineno", e->pytrace.lineno);
+	json_obj_end(j);
+}
+
+static int process_pytrace(struct worker_state *w, const struct wevent *e)
+{
+	if (env.capture_pytrace != TRUE)
+		return 0;
+
+	if (!is_ts_in_range(e->ts))
+		return 0;
+
+	if (env.json_path) {
+		emit_pytrace_event_json(w, e);
+	} else {
+		emit_pytrace_event(w, e);
+	}
+	return 0;
+}
+
+static void emit_pytorch_event(struct worker_state *w, const struct wevent *e)
+{
+	struct wprof_data_hdr *hdr = w->dump_hdr;
+	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
+
+	u64 track_uuid = ensure_pytrace_thread_track(task.pid, task.tid, task.pcomm, task.comm);
+
+	const char *name = e->rf.name_stroff ? wevent_str(hdr, e->rf.name_stroff) : "?";
+	pb_iid name_iid = emit_intern_str(w, name);
+
+
+	if (e->kind == EV_PYTORCH_ENTRY) {
+		emit_slice_begin(track_uuid, e->ts, iid_str(name_iid, name), IID_CAT_PYTRACE);
+	} else {
+		emit_slice_end(track_uuid, e->ts, iid_str(name_iid, name), IID_CAT_PYTRACE);
+	}
+}
+
+static void emit_pytorch_event_json(struct worker_state *w, const struct wevent *e)
+{
+	struct json_state *j = &js;
+	struct wprof_data_hdr *hdr = w->dump_hdr;
+	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
+
+	const char *name = e->rf.name_stroff ? wevent_str(hdr, e->rf.name_stroff) : "?";
+
+	json_obj_start(j);
+	json_kv_ts(j, "ts", e->ts - env.sess_start_ts);
+	json_kv_str(j, "t", e->kind == EV_PYTORCH_ENTRY ? "pytorch_entry" : "pytorch_exit");
+	json_task(j, "task", &task);
+	json_kv_str(j, "name", name);
+	json_obj_end(j);
+}
+
+static int process_pytorch(struct worker_state *w, const struct wevent *e)
+{
+	if (env.capture_pytorch != TRUE)
+		return 0;
+
+	if (!is_ts_in_range(e->ts))
+		return 0;
+
+	if (env.json_path)
+		emit_pytorch_event_json(w, e);
+	else
+		emit_pytorch_event(w, e);
+	return 0;
+}
+
 static handle_event_fn emit_fns[] = {
 	[EV_TIMER] = process_timer,
 	[EV_SWITCH] = process_switch,
@@ -3303,6 +3501,10 @@ static handle_event_fn emit_fns[] = {
 	[EV_CUDA_MEMSET] = process_cuda_memset,
 	[EV_CUDA_SYNC] = process_cuda_sync,
 	[EV_CUDA_API] = process_cuda_api,
+	[EV_PYTRACE_ENTRY] = process_pytrace,
+	[EV_PYTRACE_EXIT] = process_pytrace,
+	[EV_PYTORCH_ENTRY] = process_pytorch,
+	[EV_PYTORCH_EXIT] = process_pytorch,
 };
 
 static void emit_header_json(struct worker_state *w)
@@ -3323,6 +3525,8 @@ static void emit_header_json(struct worker_state *w)
 	json_kv_bool(j, "capture_scx", cfg->capture_scx);
 	json_kv_bool(j, "capture_cuda", cfg->capture_cuda);
 	json_kv_bool(j, "capture_pystacks", cfg->capture_pystacks);
+	json_kv_bool(j, "capture_pytrace", cfg->capture_pytrace);
+	json_kv_bool(j, "capture_pytorch", cfg->capture_pytorch);
 
 	json_subarr_start(j, "stacks");
 	if (cfg->captured_stack_traces & ST_TIMER)
@@ -3410,6 +3614,8 @@ int emit_trace(struct worker_state *w)
 			emit_track_descr(cur_stream, TRACK_UUID_REQUESTS, 0, "REQUESTS", 1000);
 		if (env.capture_cuda)
 			emit_track_descr(cur_stream, TRACK_UUID_CUDA, 0, "CUDA", 2000);
+		if (env.capture_pytrace)
+			emit_track_descr(cur_stream, TRACK_UUID_PYTRACE, 0, "PYTRACE", 3000);
 
 		if (env.requested_stack_traces) {
 			struct wprof_stacks_hdr *shdr = wprof_stacks_hdr(w->dump_hdr);

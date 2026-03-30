@@ -304,7 +304,7 @@ static int init_wpytrace_data(FILE *dump)
 	return 0;
 }
 
-int pytrace_session_setup(int dump_fd, int version_minor, unsigned long *sym_addrs)
+int pytrace_session_setup(int dump_fd, int torch_fd, int version_minor, unsigned long *sym_addrs)
 {
 	int err = 0;
 
@@ -395,6 +395,14 @@ int pytrace_session_setup(int dump_fd, int version_minor, unsigned long *sym_add
 
 	vlog("pytrace session ready: profiler active on %d Python thread(s)\n", thread_cnt);
 
+	/* Set up torch profiler if requested */
+	if (torch_fd >= 0) {
+		err = torch_profiler_setup(torch_fd);
+		if (err) {
+			vlog("Torch profiler setup failed: %d\n", err);
+			goto cleanup;
+		}
+	}
 
 	return 0;
 
@@ -421,6 +429,9 @@ int pytrace_session_finalize(void)
 
 	if (!pytrace_dump)
 		return 0;
+
+	/* Uninstall torch profiler first (doesn't need GIL) */
+	torch_profiler_teardown();
 
 	/* Uninstall profiler */
 	pytrace_active = false;

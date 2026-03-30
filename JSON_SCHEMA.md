@@ -37,6 +37,7 @@ The first line contains session metadata. Example:
   "capture_scx": false,
   "capture_cuda": false,
   "capture_pystacks": false,
+  "capture_pytrace": false,
   "stacks": ["timer", "offcpu"],
   "stack_cnt": 42,
   "event_cnt": 100000,
@@ -54,6 +55,7 @@ The first line contains session metadata. Example:
 | `capture_scx`      | bool            | Whether sched-ext events were captured                               |
 | `capture_cuda`     | bool            | Whether CUDA activity was captured                                   |
 | `capture_pystacks` | bool            | Whether Python stack traces were captured                            |
+| `capture_pytrace`   | bool            | Whether Python function tracing was captured                         |
 | `stacks`           | array of string | Stack trace kinds captured (e.g., `["timer","offcpu"]`, `[]` if none)|
 | `stack_cnt`        | int             | Number of stack trace lines that follow (0 if none)                  |
 | `event_cnt`        | int             | Total number of event lines that follow                              |
@@ -632,5 +634,49 @@ the host process that owns the GPU context, not a thread running on the CPU.
   "kind": "stream",
   "stream_id": 7,
   "corr_id": 503
+}
+```
+
+---
+
+### Python function tracing events
+
+These events are emitted when Python function tracing (`-f py-func`) is enabled.
+They represent deterministic function call/return events captured via
+`PyEval_SetProfile`, providing exact function call trees with timestamps.
+
+#### `pytrace_entry` — Python function entry
+
+| Field    | Type   | Description                                |
+|----------|--------|--------------------------------------------|
+| `task`   | task   | Thread entering the function               |
+| `name`   | string | Qualified function name                    |
+| `file`   | string | *(optional)* Source file path              |
+| `lineno` | int    | *(optional)* First line number of function |
+
+```json
+{
+  "ts": 0.500100000,
+  "t": "pytrace_entry",
+  "task": {"tid": 1234, "pid": 1000, "comm": "python3"},
+  "name": "module.MyClass.process",
+  "file": "/app/module.py",
+  "lineno": 42
+}
+```
+
+#### `pytrace_exit` — Python function exit
+
+| Field  | Type   | Description                     |
+|--------|--------|---------------------------------|
+| `task` | task   | Thread returning from function  |
+| `name` | string | Qualified function name         |
+
+```json
+{
+  "ts": 0.500200000,
+  "t": "pytrace_exit",
+  "task": {"tid": 1234, "pid": 1000, "comm": "python3"},
+  "name": "module.MyClass.process"
 }
 ```
