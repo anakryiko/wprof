@@ -46,12 +46,22 @@ struct {
 	__uint(max_entries, 1);
 } stats SEC(".maps");
 
+
+#define MAX_STACKS_PER_CPU 4
+
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__type(key, u32);
 	__type(value, struct stack_trace);
-	__uint(max_entries, 1); /* maximum number of stack traces per event */
+	__uint(max_entries, MAX_STACKS_PER_CPU); /* maximum number of stack traces per event */
 } stack_trace_scratch SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__type(key, u32);
+	__type(value, u64);
+	__uint(max_entries, 1);
+} stack_trace_cur SEC(".maps");
 
 #define inc_stat(stat) ({							\
 	u64 __s = 0;								\
@@ -455,10 +465,24 @@ static struct stack_trace *__grab_stack_trace(void *ctx, struct task_struct *tas
 					      size_t *sz)
 {
 	struct stack_trace *st;
+	int *st_cnt;
 
-	st = bpf_map_lookup_elem(&stack_trace_scratch, &zero);
-	if (!st)
+	st_cnt = bpf_map_lookup_elem(&stack_trace_cur, &zero);
+	if (!st_cnt)
 		return *sz = 0, NULL; /* shouldn't happen */
+
+	/* check if we ran out of per-CPU scratch buffer for stacks due to interrupts nesting */
+	int idx = __sync_fetch_and_add(st_cnt, 1);
+	if (idx + 1 > MAX_STACKS_PER_CPU) {
+		__sync_fetch_and_add(st_cnt, -1);
+		return *sz = 0, NULL;
+	}
+
+	st = bpf_map_lookup_elem(&stack_trace_scratch, &idx);
+	if (!st) {
+		__sync_fetch_and_add(st_cnt, -1);
+		return *sz = 0, NULL; /* shouldn't happen */
+	}
 
 	__capture_stack_trace(ctx, task, st, kind, user_only);
 	*sz = (st->kstack_sz < 0 ? 0 : st->kstack_sz) +
@@ -477,6 +501,20 @@ static __always_inline struct stack_trace *grab_stack_trace_user(void *ctx, stru
 								 enum stack_trace_kind kind, size_t *sz)
 {
 	return __grab_stack_trace(ctx, task, kind, true /*user_only*/, sz);
+}
+
+static __always_inline void put_stack_trace(struct stack_trace *tr)
+{
+	int *st_cnt;
+
+	if (!tr)
+		return;
+
+	st_cnt = bpf_map_lookup_elem(&stack_trace_cur, &zero);
+	if (!st_cnt)
+		return; /* shouldn't happen */
+
+	__sync_fetch_and_add(st_cnt, -1);
 }
 
 static int emit_stack_trace(struct stack_trace *t, size_t sz, struct bpf_dynptr *dptr, size_t offset)
@@ -595,6 +633,8 @@ int wprof_timer_tick(void *ctx)
 		}
 	}
 
+	put_stack_trace(tr);
+
 	return 0;
 }
 
@@ -698,6 +738,8 @@ int BPF_PROG(wprof_task_switch,
 		e->swtch.next_task_scx_dsq_id = scx_dsq_id;
 	}
 
+	put_stack_trace(tr_out);
+
 	return 0;
 }
 
@@ -744,6 +786,8 @@ int BPF_PROG(wprof_task_waking, struct task_struct *p)
 		emit_stack_trace(tr, dyn_sz, dptr, fix_sz);
 		e->flags |= ST_WAKER;
 	}
+
+	put_stack_trace(tr);
 
 skip_emit:
 	return 0;
@@ -792,6 +836,8 @@ int BPF_PROG(wprof_task_wakeup_new, struct task_struct *p)
 		emit_stack_trace(tr, dyn_sz, dptr, fix_sz);
 		e->flags |= ST_WAKER;
 	}
+
+	put_stack_trace(tr);
 
 skip_emit:
 	return 0;
@@ -1414,6 +1460,8 @@ int BPF_USDT(wprof_req_ctx, u64 req_id, const char *endpoint, enum wprof_req_eve
 	if (event_kind == REQ_END)
 		bpf_map_delete_elem(&req_states, &req_id);
 
+	put_stack_trace(tr);
+
 	return 0;
 }
 
@@ -1519,6 +1567,8 @@ int BPF_USDT(wprof_cuda_call, int domain, int cbid, __u32 corr_id)
 			e->flags |= ST_CUDA;
 		}
 	}
+
+	put_stack_trace(tr);
 
 	return 0;
 }
