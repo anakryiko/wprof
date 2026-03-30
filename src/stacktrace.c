@@ -474,14 +474,14 @@ static int process_stack_trace(struct symb_state *state, const struct wprof_even
 			 * the leaf address.
 			 */
 			for (int i = ucnt - 1; i >= 0; i--)
-				stack_frame_append(state, pid, pid, uaddrs[i] + ((i == 0) ? -1 : 0));
+				stack_frame_append(state, pid, pid, uaddrs[i] + ((i != 0) ? -1 : 0));
 		}
 
 		if (kaddrs) {
 			stack_trace_append(state, tr, 0, state->sframe_cnt, kcnt, !!uaddrs /*combine*/);
 			/* see above about that -1 compensation */
 			for (int i = kcnt - 1; i >= 0; i--)
-				stack_frame_append(state, 0 /* kernel */, pid, kaddrs[i] + ((i == 0) ? -1 : 0));
+				stack_frame_append(state, 0 /* kernel */, pid, kaddrs[i] + ((i != 0) ? -1 : 0));
 		}
 
 		st_mask &= ~tr->kind;
