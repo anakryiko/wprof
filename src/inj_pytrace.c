@@ -74,6 +74,7 @@ static bool pytrace_active;
 
 /* Dump file state */
 #define PYTRACE_DUMP_BUF_SZ (256 * 1024)
+#define PYTRACE_DUMP_MAX_STRS_SZ (16 * 1024 * 1024)
 static FILE *pytrace_dump;
 static u64 pytrace_event_cnt;
 
@@ -87,7 +88,6 @@ static struct {
 static int pytrace_thread_stats_cnt;
 #endif
 
-#define PYTRACE_DUMP_MAX_STRS_SZ (256 * 1024 * 1024)
 struct strset *pytrace_dump_strs;
 
 /* Code object cache: PyCodeObject* -> cached info */
@@ -274,7 +274,7 @@ static int pytrace_profile_callback(PyObject *obj, PyFrameObject *frame, int wha
 static void init_wpytrace_header(struct wpytrace_data_hdr *hdr)
 {
 	memset(hdr, 0, sizeof(*hdr));
-	memcpy(hdr->magic, "WPYFUNC", 8);
+	memcpy(hdr->magic, "WPYTR", 6);
 	hdr->hdr_sz = sizeof(*hdr);
 }
 

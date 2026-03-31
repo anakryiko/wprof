@@ -38,6 +38,7 @@ The first line contains session metadata. Example:
   "capture_cuda": false,
   "capture_pystacks": false,
   "capture_pytrace": false,
+  "capture_pytorch": false,
   "stacks": ["timer", "offcpu"],
   "stack_cnt": 42,
   "event_cnt": 100000,
@@ -56,6 +57,7 @@ The first line contains session metadata. Example:
 | `capture_cuda`     | bool            | Whether CUDA activity was captured                                   |
 | `capture_pystacks` | bool            | Whether Python stack traces were captured                            |
 | `capture_pytrace`   | bool            | Whether Python function tracing was captured                         |
+| `capture_pytorch`   | bool            | Whether PyTorch RecordFunction tracing was captured                   |
 | `stacks`           | array of string | Stack trace kinds captured (e.g., `["timer","offcpu"]`, `[]` if none)|
 | `stack_cnt`        | int             | Number of stack trace lines that follow (0 if none)                  |
 | `event_cnt`        | int             | Total number of event lines that follow                              |
@@ -641,7 +643,7 @@ the host process that owns the GPU context, not a thread running on the CPU.
 
 ### Python function tracing events
 
-These events are emitted when Python function tracing (`-f py-func`) is enabled.
+These events are emitted when Python function tracing (`-f py-trace`) is enabled.
 They represent deterministic function call/return events captured via
 `PyEval_SetProfile`, providing exact function call trees with timestamps.
 
@@ -678,5 +680,45 @@ They represent deterministic function call/return events captured via
   "t": "pytrace_exit",
   "task": {"tid": 1234, "pid": 1000, "comm": "python3"},
   "name": "module.MyClass.process"
+}
+```
+
+---
+
+### PyTorch RecordFunction tracing events
+
+These events are emitted when PyTorch tracing (`-f py-torch`) is enabled.
+They capture PyTorch operator execution via the RecordFunction callback system,
+covering autograd threads and other C++ threads.
+
+#### `pytorch_entry` — PyTorch operator entry
+
+| Field  | Type   | Description                          |
+|--------|--------|--------------------------------------|
+| `task` | task   | Thread entering the operator         |
+| `name` | string | Operator name (e.g., `"aten::mm"`)   |
+
+```json
+{
+  "ts": 0.600100000,
+  "t": "pytorch_entry",
+  "task": {"tid": 1234, "pid": 1000, "comm": "pt_autograd_0"},
+  "name": "aten::mm"
+}
+```
+
+#### `pytorch_exit` — PyTorch operator exit
+
+| Field  | Type   | Description                           |
+|--------|--------|---------------------------------------|
+| `task` | task   | Thread returning from the operator    |
+| `name` | string | Operator name                         |
+
+```json
+{
+  "ts": 0.600200000,
+  "t": "pytorch_exit",
+  "task": {"tid": 1234, "pid": 1000, "comm": "pt_autograd_0"},
+  "name": "aten::mm"
 }
 ```

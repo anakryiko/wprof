@@ -25,7 +25,7 @@
 
 /* Dump file state (own, not shared with inj_pytrace.c) */
 #define TORCH_DUMP_BUF_SZ (256 * 1024)
-#define TORCH_DUMP_MAX_STRS_SZ (256 * 1024 * 1024)
+#define TORCH_DUMP_MAX_STRS_SZ (16 * 1024 * 1024)
 
 static FILE *torch_dump;
 static struct strset *torch_dump_strs;
@@ -248,7 +248,7 @@ static int rf_resolve_symbols(void)
 static void init_wpytrace_header(struct wpytrace_data_hdr *hdr)
 {
 	memset(hdr, 0, sizeof(*hdr));
-	memcpy(hdr->magic, "WPYFUNC", 8);
+	memcpy(hdr->magic, "WPYTR", 6);
 	hdr->hdr_sz = sizeof(*hdr);
 }
 
