@@ -8,9 +8,8 @@
 #define WPYTRACE_DATA_FLAG_INCOMPLETE 0xffffffffffffffffULL
 
 struct wpytrace_data_hdr {
-	char magic[8];
+	char magic[6]; /* "WPYTR\0" */
 	u16 hdr_sz;
-	u16 padding;
 	u64 flags;		/* WPYTRACE_DATA_FLAG_INCOMPLETE during recording, cleared on finalization */
 	u64 sess_start_ns;
 	u64 sess_end_ns;
@@ -33,10 +32,8 @@ struct wpytrace_event {
 	u64 ts;
 	u64 code_key;
 	u32 tid;
-	u8  what;		/* PyTrace_CALL=0, PyTrace_RETURN=3, WPYTRACE_RF_ENTRY=20, WPYTRACE_RF_EXIT=21 */
-	u8  padding[3];
-	u32 rf_name_off;
-	u32 padding2;
+	u8  what:8;		/* PyTrace_CALL=0, PyTrace_RETURN=3, WPYTRACE_RF_ENTRY=20, WPYTRACE_RF_EXIT=21 */
+	u32 rf_name_off:24;
 };
 
 /* Code object map entry: maps code_key -> string offsets */
