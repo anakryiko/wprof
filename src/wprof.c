@@ -1074,6 +1074,25 @@ static void cleanup_workers(struct worker_state *workers, int worker_cnt)
 	}
 }
 
+static const char *extra_param_kind_name(enum wprof_extra_param_kind kind)
+{
+	switch (kind) {
+	case WEXTRA_FILTER_PID_ALLOW: return "--pid";
+	case WEXTRA_FILTER_PID_DENY: return "--no-pid";
+	case WEXTRA_FILTER_TID_ALLOW: return "--tid";
+	case WEXTRA_FILTER_TID_DENY: return "--no-tid";
+	case WEXTRA_FILTER_PNAME_ALLOW: return "--process-name";
+	case WEXTRA_FILTER_PNAME_DENY: return "--no-process-name";
+	case WEXTRA_FILTER_TNAME_ALLOW: return "--thread-name";
+	case WEXTRA_FILTER_TNAME_DENY: return "--no-thread-name";
+	case WEXTRA_FILTER_IDLE_ALLOW: return "--idle";
+	case WEXTRA_FILTER_IDLE_DENY: return "--no-idle";
+	case WEXTRA_FILTER_KTHREAD_ALLOW: return "--kthread";
+	case WEXTRA_FILTER_KTHREAD_DENY: return "--no-kthread";
+	default: return sfmt("<unknown:%d>", kind);
+	}
+}
+
 int main(int argc, char **argv)
 {
 	struct bpf_state bpf_state = {};
@@ -1221,6 +1240,16 @@ int main(int argc, char **argv)
 				wprintf("%-*s%s\n", w, f->header, f->cfg_get_flag(cfg) ? "YES" : "NO");
 			}
 
+			if (dump_hdr->extra_cnt > 0) {
+				wprintf("%-*s\n", w, "Extras:");
+				for (u64 i = 0; i < dump_hdr->extra_cnt; i++) {
+					struct wprof_extra_param *e = wevent_extra_param(dump_hdr, i);
+					const char *val = e->stroff ? wevent_str(dump_hdr, e->stroff) : NULL;
+					wprintf("    %s%s%s\n", extra_param_kind_name(e->kind),
+						val ? " " : "", val ?: "");
+				}
+			}
+
 			u64 kind_cnt[__EV_KIND_MAX] = {};
 			u64 kind_sz[__EV_KIND_MAX] = {};
 			struct wevent_record *rec;
@@ -1329,6 +1358,57 @@ int main(int argc, char **argv)
 		err = pmu_resolve_replay_defs(dump_hdr);
 		if (err)
 			goto cleanup;
+
+		/* Restore persisted capture-time filters (additive with CLI filters) */
+		for (u64 i = 0; i < dump_hdr->extra_cnt; i++) {
+			struct wprof_extra_param *ep = wevent_extra_param(dump_hdr, i);
+			const char *val = ep->stroff ? wevent_str(dump_hdr, ep->stroff) : "";
+
+			switch (ep->kind) {
+			case WEXTRA_FILTER_PID_ALLOW:
+				err = append_num(&env.allow_pids, &env.allow_pid_cnt, val);
+				break;
+			case WEXTRA_FILTER_PID_DENY:
+				err = append_num(&env.deny_pids, &env.deny_pid_cnt, val);
+				break;
+			case WEXTRA_FILTER_TID_ALLOW:
+				err = append_num(&env.allow_tids, &env.allow_tid_cnt, val);
+				break;
+			case WEXTRA_FILTER_TID_DENY:
+				err = append_num(&env.deny_tids, &env.deny_tid_cnt, val);
+				break;
+			case WEXTRA_FILTER_PNAME_ALLOW:
+				err = append_str(&env.allow_pnames, &env.allow_pname_cnt, val);
+				break;
+			case WEXTRA_FILTER_PNAME_DENY:
+				err = append_str(&env.deny_pnames, &env.deny_pname_cnt, val);
+				break;
+			case WEXTRA_FILTER_TNAME_ALLOW:
+				err = append_str(&env.allow_tnames, &env.allow_tname_cnt, val);
+				break;
+			case WEXTRA_FILTER_TNAME_DENY:
+				err = append_str(&env.deny_tnames, &env.deny_tname_cnt, val);
+				break;
+			case WEXTRA_FILTER_IDLE_ALLOW:
+				env.allow_idle = true;
+				break;
+			case WEXTRA_FILTER_IDLE_DENY:
+				env.deny_idle = true;
+				break;
+			case WEXTRA_FILTER_KTHREAD_ALLOW:
+				env.allow_kthread = true;
+				break;
+			case WEXTRA_FILTER_KTHREAD_DENY:
+				env.deny_kthread = true;
+				break;
+			default:
+				eprintf("Unrecognized extra param kind %d in data file!\n", ep->kind);
+				err = -EINVAL;
+				break;
+			}
+			if (err)
+				goto cleanup;
+		}
 
 		goto skip_data_collection;
 	}
