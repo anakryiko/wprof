@@ -105,8 +105,10 @@ struct utrace_cfg {
 	};
 };
 
+struct sbuf;
+
 int utrace_cfg_parse(const char *def);
 int utrace_cfg_parse_file(const char *path);
-void utrace_cfg_dump(const struct utrace_cfg *cfg);
+void utrace_cfg_format(const struct utrace_cfg *cfg, struct sbuf *sb);
 
 #endif /* __UTRACE_CFG_H_ */

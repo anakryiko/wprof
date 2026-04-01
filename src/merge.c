@@ -22,6 +22,8 @@
 #include "proc.h"
 #include "persist.h"
 #include "stacktrace.h"
+#include "utrace_cfg.h"
+#include "strs.h"
 #include "../libbpf/src/strset.h"
 #include "../libbpf/src/hashmap.h"
 
@@ -172,6 +174,18 @@ static void collect_extra_filters(struct persist_state *ps,
 		add_extra(extras, cnt, WEXTRA_FILTER_KTHREAD_ALLOW, 0);
 	if (env.deny_kthread)
 		add_extra(extras, cnt, WEXTRA_FILTER_KTHREAD_DENY, 0);
+
+	if (env.utrace_cfg_cnt > 0) {
+		struct sbuf sb = sbuf_new();
+
+		for (int i = 0; i < env.utrace_cfg_cnt; i++) {
+			sbuf_reset(&sb);
+			utrace_cfg_format(&env.utrace_cfgs[i], &sb);
+			add_extra(extras, cnt, WEXTRA_UTRACE_DEF, persist_stroff(ps, sbuf_str(&sb)));
+		}
+
+		sbuf_free(&sb);
+	}
 }
 
 int wprof_merge_data(const char *workdir_name, struct worker_state *workers)

@@ -11,118 +11,12 @@
 #include "utils.h"
 #include "env.h"
 #include "utrace_cfg.h"
-
-struct strv {
-	const char *s;
-	int len;
-};
-
-static struct strv sv(const char *s, int len)
-{
-	return (struct strv){ .s = s, .len = len };
-}
-
-static struct strv sv_new(const char *s)
-{
-	return sv(s, strlen(s));
-}
-
-static struct strv sv_empty(void)
-{
-	return sv("", 0);
-}
-
-static bool sv_is_empty(struct strv v)
-{
-	return v.len == 0;
-}
-
-static struct strv sv_trim(struct strv v)
-{
-	while (v.len > 0 && isspace(v.s[0])) { v.s++; v.len--; }
-	while (v.len > 0 && isspace(v.s[v.len - 1])) { v.len--; }
-	return v;
-}
-
-static bool sv_eq(struct strv a, const char *b)
-{
-	return strncmp(a.s, b, a.len) == 0 && b[a.len] == '\0';
-}
-
-static bool sv_starts_with(struct strv v, const char *pfx)
-{
-	int plen = strlen(pfx);
-
-	return v.len >= plen && strncmp(v.s, pfx, plen) == 0;
-}
-
-static char *sv_strdup(struct strv v)
-{
-	return strndup(v.s, v.len);
-}
-
-/* find substring in view, return -1 if not found */
-static int sv_find(struct strv v, const char *needle)
-{
-	int nlen = strlen(needle);
-
-	if (nlen > v.len)
-		return -1;
-	for (int i = 0; i <= v.len - nlen; i++)
-		if (strncmp(v.s + i, needle, nlen) == 0)
-			return i;
-	return -1;
-}
-
-static struct strv sv_split(struct strv v, const char *delim, struct strv *right)
-{
-	int pos = sv_find(v, delim);
-
-	if (pos < 0) {
-		*right = sv_empty();
-		return v;
-	}
-
-	*right = sv(v.s + pos, v.len - pos);
-	return sv(v.s, pos);
-}
-
-static struct strv sv_consume_left(struct strv v, int n)
-{
-	if (n > v.len)
-		n = v.len;
-	return sv(v.s + n, v.len - n);
-}
-
-/* strip matching left/right delimiters from v; returns true on success, false if either is missing */
-static bool sv_unwrap(struct strv *v, const char *left, const char *right)
-{
-	int llen = strlen(left);
-	int rlen = strlen(right);
-
-	if (v->len < llen + rlen)
-		return false;
-	if (strncmp(v->s, left, llen) != 0)
-		return false;
-	if (strncmp(v->s + v->len - rlen, right, rlen) != 0)
-		return false;
-
-	v->s += llen;
-	v->len -= llen + rlen;
-	return true;
-}
-
-static bool sv_as_long(struct strv v, long *val)
-{
-	int n = 0;
-
-	return sscanf(v.s, "%li%n", val, &n) == 1 && n == v.len;
-}
+#include "strs.h"
 
 /* --- error reporting with position highlighting -------------------------- */
 
 __printf(3, 4)
-static int utrace_err(struct strv orig, struct strv bad, const char *fmt, ...)
+static int utrace_err(struct sview orig, struct sview bad, const char *fmt, ...)
 {
 	va_list ap;
 
@@ -169,7 +63,7 @@ static const struct {
 	{ "str", UTRACE_ARG_STR },
 };
 
-static int parse_arg_type(struct strv v, enum utrace_arg_type *out)
+static int parse_arg_type(struct sview v, enum utrace_arg_type *out)
 {
 	for (int i = 0; i < ARRAY_SIZE(arg_type_table); i++) {
 		if (sv_eq(v, arg_type_table[i].name)) {
@@ -204,9 +98,9 @@ static const struct {
 };
 
 /* parse "IDX[:TYPE][->NAME]" argument definition without "arg:" prefix */
-static int parse_arg_param(struct strv orig, struct strv def, struct utrace_param *p)
+static int parse_arg_param(struct sview orig, struct sview def, struct utrace_param *p)
 {
-	struct strv name, arg, arg_type;
+	struct sview name, arg, arg_type;
 	enum utrace_arg_type atype = UTRACE_ARG_U64;
 	long idx;
 
@@ -245,14 +139,14 @@ static int parse_arg_param(struct strv orig, struct strv def, struct utrace_para
 	return 0;
 }
 
-static int parse_params(struct strv orig, struct strv def, struct utrace_param **out, int *out_cnt)
+static int parse_params(struct sview orig, struct sview def, struct utrace_param **out, int *out_cnt)
 {
 	struct utrace_param *params = NULL;
 	int cnt = 0;
 
 	while (!sv_is_empty(def)) {
-		struct strv rest;
-		struct strv param = sv_split(def, ",", &rest);
+		struct sview rest;
+		struct sview param = sv_split(def, ",", &rest);
 
 		def = sv_consume_left(rest, 1);
 
@@ -330,7 +224,7 @@ static bool is_span_probe(enum utrace_type t)
 	}
 }
 
-static int validate_probe_def(struct strv orig, const struct utrace_cfg *cfg)
+static int validate_probe_def(struct sview orig, const struct utrace_cfg *cfg)
 {
 	for (int i = 0; i < cfg->param_cnt; i++) {
 		const struct utrace_param *p = &cfg->params[i];
@@ -349,13 +243,13 @@ static int validate_probe_def(struct strv orig, const struct utrace_cfg *cfg)
 }
 
 /* parse a single probe definition: "type:target-spec (params)" */
-static int parse_settings(struct strv orig, struct strv def, struct utrace_settings *settings)
+static int parse_settings(struct sview orig, struct sview def, struct utrace_settings *settings)
 {
 	memset(settings, 0, sizeof(*settings));
 
 	while (!sv_is_empty(def)) {
-		struct strv rest;
-		struct strv tok = sv_trim(sv_split(def, ",", &rest));
+		struct sview rest;
+		struct sview tok = sv_trim(sv_split(def, ",", &rest));
 
 		def = sv_is_empty(rest) ? sv_empty() : sv_consume_left(rest, 1);
 
@@ -368,9 +262,9 @@ static int parse_settings(struct strv orig, struct strv def, struct utrace_setti
 	return 0;
 }
 
-static int parse_probe_def(struct strv orig, struct strv def, struct utrace_cfg *cfg)
+static int parse_probe_def(struct sview orig, struct sview def, struct utrace_cfg *cfg)
 {
-	struct strv params;
+	struct sview params;
 	int i, err;
 
 	def = sv_trim(def);
@@ -399,7 +293,7 @@ static int parse_probe_def(struct strv orig, struct strv def, struct utrace_cfg 
 	case UTRACE_UPROBE:
 	case UTRACE_URETPROBE:
 	case UTRACE_UPROBE_SPAN: {
-		struct strv name, offset;
+		struct sview name, offset;
 
 		name = sv_split(def, "+", &offset);
 		name = sv_trim(name);
@@ -418,7 +312,7 @@ static int parse_probe_def(struct strv orig, struct strv def, struct utrace_cfg 
 	case UTRACE_KPROBE:
 	case UTRACE_KRETPROBE:
 	case UTRACE_KPROBE_SPAN: {
-		struct strv name, offset;
+		struct sview name, offset;
 
 		name = sv_split(def, "+", &offset);
 		name = sv_trim(name);
@@ -436,7 +330,7 @@ static int parse_probe_def(struct strv orig, struct strv def, struct utrace_cfg 
 		break;
 	}
 	case UTRACE_USDT: {
-		struct strv provider, name;
+		struct sview provider, name;
 
 		provider = sv_split(def, ":", &name);
 		provider = sv_trim(provider);
@@ -450,7 +344,7 @@ static int parse_probe_def(struct strv orig, struct strv def, struct utrace_cfg 
 		break;
 	}
 	case UTRACE_TRACEPOINT: {
-		struct strv cat, name;
+		struct sview cat, name;
 
 		cat = sv_split(def, ":", &name);
 		cat = sv_trim(cat);
@@ -492,10 +386,10 @@ static int parse_probe_def(struct strv orig, struct strv def, struct utrace_cfg 
  * General logic is to split out all these different parts, while remembering that they
  * are all optional, except for <target-type>:<target-spec>.
  */
-static int parse_cfg(struct strv def, struct utrace_cfg *cfg)
+static int parse_cfg(struct sview def, struct utrace_cfg *cfg)
 {
-	struct strv orig = def;
-	struct strv settings, left, right;
+	struct sview orig = def;
+	struct sview settings, left, right;
 	int err;
 
 	memset(cfg, 0, sizeof(*cfg));
@@ -616,91 +510,78 @@ static const char *utrace_type_str(enum utrace_type t)
 	}
 }
 
-static void utrace_cfg_dump_single(const struct utrace_cfg *cfg, char *buf, int sz, int *pos)
+static void format_probe(const struct utrace_cfg *cfg, struct sbuf *sb)
 {
-#define APPEND(fmt, ...) do { *pos += snprintf(buf + *pos, sz - *pos, fmt, ##__VA_ARGS__); } while (0)
-
-	APPEND("%s:", utrace_type_str(cfg->type));
+	sbuf_appendf(sb, "%s:", utrace_type_str(cfg->type));
 
 	switch (cfg->type) {
 	case UTRACE_UPROBE:
 	case UTRACE_URETPROBE:
 	case UTRACE_UPROBE_SPAN:
-		APPEND("%s", cfg->uprobe.name);
+		sbuf_appendf(sb, "%s", cfg->uprobe.name);
 		if (cfg->uprobe.off)
-			APPEND("+%ld", cfg->uprobe.off);
+			sbuf_appendf(sb, "+0x%lx", cfg->uprobe.off);
 		break;
 	case UTRACE_USDT:
-		APPEND("%s:%s", cfg->usdt.provider, cfg->usdt.name);
+		sbuf_appendf(sb, "%s:%s", cfg->usdt.provider, cfg->usdt.name);
 		break;
 	case UTRACE_KPROBE:
 	case UTRACE_KRETPROBE:
 	case UTRACE_KPROBE_SPAN:
-		APPEND("%s", cfg->kprobe.name);
+		sbuf_appendf(sb, "%s", cfg->kprobe.name);
 		if (cfg->kprobe.off)
-			APPEND("+%ld", cfg->kprobe.off);
+			sbuf_appendf(sb, "+0x%lx", cfg->kprobe.off);
 		break;
 	case UTRACE_TRACEPOINT:
-		APPEND("%s:%s", cfg->tp.cat, cfg->tp.name);
+		sbuf_appendf(sb, "%s:%s", cfg->tp.cat, cfg->tp.name);
 		break;
 	case UTRACE_RAW_TRACEPOINT:
-		APPEND("%s", cfg->raw_tp.name);
+		sbuf_appendf(sb, "%s", cfg->raw_tp.name);
 		break;
 	default:
 		break;
 	}
 
 	if (cfg->param_cnt > 0) {
-		APPEND(" (");
+		sbuf_appendf(sb, " (");
 		for (int i = 0; i < cfg->param_cnt; i++) {
 			const struct utrace_param *p = &cfg->params[i];
 			if (i > 0)
-				APPEND(", ");
+				sbuf_appendf(sb, ", ");
 			switch (p->type) {
 			case UTRACE_PARAM_CAPTURE_STACK:
-				APPEND("stack");
+				sbuf_appendf(sb, "stack");
 				break;
 			case UTRACE_PARAM_BINARY_PATH:
-				APPEND("path:%s", p->binary.path);
+				sbuf_appendf(sb, "path:%s", p->binary.path);
 				break;
 			case UTRACE_PARAM_PID:
-				APPEND("pid:%d", p->pid.pid);
+				sbuf_appendf(sb, "pid:%d", p->pid.pid);
 				break;
 			case UTRACE_PARAM_ARG:
 				if (p->arg.arg_idx == UTRACE_ARG_RET)
-					APPEND("arg:ret");
+					sbuf_appendf(sb, "arg:ret");
 				else
-					APPEND("arg:%d", p->arg.arg_idx);
+					sbuf_appendf(sb, "arg:%d", p->arg.arg_idx);
 				if (p->arg.arg_type != UTRACE_ARG_U64)
-					APPEND(":%s", arg_type_str(p->arg.arg_type));
+					sbuf_appendf(sb, ":%s", arg_type_str(p->arg.arg_type));
 				if (p->arg.name)
-					APPEND("->%s", p->arg.name);
+					sbuf_appendf(sb, "->%s", p->arg.name);
 				break;
 			}
 		}
-		APPEND(")");
+		sbuf_appendf(sb, ")");
 	}
-
-	/* TODO: dump settings when we have any */
-
-#undef APPEND
 }
 
-void utrace_cfg_dump(const struct utrace_cfg *cfg)
+void utrace_cfg_format(const struct utrace_cfg *cfg, struct sbuf *sb)
 {
-	char buf[1024];
-	int pos = 0;
-
 	if (cfg->type == UTRACE_SPAN) {
-		int p1 = 0, p2 = 0;
-		char b1[512], b2[512];
-
-		utrace_cfg_dump_single(cfg->span.entry, b1, sizeof(b1), &p1);
-		utrace_cfg_dump_single(cfg->span.exit, b2, sizeof(b2), &p2);
-		dprintf(0, "utrace: span { entry: %s, exit: %s }\n", b1, b2);
+		format_probe(cfg->span.entry, sb);
+		sbuf_appendf(sb, " <=> ");
+		format_probe(cfg->span.exit, sb);
 		return;
 	}
 
-	utrace_cfg_dump_single(cfg, buf, sizeof(buf), &pos);
-	dprintf(0, "utrace: %s\n", buf);
+	format_probe(cfg, sb);
 }

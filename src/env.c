@@ -679,18 +679,12 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	}
 	/* USER-DEFINED TRACING */
 	case 'U': {
-		int prev_cnt = env.utrace_cfg_cnt;
-
 		if (arg[0] == '@')
 			err = utrace_cfg_parse_file(arg + 1);
 		else
 			err = utrace_cfg_parse(arg);
 		if (err)
 			return err;
-		if (env.verbose) {
-			for (int i = prev_cnt; i < env.utrace_cfg_cnt; i++)
-				utrace_cfg_dump(&env.utrace_cfgs[i]);
-		}
 		break;
 	}
 	/* REQUESTS QUERYING */
