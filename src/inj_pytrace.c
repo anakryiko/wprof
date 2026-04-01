@@ -304,19 +304,23 @@ static int init_wpytrace_data(FILE *dump)
 	return 0;
 }
 
-int pytrace_session_setup(int dump_fd, int torch_fd, int version_minor,
-			  unsigned long *sym_addrs, unsigned long *torch_sym_addrs)
+int pytrace_session_setup(struct pytrace_setup_ctx *ctx)
 {
 	int err = 0;
 
-	py_version_minor = version_minor;
+	py_version_minor = ctx->version_minor;
 	vlog("Setting up pytrace session (Python 3.%d)...\n", py_version_minor);
+
+	if (ctx->sym_addr_cnt != PYTRACE_SYM_CNT) {
+		elog("BUG: pytrace sym_addr_cnt:%d != PYTRACE_SYM_CNT:%d\n", ctx->sym_addr_cnt, PYTRACE_SYM_CNT);
+		return -EINVAL;
+	}
 
 	/* Assign Python C API function pointers from host-resolved addresses */
 	for (int i = 0; i < PYTRACE_SYM_CNT; i++) {
-		*(void **)pytrace_resolve_syms[i] = (void *)sym_addrs[i];
-		if (sym_addrs[i])
-			vlog("  %s = %p\n", pytrace_sym_names[i], (void *)sym_addrs[i]);
+		*(void **)pytrace_resolve_syms[i] = (void *)ctx->sym_addrs[i];
+		if (ctx->sym_addrs[i])
+			vlog("  %s = %p\n", pytrace_sym_names[i], (void *)ctx->sym_addrs[i]);
 	}
 
 	/*
@@ -328,8 +332,8 @@ int pytrace_session_setup(int dump_fd, int torch_fd, int version_minor,
 		return -ENOENT;
 	}
 
-	if (torch_fd >= 0) {
-		err = torch_profiler_setup(torch_fd, torch_sym_addrs);
+	if (ctx->torch_fd >= 0) {
+		err = torch_profiler_setup(ctx->torch_fd, ctx->torch_sym_addrs, ctx->torch_sym_addr_cnt);
 		if (err) {
 			vlog("Torch profiler setup failed: %d\n", err);
 			return err;
@@ -343,10 +347,10 @@ int pytrace_session_setup(int dump_fd, int torch_fd, int version_minor,
 		return -ENOMEM;
 	}
 
-	pytrace_dump = fdopen(dump_fd, "w");
+	pytrace_dump = fdopen(ctx->dump_fd, "w");
 	if (!pytrace_dump) {
 		err = -errno;
-		elog("Failed to create FILE wrapper around pytrace dump FD %d: %d\n", dump_fd, err);
+		elog("Failed to create FILE wrapper around pytrace dump FD %d: %d\n", ctx->dump_fd, err);
 		goto cleanup;
 	}
 	setvbuf(pytrace_dump, NULL, _IOFBF, PYTRACE_DUMP_BUF_SZ);
@@ -420,7 +424,7 @@ cleanup:
 		fclose(pytrace_dump);
 		pytrace_dump = NULL;
 	} else {
-		zclose(dump_fd);
+		zclose(ctx->dump_fd);
 	}
 	return err;
 }

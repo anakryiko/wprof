@@ -35,18 +35,32 @@ static u64 torch_event_cnt;
 static bool torch_active;
 static pthread_mutex_t torch_lock;
 
-/* RecordFunction C++ API — resolved via dlsym with mangled names */
-static const char *(*rf_name)(const void *record_fn);
-static void (*rf_remove_callback)(u64 handle);
+/* We define a wrapper struct that exactly matches the C++ layout */
+struct rf_callback_struct {
+	void *start;        /* 0  */
+	void *end;          /* 8  */
+	double prob;        /* 16 */
+	bool scopes[10];    /* 24 */
+	bool needs_inputs;  /* 34 */
+	bool needs_outputs; /* 35 */
+	bool needs_ids;     /* 36 */
+	u8 pad[3];          /* 37-39 */
+} __attribute__((packed));
 
+_Static_assert(sizeof(struct rf_callback_struct) == 40,
+	       "rf_callback_struct must be 40 bytes");
 /*
  * addGlobalCallback takes a 40-byte RecordFunctionCallback struct by value.
  * On x86_64, structs >16 bytes are passed on the stack. On aarch64, they're
  * passed by indirect reference (pointer in x0). In both cases the C compiler
  * generates the correct calling convention automatically when we call through
  * a function pointer typed to take the struct by value.
+ *
+ * RecordFunction C++ APIs — resolved before inject
  */
-static void *rf_add_global_callback_ptr;
+static u64 (*rf_add_global_callback)(struct rf_callback_struct cb);
+static const char *(*rf_name)(const void *record_fn);
+static void (*rf_remove_callback)(u64 handle);
 
 static u64 rf_callback_handle;
 static bool rf_active;
@@ -100,7 +114,7 @@ static void *rf_start_cb(void *ret_slot, const void *record_fn)
 
 	u64 ts = ktime_now_ns();
 	u32 tid = (u32)syscall(SYS_gettid);
-	const char *name = rf_name ? rf_name(record_fn) : "?";
+	const char *name = rf_name(record_fn);
 
 	pthread_mutex_lock(&torch_lock);
 	u32 name_off = strset__add_str(torch_dump_strs, name);
@@ -148,38 +162,6 @@ static void rf_end_cb(const void *record_fn, void *ctx)
 		atomic_add(&torch_event_cnt, 1);
 }
 
-/*
- * Call addGlobalCallback with a 40-byte struct passed by value.
- *
- * The C compiler handles the platform-specific calling convention for passing
- * a 40-byte struct by value (stack on x86_64, indirect reference on aarch64).
- * We cast the resolved symbol to a function pointer typed to take the struct
- * by value, and the compiler does the rest.
- */
-
-/* We define a wrapper struct that exactly matches the C++ layout */
-struct rf_callback_struct {
-	void *start;        /* 0  */
-	void *end;          /* 8  */
-	double prob;        /* 16 */
-	bool scopes[10];    /* 24 */
-	bool needs_inputs;  /* 34 */
-	bool needs_outputs; /* 35 */
-	bool needs_ids;     /* 36 */
-	u8 pad[3];          /* 37-39 */
-} __attribute__((packed));
-
-_Static_assert(sizeof(struct rf_callback_struct) == 40,
-	       "rf_callback_struct must be 40 bytes");
-
-typedef u64 (*rf_add_cb_fn_t)(struct rf_callback_struct cb);
-
-static u64 rf_call_add_global_callback(const struct rf_callback_struct *cb)
-{
-	rf_add_cb_fn_t fn = (rf_add_cb_fn_t)rf_add_global_callback_ptr;
-	return fn(*cb);
-}
-
 /* RecordScope enum values from ATen/record_function.h */
 #define RF_SCOPE_FUNCTION          0
 #define RF_SCOPE_BACKWARD_FUNCTION 1
@@ -195,7 +177,7 @@ static void rf_register(void)
 		.scopes = { [RF_SCOPE_FUNCTION] = true, [RF_SCOPE_BACKWARD_FUNCTION] = true, [RF_SCOPE_USER_SCOPE] = true },
 	};
 
-	rf_callback_handle = rf_call_add_global_callback(&cb);
+	rf_callback_handle = rf_add_global_callback(cb);
 	rf_active = true;
 
 	vlog("RecordFunction callback registered (handle=%llu)\n", (unsigned long long)rf_callback_handle);
@@ -206,11 +188,8 @@ static void rf_unregister(void)
 	if (!rf_active)
 		return;
 
-	if (rf_remove_callback) {
-		rf_remove_callback(rf_callback_handle);
-		vlog("RecordFunction callback unregistered (handle=%llu)\n",
-		     (unsigned long long)rf_callback_handle);
-	}
+	rf_remove_callback(rf_callback_handle);
+	vlog("RecordFunction callback unregistered (handle=%llu)\n", (unsigned long long)rf_callback_handle);
 
 	rf_active = false;
 }
@@ -235,7 +214,7 @@ static int verify_mutex_symbols(void)
 
 /* Table of function pointers assigned from host-resolved addresses, must match torch_sym_names order */
 static void **torch_resolve_syms[TORCH_SYM_CNT] = {
-	&rf_add_global_callback_ptr,
+	(void **)&rf_add_global_callback,
 	(void **)&rf_remove_callback,
 	(void **)&rf_name,
 };
@@ -277,18 +256,23 @@ static int init_torch_data(FILE *dump)
 
 /* ==================== Public API ==================== */
 
-int torch_profiler_setup(int dump_fd, unsigned long *sym_addrs)
+int torch_profiler_setup(int dump_fd, unsigned long *sym_addrs, int sym_addr_cnt)
 {
 	int err = 0;
 
+	if (sym_addr_cnt != TORCH_SYM_CNT) {
+		elog("BUG: pytorch torch_sym_addr_cnt:%d != TORCH_SYM_CNT:%d\n", sym_addr_cnt, TORCH_SYM_CNT);
+		return -EINVAL;
+	}
+
 	/* Assign RecordFunction API pointers from host-resolved addresses */
-	for (int i = 0; i < TORCH_SYM_CNT; i++) {
+	for (int i = 0; i < sym_addr_cnt; i++) {
 		*torch_resolve_syms[i] = (void *)sym_addrs[i];
 		if (sym_addrs[i])
 			vlog("  %s = %p\n", torch_sym_names[i], (void *)sym_addrs[i]);
 	}
 
-	if (!rf_add_global_callback_ptr || !rf_remove_callback || !rf_name) {
+	if (!rf_add_global_callback || !rf_remove_callback || !rf_name) {
 		elog("Missing required torch RecordFunction symbols\n");
 		return -ENOENT;
 	}
