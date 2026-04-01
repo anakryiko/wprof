@@ -44,6 +44,7 @@ enum wprof_extra_param_kind {
 	WEXTRA_FILTER_IDLE_DENY,
 	WEXTRA_FILTER_KTHREAD_ALLOW,
 	WEXTRA_FILTER_KTHREAD_DENY,
+	WEXTRA_UTRACE_DEF,
 };
 
 struct wprof_extra_param {

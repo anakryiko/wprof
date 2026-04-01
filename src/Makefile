@@ -187,7 +187,7 @@ WPROF_SRCS := wprof.c utils.c env.c protobuf.c data.c emit.c stacktrace.c pmu.c	
 WPROF_HDRS := wprof.h utils.h env.h protobuf.h data.h emit.h stacktrace.h topology.h pmu.h	\
 	      proc.h requests.h cuda.h inj_common.h inject.h sys.h elf_utils.h cuda_data.h 	\
 	      wprof_types.h demangle.h merge.h wevent.h persist.h		\
-	      pystacks.h pyoffsets.h pydisc.h pysym.h pyline.h pytrace.h pytrace_data.h utrace_cfg.h
+	      pystacks.h pyoffsets.h pydisc.h pysym.h pyline.h pytrace.h pytrace_data.h utrace_cfg.h strs.h
 WPROF_OBJS := $(patsubst %.c,$(OUTPUT)/%.o,$(WPROF_SRCS))
 
 WPROFINJ_SRCS := inj_lib.c inj_strset.c inj_hashmap.c inj_cupti.c inj_pytrace.c inj_torch_profiler.c

@@ -1089,6 +1089,7 @@ static const char *extra_param_kind_name(enum wprof_extra_param_kind kind)
 	case WEXTRA_FILTER_IDLE_DENY: return "--no-idle";
 	case WEXTRA_FILTER_KTHREAD_ALLOW: return "--kthread";
 	case WEXTRA_FILTER_KTHREAD_DENY: return "--no-kthread";
+	case WEXTRA_UTRACE_DEF: return "--utrace";
 	default: return sfmt("<unknown:%d>", kind);
 	}
 }
@@ -1400,6 +1401,9 @@ int main(int argc, char **argv)
 				break;
 			case WEXTRA_FILTER_KTHREAD_DENY:
 				env.deny_kthread = true;
+				break;
+			case WEXTRA_UTRACE_DEF:
+				err = utrace_cfg_parse(val);
 				break;
 			default:
 				eprintf("Unrecognized extra param kind %d in data file!\n", ep->kind);
