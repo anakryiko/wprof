@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <sys/sysmacros.h>
 #include <linux/fs.h>
 #include <fcntl.h>
 
@@ -98,10 +99,54 @@ static int pytrace_resolve_symbols(int pid, struct py_binary_info *bi, unsigned 
 	return 0;
 }
 
+/*
+ * Iterate over tracee's VMA mappings to resolve PyTorch RecordFunction symbols
+ * via ELF parsing. Works for both dynamically and statically linked PyTorch.
+ */
+static int torch_resolve_symbols(int pid, unsigned long *sym_addrs)
+{
+	struct vma_info *vma;
+	char host_path[PATH_MAX];
+	unsigned long offsets[TORCH_SYM_CNT] = {};
+	unsigned long base_addr = 0;
+	__u64 last_dev = 0;
+	__u64 last_inode = 0;
+
+	wprof_for_each(vma, vma, pid, VMA_QUERY_FILE_BACKED_VMA) {
+		if (vma->vma_flags & PROCMAP_QUERY_VMA_SHARED)
+			continue;
+		if (vma->vma_name[0] != '/')
+			continue;
+
+		__u64 curr_dev = makedev(vma->dev_major, vma->dev_minor);
+
+		if (vma->inode == last_inode && curr_dev == last_dev)
+			continue;
+
+		last_inode = vma->inode;
+		last_dev = curr_dev;
+
+		snprintf(host_path, sizeof(host_path), "/proc/%d/map_files/%llx-%llx",
+			 pid, (unsigned long long)vma->vma_start, (unsigned long long)vma->vma_end);
+		base_addr = vma->vma_start - vma->vma_offset;
+		if (elf_find_syms(host_path, STT_FUNC, torch_sym_names, offsets, TORCH_SYM_CNT) == 0) {
+			for (int i = 0; i < TORCH_SYM_CNT; i++) {
+				sym_addrs[i] = base_addr + offsets[i];
+				dlogf(PYTRACE, 1, "  %s: offset=0x%lx addr=0x%lx\n", torch_sym_names[i], offsets[i], sym_addrs[i]);
+			}
+			return 0;
+		}
+	}
+
+	eprintf("Failed to resolve torch symbol for PID: %d\n", pid);
+	return -ENOENT;
+}
+
 static int try_inject_to_python_process(int pid, int workdir_fd)
 {
 	struct py_binary_info bi;
 	unsigned long sym_addrs[PYTRACE_SYM_CNT] = {};
+	unsigned long torch_sym_addrs[TORCH_SYM_CNT] = {};
 	char log_path[128];
 	int err = 0, log_fd = -1;
 
@@ -122,6 +167,16 @@ static int try_inject_to_python_process(int pid, int workdir_fd)
 		eprintf("Failed to resolve Python symbols for %s, skipping injection\n",
 			pytrace_proc_str(pid, ns_tid_by_host_tid(pid, pid), proc_name(pid)));
 		return err;
+	}
+
+	/* Resolve PyTorch RecordFunction symbols if torch profiling is requested */
+	if (env.capture_pytorch == TRUE) {
+		err = torch_resolve_symbols(pid, torch_sym_addrs);
+		if (err) {
+			eprintf("Failed to resolve PyTorch symbols for %s, skipping injection\n",
+					pytrace_proc_str(pid, ns_tid_by_host_tid(pid, pid), proc_name(pid)));
+			return err;
+		}
 	}
 
 	snprintf(log_path, sizeof(log_path), LIBWPROFINJ_PYTRACE_LOG_PATH_FMT, getpid(), pid);
@@ -162,6 +217,7 @@ static int try_inject_to_python_process(int pid, int workdir_fd)
 	pf->log_path = strdup(log_path);
 	pf->py_version_minor = bi.py_minor;
 	memcpy(pf->sym_addrs, sym_addrs, sizeof(sym_addrs));
+	memcpy(pf->torch_sym_addrs, torch_sym_addrs, sizeof(torch_sym_addrs));
 	pf->state = TRACEE_INJECTED;
 
 	return 0;
@@ -281,6 +337,7 @@ int pytrace_trace_prepare(int workdir_fd, long sess_timeout_ms)
 			},
 		};
 		memcpy(msg.pytrace_session.sym_addrs, pf->sym_addrs, sizeof(pf->sym_addrs));
+		memcpy(msg.pytrace_session.torch_sym_addrs, pf->torch_sym_addrs, sizeof(pf->torch_sym_addrs));
 		int fds[2] = { dump_fd, torch_dump_fd };
 		int fd_cnt = (torch_dump_fd >= 0) ? 2 : 1;
 		int err = uds_send_data(pf->uds_fd, &msg, sizeof(msg), fds, fd_cnt);
