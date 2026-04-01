@@ -10,6 +10,7 @@
 #include "cuda.h"
 #include "pytrace.h"
 #include "requests.h"
+#include "utrace_cfg.h"
 
 #define WPROF_VERSION "0.3-dev"
 
@@ -168,6 +169,10 @@ struct env {
 	int pytrace_cnt;
 	bool pytraces_deactivated;
 	bool pytraces_retracted;
+
+	/* user-defined tracing (utrace) */
+	struct utrace_cfg *utrace_cfgs;
+	int utrace_cfg_cnt;
 
 	/* persisted data header, set after merge or before replay */
 	struct wprof_data_hdr *data_hdr;
