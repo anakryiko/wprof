@@ -70,11 +70,20 @@ int init_cupti_activities(void);
 int start_cupti_activities(void);
 void finalize_cupti_activities(void);
 
-int pytrace_session_setup(int dump_fd, int torch_fd, int version_minor,
-			  unsigned long *sym_addrs, unsigned long *torch_sym_addrs);
+struct pytrace_setup_ctx {
+	int dump_fd;
+	int torch_fd;
+	int version_minor;
+	unsigned long *sym_addrs;
+	int sym_addr_cnt;
+	unsigned long *torch_sym_addrs;
+	int torch_sym_addr_cnt;
+};
+
+int pytrace_session_setup(struct pytrace_setup_ctx *ctx);
 int pytrace_session_finalize(void);
 
-int torch_profiler_setup(int dump_fd, unsigned long *sym_addrs);
+int torch_profiler_setup(int dump_fd, unsigned long *sym_addrs, int sym_addr_cnt);
 int torch_profiler_teardown(void);
 
 #endif /* __INJ_H_ */
