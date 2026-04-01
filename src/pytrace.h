@@ -32,6 +32,7 @@ struct pytrace_tracee {
 
 	int py_version_minor;	/* detected Python 3.x version */
 	unsigned long sym_addrs[PYTRACE_SYM_CNT];
+	unsigned long torch_sym_addrs[TORCH_SYM_CNT];
 
 	struct tracee_state *tracee;
 	struct inj_run_ctx *ctx;

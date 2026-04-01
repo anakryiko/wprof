@@ -233,37 +233,12 @@ static int verify_mutex_symbols(void)
 	return 0;
 }
 
-static int rf_resolve_symbols(void)
-{
-	/*
-	 * libtorch_cpu.so is loaded by Python's import machinery with RTLD_LOCAL,
-	 * so its C++ symbols aren't visible via RTLD_DEFAULT. We need to get a
-	 * handle to the already-loaded library using RTLD_NOLOAD.
-	 */
-	void *torch_handle = dlopen("libtorch_cpu.so", RTLD_NOLOAD | RTLD_LAZY);
-	if (!torch_handle) {
-		vlog("dlopen(libtorch_cpu.so, NOLOAD) failed: %s\n", dlerror());
-		return -ENOENT;
-	}
-
-	vlog("Got handle to libtorch_cpu.so at %p\n", torch_handle);
-
-	rf_add_global_callback_ptr = dlsym(torch_handle,
-		"_ZN2at17addGlobalCallbackENS_22RecordFunctionCallbackE");
-	rf_remove_callback = dlsym(torch_handle, "_ZN2at14removeCallbackEm");
-	rf_name = dlsym(torch_handle, "_ZNK2at14RecordFunction4nameEv");
-
-	if (rf_add_global_callback_ptr)
-		vlog("Resolved at::addGlobalCallback at %p\n", rf_add_global_callback_ptr);
-	if (rf_remove_callback)
-		vlog("Resolved at::removeCallback at %p\n", (void *)rf_remove_callback);
-	if (rf_name)
-		vlog("Resolved at::RecordFunction::name at %p\n", (void *)rf_name);
-
-	dlclose(torch_handle);
-
-	return rf_add_global_callback_ptr && rf_remove_callback && rf_name ? 0 : -ENOENT;
-}
+/* Table of function pointers assigned from host-resolved addresses, must match torch_sym_names order */
+static void **torch_resolve_syms[TORCH_SYM_CNT] = {
+	&rf_add_global_callback_ptr,
+	(void **)&rf_remove_callback,
+	(void **)&rf_name,
+};
 
 /* ==================== Dump file management ==================== */
 
@@ -302,9 +277,21 @@ static int init_torch_data(FILE *dump)
 
 /* ==================== Public API ==================== */
 
-int torch_profiler_setup(int dump_fd)
+int torch_profiler_setup(int dump_fd, unsigned long *sym_addrs)
 {
 	int err = 0;
+
+	/* Assign RecordFunction API pointers from host-resolved addresses */
+	for (int i = 0; i < TORCH_SYM_CNT; i++) {
+		*torch_resolve_syms[i] = (void *)sym_addrs[i];
+		if (sym_addrs[i])
+			vlog("  %s = %p\n", torch_sym_names[i], (void *)sym_addrs[i]);
+	}
+
+	if (!rf_add_global_callback_ptr || !rf_remove_callback || !rf_name) {
+		elog("Missing required torch RecordFunction symbols\n");
+		return -ENOENT;
+	}
 
 	torch_dump_strs = strset__new(TORCH_DUMP_MAX_STRS_SZ, "", 1);
 	if (!torch_dump_strs) {
@@ -322,11 +309,6 @@ int torch_profiler_setup(int dump_fd)
 
 	if ((err = init_torch_data(torch_dump)) < 0) {
 		elog("Failed to init torch dump: %d\n", err);
-		goto cleanup;
-	}
-
-	if ((err = rf_resolve_symbols()) < 0) {
-		elog("Failed to resolve PyTorch record function symbols");
 		goto cleanup;
 	}
 

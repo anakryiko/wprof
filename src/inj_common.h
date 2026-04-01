@@ -33,6 +33,15 @@ static const char *pytrace_sym_names[PYTRACE_SYM_CNT] = {
 	"PyEval_SetProfileAllThreads",
 };
 
+#define TORCH_SYM_CNT 3		/* must match ARRAY_SIZE(torch_resolve_syms) in inj_torch_profiler.c */
+
+__attribute__((unused))
+static const char *torch_sym_names[TORCH_SYM_CNT] = {
+	"_ZN2at17addGlobalCallbackENS_22RecordFunctionCallbackE",	/* at::addGlobalCallback */
+	"_ZN2at14removeCallbackEm",					/* at::removeCallback */
+	"_ZNK2at14RecordFunction4nameEv",				/* at::RecordFunction::name */
+};
+
 #define LIBWPROFINJ_SETUP_SYM __libwprof_inj_setup
 #define LIBWPROFINJ_VERSION 1
 
@@ -122,6 +131,7 @@ struct inj_msg {
 			int py_version_minor; /* Python 3.x minor version */
 			bool enable_torch_profiler;
 			unsigned long sym_addrs[PYTRACE_SYM_CNT];
+			unsigned long torch_sym_addrs[TORCH_SYM_CNT];
 		} pytrace_session;
 		struct inj_msg_shutdown {
 		} shutdown;

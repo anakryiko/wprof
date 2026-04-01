@@ -304,7 +304,8 @@ static int init_wpytrace_data(FILE *dump)
 	return 0;
 }
 
-int pytrace_session_setup(int dump_fd, int torch_fd, int version_minor, unsigned long *sym_addrs)
+int pytrace_session_setup(int dump_fd, int torch_fd, int version_minor,
+			  unsigned long *sym_addrs, unsigned long *torch_sym_addrs)
 {
 	int err = 0;
 
@@ -328,7 +329,7 @@ int pytrace_session_setup(int dump_fd, int torch_fd, int version_minor, unsigned
 	}
 
 	if (torch_fd >= 0) {
-		err = torch_profiler_setup(torch_fd);
+		err = torch_profiler_setup(torch_fd, torch_sym_addrs);
 		if (err) {
 			vlog("Torch profiler setup failed: %d\n", err);
 			return err;
