@@ -17,6 +17,7 @@
 #include "env.h"
 #include "data.h"
 #include "requests.h"
+#include "utrace_cfg.h"
 
 const char *argp_program_version = "wprof v" WPROF_VERSION;
 
@@ -143,6 +144,10 @@ static const struct argp_option opts[] = {
 	{ "ringbuf-size", OPT_RINGBUF_SZ, "SIZE", 0, "BPF ringbuf size (in KBs)" },
 	{ "task-state-size", OPT_TASK_STATE_SZ, "SIZE", 0, "BPF task state map size (in threads)" },
 	{ "ringbuf-cnt", OPT_RINGBUF_CNT, "N", 0, "Number of BPF ringbufs to use" },
+
+	/* user-defined tracing */
+	{ "utrace", 'U', "DEFINITION", 0,
+	  "User-defined trace probe definition (use @<file> to read from file). Repeatable." },
 
 	/* PMUs */
 	{ "pmu", OPT_PMU_COUNTER, "EVENT", 0,
@@ -669,6 +674,22 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			ev.stored_idx = env.pmu_real_cnt;
 			env.pmu_reals = realloc(env.pmu_reals, (env.pmu_real_cnt + 1) * sizeof(*env.pmu_reals));
 			env.pmu_reals[env.pmu_real_cnt++] = ev;
+		}
+		break;
+	}
+	/* USER-DEFINED TRACING */
+	case 'U': {
+		int prev_cnt = env.utrace_cfg_cnt;
+
+		if (arg[0] == '@')
+			err = utrace_cfg_parse_file(arg + 1);
+		else
+			err = utrace_cfg_parse(arg);
+		if (err)
+			return err;
+		if (env.verbose) {
+			for (int i = prev_cnt; i < env.utrace_cfg_cnt; i++)
+				utrace_cfg_dump(&env.utrace_cfgs[i]);
 		}
 		break;
 	}

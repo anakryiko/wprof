@@ -1,0 +1,112 @@
+/* SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause) */
+/* Copyright (c) 2025 Meta Platforms, Inc. */
+#ifndef __UTRACE_CFG_H_
+#define __UTRACE_CFG_H_
+
+#include <stdbool.h>
+#include <stddef.h>
+
+enum utrace_type {
+	UTRACE_INVALID,
+	UTRACE_UPROBE,		/* u:func */
+	UTRACE_URETPROBE,	/* uret:func */
+	UTRACE_USDT,		/* usdt:provider:name */
+	UTRACE_KPROBE,		/* k:func */
+	UTRACE_KRETPROBE,	/* kret:func */
+	UTRACE_TRACEPOINT,	/* tp:category:name */
+	UTRACE_RAW_TRACEPOINT,	/* raw_tp:name */
+	UTRACE_UPROBE_SPAN,	/* uspan:func */
+	UTRACE_KPROBE_SPAN,	/* kspan:func */
+	UTRACE_SPAN,		/* two non-span probes joined by + */
+};
+
+enum utrace_arg_type {
+	UTRACE_ARG_UNKNOWN,
+	UTRACE_ARG_U8,
+	UTRACE_ARG_U16,
+	UTRACE_ARG_U32,
+	UTRACE_ARG_U64,
+	UTRACE_ARG_S8,
+	UTRACE_ARG_S16,
+	UTRACE_ARG_S32,
+	UTRACE_ARG_S64,
+	UTRACE_ARG_STR,
+};
+
+enum utrace_param_type {
+	UTRACE_PARAM_CAPTURE_STACK,
+	UTRACE_PARAM_BINARY_PATH,
+	UTRACE_PARAM_PID,
+	UTRACE_PARAM_ARG,
+};
+
+#define UTRACE_ARG_RET (-1)
+
+struct utrace_param {
+	enum utrace_param_type type;
+	union {
+		struct {
+			int arg_idx;			/* 0-based arg index, or UTRACE_ARG_RET */
+			enum utrace_arg_type arg_type; 	/* defaults to UTRACE_ARG_U64 if omitted */
+			char *name;			/* annotation name, NULL = auto "arg<N>" / "ret" */
+		} arg;
+		struct {
+			char *path;
+		} binary;
+		struct {
+			int pid;
+		} pid;
+	};
+};
+
+struct utrace_settings {
+	/* currently empty, will be extended with specific settings */
+};
+
+struct utrace_cfg {
+	enum utrace_type type;
+
+	struct utrace_param *params;
+	int param_cnt;
+
+	struct utrace_settings settings;
+
+	union {
+		/* UPROBE, URETPROBE, UPROBE_SPAN */
+		struct {
+			char *name;
+			long off;
+		} uprobe;
+		/* USDT */
+		struct {
+			char *provider;
+			char *name;
+		} usdt;
+		/* KPROBE, KRETPROBE, KPROBE_SPAN */
+		struct {
+			char *name;
+			long off;
+		} kprobe;
+		/* TRACEPOINT */
+		struct {
+			char *cat;
+			char *name;
+		} tp;
+		/* RAW_TRACEPOINT */
+		struct {
+			char *name;
+		} raw_tp;
+
+		/* GENERIC SPAN */
+		struct {
+			struct utrace_cfg *entry;
+			struct utrace_cfg *exit;
+		} span;
+	};
+};
+
+int utrace_cfg_parse(const char *def);
+int utrace_cfg_parse_file(const char *path);
+void utrace_cfg_dump(const struct utrace_cfg *cfg);
+
+#endif /* __UTRACE_CFG_H_ */
