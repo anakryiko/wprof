@@ -318,6 +318,23 @@ int pytrace_session_setup(int dump_fd, int torch_fd, int version_minor, unsigned
 			vlog("  %s = %p\n", pytrace_sym_names[i], (void *)sym_addrs[i]);
 	}
 
+	/*
+	 * Validation and torch setup come before any pytrace allocations,
+	 * so failures here can return directly without cleanup.
+	 */
+	if (!py_is_initialized()) {
+		elog("Python interpreter not initialized, skipping pytrace\n");
+		return -ENOENT;
+	}
+
+	if (torch_fd >= 0) {
+		err = torch_profiler_setup(torch_fd);
+		if (err) {
+			vlog("Torch profiler setup failed: %d\n", err);
+			return err;
+		}
+	}
+
 	/* Set up dump file */
 	pytrace_dump_strs = strset__new(PYTRACE_DUMP_MAX_STRS_SZ, "", 1);
 	if (!pytrace_dump_strs) {
@@ -343,13 +360,6 @@ int pytrace_session_setup(int dump_fd, int torch_fd, int version_minor, unsigned
 	if (!pytrace_code_cache) {
 		err = -ENOMEM;
 		elog("Failed to create pytrace code cache\n");
-		goto cleanup;
-	}
-
-	/* Install profiler on all Python threads */
-	if (!py_is_initialized()) {
-		elog("Python interpreter not initialized, skipping pytrace\n");
-		err = -ENOENT;
 		goto cleanup;
 	}
 
@@ -394,15 +404,6 @@ int pytrace_session_setup(int dump_fd, int torch_fd, int version_minor, unsigned
 	py_gilstate_release(gstate);
 
 	vlog("pytrace session ready: profiler active on %d Python thread(s)\n", thread_cnt);
-
-	/* Set up torch profiler if requested */
-	if (torch_fd >= 0) {
-		err = torch_profiler_setup(torch_fd);
-		if (err) {
-			vlog("Torch profiler setup failed: %d\n", err);
-			goto cleanup;
-		}
-	}
 
 	return 0;
 

@@ -261,8 +261,11 @@ int pytrace_trace_prepare(int workdir_fd, long sess_timeout_ms)
 			snprintf(torch_path, sizeof(torch_path), LIBWPROFINJ_TORCH_DUMP_PATH_FMT, getpid(), pf->pid);
 			torch_dump_fd = openat(workdir_fd, torch_path, O_RDWR | O_CREAT | O_CLOEXEC, 0644);
 			if (torch_dump_fd < 0) {
-				eprintf("Failed to create torch dump file at '%s': %d (continuing without torch profiling)\n",
-					torch_path, -errno);
+				int err = -errno;
+				eprintf("Failed to create torch tracee %s dump file at '%s': %d\n",
+					pytrace_str(pf), torch_path, err);
+				close(dump_fd);
+				return err;
 			} else {
 				pf->torch_dump_fd = torch_dump_fd;
 				pf->torch_dump_path = strdup(torch_path);
@@ -285,6 +288,8 @@ int pytrace_trace_prepare(int workdir_fd, long sess_timeout_ms)
 			eprintf("Failed to start pytrace trace session for tracee %s: %d\n",
 				pytrace_str(pf), err);
 			close(dump_fd);
+			if (torch_dump_fd >= 0)
+				close(torch_dump_fd);
 			pf->state = TRACEE_SETUP_FAILED;
 			continue;
 		}

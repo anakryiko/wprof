@@ -8,6 +8,7 @@
 #include <dlfcn.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+#include <pthread.h>
 
 #include "inj.h"
 #include "pytrace_data.h"
@@ -32,6 +33,7 @@ static struct strset *torch_dump_strs;
 static u64 torch_event_cnt;
 
 static bool torch_active;
+static pthread_mutex_t torch_lock;
 
 /* RecordFunction C++ API — resolved via dlsym with mangled names */
 static const char *(*rf_name)(const void *record_fn);
@@ -100,7 +102,9 @@ static void *rf_start_cb(void *ret_slot, const void *record_fn)
 	u32 tid = (u32)syscall(SYS_gettid);
 	const char *name = rf_name ? rf_name(record_fn) : "?";
 
+	pthread_mutex_lock(&torch_lock);
 	u32 name_off = strset__add_str(torch_dump_strs, name);
+	pthread_mutex_unlock(&torch_lock);
 
 	struct wpytrace_event ev = {
 		.ts = ts,
@@ -111,7 +115,7 @@ static void *rf_start_cb(void *ret_slot, const void *record_fn)
 	};
 
 	if (fwrite(&ev, sizeof(ev), 1, torch_dump) == 1)
-		torch_event_cnt++;
+		atomic_add(&torch_event_cnt, 1);
 
 	*(void **)ret_slot = NULL;
 	return ret_slot;
@@ -141,7 +145,7 @@ static void rf_end_cb(const void *record_fn, void *ctx)
 	};
 
 	if (fwrite(&ev, sizeof(ev), 1, torch_dump) == 1)
-		torch_event_cnt++;
+		atomic_add(&torch_event_cnt, 1);
 }
 
 /*
@@ -209,6 +213,24 @@ static void rf_unregister(void)
 	}
 
 	rf_active = false;
+}
+
+static int verify_mutex_symbols(void)
+{
+	const char *syms[] = {
+		"pthread_mutex_init",
+		"pthread_mutex_lock",
+		"pthread_mutex_unlock",
+		"pthread_mutex_destroy"
+	};
+
+	for (int i = 0; i < ARRAY_SIZE(syms); i++) {
+		if (!dlsym(RTLD_DEFAULT, syms[i])) {
+			elog("%s not available in tracee\n", syms[i]);
+			return -ENOENT;
+		}
+	}
+	return 0;
 }
 
 static int rf_resolve_symbols(void)
@@ -303,13 +325,16 @@ int torch_profiler_setup(int dump_fd)
 		goto cleanup;
 	}
 
-	torch_active = true;
-
 	if ((err = rf_resolve_symbols()) < 0) {
 		elog("Failed to resolve PyTorch record function symbols");
 		goto cleanup;
 	}
 
+	if ((err = verify_mutex_symbols()) < 0)
+		goto cleanup;
+
+	torch_active = true;
+	pthread_mutex_init(&torch_lock, NULL);
 	rf_register();
 
 	return 0;
@@ -336,6 +361,7 @@ int torch_profiler_teardown(void)
 
 	rf_unregister();
 	torch_active = false;
+	pthread_mutex_destroy(&torch_lock);
 
 	fflush(torch_dump);
 
