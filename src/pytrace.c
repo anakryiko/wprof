@@ -162,7 +162,9 @@ static int try_inject_to_python_process(int pid, int workdir_fd)
 	dlogf(PYTRACE, 0, "PID %d: Python binary at '%s', base_addr=0x%lx\n", pid, bi.host_path, bi.base_addr);
 
 	/* Resolve all required Python C API symbols before injection */
+	u64 ts = ktime_now_ns();
 	err = pytrace_resolve_symbols(pid, &bi, sym_addrs);
+	dlogf(PYTRACE, 1, "PID %d: pytrace symbol resolution took %.3lfms\n", pid, (ktime_now_ns() - ts) / 1e6);
 	if (err) {
 		eprintf("Failed to resolve Python symbols for %s, skipping injection\n",
 			pytrace_proc_str(pid, ns_tid_by_host_tid(pid, pid), proc_name(pid)));
@@ -171,7 +173,9 @@ static int try_inject_to_python_process(int pid, int workdir_fd)
 
 	/* Resolve PyTorch RecordFunction symbols if torch profiling is requested */
 	if (env.capture_pytorch == TRUE) {
+		ts = ktime_now_ns();
 		err = torch_resolve_symbols(pid, torch_sym_addrs);
+		dlogf(PYTRACE, 1, "PID %d: torch symbol resolution took %.3lfms\n", pid, (ktime_now_ns() - ts) / 1e6);
 		if (err) {
 			eprintf("Failed to resolve PyTorch symbols for %s, skipping injection\n",
 					pytrace_proc_str(pid, ns_tid_by_host_tid(pid, pid), proc_name(pid)));
