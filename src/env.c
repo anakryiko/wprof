@@ -447,8 +447,8 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			env.pytrace_discovery = (val == TRUE) ? PYTRACE_DISCOVER_NVIDIA_SMI : PYTRACE_DISCOVER_NONE;
 			env.capture_pytrace = val;
 			env.capture_pytorch = val;
-		} else if (strncasecmp(arg, "py-torch=", 15) == 0) {
-			const char *pf_arg = arg + 15;
+		} else if (strncasecmp(arg, "py-torch=", 9) == 0) {
+			const char *pf_arg = arg + 9;
 			int pid, n;
 
 			if (val == FALSE) {

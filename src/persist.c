@@ -539,12 +539,12 @@ static const struct wpytrace_code_entry *lookup_pytrace_code(const struct wpytra
 }
 
 int persist_pytrace_event(struct persist_state *ps, const struct wpytrace_event *e, struct wevent *dst,
-			 const struct wpytrace_data_hdr *hdr, int host_pid, const char *proc_name,
+			 const struct wpytrace_data_hdr *hdr, int host_pid, int ns_pid, const char *proc_name,
 			 const struct wpytrace_code_entry *code_map, u64 code_map_cnt,
 			 const char *pytrace_strs)
 {
-	/* Resolve TID -- pytrace events use host-level TIDs directly */
-	struct tid_cache_value *ti = resolve_cuda_host_tid(ps, host_pid, proc_name, host_pid, e->tid);
+	/* Resolve TID -- pytrace TIDs come from gettid() inside tracee and may be namespaced */
+	struct tid_cache_value *ti = resolve_cuda_host_tid(ps, host_pid, proc_name, ns_pid, e->tid);
 	if (!ti)
 		return 0;
 

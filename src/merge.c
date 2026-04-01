@@ -500,7 +500,7 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 			struct pytrace_tracee *pf = &env.pytraces[wpf->tracee_idx];
 
 			wevent_sz = persist_pytrace_event(&ps, r, &wevent_buf, wpf->dump_hdr,
-							 pf->pid, pf->proc_name,
+							 pf->pid, pf->ns_pid, pf->proc_name,
 							 wpf->code_map, wpf->code_map_cnt,
 							 wpf->strs);
 			if (wevent_sz < 0) {
