@@ -71,10 +71,10 @@ static struct pytrace_tracee *add_pytrace_tracee(struct tracee_state *tracee)
  */
 static int pytrace_resolve_symbols(int pid, struct py_binary_info *bi, unsigned long *sym_addrs)
 {
-	long offsets[PYTRACE_SYM_CNT] = {};
+	unsigned long offsets[PYTRACE_SYM_CNT] = {};
 	int err;
 
-	err = elf_find_syms(bi->host_path, STT_FUNC, pytrace_sym_names, offsets, PYTRACE_SYM_CNT);
+	err = elf_find_syms(bi->host_path, STT_FUNC, pytrace_sym_names, offsets, ARRAY_SIZE(offsets));
 	if (err) {
 		for (int i = 0; i < PYTRACE_SYM_CNT; i++) {
 			if (offsets[i])

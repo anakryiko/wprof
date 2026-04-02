@@ -221,8 +221,16 @@ int elf_read_sym_value(const char *binary_path, const char *sym_name,
 	return -ENOENT;
 }
 
+/*
+ * Find virtual address offsets relative to binary's base load address for given ELF symbols.
+ *
+ * For shared libs and PIE executables (ET_DYN) this will be just straight st_value,
+ * but for normal executables (ET_EXEC), we'll subtract base load address from st_value.
+ * This allows caller to calculate absolute symbol addresses by adding base load address without
+ * having to take into account whether the binary is position independent or not.
+ */
 int elf_find_syms(const char *binary_path, int st_type,
-		  const char **syms, long *addrs, size_t cnt)
+		  const char **syms, unsigned long *offs, size_t cnt)
 {
 	int sh_types[2] = { SHT_DYNSYM, SHT_SYMTAB };
 	int cnt_done = 0;
@@ -233,42 +241,54 @@ int elf_find_syms(const char *binary_path, int st_type,
 	if (err)
 		return err;
 
-	memset(addrs, 0, sizeof(*addrs) * cnt);
+	memset(offs, 0, sizeof(*offs) * cnt);
 
-	/* Find the ELF base virtual address (first PT_LOAD p_vaddr - p_offset).
-	 * For ET_DYN (shared libs / PIE), symbol st_value includes this base.
-	 * Subtracting it gives the offset from the load bias, so
-	 * (vma_start - vma_offset) + offset = correct runtime address. */
-	unsigned long elf_base_vaddr = 0;
+	/*
+	 * All PT_LOAD segments in ELF should (according to ELF spec) have the same
+	 * (p_vaddr - p_offset) difference, which gives us virtual address base address.
+	 *
+	 * For shared libs and PIE executables that difference has to be zero, so we can skip this
+	 * step, but we currently don't for consistency. It's a fast step.
+	 *
+	 * We later will subtract this base address to give pure offsets as an output.
+	 */
+	unsigned long base_vaddr = 0;
 	GElf_Ehdr ehdr;
 	size_t phnum;
-	if (!gelf_getehdr(elf_fd.elf, &ehdr) || ehdr.e_type != ET_DYN || elf_getphdrnum(elf_fd.elf, &phnum) != 0)
-		goto find;
+	if (!gelf_getehdr(elf_fd.elf, &ehdr) || elf_getphdrnum(elf_fd.elf, &phnum) != 0)
+		return -EINVAL; /* invalid ELF */
+
 	for (size_t i = 0; i < phnum; i++) {
 		GElf_Phdr phdr;
-		if (gelf_getphdr(elf_fd.elf, i, &phdr) && phdr.p_type == PT_LOAD) {
-			elf_base_vaddr = phdr.p_vaddr - phdr.p_offset;
-			break;
-		}
-	}
+		if (!gelf_getphdr(elf_fd.elf, i, &phdr))
+			return -EINVAL; /* invalid ELF */
+		if (phdr.p_type != PT_LOAD)
+			continue;
 
-find:
+		base_vaddr = phdr.p_vaddr - phdr.p_offset;
+		break;
+	}
 
 	for (int ti = 0; ti < ARRAY_SIZE(sh_types) && cnt_done < cnt; ti++) {
 		struct elf_sym *sym;
 
 		wprof_for_each(elf_sym, sym, elf_fd.elf, binary_path, sh_types[ti], st_type) {
 			int bind = GELF_ST_BIND(sym->sym.st_info);
-			unsigned long addr = sym->sym.st_value - elf_base_vaddr;
+			unsigned long off = sym->sym.st_value;
 
+			/*
+			 * We initially store st_value into offs array as is to avoid
+			 * complications of having a valid zero offset interacting unexpectedly
+			 * with STB_WEAK logic below. We'll subtract base_vaddr before returning.
+			 */
 			for (int i = 0; i < cnt; i++) {
 				if (strcmp(syms[i], sym->name) != 0)
 					continue;
-				if (addrs[i] && bind == STB_WEAK)
+				if (offs[i] && bind == STB_WEAK)
 					continue;
-				if (addrs[i] == 0)
+				if (offs[i] == 0)
 					cnt_done++;
-				addrs[i] = addr;
+				offs[i] = off;
 				break;
 			}
 
@@ -278,6 +298,12 @@ find:
 	}
 
 	elf_close(&elf_fd);
+
+	for (int i = 0; i < cnt; i++) {
+		if (offs[i] != 0)
+			offs[i] -= base_vaddr;
+	}
+
 	return cnt_done == cnt ? 0 : -ENOENT;
 }
 

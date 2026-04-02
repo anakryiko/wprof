@@ -45,6 +45,6 @@ int elf_read_sym_value(const char *binary_path, const char *sym_name,
 		       int st_type, void *buf, size_t buf_sz);
 
 int elf_find_syms(const char *binary_path, int st_type,
-		  const char **syms, long *addrs, size_t cnt);
+		  const char **syms, unsigned long *addrs, size_t cnt);
 
 #endif /* __ELF_UTILS_H__ */
