@@ -121,8 +121,7 @@ static int handle_rb_event(void *ctx, void *data, size_t size)
 		return 0;
 	}
 
-	if (fwrite(&size, sizeof(size), 1, w->dump) != 1 ||
-	    fwrite(data, size, 1, w->dump) != 1) {
+	if (fwrite(data, size, 1, w->dump) != 1) {
 		int err = -errno;
 
 		eprintf("Failed to write raw data dump: %d\n", err);

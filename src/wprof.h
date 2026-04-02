@@ -202,7 +202,7 @@ enum scx_dsq_insert_type {
 };
 
 struct wprof_event {
-	u16 sz; /* fixed part size */
+	u16 sz; /* total record size including trailing dynamic data */
 	u16 flags;
 	enum event_kind kind;
 	u64 ts;
@@ -252,6 +252,10 @@ struct wprof_event {
 		struct wprof_task_rename {
 			char new_comm[TASK_COMM_LEN];
 		} rename;
+		struct wprof_task_exit {
+		} task_exit;
+		struct wprof_task_free {
+		} task_free;
 		struct wprof_fork {
 			struct wprof_thread child;
 		} fork;
@@ -350,5 +354,30 @@ struct wprof_event {
 #endif
 
 #define EV_SZ(kind) offsetofend(struct wprof_event, kind)
+
+static inline u16 bpf_event_fix_sz(const struct wprof_event *e)
+{
+	switch (e->kind) {
+	case EV_SWITCH:		return EV_SZ(swtch);
+	case EV_TIMER:		return EV_SZ(timer);
+	case EV_WAKING:		return EV_SZ(waking);
+	case EV_WAKEUP_NEW:	return EV_SZ(wakeup_new);
+	case EV_HARDIRQ_EXIT:	return EV_SZ(hardirq);
+	case EV_SOFTIRQ_EXIT:	return EV_SZ(softirq);
+	case EV_WQ_END:		return EV_SZ(wq);
+	case EV_FORK:		return EV_SZ(fork);
+	case EV_EXEC:		return EV_SZ(exec);
+	case EV_TASK_RENAME:	return EV_SZ(rename);
+	case EV_TASK_EXIT:	return EV_SZ(task_exit);
+	case EV_TASK_FREE:	return EV_SZ(task_free);
+	case EV_IPI_SEND:	return EV_SZ(ipi_send);
+	case EV_IPI_EXIT:	return EV_SZ(ipi);
+	case EV_REQ_EVENT:	return EV_SZ(req);
+	case EV_REQ_TASK_EVENT:	return EV_SZ(req_task);
+	case EV_SCX_DSQ_END:	return EV_SZ(scx_dsq);
+	case EV_CUDA_CALL:	return EV_SZ(cuda_call);
+	default:		return e->sz;
+	}
+}
 
 #endif /* __WPROF_H_ */
