@@ -769,15 +769,15 @@ struct tracee_state *tracee_inject(int pid)
 	char lib_path[128];
 	snprintf(lib_path, sizeof(lib_path), "/proc/%d/map_files/%lx-%lx", pid, libc_start, libc_end);
 	const char *sym_names[] = {"dlopen", "dlclose", "dlsym"};
-	long sym_addrs[] = {0, 0, 0};
-	err = elf_find_syms(lib_path, STT_FUNC, sym_names, sym_addrs, ARRAY_SIZE(sym_names));
+	unsigned long sym_offs[] = {0, 0, 0};
+	err = elf_find_syms(lib_path, STT_FUNC, sym_names, sym_offs, ARRAY_SIZE(sym_names));
 	if (err) {
 		elog("Failed to find dlopen/dlclose/dlsym symbols: %d\n", err);
 		goto cleanup;
 	}
-	long dlopen_tracee_off = sym_addrs[0];
-	long dlclose_tracee_off = sym_addrs[1];
-	long dlsym_tracee_off = sym_addrs[2];
+	unsigned long dlopen_tracee_off = sym_offs[0];
+	unsigned long dlclose_tracee_off = sym_offs[1];
+	unsigned long dlsym_tracee_off = sym_offs[2];
 
 	tracee->dlopen_addr = libc_start - libc_fileoff + dlopen_tracee_off;
 	tracee->dlclose_addr = libc_start - libc_fileoff + dlclose_tracee_off;

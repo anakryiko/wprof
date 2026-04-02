@@ -80,9 +80,9 @@ static bool is_py_tracee(int pid)
 static bool has_pyruntime_sym(const char *binary_path)
 {
 	const char *syms[] = { "_PyRuntime" };
-	long addrs[1] = { 0 };
+	unsigned long offs[1] = {};
 
-	return elf_find_syms(binary_path, STT_OBJECT, syms, addrs, 1) == 0;
+	return elf_find_syms(binary_path, STT_OBJECT, syms, offs, ARRAY_SIZE(offs)) == 0;
 }
 
 /*
@@ -105,7 +105,7 @@ int py_find_binary(int pid, struct py_binary_info *bi)
 	snprintf(exe_path, sizeof(exe_path), "/proc/%d/exe", pid);
 
 	if (stat(exe_path, &st)) {
-		eprintf("Railed to retrive file status for %s\n", exe_path);
+		eprintf("Failed to retrive file status for %s\n", exe_path);
 		return -errno;
 	}
 	/* Scan static executable or libpython*.so for Py_Version (or _PyRuntime for 3.10).
@@ -159,17 +159,17 @@ static int setup_pid(int pid, const char *binary_path, unsigned long base_addr,
 
 	/* resolve _PyRuntime address */
 	const char *syms[] = { "_PyRuntime" };
-	long addrs[1] = { 0 };
-	err = elf_find_syms(binary_path, STT_OBJECT, syms, addrs, 1);
+	unsigned long offs[1] = {};
+	err = elf_find_syms(binary_path, STT_OBJECT, syms, offs, ARRAY_SIZE(offs));
 	if (err) {
 		eprintf("Failed to find _PyRuntime symbol in '%s' for PID %d: %d\n", binary_path, pid, err);
 		return err;
 	}
 
-	unsigned long py_runtime_addr = base_addr + (unsigned long)addrs[0];
+	unsigned long py_runtime_addr = base_addr + offs[0];
 
 	vprintf("PID %d: _PyRuntime ELF sym=0x%lx base=0x%lx runtime_addr=0x%lx\n",
-		pid, (unsigned long)addrs[0], base_addr, py_runtime_addr);
+		pid, offs[0], base_addr, py_runtime_addr);
 
 	pid_data.py_runtime_addr = py_runtime_addr;
 	pid_data.tls_key_addr = py_runtime_addr + pid_data.offsets.TLSKey_offset;
