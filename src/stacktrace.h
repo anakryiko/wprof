@@ -54,7 +54,7 @@ static inline const u64 *bpf_event_pmu_vals(const struct wprof_event *e)
 {
 	if (!(e->flags & EF_PMU_VALS))
 		return NULL;
-	return (const u64 *)((void *)e + e->sz);
+	return (const u64 *)((void *)e + bpf_event_fix_sz(e));
 }
 
 static inline size_t bpf_event_stack_traces_sz(const struct wprof_event *e)
@@ -65,7 +65,7 @@ static inline size_t bpf_event_stack_traces_sz(const struct wprof_event *e)
 	if (!st_mask)
 		return 0;
 
-	const struct stack_trace *tr = (void *)e + e->sz + bpf_event_pmu_vals_sz(e);
+	const struct stack_trace *tr = (void *)e + bpf_event_fix_sz(e) + bpf_event_pmu_vals_sz(e);
 	while (st_mask) {
 		size_t sz = stack_trace_sz(tr);
 		total += sz;
@@ -79,7 +79,7 @@ static inline const void *bpf_event_pystack(const struct wprof_event *e)
 {
 	if (!(e->flags & EF_PYSTACK))
 		return NULL;
-	return (void *)e + e->sz + bpf_event_pmu_vals_sz(e) + bpf_event_stack_traces_sz(e);
+	return (void *)e + bpf_event_fix_sz(e) + bpf_event_pmu_vals_sz(e) + bpf_event_stack_traces_sz(e);
 }
 
 u32 bpf_event_stack_id(const struct wprof_event *e, enum stack_trace_kind kind);

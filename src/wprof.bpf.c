@@ -547,13 +547,13 @@ static __always_inline bool init_wprof_event(struct wprof_event *e, u32 sz, enum
 #define emit_task_event(e, fix_sz, dyn_sz, kind, ts, task)					\
 	for (struct rb_ctx __cleanup(__rb_event_submit) __ctx =					\
 			__rb_event_reserve(task, fix_sz, dyn_sz, (void **)&(e), NULL);		\
-	     e && __ctx.ev && init_wprof_event(e, fix_sz /*+ dyn_sz*/, kind, ts, task);		\
+	     e && __ctx.ev && init_wprof_event(e, fix_sz + dyn_sz, kind, ts, task);		\
 	     __ctx.ev = NULL)
 
 #define emit_task_event_dyn(e, dptr, fix_sz, dyn_sz, kind, ts, task)				\
 	for (struct rb_ctx __cleanup(__rb_event_submit) __ctx =					\
 			__rb_event_reserve(task, fix_sz, dyn_sz, (void **)&(e), &(dptr));	\
-	     e && __ctx.ev && init_wprof_event(e, fix_sz /*+ dyn_sz*/, kind, ts, task);		\
+	     e && __ctx.ev && init_wprof_event(e, fix_sz + dyn_sz, kind, ts, task);		\
 	     __ctx.ev = NULL)
 
 static int emit_pystacks(struct pystacks_message *pymsg, int py_sz, struct bpf_dynptr *dptr, size_t offset)
