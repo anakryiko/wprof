@@ -39,8 +39,8 @@ struct wevent {
 	u16 flags;
 	enum event_kind kind;
 	u32 task_id;
-	u32 cpu;
-	u32 numa_node;
+	u16 cpu;
+	u16 numa_node;
 	u64 ts;
 
 	union {
@@ -55,8 +55,8 @@ struct wevent {
 			u32 last_next_task_state;
 			u32 prev_prio;
 			u32 next_prio;
-			u32 waker_cpu;
-			u32 waker_numa_node;
+			u16 waker_cpu;
+			u16 waker_numa_node;
 			u32 next_task_scx_layer_id; /* sched-ext specific */
 			u32 next_task_scx_dsq_id; /* sched-ext specific */
 			u32 pystack_id;

@@ -19,8 +19,8 @@
 struct task_state {
 	u64 waking_ts;
 	u32 waking_flags;
-	u32 waker_cpu;
-	u32 waker_numa_node;
+	u16 waker_cpu;
+	u16 waker_numa_node;
 	u32 last_task_state;
 	struct wprof_thread waker_task;
 	u64 softirq_ts;

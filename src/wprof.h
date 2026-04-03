@@ -207,8 +207,8 @@ struct wprof_event {
 	enum event_kind kind;
 	u64 ts;
 
-	u32 cpu;
-	u32 numa_node;
+	u16 cpu;
+	u16 numa_node;
 	struct wprof_thread task;
 
 	char __wprof_data[0]; /* marker field */
@@ -222,8 +222,8 @@ struct wprof_event {
 			u32 last_next_task_state;
 			u32 prev_prio;
 			u32 next_prio;
-			u32 waker_cpu;
-			u32 waker_numa_node;
+			u16 waker_cpu;
+			u16 waker_numa_node;
 			enum waking_flags waking_flags;
 			int next_task_scx_layer_id; /* sched-ext specific */
 			int next_task_scx_dsq_id; /* sched-ext specific */
