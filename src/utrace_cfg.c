@@ -592,6 +592,8 @@ static void format_probe(const struct utrace_cfg *cfg, struct sbuf *sb)
 				if (p->arg.name)
 					sbuf_appendf(sb, "->%s", p->arg.name);
 				break;
+			default:
+				break;
 			}
 		}
 		if (cfg->wildcard_args) {
