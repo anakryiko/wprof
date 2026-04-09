@@ -3544,26 +3544,24 @@ static void emit_utrace_args(struct worker_state *w, const struct wevent *e,
 		if (e->kind == EV_UTRACE_EXIT && p->arg.arg_idx != UTRACE_ARG_RET)
 			continue;
 
-		char auto_name[16];
-		const char *name = p->arg.name;
-		if (!name) {
-			if (p->arg.arg_idx == UTRACE_ARG_RET) {
-				name = "ret";
-			} else {
-				snprintf(auto_name, sizeof(auto_name), "arg%d", p->arg.arg_idx);
-				name = auto_name;
-			}
+		const char *name_str = p->arg.name;
+		if (!name_str) {
+			if (p->arg.arg_idx == UTRACE_ARG_RET)
+				name_str = "ret";
+			else
+				name_str = sfmt("arg%d", p->arg.arg_idx);
 		}
+		/* annotation keys are stored by pointer and encoded later, so intern them */
+		struct pb_str name = iid_str(emit_intern_str(w, name_str), name_str);
 
 		if (p->arg.arg_type == UTRACE_ARG_STR) {
 			emit_kv_str(name, wevent_str(hdr, arg_refs[arg_idx]));
 		} else if (p->arg.arg_type == UTRACE_ARG_PTR) {
-			char buf[20];
 			u64 val = read_int_blob(hdr, arg_refs[arg_idx], p->arg.arg_type);
-			snprintf(buf, sizeof(buf), "0x%llx", (unsigned long long)val);
-			emit_kv_str(name, buf);
+			emit_kv_str(name, sfmt("0x%llx", (unsigned long long)val));
 		} else {
-			emit_kv_int(name, read_int_blob(hdr, arg_refs[arg_idx], p->arg.arg_type));
+			s64 val = read_int_blob(hdr, arg_refs[arg_idx], p->arg.arg_type);
+			emit_kv_int(name, val);
 		}
 		arg_idx++;
 	}
@@ -3676,24 +3674,19 @@ static void emit_utrace_json(struct worker_state *w, const struct wevent *e)
 			if (e->kind == EV_UTRACE_EXIT && p->arg.arg_idx != UTRACE_ARG_RET)
 				continue;
 
-			char auto_name[16];
 			const char *name = p->arg.name;
 			if (!name) {
-				if (p->arg.arg_idx == UTRACE_ARG_RET) {
+				if (p->arg.arg_idx == UTRACE_ARG_RET)
 					name = "ret";
-				} else {
-					snprintf(auto_name, sizeof(auto_name), "arg%d", p->arg.arg_idx);
-					name = auto_name;
-				}
+				else
+					name = sfmt("arg%d", p->arg.arg_idx);
 			}
 
 			if (p->arg.arg_type == UTRACE_ARG_STR) {
 				json_kv_str(j, name, wevent_str(hdr, arg_refs[arg_idx]));
 			} else if (p->arg.arg_type == UTRACE_ARG_PTR) {
-				char buf[20];
 				u64 val = read_int_blob(hdr, arg_refs[arg_idx], p->arg.arg_type);
-				snprintf(buf, sizeof(buf), "0x%llx", (unsigned long long)val);
-				json_kv_str(j, name, buf);
+				json_kv_str(j, name, sfmt("0x%llx", (unsigned long long)val));
 			} else {
 				json_kv_int(j, name, read_int_blob(hdr, arg_refs[arg_idx], p->arg.arg_type));
 			}
