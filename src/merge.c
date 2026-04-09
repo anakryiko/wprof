@@ -22,8 +22,11 @@
 #include "proc.h"
 #include "persist.h"
 #include "stacktrace.h"
+#include "utrace_cfg.h"
+#include "strs.h"
 #include "../libbpf/src/strset.h"
 #include "../libbpf/src/hashmap.h"
+#include "blobset.h"
 
 static void init_data_header(struct wprof_data_hdr *hdr)
 {
@@ -135,6 +138,55 @@ static int wpytrace_event_cmp(const void *a, const void *b)
 		return 0;
 
 	return (s64)(x->ts - y->ts) < 0 ? -1 : 1;
+}
+
+static void add_extra(struct wprof_extra_param **extras, u64 *cnt,
+		      enum wprof_extra_param_kind kind, u32 stroff)
+{
+	*extras = realloc(*extras, (*cnt + 1) * sizeof(**extras));
+	(*extras)[*cnt] = (struct wprof_extra_param){ .kind = kind, .stroff = stroff };
+	*cnt += 1;
+}
+
+static void collect_extra_filters(struct persist_state *ps,
+				  struct wprof_extra_param **extras, u64 *cnt)
+{
+	for (int i = 0; i < env.allow_pid_cnt; i++)
+		add_extra(extras, cnt, WEXTRA_FILTER_PID_ALLOW, persist_stroff(ps, sfmt("%d", env.allow_pids[i])));
+	for (int i = 0; i < env.deny_pid_cnt; i++)
+		add_extra(extras, cnt, WEXTRA_FILTER_PID_DENY, persist_stroff(ps, sfmt("%d", env.deny_pids[i])));
+	for (int i = 0; i < env.allow_tid_cnt; i++)
+		add_extra(extras, cnt, WEXTRA_FILTER_TID_ALLOW, persist_stroff(ps, sfmt("%d", env.allow_tids[i])));
+	for (int i = 0; i < env.deny_tid_cnt; i++)
+		add_extra(extras, cnt, WEXTRA_FILTER_TID_DENY, persist_stroff(ps, sfmt("%d", env.deny_tids[i])));
+	for (int i = 0; i < env.allow_pname_cnt; i++)
+		add_extra(extras, cnt, WEXTRA_FILTER_PNAME_ALLOW, persist_stroff(ps, env.allow_pnames[i]));
+	for (int i = 0; i < env.deny_pname_cnt; i++)
+		add_extra(extras, cnt, WEXTRA_FILTER_PNAME_DENY, persist_stroff(ps, env.deny_pnames[i]));
+	for (int i = 0; i < env.allow_tname_cnt; i++)
+		add_extra(extras, cnt, WEXTRA_FILTER_TNAME_ALLOW, persist_stroff(ps, env.allow_tnames[i]));
+	for (int i = 0; i < env.deny_tname_cnt; i++)
+		add_extra(extras, cnt, WEXTRA_FILTER_TNAME_DENY, persist_stroff(ps, env.deny_tnames[i]));
+	if (env.allow_idle)
+		add_extra(extras, cnt, WEXTRA_FILTER_IDLE_ALLOW, 0);
+	if (env.deny_idle)
+		add_extra(extras, cnt, WEXTRA_FILTER_IDLE_DENY, 0);
+	if (env.allow_kthread)
+		add_extra(extras, cnt, WEXTRA_FILTER_KTHREAD_ALLOW, 0);
+	if (env.deny_kthread)
+		add_extra(extras, cnt, WEXTRA_FILTER_KTHREAD_DENY, 0);
+
+	if (env.utrace_cfg_cnt > 0) {
+		struct sbuf sb = sbuf_new();
+
+		for (int i = 0; i < env.utrace_cfg_cnt; i++) {
+			sbuf_reset(&sb);
+			utrace_cfg_format(&env.utrace_cfgs[i], &sb);
+			add_extra(extras, cnt, WEXTRA_UTRACE_DEF, persist_stroff(ps, sbuf_str(&sb)));
+		}
+
+		sbuf_free(&sb);
+	}
 }
 
 int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
@@ -611,6 +663,29 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 	}
 	free(wpytraces);
 
+	/*
+	 * Collect extras (persisted capture-time filters);
+	 * must be before string pool so that persist_stroff() interns filter strings.
+	 */
+	struct wprof_extra_param *extras = NULL;
+	u64 extra_cnt = 0;
+	collect_extra_filters(&ps, &extras, &extra_cnt);
+
+	/* Write extras section (right after events) */
+	off_t extras_off = 0;
+	size_t extras_sz = 0;
+	if (extra_cnt > 0) {
+		file_pad(data_dump, 8);
+		extras_off = ftell(data_dump) - sizeof(struct wprof_data_hdr);
+		extras_sz = extra_cnt * sizeof(struct wprof_extra_param);
+		if (fwrite(extras, sizeof(struct wprof_extra_param), extra_cnt, data_dump) != extra_cnt) {
+			err = -errno;
+			eprintf("Failed to fwrite() extras section: %d\n", err);
+			return err;
+		}
+	}
+	free(extras);
+
 	/* Write thread table section */
 	file_pad(data_dump, 8);
 	long threads_off = ftell(data_dump) - sizeof(struct wprof_data_hdr);
@@ -666,6 +741,17 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 	}
 
 	/* ensure string section ends at 8 byte alignment, just in case */
+	file_pad(data_dump, 8);
+
+	/* Write blob pool section */
+	long blobs_off = ftell(data_dump) - sizeof(struct wprof_data_hdr);
+	const void *blobs_data = blobset__data(ps.blobs);
+	size_t blobs_sz = blobset__data_size(ps.blobs);
+	if (blobs_sz > 0 && fwrite(blobs_data, 1, blobs_sz, data_dump) != blobs_sz) {
+		err = -errno;
+		eprintf("Failed to fwrite() blob pool: %d\n", err);
+		return err;
+	}
 	file_pad(data_dump, 8);
 
 	fflush(data_dump);
@@ -737,8 +823,15 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 	hdr.strs_off = strs_off;
 	hdr.strs_sz = strs_sz;
 
+	hdr.blobs_off = blobs_off;
+	hdr.blobs_sz = blobs_sz;
+
 	hdr.stacks_off = stacks_off;
 	hdr.stacks_sz = stacks_sz;
+
+	hdr.extras_off = extras_off;
+	hdr.extras_sz = extras_sz;
+	hdr.extra_cnt = extra_cnt;
 
 	err = fseek(data_dump, 0, SEEK_SET);
 	if (err) {

@@ -17,6 +17,7 @@
 #include "env.h"
 #include "data.h"
 #include "requests.h"
+#include "utrace_cfg.h"
 
 const char *argp_program_version = "wprof v" WPROF_VERSION;
 
@@ -54,6 +55,7 @@ struct env env = {
 	.emit_req_split = true,
 	.capture_pytrace = UNSET,
 	.capture_pytorch = UNSET,
+	.capture_utrace = UNSET,
 	.pmu_real_cnt = -1,
 	.pmu_deriv_cnt = -1,
 	.pmu_unresolved_cnt = -1,
@@ -111,7 +113,7 @@ static const struct argp_option opts[] = {
 	{ "replay-end", OPT_REPLAY_OFFSET_END, "TIME_OFFSET", 0, "Session end time offset (replay mode only). Supported syntax: 2s, 1.03s, 10.5ms, 12us, 101213ns" },
 	{ "replay-info", 'I', NULL, 0, "Print recorded data information" },
 
-	{ "stacks", 'S', "KIND", OPTION_ARG_OPTIONAL, "Capture stack traces (supported kinds: timer, offcpu, waker, cuda, req, all; default = timer + offcpu)" },
+	{ "stacks", 'S', "KIND", OPTION_ARG_OPTIONAL, "Capture stack traces (supported kinds: timer, offcpu, waker, cuda, req, utrace, all; default = timer + offcpu)" },
 	{ "no-stacks", OPT_NO_STACK_TRACES, "KIND", OPTION_ARG_OPTIONAL, "Don't capture or emit stack traces" },
 	{ "symbolize-frugal", OPT_SYMBOLIZE_FRUGALLY, NULL, 0, "Symbolize frugally (slower, but less memory hungry)" },
 
@@ -143,6 +145,10 @@ static const struct argp_option opts[] = {
 	{ "ringbuf-size", OPT_RINGBUF_SZ, "SIZE", 0, "BPF ringbuf size (in KBs)" },
 	{ "task-state-size", OPT_TASK_STATE_SZ, "SIZE", 0, "BPF task state map size (in threads)" },
 	{ "ringbuf-cnt", OPT_RINGBUF_CNT, "N", 0, "Number of BPF ringbufs to use" },
+
+	/* user-defined tracing */
+	{ "utrace", 'U', "DEFINITION", 0,
+	  "User-defined trace probe definition (use @<file> to read from file). Repeatable." },
 
 	/* PMUs */
 	{ "pmu", OPT_PMU_COUNTER, "EVENT", 0,
@@ -178,6 +184,8 @@ static enum stack_trace_kind parse_stack_kinds(const char *arg)
 		return ST_CUDA;
 	if (strcasecmp(arg, "req") == 0)
 		return ST_REQ;
+	if (strcasecmp(arg, "utrace") == 0)
+		return ST_UTRACE;
 
 	if (strcasecmp(arg, "all") == 0)
 		return ST_ALL;
@@ -670,6 +678,16 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			env.pmu_reals = realloc(env.pmu_reals, (env.pmu_real_cnt + 1) * sizeof(*env.pmu_reals));
 			env.pmu_reals[env.pmu_real_cnt++] = ev;
 		}
+		break;
+	}
+	/* USER-DEFINED TRACING */
+	case 'U': {
+		if (arg[0] == '@')
+			err = utrace_cfg_parse_file(arg + 1);
+		else
+			err = utrace_cfg_parse(arg);
+		if (err)
+			return err;
 		break;
 	}
 	/* REQUESTS QUERYING */

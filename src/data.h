@@ -9,7 +9,7 @@
 #include "pmu.h"
 
 #define WPROF_DATA_MAJOR 2
-#define WPROF_DATA_MINOR 0
+#define WPROF_DATA_MINOR 2
 #define WPROF_DATA_FLAG_INCOMPLETE 0xffffffffffffffffULL
 
 struct wprof_data_cfg {
@@ -24,10 +24,33 @@ struct wprof_data_cfg {
 	u64 capture_pystacks : 1;
 	u64 capture_pytrace : 1;
 	u64 capture_pytorch : 1;
+	u64 capture_utrace : 1;
 
 	enum stack_trace_kind captured_stack_traces;
 
 	int timer_freq_hz;
+};
+
+enum wprof_extra_param_kind {
+	WEXTRA_INVALID = 0,
+	WEXTRA_FILTER_PID_ALLOW,
+	WEXTRA_FILTER_PID_DENY,
+	WEXTRA_FILTER_TID_ALLOW,
+	WEXTRA_FILTER_TID_DENY,
+	WEXTRA_FILTER_PNAME_ALLOW,
+	WEXTRA_FILTER_PNAME_DENY,
+	WEXTRA_FILTER_TNAME_ALLOW,
+	WEXTRA_FILTER_TNAME_DENY,
+	WEXTRA_FILTER_IDLE_ALLOW,
+	WEXTRA_FILTER_IDLE_DENY,
+	WEXTRA_FILTER_KTHREAD_ALLOW,
+	WEXTRA_FILTER_KTHREAD_DENY,
+	WEXTRA_UTRACE_DEF,
+};
+
+struct wprof_extra_param {
+	enum wprof_extra_param_kind kind;
+	u32 stroff;
 };
 
 struct wprof_data_hdr {
@@ -53,8 +76,14 @@ struct wprof_data_hdr {
 	/* String pool section */
 	u64 strs_off, strs_sz;
 
+	/* Blob pool section (variable-sized binary data) */
+	u64 blobs_off, blobs_sz;
+
 	/* Symbolized stack traces section */
 	u64 stacks_off, stacks_sz;
+
+	/* Extra parameters section (persisted filters, etc.) */
+	u64 extras_off, extras_sz, extra_cnt;
 
 	struct wprof_data_cfg cfg;
 } __attribute__((aligned(8)));
@@ -125,6 +154,11 @@ static inline const char *wevent_str(struct wprof_data_hdr *hdr, u32 off)
 	return (void *)hdr + hdr->hdr_sz + hdr->strs_off + off;
 }
 
+static inline const void *wevent_blob(struct wprof_data_hdr *hdr, u32 off)
+{
+	return (void *)hdr + hdr->hdr_sz + hdr->blobs_off + off;
+}
+
 static inline struct wevent_task *wevent_task(struct wprof_data_hdr *hdr, u32 id)
 {
 	struct wevent_task *threads = (void *)hdr + hdr->hdr_sz + hdr->threads_off;
@@ -158,6 +192,12 @@ static inline u64 *wevent_pmu_vals(struct wprof_data_hdr *hdr, u32 id)
 	return &vals[id * hdr->pmu_def_real_cnt];
 }
 
+static inline struct wprof_extra_param *wevent_extra_param(struct wprof_data_hdr *hdr, u32 idx)
+{
+	struct wprof_extra_param *extras = (void *)hdr + hdr->hdr_sz + hdr->extras_off;
+	return &extras[idx];
+}
+
 static inline void wevent_pmu_to_event(struct wprof_data_hdr *hdr, u32 idx, struct pmu_event *ev)
 {
 	struct wevent_pmu_def *def = wevent_pmu_def(hdr, idx);
@@ -173,7 +213,6 @@ static inline void wevent_pmu_to_event(struct wprof_data_hdr *hdr, u32 idx, stru
 
 /* ==================== BPF EVENT (wprof_event) ITERATOR ==================== */
 struct bpf_event_record {
-	size_t sz;
 	struct wprof_event *e;
 	int idx;
 };
@@ -198,11 +237,10 @@ static inline struct bpf_event_record *bpf_event_iter_next(struct bpf_event_iter
 	if (it->next >= it->last)
 		return NULL;
 
-	it->rec.sz = *(size_t *)it->next;
-	it->rec.e = it->next + sizeof(size_t);
+	it->rec.e = it->next;
 	it->rec.idx = it->next_idx;
 
-	it->next += sizeof(size_t) + it->rec.sz;
+	it->next += it->rec.e->sz;
 	it->next_idx += 1;
 
 	return &it->rec;

@@ -173,6 +173,7 @@ static const char *pb_static_strs[] = {
 	[IID_CAT_CUDA_SYNC] = "CUDA_SYNC",
 	[IID_CAT_SCX_DSQ] = "SCX_DSQ",
 	[IID_CAT_PYTRACE] = "PYTRACE",
+	[IID_CAT_UTRACE] = "UTRACE",
 
 	[IID_NAME_TIMER] = "TIMER",
 	[IID_NAME_EXEC] = "EXEC",

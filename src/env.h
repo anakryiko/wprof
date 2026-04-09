@@ -10,6 +10,7 @@
 #include "cuda.h"
 #include "pytrace.h"
 #include "requests.h"
+#include "utrace_cfg.h"
 
 #define WPROF_VERSION "0.3-dev"
 
@@ -26,6 +27,7 @@
 #define DEFAULT_CAPTURE_PYSTACKS FALSE
 #define DEFAULT_CAPTURE_PYTRACE FALSE
 #define DEFAULT_CAPTURE_TORCH_PROFILER FALSE
+#define DEFAULT_CAPTURE_UTRACE FALSE
 
 extern bool env_verbose;
 extern int env_debug_level;
@@ -79,6 +81,7 @@ struct env {
 	enum tristate capture_pystacks;
 	enum tristate capture_pytrace;
 	enum tristate capture_pytorch;
+	enum tristate capture_utrace;
 
 	/* trace visualization features */
 	bool emit_sched_view;
@@ -169,6 +172,10 @@ struct env {
 	bool pytraces_deactivated;
 	bool pytraces_retracted;
 
+	/* user-defined tracing (utrace) */
+	struct utrace_cfg *utrace_cfgs;
+	int utrace_cfg_cnt;
+
 	/* persisted data header, set after merge or before replay */
 	struct wprof_data_hdr *data_hdr;
 };
@@ -207,6 +214,9 @@ static inline void cfg_set_capture_pytrace(struct wprof_data_cfg *cfg, bool val)
 
 static inline bool cfg_get_capture_pytorch(const struct wprof_data_cfg *cfg) { return cfg->capture_pytorch; }
 static inline void cfg_set_capture_pytorch(struct wprof_data_cfg *cfg, bool val) { cfg->capture_pytorch = val; }
+
+static inline bool cfg_get_capture_utrace(const struct wprof_data_cfg *cfg) { return cfg->capture_utrace; }
+static inline void cfg_set_capture_utrace(struct wprof_data_cfg *cfg, bool val) { cfg->capture_utrace = val; }
 
 struct capture_feature {
 	const char *name;

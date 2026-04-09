@@ -11,6 +11,7 @@
 #include "pmu.h"
 
 struct strset;
+struct blobset;
 struct hashmap;
 
 struct thread_table {
@@ -28,6 +29,7 @@ struct pmu_vals_table {
 
 struct persist_state {
 	struct strset *strs;
+	struct blobset *blobs;
 	struct thread_table threads;
 	struct pmu_vals_table pmu_vals;
 	struct wevent_pmu_def *pmu_defs;	/* real + derived PMUs */
@@ -42,6 +44,7 @@ void persist_state_free(struct persist_state *ps);
 int persist_task_id(struct persist_state *ps, const struct wprof_thread *task);
 int persist_pmu_vals_id(struct persist_state *ps, const u64 *vals);
 int persist_stroff(struct persist_state *ps, const char *str);
+int persist_bloboff(struct persist_state *ps, const void *data, size_t len, size_t align);
 int persist_add_pmu_def(struct persist_state *ps, const struct pmu_event *ev);
 int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, struct wevent *dst);
 int persist_cuda_event(struct persist_state *ps, const struct wcuda_event *e, struct wevent *dst,

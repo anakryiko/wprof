@@ -55,6 +55,7 @@
 #include "../libbpf/src/strset.h"
 #include "pystacks.h"
 #include "pysym.h"
+#include "utrace.h"
 
 static bool ignore_libbpf_warns;
 
@@ -83,6 +84,8 @@ const struct capture_feature capture_features[] = {
 	 offsetof(struct env, capture_pytrace), cfg_get_capture_pytrace, cfg_set_capture_pytrace},
 	{"PyTorch RecordFunction", "Torch:", DEFAULT_CAPTURE_TORCH_PROFILER,
 	 offsetof(struct env, capture_pytorch), cfg_get_capture_pytorch, cfg_set_capture_pytorch},
+	{"user-defined tracing", "Utrace:", DEFAULT_CAPTURE_UTRACE,
+	 offsetof(struct env, capture_utrace), cfg_get_capture_utrace, cfg_set_capture_utrace},
 };
 
 const int capture_feature_cnt = ARRAY_SIZE(capture_features);
@@ -121,8 +124,7 @@ static int handle_rb_event(void *ctx, void *data, size_t size)
 		return 0;
 	}
 
-	if (fwrite(&size, sizeof(size), 1, w->dump) != 1 ||
-	    fwrite(data, size, 1, w->dump) != 1) {
+	if (fwrite(data, size, 1, w->dump) != 1) {
 		int err = -errno;
 
 		eprintf("Failed to write raw data dump: %d\n", err);
@@ -778,6 +780,40 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 		return err;
 	}
 
+	if (env.utrace_cfg_cnt > 0) {
+		env.capture_utrace = TRUE;
+
+		/* Validate: if any utrace config requests stack capture, -Sutrace must be enabled */
+		if (!(env.requested_stack_traces & ST_UTRACE)) {
+			for (int i = 0; i < env.utrace_cfg_cnt; i++) {
+				const struct utrace_cfg *cfg = &env.utrace_cfgs[i];
+				for (int j = 0; j < cfg->param_cnt; j++) {
+					if (cfg->params[j].type == UTRACE_PARAM_CAPTURE_STACK) {
+						eprintf("utrace config #%d requests 'stack' capture, but -Sutrace is not enabled\n", i + 1);
+						return -EINVAL;
+					}
+				}
+			}
+		}
+
+		utrace_setup_autoload(skel);
+		/* Count total map entries needed (spans need 2 entries each) */
+		int map_cnt = 0;
+		for (int i = 0; i < env.utrace_cfg_cnt; i++) {
+			enum utrace_type t = env.utrace_cfgs[i].type;
+			map_cnt += (t == UTRACE_UPROBE_SPAN || t == UTRACE_KPROBE_SPAN || t == UTRACE_BPF_SPAN) ? 2 : 1;
+		}
+		bpf_map__set_max_entries(skel->maps.utrace_probe_cfgs, map_cnt);
+		err = utrace_setup_bpf_targets(skel);
+		if (err) {
+			eprintf("Failed to setup BPF probe targets: %d\n", err);
+			return err;
+		}
+	} else {
+		bpf_map__set_autocreate(skel->maps.utrace_probe_cfgs, false);
+		bpf_map__set_autocreate(skel->maps.utrace_scratch, false);
+	}
+
 	 /* force RB notification when at least 2.0MB or 25% of ringbuf (whichever is less) is full */
 	skel->rodata->rb_submit_threshold_bytes = min(2 * 1024 * 1024, env.ringbuf_sz / 4);
 
@@ -786,6 +822,15 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 		if (st->stats_fd < 0)
 			eprintf("Failed to enable BPF run stats tracking: %d!\n", st->stats_fd);
 	}
+
+	err = bpf_object__prepare(skel->obj);
+	if (err) {
+		eprintf("Failed to prepare BPF skeleton: %d\n", err);
+		return err;
+	}
+
+	if (env.utrace_cfg_cnt > 0)
+		utrace_disable_bpf_templates(skel);
 
 	err = wprof_bpf__load(skel);
 	if (err) {
@@ -937,6 +982,14 @@ static int attach_bpf(struct bpf_state *st, struct worker_state *workers, int nu
 		}
 	}
 
+	if (env.utrace_cfg_cnt > 0) {
+		err = utrace_setup(st, st->skel);
+		if (err) {
+			eprintf("Failed to setup utrace probes: %d\n", err);
+			return err;
+		}
+	}
+
 	/* spin up and ready ringbuf consumer threads */
 	st->rb_threads = calloc(env.ringbuf_cnt, sizeof(*st->rb_threads));
 
@@ -986,6 +1039,11 @@ static void detach_bpf(struct bpf_state *st, int num_cpus)
 		for (int i = 0; i < st->link_cnt; i++)
 			bpf_link__destroy(st->links[i]);
 		free(st->links);
+	}
+	if (st->link_fds) {
+		for (int i = 0; i < st->link_fd_cnt; i++)
+			close(st->link_fds[i]);
+		free(st->link_fds);
 	}
 	if (st->perf_timer_fds) {
 		for (int i = 0; i < num_cpus; i++) {
@@ -1071,6 +1129,26 @@ static void cleanup_workers(struct worker_state *workers, int worker_cnt)
 
 		w->dump_mem = NULL;
 		w->dump = NULL;
+	}
+}
+
+static const char *extra_param_kind_name(enum wprof_extra_param_kind kind)
+{
+	switch (kind) {
+	case WEXTRA_FILTER_PID_ALLOW: return "--pid";
+	case WEXTRA_FILTER_PID_DENY: return "--no-pid";
+	case WEXTRA_FILTER_TID_ALLOW: return "--tid";
+	case WEXTRA_FILTER_TID_DENY: return "--no-tid";
+	case WEXTRA_FILTER_PNAME_ALLOW: return "--process-name";
+	case WEXTRA_FILTER_PNAME_DENY: return "--no-process-name";
+	case WEXTRA_FILTER_TNAME_ALLOW: return "--thread-name";
+	case WEXTRA_FILTER_TNAME_DENY: return "--no-thread-name";
+	case WEXTRA_FILTER_IDLE_ALLOW: return "--idle";
+	case WEXTRA_FILTER_IDLE_DENY: return "--no-idle";
+	case WEXTRA_FILTER_KTHREAD_ALLOW: return "--kthread";
+	case WEXTRA_FILTER_KTHREAD_DENY: return "--no-kthread";
+	case WEXTRA_UTRACE_DEF: return "--utrace";
+	default: return sfmt("<unknown:%d>", kind);
 	}
 }
 
@@ -1188,14 +1266,15 @@ int main(int argc, char **argv)
 			if (cfg->captured_stack_traces) {
 				wprintf("%-*s\n", w, "Stack traces:");
 				if (cfg->captured_stack_traces & ST_TIMER)
-					wprintf("%-*s%s\n", w, "", "timer");
+					wprintf("    --stacks timer\n");
 				if (cfg->captured_stack_traces & ST_OFFCPU)
-					wprintf("%-*s%s\n", w,"",  "offcpu");
+					wprintf("    --stacks offcpu\n");
 				if (cfg->captured_stack_traces & ST_WAKER)
-					wprintf("%-*s%s\n", w, "", "waker");
+					wprintf("    --stacks waker\n");
 				if (cfg->captured_stack_traces & ST_CUDA)
-					wprintf("%-*s%s\n", w, "", "cuda");
-
+					wprintf("    --stacks cuda\n");
+				if (cfg->captured_stack_traces & ST_UTRACE)
+					wprintf("    --stacks utrace\n");
 			} else {
 				wprintf("%-*s%s\n", w, "Stack traces:", "NONE");
 			}
@@ -1206,11 +1285,11 @@ int main(int argc, char **argv)
 				wprintf("%-*s\n", w, "PMU counters:");
 				for (int i = 0; i < dump_hdr->pmu_def_real_cnt; i++) {
 					struct wevent_pmu_def *def = wevent_pmu_def(dump_hdr, i);
-					wprintf("%-*s%s\n", w, "", wevent_str(dump_hdr, def->name_stroff));
+					wprintf("    %s\n", wevent_str(dump_hdr, def->name_stroff));
 				}
 				for (int i = 0; i < dump_hdr->pmu_def_deriv_cnt; i++) {
 					struct wevent_pmu_def *def = wevent_pmu_def(dump_hdr, dump_hdr->pmu_def_real_cnt + i);
-					wprintf("%-*s%s (derived)\n", w, "", wevent_str(dump_hdr, def->name_stroff));
+					wprintf("    %s (derived)\n", wevent_str(dump_hdr, def->name_stroff));
 				}
 			} else {
 				wprintf("%-*s%s\n", w, "PMU counters:", "NONE");
@@ -1219,6 +1298,16 @@ int main(int argc, char **argv)
 			for (int i = 0; i < ARRAY_SIZE(capture_features); i++) {
 				const struct capture_feature *f = &capture_features[i];
 				wprintf("%-*s%s\n", w, f->header, f->cfg_get_flag(cfg) ? "YES" : "NO");
+			}
+
+			if (dump_hdr->extra_cnt > 0) {
+				wprintf("%-*s\n", w, "Extras:");
+				for (u64 i = 0; i < dump_hdr->extra_cnt; i++) {
+					struct wprof_extra_param *e = wevent_extra_param(dump_hdr, i);
+					const char *val = e->stroff ? wevent_str(dump_hdr, e->stroff) : NULL;
+					wprintf("    %s%s%s\n", extra_param_kind_name(e->kind),
+						val ? " " : "", val ?: "");
+				}
 			}
 
 			u64 kind_cnt[__EV_KIND_MAX] = {};
@@ -1241,6 +1330,8 @@ int main(int argc, char **argv)
 					str_cnt++;
 			}
 			wprintf("    %-*s%.3lfMB (%llu unique strings)\n", w - 4, "Strings:", dump_hdr->strs_sz / MB, str_cnt);
+			if (dump_hdr->blobs_sz)
+				wprintf("    %-*s%.3lfMB\n", w - 4, "Blobs:", dump_hdr->blobs_sz / MB);
 
 			wprintf("    %-*s%.3lfMB (%llu records)\n", w - 4, "Events:", dump_hdr->events_sz / MB, dump_hdr->event_cnt);
 			for (int i = 0; i < __EV_KIND_MAX; i++) {
@@ -1329,6 +1420,60 @@ int main(int argc, char **argv)
 		err = pmu_resolve_replay_defs(dump_hdr);
 		if (err)
 			goto cleanup;
+
+		/* Restore persisted capture-time filters (additive with CLI filters) */
+		for (u64 i = 0; i < dump_hdr->extra_cnt; i++) {
+			struct wprof_extra_param *ep = wevent_extra_param(dump_hdr, i);
+			const char *val = ep->stroff ? wevent_str(dump_hdr, ep->stroff) : "";
+
+			switch (ep->kind) {
+			case WEXTRA_FILTER_PID_ALLOW:
+				err = append_num(&env.allow_pids, &env.allow_pid_cnt, val);
+				break;
+			case WEXTRA_FILTER_PID_DENY:
+				err = append_num(&env.deny_pids, &env.deny_pid_cnt, val);
+				break;
+			case WEXTRA_FILTER_TID_ALLOW:
+				err = append_num(&env.allow_tids, &env.allow_tid_cnt, val);
+				break;
+			case WEXTRA_FILTER_TID_DENY:
+				err = append_num(&env.deny_tids, &env.deny_tid_cnt, val);
+				break;
+			case WEXTRA_FILTER_PNAME_ALLOW:
+				err = append_str(&env.allow_pnames, &env.allow_pname_cnt, val);
+				break;
+			case WEXTRA_FILTER_PNAME_DENY:
+				err = append_str(&env.deny_pnames, &env.deny_pname_cnt, val);
+				break;
+			case WEXTRA_FILTER_TNAME_ALLOW:
+				err = append_str(&env.allow_tnames, &env.allow_tname_cnt, val);
+				break;
+			case WEXTRA_FILTER_TNAME_DENY:
+				err = append_str(&env.deny_tnames, &env.deny_tname_cnt, val);
+				break;
+			case WEXTRA_FILTER_IDLE_ALLOW:
+				env.allow_idle = true;
+				break;
+			case WEXTRA_FILTER_IDLE_DENY:
+				env.deny_idle = true;
+				break;
+			case WEXTRA_FILTER_KTHREAD_ALLOW:
+				env.allow_kthread = true;
+				break;
+			case WEXTRA_FILTER_KTHREAD_DENY:
+				env.deny_kthread = true;
+				break;
+			case WEXTRA_UTRACE_DEF:
+				err = utrace_cfg_parse(val);
+				break;
+			default:
+				eprintf("Unrecognized extra param kind %d in data file!\n", ep->kind);
+				err = -EINVAL;
+				break;
+			}
+			if (err)
+				goto cleanup;
+		}
 
 		goto skip_data_collection;
 	}

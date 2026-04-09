@@ -219,6 +219,17 @@ struct wevent {
 		struct wevent_rf {
 			u32 name_stroff;	/* op name, e.g. "aten::linear" — only set for PYTORCH_ENTRY */
 		} rf;
+
+		/* User-defined tracing (utrace) */
+		struct wevent_utrace {
+			u32 utrace_id;
+			u32 utrace_stack_id;
+			/* trailing variable-size data:
+			 *   u32 arg_refs[arg_cnt]  -- per-arg reference:
+			 *                             string args -> stroff into string pool
+			 *                             integer args -> bloboff into blob pool
+			 */
+		} utrace;
 	};
 };
 
@@ -260,6 +271,10 @@ static inline size_t wevent_fixed_sz(const struct wevent *e)
 	case EV_PYTORCH_ENTRY:	return WEVENT_SZ(rf);
 	case EV_PYTORCH_EXIT:	return WEVENT_SZ(rf);
 
+	case EV_UTRACE_INSTANT:
+	case EV_UTRACE_ENTRY:
+	case EV_UTRACE_EXIT:	return WEVENT_SZ(utrace);
+
 	case EV_CUDA_CALL:	return 0; /* CUDA_CALL is "merged" into CUDA_API */
 	default:		return 0;
 	}
@@ -295,6 +310,9 @@ static inline const char *wevent_kind_name(enum event_kind kind)
 	case EV_PYTRACE_EXIT:	return "pytrace_exit";
 	case EV_PYTORCH_ENTRY:	return "pytorch_entry";
 	case EV_PYTORCH_EXIT:	return "pytorch_exit";
+	case EV_UTRACE_INSTANT:	return "utrace_instant";
+	case EV_UTRACE_ENTRY:	return "utrace_entry";
+	case EV_UTRACE_EXIT:	return "utrace_exit";
 	default:		return "unknown";
 	}
 }

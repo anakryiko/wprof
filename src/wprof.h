@@ -103,6 +103,11 @@ enum event_kind {
 	EV_PYTORCH_ENTRY = 62,
 	EV_PYTORCH_EXIT = 63,
 
+	/* User-defined tracing (utrace) */
+	EV_UTRACE_INSTANT = 70,
+	EV_UTRACE_ENTRY = 71,
+	EV_UTRACE_EXIT = 72,
+
 	__EV_KIND_MAX,
 };
 
@@ -114,6 +119,7 @@ enum stack_trace_kind {
 	ST_WAKER		= 1 << 2, /* thread being marked runnable, waker-side stack trace */
 	ST_CUDA			= 1 << 3, /* CUDA API calls */
 	ST_REQ			= 1 << 4, /* request lifecycle events (begin/end/set/unset) */
+	ST_UTRACE		= 1 << 5, /* user-defined tracing probes */
 
 	__ST_LAST,
 	ST_ANY = (__ST_LAST - 1) * 2 - 1,
@@ -201,8 +207,36 @@ enum scx_dsq_insert_type {
 	SCX_DSQ_DISPATCH_VTIME_FROM_DSQ = 7,
 };
 
+#include "utrace_cfg.h"
+
+#define MAX_UTRACE_ARGS 8
+#define MAX_UTRACE_STR_SZ 128
+
+enum utrace_event_type {
+	UTRACE_INSTANT,		/* non-span: uprobe, uretprobe, kprobe, kretprobe */
+	UTRACE_ENTRY,		/* span entry half */
+	UTRACE_EXIT,		/* span exit half */
+};
+
+enum utrace_probe_flags {
+	UTRACE_FL_CAPTURE_STACK = 1 << 0,
+};
+
+/* Per-probe config, stored in BPF array map, populated from utrace_cfg */
+struct utrace_probe_cfg {
+	u32 utrace_id;		/* index into utrace_cfgs (same for both halves of a span) */
+	int arg_cnt;
+	u32 flags;				/* enum utrace_probe_flags */
+	enum utrace_event_type event_type;
+	enum utrace_type probe_type;
+	struct {
+		enum utrace_arg_type type;
+		int idx;	/* 0-based arg index, or UTRACE_ARG_RET (-1) */
+	} args[MAX_UTRACE_ARGS];
+};
+
 struct wprof_event {
-	u16 sz; /* fixed part size */
+	u16 sz; /* total record size including trailing dynamic data */
 	u16 flags;
 	enum event_kind kind;
 	u64 ts;
@@ -252,6 +286,10 @@ struct wprof_event {
 		struct wprof_task_rename {
 			char new_comm[TASK_COMM_LEN];
 		} rename;
+		struct wprof_task_exit {
+		} task_exit;
+		struct wprof_task_free {
+		} task_free;
 		struct wprof_fork {
 			struct wprof_thread child;
 		} fork;
@@ -342,6 +380,11 @@ struct wprof_event {
 			u32 ret_val;
 			u8 kind;
 		} cuda_api;
+		struct wprof_utrace {
+			u32 utrace_id;
+			s16 arg_len[MAX_UTRACE_ARGS];	/* per-arg byte length; negative = read error */
+			/* trailing dyn data: u64 for integer args, raw string bytes for string args */
+		} utrace;
 	};
 };
 
@@ -350,5 +393,33 @@ struct wprof_event {
 #endif
 
 #define EV_SZ(kind) offsetofend(struct wprof_event, kind)
+
+static inline u16 bpf_event_fix_sz(const struct wprof_event *e)
+{
+	switch (e->kind) {
+	case EV_SWITCH:		return EV_SZ(swtch);
+	case EV_TIMER:		return EV_SZ(timer);
+	case EV_WAKING:		return EV_SZ(waking);
+	case EV_WAKEUP_NEW:	return EV_SZ(wakeup_new);
+	case EV_HARDIRQ_EXIT:	return EV_SZ(hardirq);
+	case EV_SOFTIRQ_EXIT:	return EV_SZ(softirq);
+	case EV_WQ_END:		return EV_SZ(wq);
+	case EV_FORK:		return EV_SZ(fork);
+	case EV_EXEC:		return EV_SZ(exec);
+	case EV_TASK_RENAME:	return EV_SZ(rename);
+	case EV_TASK_EXIT:	return EV_SZ(task_exit);
+	case EV_TASK_FREE:	return EV_SZ(task_free);
+	case EV_IPI_SEND:	return EV_SZ(ipi_send);
+	case EV_IPI_EXIT:	return EV_SZ(ipi);
+	case EV_REQ_EVENT:	return EV_SZ(req);
+	case EV_REQ_TASK_EVENT:	return EV_SZ(req_task);
+	case EV_SCX_DSQ_END:	return EV_SZ(scx_dsq);
+	case EV_CUDA_CALL:	return EV_SZ(cuda_call);
+	case EV_UTRACE_INSTANT:
+	case EV_UTRACE_ENTRY:
+	case EV_UTRACE_EXIT:	return EV_SZ(utrace);
+	default:		return e->sz;
+	}
+}
 
 #endif /* __WPROF_H_ */

@@ -20,6 +20,7 @@
 #include "cuda_data.h"
 #include "demangle.h"
 #include "requests.h"
+#include "utrace_cfg.h"
 
 #include "json.c"
 
@@ -32,9 +33,9 @@ enum task_run_state {
 };
 
 enum track_child_order {
-	INVALID,
-	CHRONO,
-	EXPLICIT,
+	CHILD_ORDER_INVALID,
+	CHILD_ORDER_CHRONO,
+	CHILD_ORDER_EXPLICIT,
 };
 
 struct task_state {
@@ -113,6 +114,7 @@ enum dyn_track_kind {
 	DTK_REQ_THREAD_EMBED,		/* first-event-per-thread tracking for embed mode (id1 = tid, id2 = req_id) */
 	DTK_PYTRACE_PROC,	/* Python-traced process track (by PID) */
 	DTK_PYTRACE_PROC_THREAD,/* Python-traced thread track (by TID) */
+	DTK_UTRACE_THREAD,	/* utrace per-config track (id1 = tid, id2 = utrace_id) */
 };
 
 struct track_key {
@@ -764,7 +766,7 @@ static void emit_kind_track_descr(pb_ostream_t *stream, enum task_kind k)
 				? perfetto_protos_TrackDescriptor_ChildTracksOrdering_LEXICOGRAPHIC
 				: perfetto_protos_TrackDescriptor_ChildTracksOrdering_EXPLICIT,
 			PB_INIT(sibling_order_rank) = track_rank,
-			PB_INIT(sibling_merge_behavior) = perfetto_protos_TrackDescriptor_SiblingMergeBehavior_SIBLING_MERGE_BEHAVIOR_NONE,
+			/* sibling_merge_behavior left as default (mergeable) */
 		}},
 	};
 	emit_trace_packet(stream, &desc_pb);
@@ -774,13 +776,14 @@ static void emit_track_descr_impl(pb_ostream_t *stream, __u64 track_uuid, __u64 
 {
 	perfetto_protos_TrackDescriptor_ChildTracksOrdering child_ordering;
 	switch (child_order) {
-		case CHRONO:
+		case CHILD_ORDER_CHRONO:
 			child_ordering = perfetto_protos_TrackDescriptor_ChildTracksOrdering_CHRONOLOGICAL;
 			break;
-		case EXPLICIT:
+		case CHILD_ORDER_EXPLICIT:
 			child_ordering = perfetto_protos_TrackDescriptor_ChildTracksOrdering_EXPLICIT;
 			break;
-		case INVALID:
+		case CHILD_ORDER_INVALID:
+		default:
 			eprintf("BUG: invalid child_order in track_child_order()\n");
 			break;
 	}
@@ -795,7 +798,7 @@ static void emit_track_descr_impl(pb_ostream_t *stream, __u64 track_uuid, __u64 
 			PB_INIT(child_ordering) = child_ordering,
 			.sibling_order_rank = rank,
 			.has_sibling_order_rank = rank != 0,
-			PB_INIT(sibling_merge_behavior) = perfetto_protos_TrackDescriptor_SiblingMergeBehavior_SIBLING_MERGE_BEHAVIOR_NONE,
+			/* sibling_merge_behavior left as default (mergeable) */
 		}},
 	};
 	emit_trace_packet(stream, &desc);
@@ -803,12 +806,12 @@ static void emit_track_descr_impl(pb_ostream_t *stream, __u64 track_uuid, __u64 
 
 static void emit_track_descr(pb_ostream_t *stream, __u64 track_uuid, __u64 parent_track_uuid, const char *name, int rank)
 {
-	emit_track_descr_impl(stream, track_uuid, parent_track_uuid, name, rank, CHRONO);
+	emit_track_descr_impl(stream, track_uuid, parent_track_uuid, name, rank, CHILD_ORDER_CHRONO);
 }
 
 static void emit_track_descr_explicit(pb_ostream_t *stream, __u64 track_uuid, __u64 parent_track_uuid, const char *name, int rank)
 {
-	emit_track_descr_impl(stream, track_uuid, parent_track_uuid, name, rank, EXPLICIT);
+	emit_track_descr_impl(stream, track_uuid, parent_track_uuid, name, rank, CHILD_ORDER_EXPLICIT);
 }
 
 static void emit_process_track_descr(pb_ostream_t *stream, const struct wprof_task *t)
@@ -826,7 +829,7 @@ static void emit_process_track_descr(pb_ostream_t *stream, const struct wprof_ta
 			},
 			PB_INIT(child_ordering) = perfetto_protos_TrackDescriptor_ChildTracksOrdering_EXPLICIT,
 			PB_INIT(sibling_order_rank) = track_process_rank(t),
-			PB_INIT(sibling_merge_behavior) = perfetto_protos_TrackDescriptor_SiblingMergeBehavior_SIBLING_MERGE_BEHAVIOR_NONE,
+			/* sibling_merge_behavior left as default (mergeable) */
 		}},
 	};
 	emit_trace_packet(stream, &proc_desc);
@@ -845,7 +848,7 @@ static void emit_thread_track_descr(pb_ostream_t *stream, const struct wprof_tas
 			},
 			PB_INIT(child_ordering) = perfetto_protos_TrackDescriptor_ChildTracksOrdering_EXPLICIT,
 			PB_INIT(sibling_order_rank) = track_thread_rank(t),
-			PB_INIT(sibling_merge_behavior) = perfetto_protos_TrackDescriptor_SiblingMergeBehavior_SIBLING_MERGE_BEHAVIOR_NONE,
+			/* sibling_merge_behavior left as default (mergeable) */
 		}},
 	};
 	emit_trace_packet(stream, &thread_desc);
@@ -3478,6 +3481,305 @@ static int process_pytorch(struct worker_state *w, const struct wevent *e)
 	return 0;
 }
 
+static const char *utrace_probe_name(const struct utrace_cfg *cfg)
+{
+	switch (cfg->type) {
+	case UTRACE_UPROBE:
+	case UTRACE_URETPROBE:
+	case UTRACE_UPROBE_SPAN:	return cfg->uprobe.name;
+	case UTRACE_KPROBE:
+	case UTRACE_KRETPROBE:
+	case UTRACE_KPROBE_SPAN:	return cfg->kprobe.name;
+	case UTRACE_USDT:		return cfg->usdt.name;
+	case UTRACE_TRACEPOINT:		return cfg->tp.name;
+	case UTRACE_RAW_TRACEPOINT:	return cfg->raw_tp.name;
+	case UTRACE_BPF_PROBE:
+	case UTRACE_BPF_RETPROBE:
+	case UTRACE_BPF_SPAN:		return cfg->bpf_prog.name;
+	default:			return "?";
+	}
+}
+
+static u64 ensure_utrace_thread_track(const struct wprof_task *t, u32 utrace_id)
+{
+	struct track_state *s = track_state_get_or_add(DTK_UTRACE_THREAD, t->tid, utrace_id);
+
+	if (!s->exists) {
+		const struct utrace_cfg *cfg = &env.utrace_cfgs[utrace_id];
+		const char *name = cfg->settings.id ? cfg->settings.id : utrace_probe_name(cfg);
+
+		emit_track_descr(cur_stream, s->track_id, trackid_thread(t), name, utrace_id);
+		s->exists = true;
+	}
+	return s->track_id;
+}
+
+static s64 read_int_blob(struct wprof_data_hdr *hdr, u32 bloboff, enum utrace_arg_type type)
+{
+	const void *p = wevent_blob(hdr, bloboff);
+
+	switch (type) {
+	case UTRACE_ARG_U8:  return *(const u8 *)p;
+	case UTRACE_ARG_S8:  return *(const s8 *)p;
+	case UTRACE_ARG_U16: return *(const u16 *)p;
+	case UTRACE_ARG_S16: return *(const s16 *)p;
+	case UTRACE_ARG_U32: return *(const u32 *)p;
+	case UTRACE_ARG_S32: return *(const s32 *)p;
+	case UTRACE_ARG_U64: case UTRACE_ARG_PTR: return *(const u64 *)p;
+	case UTRACE_ARG_S64: return *(const s64 *)p;
+	default: return 0;
+	}
+}
+
+/*
+ * Format a utrace event name using cfg->settings.name_fmt, substituting
+ * {arg_name} placeholders with actual argument values. Only entry-side args
+ * (non-ret) are available for substitution. Returns length written (like snprintf).
+ */
+static int format_utrace_name(char *buf, size_t buf_sz, struct wprof_data_hdr *hdr,
+			      const struct wevent *e, const struct utrace_cfg *cfg)
+{
+	if (!cfg->settings.name_segs)
+		return snprintf(buf, buf_sz, "%s", utrace_probe_name(cfg));
+
+	const u32 *arg_refs = (const u32 *)((const void *)e + WEVENT_SZ(utrace));
+	size_t pos = 0;
+
+	for (int i = 0; i < cfg->settings.name_seg_cnt && pos < buf_sz - 1; i++) {
+		const struct utrace_fmt_seg *seg = &cfg->settings.name_segs[i];
+		int n = 0;
+
+		if (seg->type == UTRACE_FMT_SEG_LIT) {
+			n = snprintf(buf + pos, buf_sz - pos, "%.*s", seg->lit.len, seg->lit.s);
+		} else {
+			if (seg->arg.type == UTRACE_ARG_STR) {
+				n = snprintf(buf + pos, buf_sz - pos, "%s", wevent_str(hdr, arg_refs[seg->arg.arg_idx]));
+			} else if (seg->arg.type == UTRACE_ARG_PTR) {
+				u64 val = read_int_blob(hdr, arg_refs[seg->arg.arg_idx], seg->arg.type);
+				n = snprintf(buf + pos, buf_sz - pos, "0x%llx", (unsigned long long)val);
+			} else {
+				s64 val = read_int_blob(hdr, arg_refs[seg->arg.arg_idx], seg->arg.type);
+				n = snprintf(buf + pos, buf_sz - pos, "%lld", (long long)val);
+			}
+		}
+		if (n > 0)
+			pos += n < (int)(buf_sz - pos) ? n : buf_sz - pos - 1;
+	}
+
+	buf[pos] = '\0';
+	return pos;
+}
+
+static void emit_utrace_args(struct worker_state *w, const struct wevent *e,
+			     const struct utrace_cfg *cfg, int arg_cnt)
+{
+	struct wprof_data_hdr *hdr = w->dump_hdr;
+	const u32 *arg_refs = (const u32 *)((const void *)e + WEVENT_SZ(utrace));
+
+	int arg_idx = 0;
+	for (int i = 0; i < cfg->param_cnt && arg_idx < arg_cnt; i++) {
+		const struct utrace_param *p = &cfg->params[i];
+		if (p->type != UTRACE_PARAM_ARG)
+			continue;
+		if (e->kind == EV_UTRACE_ENTRY && p->arg.arg_idx == UTRACE_ARG_RET)
+			continue;
+		if (e->kind == EV_UTRACE_EXIT && p->arg.arg_idx != UTRACE_ARG_RET)
+			continue;
+
+		const char *name_str = p->arg.name;
+		if (!name_str) {
+			if (p->arg.arg_idx == UTRACE_ARG_RET)
+				name_str = "ret";
+			else
+				name_str = sfmt("arg%d", p->arg.arg_idx);
+		}
+		/* annotation keys are stored by pointer and encoded later, so intern them */
+		struct pb_str name = iid_str(emit_intern_str(w, name_str), name_str);
+
+		if (p->arg.arg_type == UTRACE_ARG_STR) {
+			emit_kv_str(name, wevent_str(hdr, arg_refs[arg_idx]));
+		} else if (p->arg.arg_type == UTRACE_ARG_PTR) {
+			u64 val = read_int_blob(hdr, arg_refs[arg_idx], p->arg.arg_type);
+			emit_kv_str(name, sfmt("0x%llx", (unsigned long long)val));
+		} else {
+			s64 val = read_int_blob(hdr, arg_refs[arg_idx], p->arg.arg_type);
+			emit_kv_int(name, val);
+		}
+		arg_idx++;
+	}
+}
+
+static void emit_utrace_event(struct worker_state *w, const struct wevent *e)
+{
+	struct wprof_data_hdr *hdr = w->dump_hdr;
+	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
+
+	u32 utrace_id = e->utrace.utrace_id;
+	const struct utrace_cfg *cfg = &env.utrace_cfgs[utrace_id];
+
+	emit_track_descrs(w, &task);
+	u64 track_uuid = ensure_utrace_thread_track(&task, utrace_id);
+
+	/* Count args for this event side */
+	int arg_cnt = 0;
+	for (int i = 0; i < cfg->param_cnt; i++) {
+		const struct utrace_param *p = &cfg->params[i];
+		if (p->type != UTRACE_PARAM_ARG)
+			continue;
+		if (e->kind == EV_UTRACE_ENTRY && p->arg.arg_idx == UTRACE_ARG_RET)
+			continue;
+		if (e->kind == EV_UTRACE_EXIT && p->arg.arg_idx != UTRACE_ARG_RET)
+			continue;
+		arg_cnt++;
+	}
+
+	/* Format the event name: use name_fmt on entry/instant, probe name on exit */
+	char name_buf[256];
+	const char *name;
+	if (e->kind != EV_UTRACE_EXIT && cfg->settings.name_segs) {
+		format_utrace_name(name_buf, sizeof(name_buf), hdr, e, cfg);
+		name = name_buf;
+	} else {
+		name = utrace_probe_name(cfg);
+	}
+	pb_iid name_iid = emit_intern_str(w, name);
+
+	u32 stack_id = (env.requested_stack_traces & ST_UTRACE) ? e->utrace.utrace_stack_id : 0;
+
+	switch (e->kind) {
+	case EV_UTRACE_ENTRY:
+		emit_slice_begin(track_uuid, e->ts, iid_str(name_iid, name), IID_CAT_UTRACE) {
+			emit_utrace_args(w, e, cfg, arg_cnt);
+			if (stack_id > 0)
+				emit_callstack(w, stack_id);
+		}
+		break;
+	case EV_UTRACE_EXIT:
+		emit_slice_end(track_uuid, e->ts, iid_str(name_iid, name), IID_CAT_UTRACE) {
+			emit_utrace_args(w, e, cfg, arg_cnt);
+			if (stack_id > 0)
+				emit_callstack(w, stack_id);
+		}
+		break;
+	default: /* EV_UTRACE_INSTANT */
+		emit_instant(track_uuid, e->ts, iid_str(name_iid, name), IID_CAT_UTRACE) {
+			emit_utrace_args(w, e, cfg, arg_cnt);
+			if (stack_id > 0)
+				emit_callstack(w, stack_id);
+		}
+		break;
+	}
+}
+
+static void emit_utrace_json(struct worker_state *w, const struct wevent *e)
+{
+	struct json_state *j = &js;
+	struct wprof_data_hdr *hdr = w->dump_hdr;
+	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
+
+	u32 utrace_id = e->utrace.utrace_id;
+	const struct utrace_cfg *cfg = &env.utrace_cfgs[utrace_id];
+
+	const char *type_str;
+	switch (e->kind) {
+	case EV_UTRACE_ENTRY: type_str = "utrace_entry"; break;
+	case EV_UTRACE_EXIT: type_str = "utrace_exit"; break;
+	default: type_str = "utrace_instant"; break;
+	}
+
+	json_obj_start(j);
+	json_kv_ts(j, "ts", e->ts - env.sess_start_ts);
+	json_kv_str(j, "t", type_str);
+	json_kv_int(j, "utrace_id", utrace_id);
+	json_task(j, "task", &task);
+	json_kv_int(j, "cpu", e->cpu);
+	if (env.emit_numa)
+		json_kv_int(j, "numa", e->numa_node);
+
+	/* Count actual args for this event (filtered for entry/exit) */
+	int arg_cnt = 0;
+	for (int i = 0; i < cfg->param_cnt; i++) {
+		const struct utrace_param *p = &cfg->params[i];
+		if (p->type != UTRACE_PARAM_ARG)
+			continue;
+		if (e->kind == EV_UTRACE_ENTRY && p->arg.arg_idx == UTRACE_ARG_RET)
+			continue;
+		if (e->kind == EV_UTRACE_EXIT && p->arg.arg_idx != UTRACE_ARG_RET)
+			continue;
+		arg_cnt++;
+	}
+
+	/* Emit formatted name and probe id */
+	char name_buf[256];
+	format_utrace_name(name_buf, sizeof(name_buf), hdr, e, cfg);
+	json_kv_str(j, "name", name_buf);
+	if (cfg->settings.id)
+		json_kv_str(j, "utrace_id", cfg->settings.id);
+
+	/* Decode args from wevent trailing data */
+	const u32 *arg_refs = (const u32 *)((const void *)e + WEVENT_SZ(utrace));
+
+	if (arg_cnt > 0) {
+		json_subobj_start(j, "args");
+		int arg_idx = 0;
+		for (int i = 0; i < cfg->param_cnt && arg_idx < arg_cnt; i++) {
+			const struct utrace_param *p = &cfg->params[i];
+			if (p->type != UTRACE_PARAM_ARG)
+				continue;
+			if (e->kind == EV_UTRACE_ENTRY && p->arg.arg_idx == UTRACE_ARG_RET)
+				continue;
+			if (e->kind == EV_UTRACE_EXIT && p->arg.arg_idx != UTRACE_ARG_RET)
+				continue;
+
+			const char *name = p->arg.name;
+			if (!name) {
+				if (p->arg.arg_idx == UTRACE_ARG_RET)
+					name = "ret";
+				else
+					name = sfmt("arg%d", p->arg.arg_idx);
+			}
+
+			if (p->arg.arg_type == UTRACE_ARG_STR) {
+				json_kv_str(j, name, wevent_str(hdr, arg_refs[arg_idx]));
+			} else if (p->arg.arg_type == UTRACE_ARG_PTR) {
+				u64 val = read_int_blob(hdr, arg_refs[arg_idx], p->arg.arg_type);
+				json_kv_str(j, name, sfmt("0x%llx", (unsigned long long)val));
+			} else {
+				json_kv_int(j, name, read_int_blob(hdr, arg_refs[arg_idx], p->arg.arg_type));
+			}
+			arg_idx++;
+		}
+		json_obj_end(j);
+	}
+
+	if ((env.requested_stack_traces & ST_UTRACE) && e->utrace.utrace_stack_id > 0)
+		json_kv_int(j, "stack_id", e->utrace.utrace_stack_id);
+
+	json_obj_end(j);
+}
+
+static int process_utrace(struct worker_state *w, const struct wevent *e)
+{
+	if (env.capture_utrace != TRUE)
+		return 0;
+
+	if (!is_ts_in_range(e->ts))
+		return 0;
+
+	struct wprof_data_hdr *hdr = w->dump_hdr;
+	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
+
+	if (!should_trace_task(&task))
+		return 0;
+
+	if (env.json_path)
+		emit_utrace_json(w, e);
+	else
+		emit_utrace_event(w, e);
+
+	return 0;
+}
+
 static handle_event_fn emit_fns[] = {
 	[EV_TIMER] = process_timer,
 	[EV_SWITCH] = process_switch,
@@ -3505,6 +3807,9 @@ static handle_event_fn emit_fns[] = {
 	[EV_PYTRACE_EXIT] = process_pytrace,
 	[EV_PYTORCH_ENTRY] = process_pytorch,
 	[EV_PYTORCH_EXIT] = process_pytorch,
+	[EV_UTRACE_INSTANT] = process_utrace,
+	[EV_UTRACE_ENTRY] = process_utrace,
+	[EV_UTRACE_EXIT] = process_utrace,
 };
 
 static void emit_header_json(struct worker_state *w)
@@ -3527,6 +3832,7 @@ static void emit_header_json(struct worker_state *w)
 	json_kv_bool(j, "capture_pystacks", cfg->capture_pystacks);
 	json_kv_bool(j, "capture_pytrace", cfg->capture_pytrace);
 	json_kv_bool(j, "capture_pytorch", cfg->capture_pytorch);
+	json_kv_bool(j, "capture_utrace", cfg->capture_utrace);
 
 	json_subarr_start(j, "stacks");
 	if (cfg->captured_stack_traces & ST_TIMER)
@@ -3537,6 +3843,8 @@ static void emit_header_json(struct worker_state *w)
 		json_arr_str(j, "waker");
 	if (cfg->captured_stack_traces & ST_CUDA)
 		json_arr_str(j, "cuda");
+	if (cfg->captured_stack_traces & ST_UTRACE)
+		json_arr_str(j, "utrace");
 	json_arr_end(j);
 
 	json_kv_int(j, "stack_cnt", stack_cnt);
