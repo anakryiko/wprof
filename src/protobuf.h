@@ -145,6 +145,7 @@ enum pb_static_iid {
 		IID_CAT_CUDA_SYNC,				/* CUDA_SYNC */
 		IID_CAT_SCX_DSQ,				/* SCX_DSQ */
 		IID_CAT_PYTRACE,				/* PYTRACE */
+		IID_CAT_UTRACE,					/* UTRACE */
 	CAT_END_IID,
 
 	NAME_START_IID, __NAME_RESET_IID = NAME_START_IID - 1,
