@@ -474,7 +474,7 @@ int utrace_setup(struct bpf_state *st, struct wprof_bpf *skel)
 		const struct utrace_cfg *cfg = &env.utrace_cfgs[i];
 		struct utrace_probe_cfg pcfg;
 		const char *binary_path;
-		long sym_offset = 0;
+		unsigned long sym_offset = 0;
 		int pid;
 		LIBBPF_OPTS(bpf_uprobe_opts, uprobe_opts);
 		LIBBPF_OPTS(bpf_kprobe_opts, kprobe_opts);
