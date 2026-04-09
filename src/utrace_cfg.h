@@ -48,10 +48,11 @@ static inline int utrace_arg_size(enum utrace_arg_type t)
 }
 
 enum utrace_param_type {
-	UTRACE_PARAM_CAPTURE_STACK,
+	UTRACE_PARAM_INVALID = 0,
+	UTRACE_PARAM_ARG = 1,
+	UTRACE_PARAM_CAPTURE_STACK = 1000,
 	UTRACE_PARAM_BINARY_PATH,
 	UTRACE_PARAM_PID,
-	UTRACE_PARAM_ARG,
 };
 
 #define UTRACE_ARG_RET (-1)
@@ -81,6 +82,7 @@ struct utrace_settings {
 
 struct utrace_cfg {
 	enum utrace_type type;
+	bool wildcard_args;
 
 	struct utrace_param *params;
 	int param_cnt;

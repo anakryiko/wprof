@@ -256,78 +256,208 @@ static int resolve_btf_arg_type(const struct btf *btf, const char *func_name,
 	}
 }
 
-static void utrace_resolve_btf_types(void)
+static bool cfg_is_ret_probe(enum utrace_type t)
+{
+	return t == UTRACE_URETPROBE || t == UTRACE_KRETPROBE;
+}
+
+static bool cfg_is_native_span(enum utrace_type t)
+{
+	return t == UTRACE_KPROBE_SPAN || t == UTRACE_UPROBE_SPAN;
+}
+
+/* Determine the number of positional args for wildcard expansion */
+static int btf_func_arg_cnt(const struct btf *btf, const char *func_name)
+{
+	if (!btf)
+		return -1;
+
+	__s32 func_id = btf__find_by_name_kind(btf, func_name, BTF_KIND_FUNC);
+	if (func_id < 0)
+		return -1;
+
+	const struct btf_type *func = btf__type_by_id(btf, func_id);
+	const struct btf_type *proto = btf__type_by_id(btf, func->type);
+	if (!proto || !btf_is_func_proto(proto))
+		return -1;
+
+	return btf_vlen(proto);
+}
+
+/* Expand wildcard_args into individual arg params */
+static void expand_wildcard_args(struct utrace_cfg *cfg, const struct btf *btf)
+{
+	int arg_cnt;
+	bool has_ret = cfg_is_ret_probe(cfg->type) || cfg_is_native_span(cfg->type);
+
+	if (cfg_is_ret_probe(cfg->type)) {
+		/* ret probes only get arg:ret, no positional args */
+		arg_cnt = 0;
+	} else if (cfg_is_kprobe_type(cfg)) {
+		arg_cnt = btf_func_arg_cnt(btf, cfg->kprobe.name);
+		if (arg_cnt < 0)
+			arg_cnt = 6;
+	} else {
+		arg_cnt = 6;
+	}
+
+	/* figure out which arg indices are already explicitly defined */
+	bool has_arg[MAX_UTRACE_ARGS] = {};
+	bool has_arg_ret = false;
+	for (int i = 0; i < cfg->param_cnt; i++) {
+		if (cfg->params[i].type != UTRACE_PARAM_ARG)
+			continue;
+		if (cfg->params[i].arg.arg_idx == UTRACE_ARG_RET)
+			has_arg_ret = true;
+		else if (cfg->params[i].arg.arg_idx < MAX_UTRACE_ARGS)
+			has_arg[cfg->params[i].arg.arg_idx] = true;
+	}
+
+	/* cap so total args fit in MAX_UTRACE_ARGS */
+	int max_args = MAX_UTRACE_ARGS - (has_ret && !has_arg_ret ? 1 : 0);
+	if (arg_cnt > max_args)
+		arg_cnt = max_args;
+
+	/* count how many new args we actually need to add */
+	int add_cnt = 0;
+	for (int i = 0; i < arg_cnt; i++)
+		if (!has_arg[i])
+			add_cnt++;
+	if (has_ret && !has_arg_ret)
+		add_cnt++;
+
+	cfg->params = realloc(cfg->params, (cfg->param_cnt + add_cnt) * sizeof(*cfg->params));
+
+	int idx = cfg->param_cnt;
+
+	for (int i = 0; i < arg_cnt; i++) {
+		if (has_arg[i])
+			continue;
+		struct utrace_param *p = &cfg->params[idx++];
+		memset(p, 0, sizeof(*p));
+		p->type = UTRACE_PARAM_ARG;
+		p->arg.arg_idx = i;
+		p->arg.arg_type = UTRACE_ARG_UNKNOWN;
+	}
+
+	if (has_ret && !has_arg_ret) {
+		struct utrace_param *p = &cfg->params[idx++];
+		memset(p, 0, sizeof(*p));
+		p->type = UTRACE_PARAM_ARG;
+		p->arg.arg_idx = UTRACE_ARG_RET;
+		p->arg.arg_type = UTRACE_ARG_UNKNOWN;
+	}
+
+	cfg->param_cnt += add_cnt;
+	cfg->wildcard_args = false;
+}
+
+/* Check if a cfg (or its inner span cfgs) needs BTF for wildcard expansion or type resolution */
+static bool cfg_needs_btf(const struct utrace_cfg *cfg)
+{
+	if (cfg->type == UTRACE_SPAN)
+		return cfg_needs_btf(cfg->span.entry) || cfg_needs_btf(cfg->span.exit);
+
+	if (cfg->wildcard_args && cfg_is_kprobe_type(cfg))
+		return true;
+
+	if (!cfg_is_kprobe_type(cfg))
+		return false;
+
+	for (int j = 0; j < cfg->param_cnt; j++) {
+		if (cfg->params[j].type != UTRACE_PARAM_ARG)
+			continue;
+		if (cfg->params[j].arg.arg_type == UTRACE_ARG_UNKNOWN || !cfg->params[j].arg.name)
+			return true;
+	}
+	return false;
+}
+
+static int param_sort_key(const struct utrace_param *p)
+{
+	if (p->type == UTRACE_PARAM_ARG)
+		return UTRACE_PARAM_ARG + (p->arg.arg_idx == UTRACE_ARG_RET ? 99 : p->arg.arg_idx);
+	return p->type;
+}
+
+static int cmp_params(const void *a, const void *b)
+{
+	return param_sort_key(a) - param_sort_key(b);
+}
+
+/* Expand wildcards and resolve arg types/names for a single cfg */
+static void augment_cfg_args(struct utrace_cfg *cfg, const struct btf *btf)
+{
+	if (cfg->type == UTRACE_SPAN) {
+		augment_cfg_args(cfg->span.entry, btf);
+		augment_cfg_args(cfg->span.exit, btf);
+		return;
+	}
+
+	if (cfg->wildcard_args)
+		expand_wildcard_args(cfg, btf);
+
+	for (int j = 0; j < cfg->param_cnt; j++) {
+		struct utrace_param *p = &cfg->params[j];
+
+		if (p->type != UTRACE_PARAM_ARG)
+			continue;
+		if (p->arg.arg_type != UTRACE_ARG_UNKNOWN && p->arg.name)
+			continue;
+
+		if (!cfg_is_kprobe_type(cfg)) {
+			if (p->arg.arg_type == UTRACE_ARG_UNKNOWN)
+				p->arg.arg_type = UTRACE_ARG_U64;
+			continue;
+		}
+
+		if (!btf) {
+			if (p->arg.arg_type == UTRACE_ARG_UNKNOWN)
+				p->arg.arg_type = UTRACE_ARG_U64;
+			continue;
+		}
+
+		enum utrace_arg_type arg_type;
+		const char *param_name = NULL;
+		int err = resolve_btf_arg_type(btf, cfg->kprobe.name,
+					       p->arg.arg_idx, &arg_type, &param_name);
+		if (err) {
+			if (p->arg.arg_type == UTRACE_ARG_UNKNOWN) {
+				wprintf("utrace: failed to resolve BTF type for %s arg %d, defaulting to u64\n",
+					cfg->kprobe.name,
+					p->arg.arg_idx == UTRACE_ARG_RET ? -1 : p->arg.arg_idx);
+			}
+			arg_type = UTRACE_ARG_U64;
+		}
+		if (p->arg.arg_type == UTRACE_ARG_UNKNOWN)
+			p->arg.arg_type = arg_type;
+		if (!p->arg.name && param_name)
+			p->arg.name = strdup(param_name);
+	}
+
+	qsort(cfg->params, cfg->param_cnt, sizeof(*cfg->params), cmp_params);
+}
+
+static void utrace_augment_args(void)
 {
 	bool need_btf = false;
 
 	for (int i = 0; i < env.utrace_cfg_cnt; i++) {
-		struct utrace_cfg *cfg = &env.utrace_cfgs[i];
-
-		if (!cfg_is_kprobe_type(cfg))
-			continue;
-
-		for (int j = 0; j < cfg->param_cnt; j++) {
-			if (cfg->params[j].type != UTRACE_PARAM_ARG)
-				continue;
-			if (cfg->params[j].arg.arg_type == UTRACE_ARG_UNKNOWN || !cfg->params[j].arg.name) {
-				need_btf = true;
-				goto load_btf;
-			}
+		if (cfg_needs_btf(&env.utrace_cfgs[i])) {
+			need_btf = true;
+			break;
 		}
 	}
-load_btf:
-	if (!need_btf)
-		return;
 
-	struct btf *btf = btf__parse("/sys/kernel/btf/vmlinux", NULL);
-	if (!btf) {
-		wprintf("utrace: failed to load kernel BTF, arg types will default to u64\n");
-		for (int i = 0; i < env.utrace_cfg_cnt; i++) {
-			struct utrace_cfg *cfg = &env.utrace_cfgs[i];
-			for (int j = 0; j < cfg->param_cnt; j++) {
-				if (cfg->params[j].type == UTRACE_PARAM_ARG &&
-				    cfg->params[j].arg.arg_type == UTRACE_ARG_UNKNOWN)
-					cfg->params[j].arg.arg_type = UTRACE_ARG_U64;
-			}
-		}
-		return;
+	struct btf *btf = NULL;
+	if (need_btf) {
+		btf = btf__parse("/sys/kernel/btf/vmlinux", NULL);
+		if (!btf)
+			wprintf("utrace: failed to load kernel BTF, arg types will default to u64\n");
 	}
 
-	for (int i = 0; i < env.utrace_cfg_cnt; i++) {
-		struct utrace_cfg *cfg = &env.utrace_cfgs[i];
-
-		for (int j = 0; j < cfg->param_cnt; j++) {
-			struct utrace_param *p = &cfg->params[j];
-
-			if (p->type != UTRACE_PARAM_ARG)
-				continue;
-			if (p->arg.arg_type != UTRACE_ARG_UNKNOWN && p->arg.name)
-				continue;
-
-			if (!cfg_is_kprobe_type(cfg)) {
-				if (p->arg.arg_type == UTRACE_ARG_UNKNOWN)
-					p->arg.arg_type = UTRACE_ARG_U64;
-				continue;
-			}
-
-			enum utrace_arg_type arg_type;
-			const char *param_name = NULL;
-			int err = resolve_btf_arg_type(btf, cfg->kprobe.name,
-						       p->arg.arg_idx, &arg_type, &param_name);
-			if (err) {
-				if (p->arg.arg_type == UTRACE_ARG_UNKNOWN) {
-					wprintf("utrace: failed to resolve BTF type for %s arg %d, defaulting to u64\n",
-						cfg->kprobe.name,
-						p->arg.arg_idx == UTRACE_ARG_RET ? -1 : p->arg.arg_idx);
-				}
-				arg_type = UTRACE_ARG_U64;
-			}
-			if (p->arg.arg_type == UTRACE_ARG_UNKNOWN)
-				p->arg.arg_type = arg_type;
-			if (!p->arg.name && param_name)
-				p->arg.name = strdup(param_name);
-		}
-	}
+	for (int i = 0; i < env.utrace_cfg_cnt; i++)
+		augment_cfg_args(&env.utrace_cfgs[i], btf);
 
 	btf__free(btf);
 }
@@ -338,7 +468,7 @@ int utrace_setup(struct bpf_state *st, struct wprof_bpf *skel)
 	int map_fd = bpf_map__fd(skel->maps.utrace_probe_cfgs);
 	u32 map_idx = 0;
 
-	utrace_resolve_btf_types();
+	utrace_augment_args();
 
 	for (int i = 0; i < env.utrace_cfg_cnt; i++) {
 		const struct utrace_cfg *cfg = &env.utrace_cfgs[i];
