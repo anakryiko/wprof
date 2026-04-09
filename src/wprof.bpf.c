@@ -1658,7 +1658,10 @@ static __always_inline int utrace_handle_probe(struct pt_regs *ctx, bool is_kern
 			}
 
 			int len;
-			if (is_kernel)
+			/* kernel addresses have high bit set (negative as s64) */
+			if (is_kernel && (s64)arg_val >= 0)
+				len = bpf_probe_read_user_str(p, MAX_UTRACE_STR_SZ, (void *)arg_val);
+			else if (is_kernel)
 				len = bpf_probe_read_kernel_str(p, MAX_UTRACE_STR_SZ, (void *)arg_val);
 			else
 				len = bpf_copy_from_user_str(p, MAX_UTRACE_STR_SZ, (void *)arg_val, 0);

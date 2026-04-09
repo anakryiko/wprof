@@ -3503,7 +3503,7 @@ static u64 ensure_utrace_thread_track(const struct wprof_task *t, u32 utrace_id)
 
 	if (!s->exists) {
 		const struct utrace_cfg *cfg = &env.utrace_cfgs[utrace_id];
-		const char *name = utrace_probe_name(cfg);
+		const char *name = cfg->settings.id ? cfg->settings.id : utrace_probe_name(cfg);
 
 		emit_track_descr(cur_stream, s->track_id, trackid_thread(t), name, utrace_id);
 		s->exists = true;
@@ -3526,6 +3526,45 @@ static s64 read_int_blob(struct wprof_data_hdr *hdr, u32 bloboff, enum utrace_ar
 	case UTRACE_ARG_S64: return *(const s64 *)p;
 	default: return 0;
 	}
+}
+
+/*
+ * Format a utrace event name using cfg->settings.name_fmt, substituting
+ * {arg_name} placeholders with actual argument values. Only entry-side args
+ * (non-ret) are available for substitution. Returns length written (like snprintf).
+ */
+static int format_utrace_name(char *buf, size_t buf_sz, struct wprof_data_hdr *hdr,
+			      const struct wevent *e, const struct utrace_cfg *cfg)
+{
+	if (!cfg->settings.name_segs)
+		return snprintf(buf, buf_sz, "%s", utrace_probe_name(cfg));
+
+	const u32 *arg_refs = (const u32 *)((const void *)e + WEVENT_SZ(utrace));
+	size_t pos = 0;
+
+	for (int i = 0; i < cfg->settings.name_seg_cnt && pos < buf_sz - 1; i++) {
+		const struct utrace_fmt_seg *seg = &cfg->settings.name_segs[i];
+		int n = 0;
+
+		if (seg->type == UTRACE_FMT_SEG_LIT) {
+			n = snprintf(buf + pos, buf_sz - pos, "%.*s", seg->lit.len, seg->lit.s);
+		} else {
+			if (seg->arg.type == UTRACE_ARG_STR) {
+				n = snprintf(buf + pos, buf_sz - pos, "%s", wevent_str(hdr, arg_refs[seg->arg.arg_idx]));
+			} else if (seg->arg.type == UTRACE_ARG_PTR) {
+				u64 val = read_int_blob(hdr, arg_refs[seg->arg.arg_idx], seg->arg.type);
+				n = snprintf(buf + pos, buf_sz - pos, "0x%llx", (unsigned long long)val);
+			} else {
+				s64 val = read_int_blob(hdr, arg_refs[seg->arg.arg_idx], seg->arg.type);
+				n = snprintf(buf + pos, buf_sz - pos, "%lld", (long long)val);
+			}
+		}
+		if (n > 0)
+			pos += n < (int)(buf_sz - pos) ? n : buf_sz - pos - 1;
+	}
+
+	buf[pos] = '\0';
+	return pos;
 }
 
 static void emit_utrace_args(struct worker_state *w, const struct wevent *e,
@@ -3574,12 +3613,9 @@ static void emit_utrace_event(struct worker_state *w, const struct wevent *e)
 
 	u32 utrace_id = e->utrace.utrace_id;
 	const struct utrace_cfg *cfg = &env.utrace_cfgs[utrace_id];
-	const char *name = utrace_probe_name(cfg);
 
 	emit_track_descrs(w, &task);
 	u64 track_uuid = ensure_utrace_thread_track(&task, utrace_id);
-
-	pb_iid name_iid = emit_intern_str(w, name);
 
 	/* Count args for this event side */
 	int arg_cnt = 0;
@@ -3593,6 +3629,17 @@ static void emit_utrace_event(struct worker_state *w, const struct wevent *e)
 			continue;
 		arg_cnt++;
 	}
+
+	/* Format the event name: use name_fmt on entry/instant, probe name on exit */
+	char name_buf[256];
+	const char *name;
+	if (e->kind != EV_UTRACE_EXIT && cfg->settings.name_segs) {
+		format_utrace_name(name_buf, sizeof(name_buf), hdr, e, cfg);
+		name = name_buf;
+	} else {
+		name = utrace_probe_name(cfg);
+	}
+	pb_iid name_iid = emit_intern_str(w, name);
 
 	u32 stack_id = (env.requested_stack_traces & ST_UTRACE) ? e->utrace.utrace_stack_id : 0;
 
@@ -3658,6 +3705,13 @@ static void emit_utrace_json(struct worker_state *w, const struct wevent *e)
 			continue;
 		arg_cnt++;
 	}
+
+	/* Emit formatted name and probe id */
+	char name_buf[256];
+	format_utrace_name(name_buf, sizeof(name_buf), hdr, e, cfg);
+	json_kv_str(j, "name", name_buf);
+	if (cfg->settings.id)
+		json_kv_str(j, "utrace_id", cfg->settings.id);
 
 	/* Decode args from wevent trailing data */
 	const u32 *arg_refs = (const u32 *)((const void *)e + WEVENT_SZ(utrace));

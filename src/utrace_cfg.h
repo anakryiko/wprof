@@ -76,8 +76,30 @@ struct utrace_param {
 	};
 };
 
+enum utrace_fmt_seg_type {
+	UTRACE_FMT_SEG_LIT,  /* literal string segment */
+	UTRACE_FMT_SEG_ARG,  /* argument substitution */
+};
+
+struct utrace_fmt_seg {
+	enum utrace_fmt_seg_type type;
+	union {
+		struct {
+			const char *s;   /* points into name_fmt string */
+			int len;
+		} lit;
+		struct {
+			int arg_idx;                /* positional index into entry-side arg_refs[] */
+			enum utrace_arg_type type;  /* cached arg type for formatting */
+		} arg;
+	};
+};
+
 struct utrace_settings {
-	/* currently empty, will be extended with specific settings */
+	char *id;       /* user-defined probe identifier, NULL if unset */
+	char *name_fmt; /* format string for slice/instant name, NULL if unset */
+	struct utrace_fmt_seg *name_segs; /* pre-compiled name format segments */
+	int name_seg_cnt;
 };
 
 struct utrace_cfg {
