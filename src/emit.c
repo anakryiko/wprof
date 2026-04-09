@@ -32,9 +32,9 @@ enum task_run_state {
 };
 
 enum track_child_order {
-	INVALID,
-	CHRONO,
-	EXPLICIT,
+	CHILD_ORDER_INVALID,
+	CHILD_ORDER_CHRONO,
+	CHILD_ORDER_EXPLICIT,
 };
 
 struct task_state {
@@ -774,13 +774,14 @@ static void emit_track_descr_impl(pb_ostream_t *stream, __u64 track_uuid, __u64 
 {
 	perfetto_protos_TrackDescriptor_ChildTracksOrdering child_ordering;
 	switch (child_order) {
-		case CHRONO:
+		case CHILD_ORDER_CHRONO:
 			child_ordering = perfetto_protos_TrackDescriptor_ChildTracksOrdering_CHRONOLOGICAL;
 			break;
-		case EXPLICIT:
+		case CHILD_ORDER_EXPLICIT:
 			child_ordering = perfetto_protos_TrackDescriptor_ChildTracksOrdering_EXPLICIT;
 			break;
-		case INVALID:
+		case CHILD_ORDER_INVALID:
+		default:
 			eprintf("BUG: invalid child_order in track_child_order()\n");
 			break;
 	}
@@ -803,12 +804,12 @@ static void emit_track_descr_impl(pb_ostream_t *stream, __u64 track_uuid, __u64 
 
 static void emit_track_descr(pb_ostream_t *stream, __u64 track_uuid, __u64 parent_track_uuid, const char *name, int rank)
 {
-	emit_track_descr_impl(stream, track_uuid, parent_track_uuid, name, rank, CHRONO);
+	emit_track_descr_impl(stream, track_uuid, parent_track_uuid, name, rank, CHILD_ORDER_CHRONO);
 }
 
 static void emit_track_descr_explicit(pb_ostream_t *stream, __u64 track_uuid, __u64 parent_track_uuid, const char *name, int rank)
 {
-	emit_track_descr_impl(stream, track_uuid, parent_track_uuid, name, rank, EXPLICIT);
+	emit_track_descr_impl(stream, track_uuid, parent_track_uuid, name, rank, CHILD_ORDER_EXPLICIT);
 }
 
 static void emit_process_track_descr(pb_ostream_t *stream, const struct wprof_task *t)
