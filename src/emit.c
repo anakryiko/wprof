@@ -20,6 +20,7 @@
 #include "cuda_data.h"
 #include "demangle.h"
 #include "requests.h"
+#include "utrace_cfg.h"
 
 #include "json.c"
 
@@ -113,6 +114,7 @@ enum dyn_track_kind {
 	DTK_REQ_THREAD_EMBED,		/* first-event-per-thread tracking for embed mode (id1 = tid, id2 = req_id) */
 	DTK_PYTRACE_PROC,	/* Python-traced process track (by PID) */
 	DTK_PYTRACE_PROC_THREAD,/* Python-traced thread track (by TID) */
+	DTK_UTRACE_THREAD,	/* utrace per-config track (id1 = tid, id2 = utrace_id) */
 };
 
 struct track_key {
@@ -3479,6 +3481,234 @@ static int process_pytorch(struct worker_state *w, const struct wevent *e)
 	return 0;
 }
 
+static const char *utrace_probe_name(const struct utrace_cfg *cfg)
+{
+	switch (cfg->type) {
+	case UTRACE_UPROBE:
+	case UTRACE_URETPROBE:
+	case UTRACE_UPROBE_SPAN:	return cfg->uprobe.name;
+	case UTRACE_KPROBE:
+	case UTRACE_KRETPROBE:
+	case UTRACE_KPROBE_SPAN:	return cfg->kprobe.name;
+	case UTRACE_USDT:		return cfg->usdt.name;
+	case UTRACE_TRACEPOINT:		return cfg->tp.name;
+	case UTRACE_RAW_TRACEPOINT:	return cfg->raw_tp.name;
+	default:			return "?";
+	}
+}
+
+static u64 ensure_utrace_thread_track(const struct wprof_task *t, u32 utrace_id)
+{
+	struct track_state *s = track_state_get_or_add(DTK_UTRACE_THREAD, t->tid, utrace_id);
+
+	if (!s->exists) {
+		const struct utrace_cfg *cfg = &env.utrace_cfgs[utrace_id];
+		const char *name = utrace_probe_name(cfg);
+
+		emit_track_descr(cur_stream, s->track_id, trackid_thread(t), name, utrace_id);
+		s->exists = true;
+	}
+	return s->track_id;
+}
+
+static void emit_utrace_args(struct worker_state *w, const struct wevent *e,
+			     const struct utrace_cfg *cfg, int arg_cnt)
+{
+	struct wprof_data_hdr *hdr = w->dump_hdr;
+	const u32 *arg_refs = (const u32 *)((const void *)e + WEVENT_SZ(utrace));
+	const u64 *int_vals = (const u64 *)((const void *)arg_refs + arg_cnt * sizeof(u32));
+
+	int arg_idx = 0;
+	for (int i = 0; i < cfg->param_cnt && arg_idx < arg_cnt; i++) {
+		const struct utrace_param *p = &cfg->params[i];
+		if (p->type != UTRACE_PARAM_ARG)
+			continue;
+		if (e->kind == EV_UTRACE_ENTRY && p->arg.arg_idx == UTRACE_ARG_RET)
+			continue;
+		if (e->kind == EV_UTRACE_EXIT && p->arg.arg_idx != UTRACE_ARG_RET)
+			continue;
+
+		char auto_name[16];
+		const char *name = p->arg.name;
+		if (!name) {
+			if (p->arg.arg_idx == UTRACE_ARG_RET) {
+				name = "ret";
+			} else {
+				snprintf(auto_name, sizeof(auto_name), "arg%d", p->arg.arg_idx);
+				name = auto_name;
+			}
+		}
+
+		if (p->arg.arg_type == UTRACE_ARG_STR) {
+			emit_kv_str(name, wevent_str(hdr, arg_refs[arg_idx]));
+		} else {
+			u64 val;
+			memcpy(&val, (const void *)int_vals + arg_refs[arg_idx], sizeof(u64));
+			emit_kv_int(name, (s64)val);
+		}
+		arg_idx++;
+	}
+}
+
+static void emit_utrace_event(struct worker_state *w, const struct wevent *e)
+{
+	struct wprof_data_hdr *hdr = w->dump_hdr;
+	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
+
+	u32 utrace_id = e->utrace.utrace_id;
+	const struct utrace_cfg *cfg = &env.utrace_cfgs[utrace_id];
+	const char *name = utrace_probe_name(cfg);
+
+	emit_track_descrs(w, &task);
+	u64 track_uuid = ensure_utrace_thread_track(&task, utrace_id);
+
+	pb_iid name_iid = emit_intern_str(w, name);
+
+	/* Count args for this event side */
+	int arg_cnt = 0;
+	for (int i = 0; i < cfg->param_cnt; i++) {
+		const struct utrace_param *p = &cfg->params[i];
+		if (p->type != UTRACE_PARAM_ARG)
+			continue;
+		if (e->kind == EV_UTRACE_ENTRY && p->arg.arg_idx == UTRACE_ARG_RET)
+			continue;
+		if (e->kind == EV_UTRACE_EXIT && p->arg.arg_idx != UTRACE_ARG_RET)
+			continue;
+		arg_cnt++;
+	}
+
+	u32 stack_id = (env.requested_stack_traces & ST_UTRACE) ? e->utrace.utrace_stack_id : 0;
+
+	switch (e->kind) {
+	case EV_UTRACE_ENTRY:
+		emit_slice_begin(track_uuid, e->ts, iid_str(name_iid, name), IID_CAT_UTRACE) {
+			emit_utrace_args(w, e, cfg, arg_cnt);
+			if (stack_id > 0)
+				emit_callstack(w, stack_id);
+		}
+		break;
+	case EV_UTRACE_EXIT:
+		emit_slice_end(track_uuid, e->ts, iid_str(name_iid, name), IID_CAT_UTRACE) {
+			emit_utrace_args(w, e, cfg, arg_cnt);
+			if (stack_id > 0)
+				emit_callstack(w, stack_id);
+		}
+		break;
+	default: /* EV_UTRACE_INSTANT */
+		emit_instant(track_uuid, e->ts, iid_str(name_iid, name), IID_CAT_UTRACE) {
+			emit_utrace_args(w, e, cfg, arg_cnt);
+			if (stack_id > 0)
+				emit_callstack(w, stack_id);
+		}
+		break;
+	}
+}
+
+static void emit_utrace_json(struct worker_state *w, const struct wevent *e)
+{
+	struct json_state *j = &js;
+	struct wprof_data_hdr *hdr = w->dump_hdr;
+	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
+
+	u32 utrace_id = e->utrace.utrace_id;
+	const struct utrace_cfg *cfg = &env.utrace_cfgs[utrace_id];
+
+	const char *type_str;
+	switch (e->kind) {
+	case EV_UTRACE_ENTRY: type_str = "utrace_entry"; break;
+	case EV_UTRACE_EXIT: type_str = "utrace_exit"; break;
+	default: type_str = "utrace_instant"; break;
+	}
+
+	json_obj_start(j);
+	json_kv_ts(j, "ts", e->ts - env.sess_start_ts);
+	json_kv_str(j, "t", type_str);
+	json_kv_int(j, "utrace_id", utrace_id);
+	json_task(j, "task", &task);
+	json_kv_int(j, "cpu", e->cpu);
+	if (env.emit_numa)
+		json_kv_int(j, "numa", e->numa_node);
+
+	/* Count actual args for this event (filtered for entry/exit) */
+	int arg_cnt = 0;
+	for (int i = 0; i < cfg->param_cnt; i++) {
+		const struct utrace_param *p = &cfg->params[i];
+		if (p->type != UTRACE_PARAM_ARG)
+			continue;
+		if (e->kind == EV_UTRACE_ENTRY && p->arg.arg_idx == UTRACE_ARG_RET)
+			continue;
+		if (e->kind == EV_UTRACE_EXIT && p->arg.arg_idx != UTRACE_ARG_RET)
+			continue;
+		arg_cnt++;
+	}
+
+	/* Decode args from wevent trailing data */
+	const u32 *arg_refs = (const u32 *)((const void *)e + WEVENT_SZ(utrace));
+	const u64 *int_vals = (const u64 *)((const void *)arg_refs + arg_cnt * sizeof(u32));
+
+	if (arg_cnt > 0) {
+		json_subobj_start(j, "args");
+		int arg_idx = 0;
+		for (int i = 0; i < cfg->param_cnt && arg_idx < arg_cnt; i++) {
+			const struct utrace_param *p = &cfg->params[i];
+			if (p->type != UTRACE_PARAM_ARG)
+				continue;
+			if (e->kind == EV_UTRACE_ENTRY && p->arg.arg_idx == UTRACE_ARG_RET)
+				continue;
+			if (e->kind == EV_UTRACE_EXIT && p->arg.arg_idx != UTRACE_ARG_RET)
+				continue;
+
+			char auto_name[16];
+			const char *name = p->arg.name;
+			if (!name) {
+				if (p->arg.arg_idx == UTRACE_ARG_RET) {
+					name = "ret";
+				} else {
+					snprintf(auto_name, sizeof(auto_name), "arg%d", p->arg.arg_idx);
+					name = auto_name;
+				}
+			}
+
+			if (p->arg.arg_type == UTRACE_ARG_STR) {
+				json_kv_str(j, name, wevent_str(hdr, arg_refs[arg_idx]));
+			} else {
+				u64 val;
+				memcpy(&val, (const void *)int_vals + arg_refs[arg_idx], sizeof(u64));
+				json_kv_int(j, name, val);
+			}
+			arg_idx++;
+		}
+		json_obj_end(j);
+	}
+
+	if ((env.requested_stack_traces & ST_UTRACE) && e->utrace.utrace_stack_id > 0)
+		json_kv_int(j, "stack_id", e->utrace.utrace_stack_id);
+
+	json_obj_end(j);
+}
+
+static int process_utrace(struct worker_state *w, const struct wevent *e)
+{
+	if (env.capture_utrace != TRUE)
+		return 0;
+
+	if (!is_ts_in_range(e->ts))
+		return 0;
+
+	struct wprof_data_hdr *hdr = w->dump_hdr;
+	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
+
+	if (!should_trace_task(&task))
+		return 0;
+
+	if (env.json_path)
+		emit_utrace_json(w, e);
+	else
+		emit_utrace_event(w, e);
+
+	return 0;
+}
+
 static handle_event_fn emit_fns[] = {
 	[EV_TIMER] = process_timer,
 	[EV_SWITCH] = process_switch,
@@ -3506,6 +3736,9 @@ static handle_event_fn emit_fns[] = {
 	[EV_PYTRACE_EXIT] = process_pytrace,
 	[EV_PYTORCH_ENTRY] = process_pytorch,
 	[EV_PYTORCH_EXIT] = process_pytorch,
+	[EV_UTRACE_INSTANT] = process_utrace,
+	[EV_UTRACE_ENTRY] = process_utrace,
+	[EV_UTRACE_EXIT] = process_utrace,
 };
 
 static void emit_header_json(struct worker_state *w)
@@ -3528,6 +3761,7 @@ static void emit_header_json(struct worker_state *w)
 	json_kv_bool(j, "capture_pystacks", cfg->capture_pystacks);
 	json_kv_bool(j, "capture_pytrace", cfg->capture_pytrace);
 	json_kv_bool(j, "capture_pytorch", cfg->capture_pytorch);
+	json_kv_bool(j, "capture_utrace", cfg->capture_utrace);
 
 	json_subarr_start(j, "stacks");
 	if (cfg->captured_stack_traces & ST_TIMER)
@@ -3538,6 +3772,8 @@ static void emit_header_json(struct worker_state *w)
 		json_arr_str(j, "waker");
 	if (cfg->captured_stack_traces & ST_CUDA)
 		json_arr_str(j, "cuda");
+	if (cfg->captured_stack_traces & ST_UTRACE)
+		json_arr_str(j, "utrace");
 	json_arr_end(j);
 
 	json_kv_int(j, "stack_cnt", stack_cnt);
