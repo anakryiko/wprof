@@ -10,9 +10,9 @@
 /*
  * Pack blob offset, size, and alignment into a single long for use as
  * hashmap key.  Layout (64 bits):
- *   bits  0..25  — offset into data buffer  (up to 64 MB)
- *   bits 26..31  — alignment                (6 bits, up to 63)
- *   bits 32..63  — blob size                (up to 4 GB)
+ *   bits  0..25  -- offset into data buffer  (up to 64 MB)
+ *   bits 26..31  -- alignment                (6 bits, up to 63)
+ *   bits 32..63  -- blob size                (up to 4 GB)
  *
  * Alignment is part of the key so blobs with different alignment
  * requirements are never considered duplicates.
@@ -64,7 +64,7 @@ static bool blob_equal_fn(long key1, long key2, void *ctx)
 {
 	const struct blobset *set = ctx;
 
-	/* upper 38 bits encode size + alignment — must match exactly */
+	/* upper 38 bits encode size + alignment -- must match exactly */
 	if ((key1 ^ key2) >> 26)
 		return false;
 	return memcmp(set->data + blob_key_off(key1),

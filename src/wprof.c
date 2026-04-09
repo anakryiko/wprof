@@ -1311,6 +1311,8 @@ int main(int argc, char **argv)
 					str_cnt++;
 			}
 			wprintf("    %-*s%.3lfMB (%llu unique strings)\n", w - 4, "Strings:", dump_hdr->strs_sz / MB, str_cnt);
+			if (dump_hdr->blobs_sz)
+				wprintf("    %-*s%.3lfMB\n", w - 4, "Blobs:", dump_hdr->blobs_sz / MB);
 
 			wprintf("    %-*s%.3lfMB (%llu records)\n", w - 4, "Events:", dump_hdr->events_sz / MB, dump_hdr->event_cnt);
 			for (int i = 0; i < __EV_KIND_MAX; i++) {

@@ -35,6 +35,17 @@ enum utrace_arg_type {
 	UTRACE_ARG_STR,
 };
 
+static inline int utrace_arg_size(enum utrace_arg_type t)
+{
+	switch (t) {
+	case UTRACE_ARG_U8:  case UTRACE_ARG_S8:  return 1;
+	case UTRACE_ARG_U16: case UTRACE_ARG_S16: return 2;
+	case UTRACE_ARG_U32: case UTRACE_ARG_S32: return 4;
+	case UTRACE_ARG_U64: case UTRACE_ARG_S64: return 8;
+	default: return 0;
+	}
+}
+
 enum utrace_param_type {
 	UTRACE_PARAM_CAPTURE_STACK,
 	UTRACE_PARAM_BINARY_PATH,

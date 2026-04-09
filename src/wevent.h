@@ -226,9 +226,8 @@ struct wevent {
 			u32 utrace_stack_id;
 			/* trailing variable-size data:
 			 *   u32 arg_refs[arg_cnt]  -- per-arg reference:
-			 *                             string args → stroff into string pool
-			 *                             integer args → byte offset into int_vals blob
-			 *   u64 int_vals[]         -- packed raw integer arg values
+			 *                             string args -> stroff into string pool
+			 *                             integer args -> bloboff into blob pool
 			 */
 		} utrace;
 	};
