@@ -264,7 +264,43 @@ static int validate_probe_def(struct sview orig, const struct utrace_cfg *cfg)
 	return 0;
 }
 
-/* parse a single probe definition: "type:target-spec (params)" */
+/*
+ * Consume a setting value: either a quoted string ('...' or "...") or an
+ * unquoted token (the already-trimmed tok). Returns 0 on success, stores
+ * the strdup'd value in *out. On error returns -EINVAL.
+ */
+static int sv_consume_str_literal(struct sview orig, struct sview tok, const char *key, char **out)
+{
+	if (*out)
+		return utrace_err(orig, tok, "duplicate '%s' setting\n", key);
+
+	struct sview val;
+
+	if (tok.len > 0 && (tok.s[0] == '\'' || tok.s[0] == '"')) {
+		char quote = tok.s[0];
+		/* find matching closing quote */
+		int end = -1;
+		for (int i = 1; i < tok.len; i++) {
+			if (tok.s[i] == quote) {
+				end = i;
+				break;
+			}
+		}
+		if (end < 0)
+			return utrace_err(orig, tok, "unterminated quoted string for '%s'\n", key);
+		val = (struct sview){ .s = tok.s + 1, .len = end - 1 };
+	} else {
+		val = tok;
+	}
+
+	if (sv_is_empty(val))
+		return utrace_err(orig, tok, "empty '%s' value\n", key);
+
+	*out = sv_strdup(val);
+	return 0;
+}
+
+/* parse settings block: "id:value, name:'format {arg}'" */
 static int parse_settings(struct sview orig, struct sview def, struct utrace_settings *settings)
 {
 	memset(settings, 0, sizeof(*settings));
@@ -278,10 +314,99 @@ static int parse_settings(struct sview orig, struct sview def, struct utrace_set
 		if (sv_is_empty(tok))
 			continue;
 
-		return utrace_err(orig, tok, "unknown setting\n");
+		int err;
+		if (sv_starts_with(tok, "id:")) {
+			err = sv_consume_str_literal(orig, sv_trim(sv_consume_left(tok, 3)), "id", &settings->id);
+			if (err)
+				return err;
+		} else if (sv_starts_with(tok, "name:")) {
+			err = sv_consume_str_literal(orig, sv_trim(sv_consume_left(tok, 5)), "name", &settings->name_fmt);
+			if (err)
+				return err;
+		} else {
+			return utrace_err(orig, tok, "unknown setting\n");
+		}
 	}
 
 	return 0;
+}
+
+static void utrace_compile_fmt(const char *fmt, const struct utrace_param *params, int param_cnt,
+			       struct utrace_fmt_seg **out_segs, int *out_seg_cnt)
+{
+	struct utrace_fmt_seg *segs = NULL;
+	int seg_cnt = 0;
+
+	while (*fmt) {
+		if (*fmt != '{') {
+			/* start of a literal run */
+			const char *start = fmt;
+			while (*fmt && *fmt != '{')
+				fmt++;
+			segs = realloc(segs, (seg_cnt + 1) * sizeof(*segs));
+			segs[seg_cnt].type = UTRACE_FMT_SEG_LIT;
+			segs[seg_cnt].lit.s = start;
+			segs[seg_cnt].lit.len = fmt - start;
+			seg_cnt++;
+			continue;
+		}
+
+		const char *close = strchr(fmt + 1, '}');
+		if (!close) {
+			/* unterminated '{' — emit rest as literal */
+			segs = realloc(segs, (seg_cnt + 1) * sizeof(*segs));
+			segs[seg_cnt].type = UTRACE_FMT_SEG_LIT;
+			segs[seg_cnt].lit.s = fmt;
+			segs[seg_cnt].lit.len = strlen(fmt);
+			seg_cnt++;
+			break;
+		}
+
+		int name_len = close - fmt - 1;
+
+		/* try to resolve placeholder against entry-side ARG params */
+		int arg_idx = 0;
+		bool matched = false;
+		for (int i = 0; i < param_cnt; i++) {
+			const struct utrace_param *p = &params[i];
+			if (p->type != UTRACE_PARAM_ARG)
+				continue;
+			if (p->arg.arg_idx == UTRACE_ARG_RET)
+				continue;
+
+			const char *pname = p->arg.name;
+			char auto_name[32];
+			if (!pname) {
+				snprintf(auto_name, sizeof(auto_name), "arg%d", p->arg.arg_idx);
+				pname = auto_name;
+			}
+
+			if (strlen(pname) == name_len && strncmp(pname, fmt + 1, name_len) == 0) {
+				segs = realloc(segs, (seg_cnt + 1) * sizeof(*segs));
+				segs[seg_cnt].type = UTRACE_FMT_SEG_ARG;
+				segs[seg_cnt].arg.arg_idx = arg_idx;
+				segs[seg_cnt].arg.type = p->arg.arg_type;
+				seg_cnt++;
+				matched = true;
+				break;
+			}
+			arg_idx++;
+		}
+
+		if (!matched) {
+			/* unmatched placeholder — emit as literal including braces */
+			segs = realloc(segs, (seg_cnt + 1) * sizeof(*segs));
+			segs[seg_cnt].type = UTRACE_FMT_SEG_LIT;
+			segs[seg_cnt].lit.s = fmt;
+			segs[seg_cnt].lit.len = close - fmt + 1;
+			seg_cnt++;
+		}
+
+		fmt = close + 1;
+	}
+
+	*out_segs = segs;
+	*out_seg_cnt = seg_cnt;
 }
 
 static int parse_probe_def(struct sview orig, struct sview def, struct utrace_cfg *cfg)
@@ -400,10 +525,10 @@ static int parse_probe_def(struct sview orig, struct sview def, struct utrace_cf
 
 /*
  * General form of utrace definition:
- * <target-type>:<target-spec> (<param-type>:<param-spec>, ...) { <setting-type>:<setting-spec> }
+ * <target-type>:<target-spec> (<param-type>:<param-spec>, ...) | <setting-type>:<setting-spec> |
  *
  * For generic span definition, general shape is:
- * <target> (<params>) + <target> (<params>) { <settings> }
+ * <target> (<params>) + <target> (<params>) | <settings> |
  *
  * General logic is to split out all these different parts, while remembering that they
  * are all optional, except for <target-type>:<target-spec>.
@@ -420,13 +545,13 @@ static int parse_cfg(struct sview def, struct utrace_cfg *cfg)
 	if (sv_is_empty(def))
 		return utrace_err(orig, orig, "empty definition\n");
 
-	/* split by '{' to carve out optional settings */
-	def = sv_split(def, "{", &settings);
+	/* split by '|' to carve out optional settings */
+	def = sv_split(def, "|", &settings);
 	def = sv_trim(def);
 	settings = sv_trim(settings);
 	if (!sv_is_empty(settings)) {
-		if (!sv_unwrap(&settings, "{", "}"))
-			return utrace_err(orig, settings, "settings must be enclosed in {...}\n");
+		if (!sv_unwrap(&settings, "|", "|"))
+			return utrace_err(orig, settings, "settings must be enclosed in |...|\n");
 		err = parse_settings(orig, sv_trim(settings), &cfg->settings);
 		if (err)
 			return err;
@@ -440,6 +565,9 @@ static int parse_cfg(struct sview def, struct utrace_cfg *cfg)
 		err = parse_probe_def(orig, def, cfg);
 		if (err)
 			return err;
+		if (cfg->settings.name_fmt)
+			utrace_compile_fmt(cfg->settings.name_fmt, cfg->params, cfg->param_cnt,
+					   &cfg->settings.name_segs, &cfg->settings.name_seg_cnt);
 	} else {
 		right = sv_trim(sv_consume_left(right, 2));
 
@@ -455,10 +583,12 @@ static int parse_cfg(struct sview def, struct utrace_cfg *cfg)
 		if (is_span_probe(cfg->span.entry->type) || is_span_probe(cfg->span.exit->type))
 			return utrace_err(orig, def, "nested spans are not allowed\n");
 
+		if (cfg->settings.name_fmt)
+			utrace_compile_fmt(cfg->settings.name_fmt, cfg->span.entry->params, cfg->span.entry->param_cnt,
+					   &cfg->settings.name_segs, &cfg->settings.name_seg_cnt);
 		return 0;
 	}
 
-	/* TODO: high-level validation of settings against probe definition */
 	return 0;
 }
 
@@ -605,14 +735,45 @@ static void format_probe(const struct utrace_cfg *cfg, struct sbuf *sb)
 	}
 }
 
+static void format_setting_value(struct sbuf *sb, const char *val)
+{
+	if (strchr(val, ' '))
+		sbuf_appendf(sb, "'%s'", val);
+	else
+		sbuf_appendf(sb, "%s", val);
+}
+
+static void format_settings(const struct utrace_settings *s, struct sbuf *sb)
+{
+	if (!s->id && !s->name_fmt)
+		return;
+
+	sbuf_appendf(sb, " | ");
+	bool first = true;
+	if (s->id) {
+		sbuf_appendf(sb, "id:");
+		format_setting_value(sb, s->id);
+		first = false;
+	}
+	if (s->name_fmt) {
+		if (!first)
+			sbuf_appendf(sb, ", ");
+		sbuf_appendf(sb, "name:");
+		format_setting_value(sb, s->name_fmt);
+	}
+	sbuf_appendf(sb, " |");
+}
+
 void utrace_cfg_format(const struct utrace_cfg *cfg, struct sbuf *sb)
 {
 	if (cfg->type == UTRACE_SPAN) {
 		format_probe(cfg->span.entry, sb);
 		sbuf_appendf(sb, " ~~ ");
 		format_probe(cfg->span.exit, sb);
+		format_settings(&cfg->settings, sb);
 		return;
 	}
 
 	format_probe(cfg, sb);
+	format_settings(&cfg->settings, sb);
 }
