@@ -1611,7 +1611,18 @@ static __always_inline u64 utrace_read_arg(struct pt_regs *regs, int idx)
 	}
 }
 
-static __always_inline int utrace_handle_probe(struct pt_regs *ctx, bool is_kernel)
+static __always_inline u64 utrace_read_arg_fentry(void *ctx, int idx)
+{
+	u64 val = 0;
+
+	if (idx == UTRACE_ARG_RET)
+		bpf_get_func_ret(ctx, &val);
+	else
+		bpf_get_func_arg(ctx, idx, &val);
+	return val;
+}
+
+static __always_inline int utrace_handle_probe(void *ctx, bool is_kernel, bool is_fentry)
 {
 	u64 now_ts = bpf_ktime_get_ns();
 	struct task_struct *task = bpf_get_current_task_btf();
@@ -1648,7 +1659,7 @@ static __always_inline int utrace_handle_probe(struct pt_regs *ctx, bool is_kern
 
 		u8 arg_type = cfg->args[i].type;
 		s8 arg_idx = cfg->args[i].idx;
-		u64 arg_val = utrace_read_arg(ctx, arg_idx);
+		u64 arg_val = is_fentry ? utrace_read_arg_fentry(ctx, arg_idx) : utrace_read_arg(ctx, arg_idx);
 
 		if (arg_type == UTRACE_ARG_STR) {
 			void *p = bpf_dynptr_data(&scratch_dptr, scratch_off, MAX_UTRACE_STR_SZ);
@@ -1727,23 +1738,35 @@ static __always_inline int utrace_handle_probe(struct pt_regs *ctx, bool is_kern
 SEC("?uprobe.s")
 int utrace_uprobe(struct pt_regs *ctx)
 {
-	return utrace_handle_probe(ctx, false);
+	return utrace_handle_probe(ctx, false, false);
 }
 
 SEC("?uretprobe.s")
 int utrace_uretprobe(struct pt_regs *ctx)
 {
-	return utrace_handle_probe(ctx, false);
+	return utrace_handle_probe(ctx, false, false);
 }
 
 SEC("?kprobe")
 int utrace_kprobe(struct pt_regs *ctx)
 {
-	return utrace_handle_probe(ctx, true);
+	return utrace_handle_probe(ctx, true, false);
 }
 
 SEC("?kretprobe")
 int utrace_kretprobe(struct pt_regs *ctx)
 {
-	return utrace_handle_probe(ctx, true);
+	return utrace_handle_probe(ctx, true, false);
+}
+
+SEC("?fentry")
+int utrace_bpf_entry(void *ctx)
+{
+	return utrace_handle_probe(ctx, true, true);
+}
+
+SEC("?fexit")
+int utrace_bpf_exit(void *ctx)
+{
+	return utrace_handle_probe(ctx, true, true);
 }

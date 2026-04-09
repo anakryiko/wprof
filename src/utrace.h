@@ -7,6 +7,8 @@ struct wprof_bpf;
 struct bpf_state;
 
 int utrace_setup_autoload(struct wprof_bpf *skel);
+int utrace_setup_bpf_targets(struct wprof_bpf *skel);
+void utrace_disable_bpf_templates(struct wprof_bpf *skel);
 int utrace_setup(struct bpf_state *st, struct wprof_bpf *skel);
 
 #endif /* __UTRACE_H_ */

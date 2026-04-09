@@ -91,11 +91,14 @@ static const struct {
 	{ "uspan:", UTRACE_UPROBE_SPAN },
 	{ "usdt:",  UTRACE_USDT },
 	{ "u:",     UTRACE_UPROBE },
-	{ "kret:",  UTRACE_KRETPROBE },
-	{ "kspan:", UTRACE_KPROBE_SPAN },
-	{ "k:",     UTRACE_KPROBE },
-	{ "tp:",    UTRACE_TRACEPOINT },
-	{ "raw_tp:", UTRACE_RAW_TRACEPOINT },
+	{ "kret:",    UTRACE_KRETPROBE },
+	{ "kspan:",   UTRACE_KPROBE_SPAN },
+	{ "k:",       UTRACE_KPROBE },
+	{ "bpfret:",  UTRACE_BPF_RETPROBE },
+	{ "bpfspan:", UTRACE_BPF_SPAN },
+	{ "bpf:",     UTRACE_BPF_PROBE },
+	{ "tp:",      UTRACE_TRACEPOINT },
+	{ "raw_tp:",  UTRACE_RAW_TRACEPOINT },
 };
 
 /* parse "IDX[:TYPE][->NAME]" argument definition without "arg:" prefix */
@@ -231,7 +234,7 @@ static bool is_uprobe(enum utrace_type t)
 
 static bool is_ret_probe(enum utrace_type t)
 {
-	return t == UTRACE_URETPROBE || t == UTRACE_KRETPROBE;
+	return t == UTRACE_URETPROBE || t == UTRACE_KRETPROBE || t == UTRACE_BPF_RETPROBE;
 }
 
 static bool is_span_probe(enum utrace_type t)
@@ -240,6 +243,7 @@ static bool is_span_probe(enum utrace_type t)
 	case UTRACE_SPAN:
 	case UTRACE_KPROBE_SPAN:
 	case UTRACE_UPROBE_SPAN:
+	case UTRACE_BPF_SPAN:
 		return true;
 	default:
 		return false;
@@ -507,6 +511,11 @@ static int parse_probe_def(struct sview orig, struct sview def, struct utrace_cf
 	case UTRACE_RAW_TRACEPOINT:
 		cfg->raw_tp.name = sv_strdup(def);
 		break;
+	case UTRACE_BPF_PROBE:
+	case UTRACE_BPF_RETPROBE:
+	case UTRACE_BPF_SPAN:
+		cfg->bpf_prog.name = sv_strdup(def);
+		break;
 	default:
 		return utrace_err(orig, def, "unexpected probe type %d\n", cfg->type);
 	}
@@ -657,6 +666,9 @@ static const char *utrace_type_str(enum utrace_type t)
 	case UTRACE_RAW_TRACEPOINT:	return "raw_tp";
 	case UTRACE_UPROBE_SPAN:	return "uspan";
 	case UTRACE_KPROBE_SPAN:	return "kspan";
+	case UTRACE_BPF_PROBE:		return "bpf";
+	case UTRACE_BPF_RETPROBE:	return "bpfret";
+	case UTRACE_BPF_SPAN:		return "bpfspan";
 	case UTRACE_SPAN:		return "span";
 	default:			return "???";
 	}
@@ -689,6 +701,11 @@ static void format_probe(const struct utrace_cfg *cfg, struct sbuf *sb)
 		break;
 	case UTRACE_RAW_TRACEPOINT:
 		sbuf_appendf(sb, "%s", cfg->raw_tp.name);
+		break;
+	case UTRACE_BPF_PROBE:
+	case UTRACE_BPF_RETPROBE:
+	case UTRACE_BPF_SPAN:
+		sbuf_appendf(sb, "%s", cfg->bpf_prog.name);
 		break;
 	default:
 		break;

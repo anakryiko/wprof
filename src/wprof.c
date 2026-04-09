@@ -801,9 +801,14 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 		int map_cnt = 0;
 		for (int i = 0; i < env.utrace_cfg_cnt; i++) {
 			enum utrace_type t = env.utrace_cfgs[i].type;
-			map_cnt += (t == UTRACE_UPROBE_SPAN || t == UTRACE_KPROBE_SPAN) ? 2 : 1;
+			map_cnt += (t == UTRACE_UPROBE_SPAN || t == UTRACE_KPROBE_SPAN || t == UTRACE_BPF_SPAN) ? 2 : 1;
 		}
 		bpf_map__set_max_entries(skel->maps.utrace_probe_cfgs, map_cnt);
+		err = utrace_setup_bpf_targets(skel);
+		if (err) {
+			eprintf("Failed to setup BPF probe targets: %d\n", err);
+			return err;
+		}
 	} else {
 		bpf_map__set_autocreate(skel->maps.utrace_probe_cfgs, false);
 		bpf_map__set_autocreate(skel->maps.utrace_scratch, false);
@@ -817,6 +822,15 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 		if (st->stats_fd < 0)
 			eprintf("Failed to enable BPF run stats tracking: %d!\n", st->stats_fd);
 	}
+
+	err = bpf_object__prepare(skel->obj);
+	if (err) {
+		eprintf("Failed to prepare BPF skeleton: %d\n", err);
+		return err;
+	}
+
+	if (env.utrace_cfg_cnt > 0)
+		utrace_disable_bpf_templates(skel);
 
 	err = wprof_bpf__load(skel);
 	if (err) {
@@ -1025,6 +1039,11 @@ static void detach_bpf(struct bpf_state *st, int num_cpus)
 		for (int i = 0; i < st->link_cnt; i++)
 			bpf_link__destroy(st->links[i]);
 		free(st->links);
+	}
+	if (st->link_fds) {
+		for (int i = 0; i < st->link_fd_cnt; i++)
+			close(st->link_fds[i]);
+		free(st->link_fds);
 	}
 	if (st->perf_timer_fds) {
 		for (int i = 0; i < num_cpus; i++) {
