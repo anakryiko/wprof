@@ -207,6 +207,8 @@ enum scx_dsq_insert_type {
 	SCX_DSQ_DISPATCH_VTIME_FROM_DSQ = 7,
 };
 
+#include "utrace_cfg.h"
+
 #define MAX_UTRACE_ARGS 8
 #define MAX_UTRACE_STR_SZ 128
 
@@ -216,16 +218,20 @@ enum utrace_event_type {
 	UTRACE_EXIT,		/* span exit half */
 };
 
+enum utrace_probe_flags {
+	UTRACE_FL_CAPTURE_STACK = 1 << 0,
+};
+
 /* Per-probe config, stored in BPF array map, populated from utrace_cfg */
 struct utrace_probe_cfg {
 	u32 utrace_id;		/* index into utrace_cfgs (same for both halves of a span) */
-	u8 arg_cnt;
-	u8 capture_stack;
-	u8 event_type;		/* enum utrace_event_type → maps to EV_UTRACE_INSTANT/ENTRY/EXIT */
-	u8 is_kernel;
+	int arg_cnt;
+	u32 flags;				/* enum utrace_probe_flags */
+	enum utrace_event_type event_type;
+	enum utrace_type probe_type;
 	struct {
-		u8 type;	/* utrace_arg_type */
-		s8 idx;		/* 0-based arg index, or UTRACE_ARG_RET (-1) */
+		enum utrace_arg_type type;
+		int idx;	/* 0-based arg index, or UTRACE_ARG_RET (-1) */
 	} args[MAX_UTRACE_ARGS];
 };
 

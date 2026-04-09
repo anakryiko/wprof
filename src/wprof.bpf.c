@@ -1684,7 +1684,7 @@ static __always_inline int utrace_handle_probe(struct pt_regs *ctx, bool is_kern
 
 	struct stack_trace *tr = NULL;
 	size_t tr_sz = 0;
-	if (cfg->capture_stack && (requested_stack_traces & ST_UTRACE)) {
+	if ((cfg->flags & UTRACE_FL_CAPTURE_STACK) && (requested_stack_traces & ST_UTRACE)) {
 		if (is_kernel)
 			tr = grab_stack_trace(ctx, NULL, ST_UTRACE, &tr_sz);
 		else

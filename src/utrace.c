@@ -98,21 +98,31 @@ int utrace_setup_autoload(struct wprof_bpf *skel)
 	return 0;
 }
 
+static bool cfg_is_span(const struct utrace_cfg *cfg)
+{
+	return cfg->type == UTRACE_UPROBE_SPAN || cfg->type == UTRACE_KPROBE_SPAN;
+}
+
 /* Fill a utrace_probe_cfg from utrace_cfg params, filtering args by is_exit */
 static void fill_probe_cfg(struct utrace_probe_cfg *pcfg, const struct utrace_cfg *cfg,
-			   int utrace_id, enum utrace_event_type event_type, bool is_exit, bool is_kernel)
+			   int utrace_id, enum utrace_event_type event_type, bool is_exit)
 {
 	memset(pcfg, 0, sizeof(*pcfg));
 	pcfg->utrace_id = utrace_id;
 	pcfg->event_type = event_type;
-	pcfg->is_kernel = is_kernel;
+	pcfg->probe_type = cfg->type;
 
 	int arg_idx = 0;
 	for (int i = 0; i < cfg->param_cnt && arg_idx < MAX_UTRACE_ARGS; i++) {
 		const struct utrace_param *p = &cfg->params[i];
 
-		if (p->type == UTRACE_PARAM_CAPTURE_STACK)
-			pcfg->capture_stack = 1;
+		if (p->type == UTRACE_PARAM_CAPTURE_STACK) {
+			/* For kspan/uspan exits, skip: same function as entry, stack is redundant */
+			if (is_exit && cfg_is_span(cfg))
+				continue;
+			pcfg->flags |= UTRACE_FL_CAPTURE_STACK;
+			continue;
+		}
 		if (p->type != UTRACE_PARAM_ARG)
 			continue;
 
@@ -183,9 +193,7 @@ int utrace_setup(struct bpf_state *st, struct wprof_bpf *skel)
 				return -EINVAL;
 			}
 
-			fill_probe_cfg(&pcfg, cfg, i,
-				       cfg->type == UTRACE_UPROBE ? UTRACE_INSTANT : UTRACE_INSTANT,
-				       false, false);
+			fill_probe_cfg(&pcfg, cfg, i, UTRACE_INSTANT, false);
 			err = bpf_map_update_elem(map_fd, &map_idx, &pcfg, BPF_ANY);
 			if (err) {
 				eprintf("utrace: failed to update probe cfg map: %d\n", err);
@@ -213,7 +221,7 @@ int utrace_setup(struct bpf_state *st, struct wprof_bpf *skel)
 		}
 		case UTRACE_KPROBE:
 		case UTRACE_KRETPROBE: {
-			fill_probe_cfg(&pcfg, cfg, i, UTRACE_INSTANT, false, true);
+			fill_probe_cfg(&pcfg, cfg, i, UTRACE_INSTANT, false);
 			err = bpf_map_update_elem(map_fd, &map_idx, &pcfg, BPF_ANY);
 			if (err) {
 				eprintf("utrace: failed to update probe cfg map: %d\n", err);
@@ -258,7 +266,7 @@ int utrace_setup(struct bpf_state *st, struct wprof_bpf *skel)
 			sym_offset += cfg->uprobe.off;
 
 			/* Entry half */
-			fill_probe_cfg(&pcfg, cfg, i, UTRACE_ENTRY, false, false);
+			fill_probe_cfg(&pcfg, cfg, i, UTRACE_ENTRY, false);
 			err = bpf_map_update_elem(map_fd, &map_idx, &pcfg, BPF_ANY);
 			if (err)
 				return err;
@@ -278,7 +286,7 @@ int utrace_setup(struct bpf_state *st, struct wprof_bpf *skel)
 			map_idx++;
 
 			/* Exit half */
-			fill_probe_cfg(&pcfg, cfg, i, UTRACE_EXIT, true, false);
+			fill_probe_cfg(&pcfg, cfg, i, UTRACE_EXIT, true);
 			err = bpf_map_update_elem(map_fd, &map_idx, &pcfg, BPF_ANY);
 			if (err)
 				return err;
@@ -301,7 +309,7 @@ int utrace_setup(struct bpf_state *st, struct wprof_bpf *skel)
 		}
 		case UTRACE_KPROBE_SPAN: {
 			/* Entry half */
-			fill_probe_cfg(&pcfg, cfg, i, UTRACE_ENTRY, false, true);
+			fill_probe_cfg(&pcfg, cfg, i, UTRACE_ENTRY, false);
 			err = bpf_map_update_elem(map_fd, &map_idx, &pcfg, BPF_ANY);
 			if (err)
 				return err;
@@ -320,7 +328,7 @@ int utrace_setup(struct bpf_state *st, struct wprof_bpf *skel)
 			map_idx++;
 
 			/* Exit half */
-			fill_probe_cfg(&pcfg, cfg, i, UTRACE_EXIT, true, true);
+			fill_probe_cfg(&pcfg, cfg, i, UTRACE_EXIT, true);
 			err = bpf_map_update_elem(map_fd, &map_idx, &pcfg, BPF_ANY);
 			if (err)
 				return err;
