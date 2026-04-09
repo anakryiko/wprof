@@ -16,6 +16,7 @@
 #include "proc.h"
 #include "../libbpf/src/strset.h"
 #include "../libbpf/src/hashmap.h"
+#include "blobset.h"
 
 #define THREAD_TABLE_INIT_CAP 1024
 
@@ -58,6 +59,7 @@ int persist_state_init(struct persist_state *ps, int pmu_cnt)
 	memset(ps, 0, sizeof(*ps));
 
 	ps->strs = strset__new(UINT_MAX, "", 1);
+	ps->blobs = blobset__new();
 
 	ps->threads.lookup = hashmap__new(thread_key_hash_fn, thread_key_equal_fn, NULL);
 	ps->threads.entries = calloc(THREAD_TABLE_INIT_CAP, sizeof(*ps->threads.entries));
@@ -88,6 +90,7 @@ void persist_state_free(struct persist_state *ps)
 	free(ps->threads.entries);
 	free(ps->pmu_defs);
 	strset__free(ps->strs);
+	blobset__free(ps->blobs);
 
 	if (ps->tid_cache) {
 		hashmap__for_each_entry(ps->tid_cache, entry, bkt)
@@ -106,6 +109,13 @@ int persist_stroff(struct persist_state *ps, const char *str)
 	if (!str || !str[0])
 		return 0;
 	return strset__add_str(ps->strs, str);
+}
+
+int persist_bloboff(struct persist_state *ps, const void *data, size_t len, size_t align)
+{
+	if (!data || len == 0)
+		return 0;
+	return blobset__add_blob(ps->blobs, data, len, align);
 }
 
 int persist_task_id(struct persist_state *ps, const struct wprof_thread *task)
@@ -353,9 +363,8 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 		u32 utrace_id = e->utrace.utrace_id;
 		const struct utrace_cfg *cfg = &env.utrace_cfgs[utrace_id];
 
-		/* Derive arg_cnt and arg types from config, filtered for entry/exit */
+		/* Derive arg_cnt from config, filtered for entry/exit */
 		int arg_cnt = 0;
-		int int_cnt = 0;
 		for (int i = 0; i < cfg->param_cnt; i++) {
 			const struct utrace_param *p = &cfg->params[i];
 			if (p->type != UTRACE_PARAM_ARG)
@@ -364,12 +373,10 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 				continue;
 			if (e->kind == EV_UTRACE_EXIT && p->arg.arg_idx != UTRACE_ARG_RET)
 				continue;
-			if (p->arg.arg_type != UTRACE_ARG_STR)
-				int_cnt++;
 			arg_cnt++;
 		}
 
-		u16 wsz = WEVENT_SZ(utrace) + arg_cnt * sizeof(u32) + int_cnt * sizeof(u64);
+		u16 wsz = WEVENT_SZ(utrace) + arg_cnt * sizeof(u32);
 		fill_wevent_hdr(dst, e, task_id, wsz);
 
 		dst->utrace.utrace_id = utrace_id;
@@ -381,15 +388,12 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 		dyn_data += bpf_event_stack_traces_sz(e);
 
 		u32 *arg_refs = (u32 *)((void *)dst + WEVENT_SZ(utrace));
-		u64 *int_vals = (u64 *)((void *)arg_refs + arg_cnt * sizeof(u32));
-		int int_idx = 0;
 		int dyn_off = 0;
 
 		for (int i = 0; i < arg_cnt && i < MAX_UTRACE_ARGS; i++) {
 			s16 len = e->utrace.arg_len[i];
 
 			if (len <= 0) {
-				/* Error reading arg — store empty string / zero */
 				arg_refs[i] = 0;
 				continue;
 			}
@@ -414,11 +418,10 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 				const char *str = (const char *)dyn_data + dyn_off;
 				arg_refs[i] = persist_stroff(ps, str);
 			} else {
-				u64 val;
-				memcpy(&val, dyn_data + dyn_off, sizeof(u64));
-				arg_refs[i] = int_idx * sizeof(u64);
-				int_vals[int_idx] = val;
-				int_idx++;
+				int arg_sz = utrace_arg_size(p->arg.arg_type);
+				/* BPF stores all integer args as u64; on little-endian
+				 * reading just arg_sz bytes gives the correct value */
+				arg_refs[i] = persist_bloboff(ps, dyn_data + dyn_off, arg_sz, arg_sz);
 			}
 			dyn_off += len;
 		}

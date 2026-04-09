@@ -3511,12 +3511,28 @@ static u64 ensure_utrace_thread_track(const struct wprof_task *t, u32 utrace_id)
 	return s->track_id;
 }
 
+static s64 read_int_blob(struct wprof_data_hdr *hdr, u32 bloboff, enum utrace_arg_type type)
+{
+	const void *p = wevent_blob(hdr, bloboff);
+
+	switch (type) {
+	case UTRACE_ARG_U8:  return *(const u8 *)p;
+	case UTRACE_ARG_S8:  return *(const s8 *)p;
+	case UTRACE_ARG_U16: return *(const u16 *)p;
+	case UTRACE_ARG_S16: return *(const s16 *)p;
+	case UTRACE_ARG_U32: return *(const u32 *)p;
+	case UTRACE_ARG_S32: return *(const s32 *)p;
+	case UTRACE_ARG_U64: return *(const u64 *)p;
+	case UTRACE_ARG_S64: return *(const s64 *)p;
+	default: return 0;
+	}
+}
+
 static void emit_utrace_args(struct worker_state *w, const struct wevent *e,
 			     const struct utrace_cfg *cfg, int arg_cnt)
 {
 	struct wprof_data_hdr *hdr = w->dump_hdr;
 	const u32 *arg_refs = (const u32 *)((const void *)e + WEVENT_SZ(utrace));
-	const u64 *int_vals = (const u64 *)((const void *)arg_refs + arg_cnt * sizeof(u32));
 
 	int arg_idx = 0;
 	for (int i = 0; i < cfg->param_cnt && arg_idx < arg_cnt; i++) {
@@ -3542,9 +3558,7 @@ static void emit_utrace_args(struct worker_state *w, const struct wevent *e,
 		if (p->arg.arg_type == UTRACE_ARG_STR) {
 			emit_kv_str(name, wevent_str(hdr, arg_refs[arg_idx]));
 		} else {
-			u64 val;
-			memcpy(&val, (const void *)int_vals + arg_refs[arg_idx], sizeof(u64));
-			emit_kv_int(name, (s64)val);
+			emit_kv_int(name, read_int_blob(hdr, arg_refs[arg_idx], p->arg.arg_type));
 		}
 		arg_idx++;
 	}
@@ -3644,7 +3658,6 @@ static void emit_utrace_json(struct worker_state *w, const struct wevent *e)
 
 	/* Decode args from wevent trailing data */
 	const u32 *arg_refs = (const u32 *)((const void *)e + WEVENT_SZ(utrace));
-	const u64 *int_vals = (const u64 *)((const void *)arg_refs + arg_cnt * sizeof(u32));
 
 	if (arg_cnt > 0) {
 		json_subobj_start(j, "args");
@@ -3672,9 +3685,7 @@ static void emit_utrace_json(struct worker_state *w, const struct wevent *e)
 			if (p->arg.arg_type == UTRACE_ARG_STR) {
 				json_kv_str(j, name, wevent_str(hdr, arg_refs[arg_idx]));
 			} else {
-				u64 val;
-				memcpy(&val, (const void *)int_vals + arg_refs[arg_idx], sizeof(u64));
-				json_kv_int(j, name, val);
+				json_kv_int(j, name, read_int_blob(hdr, arg_refs[arg_idx], p->arg.arg_type));
 			}
 			arg_idx++;
 		}

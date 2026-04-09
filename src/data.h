@@ -9,7 +9,7 @@
 #include "pmu.h"
 
 #define WPROF_DATA_MAJOR 2
-#define WPROF_DATA_MINOR 1
+#define WPROF_DATA_MINOR 2
 #define WPROF_DATA_FLAG_INCOMPLETE 0xffffffffffffffffULL
 
 struct wprof_data_cfg {
@@ -75,6 +75,9 @@ struct wprof_data_hdr {
 
 	/* String pool section */
 	u64 strs_off, strs_sz;
+
+	/* Blob pool section (variable-sized binary data) */
+	u64 blobs_off, blobs_sz;
 
 	/* Symbolized stack traces section */
 	u64 stacks_off, stacks_sz;
@@ -149,6 +152,11 @@ static inline struct wprof_stack_frame *wprof_stacks_frame(struct wprof_data_hdr
 static inline const char *wevent_str(struct wprof_data_hdr *hdr, u32 off)
 {
 	return (void *)hdr + hdr->hdr_sz + hdr->strs_off + off;
+}
+
+static inline const void *wevent_blob(struct wprof_data_hdr *hdr, u32 off)
+{
+	return (void *)hdr + hdr->hdr_sz + hdr->blobs_off + off;
 }
 
 static inline struct wevent_task *wevent_task(struct wprof_data_hdr *hdr, u32 id)

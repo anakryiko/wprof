@@ -26,6 +26,7 @@
 #include "strs.h"
 #include "../libbpf/src/strset.h"
 #include "../libbpf/src/hashmap.h"
+#include "blobset.h"
 
 static void init_data_header(struct wprof_data_hdr *hdr)
 {
@@ -742,6 +743,17 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 	/* ensure string section ends at 8 byte alignment, just in case */
 	file_pad(data_dump, 8);
 
+	/* Write blob pool section */
+	long blobs_off = ftell(data_dump) - sizeof(struct wprof_data_hdr);
+	const void *blobs_data = blobset__data(ps.blobs);
+	size_t blobs_sz = blobset__data_size(ps.blobs);
+	if (blobs_sz > 0 && fwrite(blobs_data, 1, blobs_sz, data_dump) != blobs_sz) {
+		err = -errno;
+		eprintf("Failed to fwrite() blob pool: %d\n", err);
+		return err;
+	}
+	file_pad(data_dump, 8);
+
 	fflush(data_dump);
 	fsync(fileno(data_dump));
 
@@ -810,6 +822,9 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 
 	hdr.strs_off = strs_off;
 	hdr.strs_sz = strs_sz;
+
+	hdr.blobs_off = blobs_off;
+	hdr.blobs_sz = blobs_sz;
 
 	hdr.stacks_off = stacks_off;
 	hdr.stacks_sz = stacks_sz;
