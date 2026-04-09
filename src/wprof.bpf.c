@@ -7,6 +7,7 @@
 #include <bpf/usdt.bpf.h>
 
 #include "wprof.h"
+#include "utrace_cfg.h"
 #include "wprof.bpf.h"
 
 #include "strobelight/bpf_lib/python/include/structs.h"
@@ -1571,4 +1572,175 @@ int BPF_USDT(wprof_cuda_call, int domain, int cbid, __u32 corr_id)
 	put_stack_trace(tr);
 
 	return 0;
+}
+
+/* ==================== UTRACE (user-defined tracing) ==================== */
+
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__type(key, u32);
+	__type(value, struct utrace_probe_cfg);
+	__uint(max_entries, 1); /* resized at load time */
+} utrace_probe_cfgs SEC(".maps");
+
+#define UTRACE_SCRATCH_SZ (MAX_UTRACE_ARGS * MAX_UTRACE_STR_SZ)
+
+struct utrace_scratch {
+	s16 arg_lens[MAX_UTRACE_ARGS];
+	char buf[UTRACE_SCRATCH_SZ];
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__type(key, u32);
+	__type(value, struct utrace_scratch);
+	__uint(max_entries, 1);
+} utrace_scratch SEC(".maps");
+
+static __always_inline u64 utrace_read_arg(struct pt_regs *regs, int idx)
+{
+	switch (idx) {
+	case UTRACE_ARG_RET: return PT_REGS_RC_CORE(regs);
+	case 0: return PT_REGS_PARM1_CORE(regs);
+	case 1: return PT_REGS_PARM2_CORE(regs);
+	case 2: return PT_REGS_PARM3_CORE(regs);
+	case 3: return PT_REGS_PARM4_CORE(regs);
+	case 4: return PT_REGS_PARM5_CORE(regs);
+	case 5: return PT_REGS_PARM6_CORE(regs);
+	default: return 0;
+	}
+}
+
+static __always_inline int utrace_handle_probe(struct pt_regs *ctx, bool is_kernel)
+{
+	u64 now_ts = bpf_ktime_get_ns();
+	struct task_struct *task = bpf_get_current_task_btf();
+
+	if (!should_trace_task(task, now_ts))
+		return 0;
+
+	u32 cookie = bpf_get_attach_cookie(ctx);
+	struct utrace_probe_cfg *cfg = bpf_map_lookup_elem(&utrace_probe_cfgs, &cookie);
+	if (!cfg)
+		return 0;
+
+	u64 arg_cnt = cfg->arg_cnt;
+	if (arg_cnt > MAX_UTRACE_ARGS)
+		arg_cnt = MAX_UTRACE_ARGS;
+
+	struct utrace_scratch *scratch = bpf_map_lookup_elem(&utrace_scratch, &zero);
+	if (!scratch)
+		return 0;
+
+	u32 scratch_off = zero;
+	struct bpf_dynptr scratch_dptr;
+	bpf_dynptr_from_mem(scratch->buf, sizeof(scratch->buf), 0, &scratch_dptr);
+
+	/*
+	 * Read args into scratch buffer to calculate dyn_sz.
+	 * String and integer values are interleaved uniformly, only the
+	 * number of bytes consumed differs.
+	 */
+	int i;
+	bpf_for(i, 0, arg_cnt) {
+		if (i >= MAX_UTRACE_ARGS)
+			break;
+
+		u8 arg_type = cfg->args[i].type;
+		s8 arg_idx = cfg->args[i].idx;
+		u64 arg_val = utrace_read_arg(ctx, arg_idx);
+
+		if (arg_type == UTRACE_ARG_STR) {
+			void *p = bpf_dynptr_data(&scratch_dptr, scratch_off, MAX_UTRACE_STR_SZ);
+			if (!p) {
+				scratch->arg_lens[i] = -ENOSPC;
+				continue;
+			}
+
+			int len;
+			if (is_kernel)
+				len = bpf_probe_read_kernel_str(p, MAX_UTRACE_STR_SZ, (void *)arg_val);
+			else
+				len = bpf_copy_from_user_str(p, MAX_UTRACE_STR_SZ, (void *)arg_val, 0);
+
+			if (len > 0) {
+				scratch->arg_lens[i] = len;
+				scratch_off += len;
+			} else {
+				scratch->arg_lens[i] = len;
+			}
+		} else {
+			void *p = bpf_dynptr_data(&scratch_dptr, scratch_off, sizeof(u64));
+			if (!p) {
+				scratch->arg_lens[i] = -ENOSPC;
+				continue;
+			}
+
+			bpf_probe_read_kernel(p, sizeof(u64), &arg_val);
+			scratch->arg_lens[i] = sizeof(u64);
+			scratch_off += sizeof(u64);
+		}
+	}
+
+	struct stack_trace *tr = NULL;
+	size_t tr_sz = 0;
+	if (cfg->capture_stack && (requested_stack_traces & ST_UTRACE)) {
+		if (is_kernel)
+			tr = grab_stack_trace(ctx, NULL, ST_UTRACE, &tr_sz);
+		else
+			tr = grab_stack_trace_user(ctx, NULL, ST_UTRACE, &tr_sz);
+	}
+
+	enum event_kind ev_kind;
+	switch (cfg->event_type) {
+	case UTRACE_ENTRY: ev_kind = EV_UTRACE_ENTRY; break;
+	case UTRACE_EXIT: ev_kind = EV_UTRACE_EXIT; break;
+	default: ev_kind = EV_UTRACE_INSTANT; break;
+	}
+
+	struct wprof_event *e;
+	struct bpf_dynptr *dptr;
+	size_t fix_sz = EV_SZ(utrace);
+	size_t dyn_sz = scratch_off + tr_sz;
+	emit_task_event_dyn(e, dptr, fix_sz, dyn_sz, ev_kind, now_ts, task) {
+		e->utrace.utrace_id = cfg->utrace_id;
+		__builtin_memcpy(e->utrace.arg_len, scratch->arg_lens, sizeof(scratch->arg_lens));
+
+		if (tr) {
+			emit_stack_trace(tr, tr_sz, dptr, fix_sz);
+			e->flags |= ST_UTRACE;
+		}
+
+		if (scratch_off > sizeof(scratch->buf))
+			scratch_off = sizeof(scratch->buf);
+		bpf_dynptr_write(dptr, fix_sz + tr_sz, scratch->buf, scratch_off, 0);
+	}
+
+	put_stack_trace(tr);
+
+	return 0;
+}
+
+SEC("?uprobe.s")
+int utrace_uprobe(struct pt_regs *ctx)
+{
+	return utrace_handle_probe(ctx, false);
+}
+
+SEC("?uretprobe.s")
+int utrace_uretprobe(struct pt_regs *ctx)
+{
+	return utrace_handle_probe(ctx, false);
+}
+
+SEC("?kprobe")
+int utrace_kprobe(struct pt_regs *ctx)
+{
+	return utrace_handle_probe(ctx, true);
+}
+
+SEC("?kretprobe")
+int utrace_kretprobe(struct pt_regs *ctx)
+{
+	return utrace_handle_probe(ctx, true);
 }
