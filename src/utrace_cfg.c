@@ -140,7 +140,8 @@ static int parse_arg_param(struct sview orig, struct sview def, struct utrace_pa
 	return 0;
 }
 
-static int parse_params(struct sview orig, struct sview def, struct utrace_param **out, int *out_cnt)
+static int parse_params(struct sview orig, struct sview def, struct utrace_param **out, int *out_cnt,
+			bool *wildcard_args)
 {
 	struct utrace_param *params = NULL;
 	int cnt = 0;
@@ -154,6 +155,18 @@ static int parse_params(struct sview orig, struct sview def, struct utrace_param
 		if (sv_is_empty(sv_trim(param)))
 			return utrace_err(orig, param, "invalid empty parameter\n");
 		param = sv_trim(param);
+
+		if (sv_starts_with(param, "arg:")) {
+			struct sview arg_rest = sv_trim(sv_consume_left(param, 4));
+			if (sv_starts_with(arg_rest, "*")) {
+				if (!sv_eq(arg_rest, "*"))
+					return utrace_err(orig, arg_rest, "arg:* does not accept suffixes\n");
+				if (*wildcard_args)
+					return utrace_err(orig, param, "duplicate arg:*\n");
+				*wildcard_args = true;
+				continue;
+			}
+		}
 
 		params = realloc(params, (cnt + 1) * sizeof(*params));
 
@@ -369,7 +382,7 @@ static int parse_probe_def(struct sview orig, struct sview def, struct utrace_cf
 		params = sv_trim(params);
 		if (!sv_unwrap(&params, "(", ")"))
 			return utrace_err(orig, params, "parameters must be enclosed in (...)\n");
-		err = parse_params(orig, params, &cfg->params, &cfg->param_cnt);
+		err = parse_params(orig, params, &cfg->params, &cfg->param_cnt, &cfg->wildcard_args);
 		if (err)
 			return err;
 	}
@@ -543,12 +556,14 @@ static void format_probe(const struct utrace_cfg *cfg, struct sbuf *sb)
 		break;
 	}
 
-	if (cfg->param_cnt > 0) {
+	if (cfg->param_cnt > 0 || cfg->wildcard_args) {
 		sbuf_appendf(sb, " (");
+		bool first = true;
 		for (int i = 0; i < cfg->param_cnt; i++) {
 			const struct utrace_param *p = &cfg->params[i];
-			if (i > 0)
+			if (!first)
 				sbuf_appendf(sb, ", ");
+			first = false;
 			switch (p->type) {
 			case UTRACE_PARAM_CAPTURE_STACK:
 				sbuf_appendf(sb, "stack");
@@ -570,6 +585,11 @@ static void format_probe(const struct utrace_cfg *cfg, struct sbuf *sb)
 					sbuf_appendf(sb, "->%s", p->arg.name);
 				break;
 			}
+		}
+		if (cfg->wildcard_args) {
+			if (!first)
+				sbuf_appendf(sb, ", ");
+			sbuf_appendf(sb, "arg:*");
 		}
 		sbuf_appendf(sb, ")");
 	}
