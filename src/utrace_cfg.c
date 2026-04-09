@@ -411,8 +411,8 @@ static int parse_cfg(struct sview def, struct utrace_cfg *cfg)
 			return err;
 	}
 
-	/* split by '<=>' in case this is a span */
-	left = sv_split(def, "<=>", &right);
+	/* split by '~~' in case this is a span */
+	left = sv_split(def, "~~", &right);
 	left = sv_trim(left);
 
 	if (sv_is_empty(right)) {
@@ -420,7 +420,7 @@ static int parse_cfg(struct sview def, struct utrace_cfg *cfg)
 		if (err)
 			return err;
 	} else {
-		right = sv_trim(sv_consume_left(right, 3));
+		right = sv_trim(sv_consume_left(right, 2));
 
 		cfg->type = UTRACE_SPAN;
 		cfg->span.entry = calloc(1, sizeof(*cfg->span.entry));
@@ -579,7 +579,7 @@ void utrace_cfg_format(const struct utrace_cfg *cfg, struct sbuf *sb)
 {
 	if (cfg->type == UTRACE_SPAN) {
 		format_probe(cfg->span.entry, sb);
-		sbuf_appendf(sb, " <=> ");
+		sbuf_appendf(sb, " ~~ ");
 		format_probe(cfg->span.exit, sb);
 		return;
 	}
