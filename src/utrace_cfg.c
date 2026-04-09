@@ -182,7 +182,15 @@ static int parse_params(struct sview orig, struct sview def, struct utrace_param
 				return utrace_err(orig, param, "invalid empty path\n");
 
 			p->type = UTRACE_PARAM_BINARY_PATH;
-			p->binary.path = sv_strdup(param);
+			char *path = sv_strdup(param);
+			if (path[0] != '/') {
+				char *abs = realpath(path, NULL);
+				if (!abs)
+					return utrace_err(orig, param, "failed to resolve path: %s\n", strerror(errno));
+				free(path);
+				path = abs;
+			}
+			p->binary.path = path;
 		} else if (sv_starts_with(param, "pid:")) {
 			param = sv_trim(sv_consume_left(param, 4));
 
