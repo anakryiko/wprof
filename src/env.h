@@ -27,6 +27,7 @@
 #define DEFAULT_CAPTURE_PYSTACKS FALSE
 #define DEFAULT_CAPTURE_PYTRACE FALSE
 #define DEFAULT_CAPTURE_TORCH_PROFILER FALSE
+#define DEFAULT_CAPTURE_UTRACE FALSE
 
 extern bool env_verbose;
 extern int env_debug_level;
@@ -80,6 +81,7 @@ struct env {
 	enum tristate capture_pystacks;
 	enum tristate capture_pytrace;
 	enum tristate capture_pytorch;
+	enum tristate capture_utrace;
 
 	/* trace visualization features */
 	bool emit_sched_view;
@@ -212,6 +214,9 @@ static inline void cfg_set_capture_pytrace(struct wprof_data_cfg *cfg, bool val)
 
 static inline bool cfg_get_capture_pytorch(const struct wprof_data_cfg *cfg) { return cfg->capture_pytorch; }
 static inline void cfg_set_capture_pytorch(struct wprof_data_cfg *cfg, bool val) { cfg->capture_pytorch = val; }
+
+static inline bool cfg_get_capture_utrace(const struct wprof_data_cfg *cfg) { return cfg->capture_utrace; }
+static inline void cfg_set_capture_utrace(struct wprof_data_cfg *cfg, bool val) { cfg->capture_utrace = val; }
 
 struct capture_feature {
 	const char *name;

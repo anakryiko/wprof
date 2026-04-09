@@ -55,6 +55,7 @@
 #include "../libbpf/src/strset.h"
 #include "pystacks.h"
 #include "pysym.h"
+#include "utrace.h"
 
 static bool ignore_libbpf_warns;
 
@@ -83,6 +84,8 @@ const struct capture_feature capture_features[] = {
 	 offsetof(struct env, capture_pytrace), cfg_get_capture_pytrace, cfg_set_capture_pytrace},
 	{"PyTorch RecordFunction", "Torch:", DEFAULT_CAPTURE_TORCH_PROFILER,
 	 offsetof(struct env, capture_pytorch), cfg_get_capture_pytorch, cfg_set_capture_pytorch},
+	{"user-defined tracing", "Utrace:", DEFAULT_CAPTURE_UTRACE,
+	 offsetof(struct env, capture_utrace), cfg_get_capture_utrace, cfg_set_capture_utrace},
 };
 
 const int capture_feature_cnt = ARRAY_SIZE(capture_features);
@@ -777,6 +780,35 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 		return err;
 	}
 
+	if (env.utrace_cfg_cnt > 0) {
+		env.capture_utrace = TRUE;
+
+		/* Validate: if any utrace config requests stack capture, -Sutrace must be enabled */
+		if (!(env.requested_stack_traces & ST_UTRACE)) {
+			for (int i = 0; i < env.utrace_cfg_cnt; i++) {
+				const struct utrace_cfg *cfg = &env.utrace_cfgs[i];
+				for (int j = 0; j < cfg->param_cnt; j++) {
+					if (cfg->params[j].type == UTRACE_PARAM_CAPTURE_STACK) {
+						eprintf("utrace config #%d requests 'stack' capture, but -Sutrace is not enabled\n", i + 1);
+						return -EINVAL;
+					}
+				}
+			}
+		}
+
+		utrace_setup_autoload(skel);
+		/* Count total map entries needed (spans need 2 entries each) */
+		int map_cnt = 0;
+		for (int i = 0; i < env.utrace_cfg_cnt; i++) {
+			enum utrace_type t = env.utrace_cfgs[i].type;
+			map_cnt += (t == UTRACE_UPROBE_SPAN || t == UTRACE_KPROBE_SPAN) ? 2 : 1;
+		}
+		bpf_map__set_max_entries(skel->maps.utrace_probe_cfgs, map_cnt);
+	} else {
+		bpf_map__set_autocreate(skel->maps.utrace_probe_cfgs, false);
+		bpf_map__set_autocreate(skel->maps.utrace_scratch, false);
+	}
+
 	 /* force RB notification when at least 2.0MB or 25% of ringbuf (whichever is less) is full */
 	skel->rodata->rb_submit_threshold_bytes = min(2 * 1024 * 1024, env.ringbuf_sz / 4);
 
@@ -932,6 +964,14 @@ static int attach_bpf(struct bpf_state *st, struct worker_state *workers, int nu
 		err = attach_req_tracking_usdts(st);
 		if (err) {
 			eprintf("Failed to attach request tracking USDTs: %d\n", err);
+			return err;
+		}
+	}
+
+	if (env.utrace_cfg_cnt > 0) {
+		err = utrace_setup(st, st->skel);
+		if (err) {
+			eprintf("Failed to setup utrace probes: %d\n", err);
 			return err;
 		}
 	}
@@ -1207,14 +1247,15 @@ int main(int argc, char **argv)
 			if (cfg->captured_stack_traces) {
 				wprintf("%-*s\n", w, "Stack traces:");
 				if (cfg->captured_stack_traces & ST_TIMER)
-					wprintf("%-*s%s\n", w, "", "timer");
+					wprintf("    --stacks timer\n");
 				if (cfg->captured_stack_traces & ST_OFFCPU)
-					wprintf("%-*s%s\n", w,"",  "offcpu");
+					wprintf("    --stacks offcpu\n");
 				if (cfg->captured_stack_traces & ST_WAKER)
-					wprintf("%-*s%s\n", w, "", "waker");
+					wprintf("    --stacks waker\n");
 				if (cfg->captured_stack_traces & ST_CUDA)
-					wprintf("%-*s%s\n", w, "", "cuda");
-
+					wprintf("    --stacks cuda\n");
+				if (cfg->captured_stack_traces & ST_UTRACE)
+					wprintf("    --stacks utrace\n");
 			} else {
 				wprintf("%-*s%s\n", w, "Stack traces:", "NONE");
 			}
@@ -1225,11 +1266,11 @@ int main(int argc, char **argv)
 				wprintf("%-*s\n", w, "PMU counters:");
 				for (int i = 0; i < dump_hdr->pmu_def_real_cnt; i++) {
 					struct wevent_pmu_def *def = wevent_pmu_def(dump_hdr, i);
-					wprintf("%-*s%s\n", w, "", wevent_str(dump_hdr, def->name_stroff));
+					wprintf("    %s\n", wevent_str(dump_hdr, def->name_stroff));
 				}
 				for (int i = 0; i < dump_hdr->pmu_def_deriv_cnt; i++) {
 					struct wevent_pmu_def *def = wevent_pmu_def(dump_hdr, dump_hdr->pmu_def_real_cnt + i);
-					wprintf("%-*s%s (derived)\n", w, "", wevent_str(dump_hdr, def->name_stroff));
+					wprintf("    %s (derived)\n", wevent_str(dump_hdr, def->name_stroff));
 				}
 			} else {
 				wprintf("%-*s%s\n", w, "PMU counters:", "NONE");
