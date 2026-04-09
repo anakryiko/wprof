@@ -3,8 +3,10 @@
 #ifndef __UTRACE_CFG_H_
 #define __UTRACE_CFG_H_
 
+#ifndef __bpf__
 #include <stdbool.h>
 #include <stddef.h>
+#endif
 
 enum utrace_type {
 	UTRACE_INVALID,
@@ -41,6 +43,8 @@ enum utrace_param_type {
 };
 
 #define UTRACE_ARG_RET (-1)
+
+#ifndef __bpf__
 
 struct utrace_param {
 	enum utrace_param_type type;
@@ -110,5 +114,7 @@ struct sbuf;
 int utrace_cfg_parse(const char *def);
 int utrace_cfg_parse_file(const char *path);
 void utrace_cfg_format(const struct utrace_cfg *cfg, struct sbuf *sb);
+
+#endif /* !__bpf__ */
 
 #endif /* __UTRACE_CFG_H_ */

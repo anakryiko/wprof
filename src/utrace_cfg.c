@@ -232,8 +232,8 @@ static int validate_probe_def(struct sview orig, const struct utrace_cfg *cfg)
 		if (p->type == UTRACE_PARAM_ARG) {
 			if (is_ret_probe(cfg->type) && p->arg.arg_idx != UTRACE_ARG_RET)
 				return utrace_err(orig, orig, "return probes only support arg:ret captures, not arg:%d\n", p->arg.arg_idx);
-			if (!is_ret_probe(cfg->type) && p->arg.arg_idx == UTRACE_ARG_RET)
-				return utrace_err(orig, orig, "arg:ret is only valid on return probes (uret/kret)\n");
+			if (!is_ret_probe(cfg->type) && !is_span_probe(cfg->type) && p->arg.arg_idx == UTRACE_ARG_RET)
+				return utrace_err(orig, orig, "arg:ret is only valid on return/span probes (uret/kret/uspan/kspan)\n");
 		}
 		if (p->type == UTRACE_PARAM_BINARY_PATH && !is_uprobe(cfg->type))
 			return utrace_err(orig, orig, "'path' parameter is only valid for uprobe-based probes\n");
