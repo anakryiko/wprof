@@ -103,6 +103,11 @@ enum event_kind {
 	EV_PYTORCH_ENTRY = 62,
 	EV_PYTORCH_EXIT = 63,
 
+	/* User-defined tracing (utrace) */
+	EV_UTRACE_INSTANT = 70,
+	EV_UTRACE_ENTRY = 71,
+	EV_UTRACE_EXIT = 72,
+
 	__EV_KIND_MAX,
 };
 
@@ -114,6 +119,7 @@ enum stack_trace_kind {
 	ST_WAKER		= 1 << 2, /* thread being marked runnable, waker-side stack trace */
 	ST_CUDA			= 1 << 3, /* CUDA API calls */
 	ST_REQ			= 1 << 4, /* request lifecycle events (begin/end/set/unset) */
+	ST_UTRACE		= 1 << 5, /* user-defined tracing probes */
 
 	__ST_LAST,
 	ST_ANY = (__ST_LAST - 1) * 2 - 1,
@@ -199,6 +205,28 @@ enum scx_dsq_insert_type {
 	SCX_DSQ_MOVE_VTIME = 5,
 	SCX_DSQ_DISPATCH_FROM_DSQ = 6,
 	SCX_DSQ_DISPATCH_VTIME_FROM_DSQ = 7,
+};
+
+#define MAX_UTRACE_ARGS 8
+#define MAX_UTRACE_STR_SZ 128
+
+enum utrace_event_type {
+	UTRACE_INSTANT,		/* non-span: uprobe, uretprobe, kprobe, kretprobe */
+	UTRACE_ENTRY,		/* span entry half */
+	UTRACE_EXIT,		/* span exit half */
+};
+
+/* Per-probe config, stored in BPF array map, populated from utrace_cfg */
+struct utrace_probe_cfg {
+	u32 utrace_id;		/* index into utrace_cfgs (same for both halves of a span) */
+	u8 arg_cnt;
+	u8 capture_stack;
+	u8 event_type;		/* enum utrace_event_type → maps to EV_UTRACE_INSTANT/ENTRY/EXIT */
+	u8 is_kernel;
+	struct {
+		u8 type;	/* utrace_arg_type */
+		s8 idx;		/* 0-based arg index, or UTRACE_ARG_RET (-1) */
+	} args[MAX_UTRACE_ARGS];
 };
 
 struct wprof_event {
@@ -346,6 +374,11 @@ struct wprof_event {
 			u32 ret_val;
 			u8 kind;
 		} cuda_api;
+		struct wprof_utrace {
+			u32 utrace_id;
+			s16 arg_len[MAX_UTRACE_ARGS];	/* per-arg byte length; negative = read error */
+			/* trailing dyn data: u64 for integer args, raw string bytes for string args */
+		} utrace;
 	};
 };
 
@@ -376,6 +409,9 @@ static inline u16 bpf_event_fix_sz(const struct wprof_event *e)
 	case EV_REQ_TASK_EVENT:	return EV_SZ(req_task);
 	case EV_SCX_DSQ_END:	return EV_SZ(scx_dsq);
 	case EV_CUDA_CALL:	return EV_SZ(cuda_call);
+	case EV_UTRACE_INSTANT:
+	case EV_UTRACE_ENTRY:
+	case EV_UTRACE_EXIT:	return EV_SZ(utrace);
 	default:		return e->sz;
 	}
 }
