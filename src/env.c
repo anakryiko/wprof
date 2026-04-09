@@ -55,6 +55,7 @@ struct env env = {
 	.emit_req_split = true,
 	.capture_pytrace = UNSET,
 	.capture_pytorch = UNSET,
+	.capture_utrace = UNSET,
 	.pmu_real_cnt = -1,
 	.pmu_deriv_cnt = -1,
 	.pmu_unresolved_cnt = -1,
@@ -112,7 +113,7 @@ static const struct argp_option opts[] = {
 	{ "replay-end", OPT_REPLAY_OFFSET_END, "TIME_OFFSET", 0, "Session end time offset (replay mode only). Supported syntax: 2s, 1.03s, 10.5ms, 12us, 101213ns" },
 	{ "replay-info", 'I', NULL, 0, "Print recorded data information" },
 
-	{ "stacks", 'S', "KIND", OPTION_ARG_OPTIONAL, "Capture stack traces (supported kinds: timer, offcpu, waker, cuda, req, all; default = timer + offcpu)" },
+	{ "stacks", 'S', "KIND", OPTION_ARG_OPTIONAL, "Capture stack traces (supported kinds: timer, offcpu, waker, cuda, req, utrace, all; default = timer + offcpu)" },
 	{ "no-stacks", OPT_NO_STACK_TRACES, "KIND", OPTION_ARG_OPTIONAL, "Don't capture or emit stack traces" },
 	{ "symbolize-frugal", OPT_SYMBOLIZE_FRUGALLY, NULL, 0, "Symbolize frugally (slower, but less memory hungry)" },
 
@@ -183,6 +184,8 @@ static enum stack_trace_kind parse_stack_kinds(const char *arg)
 		return ST_CUDA;
 	if (strcasecmp(arg, "req") == 0)
 		return ST_REQ;
+	if (strcasecmp(arg, "utrace") == 0)
+		return ST_UTRACE;
 
 	if (strcasecmp(arg, "all") == 0)
 		return ST_ALL;
