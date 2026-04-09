@@ -140,6 +140,14 @@ int parse_cpu_mask(const char *fcpu, bool **mask, int *mask_sz);
 
 bool wprof_glob_match(const char *pat, const char *str);
 
+static inline bool str_has_suffix(const char *str, const char *suffix)
+{
+	size_t str_len = strlen(str);
+	size_t sfx_len = strlen(suffix);
+
+	return str_len >= sfx_len && strcmp(str + str_len - sfx_len, suffix) == 0;
+}
+
 /* HASHMAP HELPERS */
 static inline size_t str_hash_fn(long key, void *ctx)
 {

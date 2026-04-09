@@ -15,6 +15,7 @@
 #include "utrace_cfg.h"
 #include "elf_utils.h"
 #include "bpf_utils.h"
+#include "proc.h"
 #include "wprof.skel.h"
 
 static int add_link(struct bpf_state *st, struct bpf_link *link)
@@ -139,6 +140,15 @@ static void fill_probe_cfg(struct utrace_probe_cfg *pcfg, const struct utrace_cf
 		arg_idx++;
 	}
 	pcfg->arg_cnt = arg_idx;
+}
+
+static void cfg_set_binary_path(struct utrace_cfg *cfg, char *path)
+{
+	cfg->params = realloc(cfg->params, (cfg->param_cnt + 1) * sizeof(*cfg->params));
+	struct utrace_param *p = &cfg->params[cfg->param_cnt++];
+	memset(p, 0, sizeof(*p));
+	p->type = UTRACE_PARAM_BINARY_PATH;
+	p->binary.path = path;
 }
 
 static const char *cfg_binary_path(const struct utrace_cfg *cfg)
@@ -462,6 +472,52 @@ static void utrace_augment_args(void)
 	btf__free(btf);
 }
 
+/*
+ * Resolve uprobe binary path by scanning /proc/<pid>/maps for executable VMAs.
+ * Returns the /proc/<pid>/map_files/ path in attach_path_out (for ELF lookup and
+ * uprobe attach) and the human-readable VMA name in display_path_out (for logging
+ * and replay).
+ */
+static int resolve_uprobe_binary(int pid, const char *sym_name,
+				 char **attach_path_out, char **display_path_out,
+				 unsigned long *offset_out)
+{
+	__u32 last_dev_major = 0, last_dev_minor = 0;
+	__u64 last_inode = 0;
+	struct vma_info *vma;
+
+	wprof_for_each(vma, vma, pid, VMA_QUERY_FILE_BACKED_VMA | VMA_QUERY_VMA_EXECUTABLE) {
+		if (vma->vma_name[0] != '/')
+			continue;
+		/* skip duplicate segments of the same binary */
+		if (vma->dev_major == last_dev_major && vma->dev_minor == last_dev_minor && vma->inode == last_inode)
+			continue;
+		last_dev_major = vma->dev_major;
+		last_dev_minor = vma->dev_minor;
+		last_inode = vma->inode;
+
+		/* Use /proc/<pid>/map_files/ to access binary through the process's mount namespace */
+		char map_file[128];
+		snprintf(map_file, sizeof(map_file), "/proc/%d/map_files/%llx-%llx",
+			 pid, (unsigned long long)vma->vma_start, (unsigned long long)vma->vma_end);
+
+		unsigned long offset = 0;
+		if (elf_find_syms(map_file, STT_FUNC, &sym_name, &offset, 1))
+			continue;
+
+		*attach_path_out = strdup(map_file);
+		const char *name = vma->vma_name;
+		if (str_has_suffix(name, " (deleted)"))
+			*display_path_out = strndup(name, strlen(name) - 10);
+		else
+			*display_path_out = strdup(name);
+		*offset_out = offset;
+		return 0;
+	}
+
+	return -ENOENT;
+}
+
 int utrace_setup(struct bpf_state *st, struct wprof_bpf *skel)
 {
 	int err;
@@ -482,7 +538,9 @@ int utrace_setup(struct bpf_state *st, struct wprof_bpf *skel)
 
 		switch (cfg->type) {
 		case UTRACE_UPROBE:
-		case UTRACE_URETPROBE: {
+		case UTRACE_URETPROBE:
+		case UTRACE_UPROBE_SPAN: {
+			char *resolved_path = NULL;
 			binary_path = cfg_binary_path(cfg);
 			pid = cfg_pid(cfg);
 
@@ -495,35 +553,90 @@ int utrace_setup(struct bpf_state *st, struct wprof_bpf *skel)
 					return err;
 				}
 				sym_offset += cfg->uprobe.off;
+			} else if (pid >= 0) {
+				char *display_path = NULL;
+				err = resolve_uprobe_binary(pid, cfg->uprobe.name, &resolved_path, &display_path, &sym_offset);
+				if (err) {
+					eprintf("utrace: failed to find symbol '%s' in any binary of PID %d: %d\n",
+						cfg->uprobe.name, pid, err);
+					return err;
+				}
+				binary_path = resolved_path;
+				cfg_set_binary_path(&env.utrace_cfgs[i], display_path);
+				sym_offset += cfg->uprobe.off;
 			} else {
-				eprintf("utrace: uprobe '%s' requires a binary path (path: param)\n", cfg->uprobe.name);
+				eprintf("utrace: uprobe '%s' requires a binary path (path:) or process (pid:)\n", cfg->uprobe.name);
 				return -EINVAL;
 			}
 
-			fill_probe_cfg(&pcfg, cfg, i, UTRACE_INSTANT, false);
-			err = bpf_map_update_elem(map_fd, &map_idx, &pcfg, BPF_ANY);
-			if (err) {
-				eprintf("utrace: failed to update probe cfg map: %d\n", err);
-				return err;
-			}
+			if (cfg->type == UTRACE_UPROBE_SPAN) {
+				/* Entry half */
+				fill_probe_cfg(&pcfg, cfg, i, UTRACE_ENTRY, false);
+				err = bpf_map_update_elem(map_fd, &map_idx, &pcfg, BPF_ANY);
+				if (err)
+					return err;
 
-			uprobe_opts.bpf_cookie = map_idx;
-			uprobe_opts.retprobe = (cfg->type == UTRACE_URETPROBE);
-			struct bpf_program *prog = cfg->type == UTRACE_URETPROBE
-				? skel->progs.utrace_uretprobe
-				: skel->progs.utrace_uprobe;
-			link = bpf_program__attach_uprobe_opts(prog, pid, binary_path, sym_offset, &uprobe_opts);
-			if (!link) {
-				err = -errno;
-				eprintf("utrace: failed to attach %s to '%s' in '%s': %d\n",
-					cfg->type == UTRACE_URETPROBE ? "uretprobe" : "uprobe",
-					cfg->uprobe.name, binary_path, err);
-				return err;
+				uprobe_opts.bpf_cookie = map_idx;
+				uprobe_opts.retprobe = false;
+				link = bpf_program__attach_uprobe_opts(skel->progs.utrace_uprobe, pid, binary_path, sym_offset, &uprobe_opts);
+				if (!link) {
+					err = -errno;
+					eprintf("utrace: failed to attach uprobe to '%s' in '%s': %d\n",
+						cfg->uprobe.name, binary_path, err);
+					return err;
+				}
+				err = add_link(st, link);
+				if (err)
+					return err;
+				map_idx++;
+
+				/* Exit half */
+				fill_probe_cfg(&pcfg, cfg, i, UTRACE_EXIT, true);
+				err = bpf_map_update_elem(map_fd, &map_idx, &pcfg, BPF_ANY);
+				if (err)
+					return err;
+
+				LIBBPF_OPTS(bpf_uprobe_opts, ret_opts);
+				ret_opts.bpf_cookie = map_idx;
+				ret_opts.retprobe = true;
+				link = bpf_program__attach_uprobe_opts(skel->progs.utrace_uretprobe, pid, binary_path, sym_offset, &ret_opts);
+				if (!link) {
+					err = -errno;
+					eprintf("utrace: failed to attach uretprobe to '%s' in '%s': %d\n",
+						cfg->uprobe.name, binary_path, err);
+					return err;
+				}
+				err = add_link(st, link);
+				if (err)
+					return err;
+				map_idx++;
+			} else {
+				fill_probe_cfg(&pcfg, cfg, i, UTRACE_INSTANT, false);
+				err = bpf_map_update_elem(map_fd, &map_idx, &pcfg, BPF_ANY);
+				if (err) {
+					eprintf("utrace: failed to update probe cfg map: %d\n", err);
+					return err;
+				}
+
+				uprobe_opts.bpf_cookie = map_idx;
+				uprobe_opts.retprobe = (cfg->type == UTRACE_URETPROBE);
+				struct bpf_program *prog = cfg->type == UTRACE_URETPROBE
+					? skel->progs.utrace_uretprobe
+					: skel->progs.utrace_uprobe;
+				link = bpf_program__attach_uprobe_opts(prog, pid, binary_path, sym_offset, &uprobe_opts);
+				if (!link) {
+					err = -errno;
+					eprintf("utrace: failed to attach %s to '%s' in '%s': %d\n",
+						cfg->type == UTRACE_URETPROBE ? "uretprobe" : "uprobe",
+						cfg->uprobe.name, binary_path, err);
+					return err;
+				}
+				err = add_link(st, link);
+				if (err)
+					return err;
+				map_idx++;
 			}
-			err = add_link(st, link);
-			if (err)
-				return err;
-			map_idx++;
+			free(resolved_path);
 			break;
 		}
 		case UTRACE_KPROBE:
@@ -546,66 +659,6 @@ int utrace_setup(struct bpf_state *st, struct wprof_bpf *skel)
 				eprintf("utrace: failed to attach %s to '%s': %d\n",
 					cfg->type == UTRACE_KRETPROBE ? "kretprobe" : "kprobe",
 					cfg->kprobe.name, err);
-				return err;
-			}
-			err = add_link(st, link);
-			if (err)
-				return err;
-			map_idx++;
-			break;
-		}
-		case UTRACE_UPROBE_SPAN: {
-			binary_path = cfg_binary_path(cfg);
-			pid = cfg_pid(cfg);
-
-			if (!binary_path) {
-				eprintf("utrace: uprobe span '%s' requires a binary path (path: param)\n", cfg->uprobe.name);
-				return -EINVAL;
-			}
-
-			const char *sym_name = cfg->uprobe.name;
-			err = elf_find_syms(binary_path, STT_FUNC, &sym_name, &sym_offset, 1);
-			if (err < 0) {
-				eprintf("utrace: failed to resolve symbol '%s' in '%s': %d\n",
-					cfg->uprobe.name, binary_path, err);
-				return err;
-			}
-			sym_offset += cfg->uprobe.off;
-
-			/* Entry half */
-			fill_probe_cfg(&pcfg, cfg, i, UTRACE_ENTRY, false);
-			err = bpf_map_update_elem(map_fd, &map_idx, &pcfg, BPF_ANY);
-			if (err)
-				return err;
-
-			uprobe_opts.bpf_cookie = map_idx;
-			uprobe_opts.retprobe = false;
-			link = bpf_program__attach_uprobe_opts(skel->progs.utrace_uprobe, pid, binary_path, sym_offset, &uprobe_opts);
-			if (!link) {
-				err = -errno;
-				eprintf("utrace: failed to attach uprobe span entry to '%s' in '%s': %d\n",
-					cfg->uprobe.name, binary_path, err);
-				return err;
-			}
-			err = add_link(st, link);
-			if (err)
-				return err;
-			map_idx++;
-
-			/* Exit half */
-			fill_probe_cfg(&pcfg, cfg, i, UTRACE_EXIT, true);
-			err = bpf_map_update_elem(map_fd, &map_idx, &pcfg, BPF_ANY);
-			if (err)
-				return err;
-
-			LIBBPF_OPTS(bpf_uprobe_opts, ret_opts);
-			ret_opts.bpf_cookie = map_idx;
-			ret_opts.retprobe = true;
-			link = bpf_program__attach_uprobe_opts(skel->progs.utrace_uretprobe, pid, binary_path, sym_offset, &ret_opts);
-			if (!link) {
-				err = -errno;
-				eprintf("utrace: failed to attach uprobe span exit to '%s' in '%s': %d\n",
-					cfg->uprobe.name, binary_path, err);
 				return err;
 			}
 			err = add_link(st, link);
