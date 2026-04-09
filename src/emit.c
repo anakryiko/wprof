@@ -3522,7 +3522,7 @@ static s64 read_int_blob(struct wprof_data_hdr *hdr, u32 bloboff, enum utrace_ar
 	case UTRACE_ARG_S16: return *(const s16 *)p;
 	case UTRACE_ARG_U32: return *(const u32 *)p;
 	case UTRACE_ARG_S32: return *(const s32 *)p;
-	case UTRACE_ARG_U64: return *(const u64 *)p;
+	case UTRACE_ARG_U64: case UTRACE_ARG_PTR: return *(const u64 *)p;
 	case UTRACE_ARG_S64: return *(const s64 *)p;
 	default: return 0;
 	}
@@ -3557,6 +3557,11 @@ static void emit_utrace_args(struct worker_state *w, const struct wevent *e,
 
 		if (p->arg.arg_type == UTRACE_ARG_STR) {
 			emit_kv_str(name, wevent_str(hdr, arg_refs[arg_idx]));
+		} else if (p->arg.arg_type == UTRACE_ARG_PTR) {
+			char buf[20];
+			u64 val = read_int_blob(hdr, arg_refs[arg_idx], p->arg.arg_type);
+			snprintf(buf, sizeof(buf), "0x%llx", (unsigned long long)val);
+			emit_kv_str(name, buf);
 		} else {
 			emit_kv_int(name, read_int_blob(hdr, arg_refs[arg_idx], p->arg.arg_type));
 		}
@@ -3684,6 +3689,11 @@ static void emit_utrace_json(struct worker_state *w, const struct wevent *e)
 
 			if (p->arg.arg_type == UTRACE_ARG_STR) {
 				json_kv_str(j, name, wevent_str(hdr, arg_refs[arg_idx]));
+			} else if (p->arg.arg_type == UTRACE_ARG_PTR) {
+				char buf[20];
+				u64 val = read_int_blob(hdr, arg_refs[arg_idx], p->arg.arg_type);
+				snprintf(buf, sizeof(buf), "0x%llx", (unsigned long long)val);
+				json_kv_str(j, name, buf);
 			} else {
 				json_kv_int(j, name, read_int_blob(hdr, arg_refs[arg_idx], p->arg.arg_type));
 			}

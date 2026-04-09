@@ -33,6 +33,7 @@ enum utrace_arg_type {
 	UTRACE_ARG_S32,
 	UTRACE_ARG_S64,
 	UTRACE_ARG_STR,
+	UTRACE_ARG_PTR,
 };
 
 static inline int utrace_arg_size(enum utrace_arg_type t)
@@ -41,7 +42,7 @@ static inline int utrace_arg_size(enum utrace_arg_type t)
 	case UTRACE_ARG_U8:  case UTRACE_ARG_S8:  return 1;
 	case UTRACE_ARG_U16: case UTRACE_ARG_S16: return 2;
 	case UTRACE_ARG_U32: case UTRACE_ARG_S32: return 4;
-	case UTRACE_ARG_U64: case UTRACE_ARG_S64: return 8;
+	case UTRACE_ARG_U64: case UTRACE_ARG_S64: case UTRACE_ARG_PTR: return 8;
 	default: return 0;
 	}
 }

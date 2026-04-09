@@ -61,6 +61,7 @@ static const struct {
 	{ "s64", UTRACE_ARG_S64 },
 	{ "long", UTRACE_ARG_S64 },
 	{ "str", UTRACE_ARG_STR },
+	{ "ptr", UTRACE_ARG_PTR },
 };
 
 static int parse_arg_type(struct sview v, enum utrace_arg_type *out)
@@ -101,7 +102,7 @@ static const struct {
 static int parse_arg_param(struct sview orig, struct sview def, struct utrace_param *p)
 {
 	struct sview name, arg, arg_type;
-	enum utrace_arg_type atype = UTRACE_ARG_U64;
+	enum utrace_arg_type atype = UTRACE_ARG_UNKNOWN;
 	long idx;
 
 	def = sv_trim(def);
@@ -563,7 +564,7 @@ static void format_probe(const struct utrace_cfg *cfg, struct sbuf *sb)
 					sbuf_appendf(sb, "arg:ret");
 				else
 					sbuf_appendf(sb, "arg:%d", p->arg.arg_idx);
-				if (p->arg.arg_type != UTRACE_ARG_U64)
+				if (p->arg.arg_type != UTRACE_ARG_UNKNOWN)
 					sbuf_appendf(sb, ":%s", arg_type_str(p->arg.arg_type));
 				if (p->arg.name)
 					sbuf_appendf(sb, "->%s", p->arg.name);
