@@ -12,6 +12,7 @@
 #include "pmu.h"
 #include "cuda_data.h"
 #include "pytrace_data.h"
+#include "utrace_cfg.h"
 #include "proc.h"
 #include "../libbpf/src/strset.h"
 #include "../libbpf/src/hashmap.h"
@@ -345,6 +346,84 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 		dst->scx_dsq.scx_layer_id = e->scx_dsq.scx_layer_id;
 		dst->scx_dsq.scx_dsq_insert_type = e->scx_dsq.scx_dsq_insert_type;
 		break;
+
+	case EV_UTRACE_INSTANT:
+	case EV_UTRACE_ENTRY:
+	case EV_UTRACE_EXIT: {
+		u32 utrace_id = e->utrace.utrace_id;
+		const struct utrace_cfg *cfg = &env.utrace_cfgs[utrace_id];
+
+		/* Derive arg_cnt and arg types from config, filtered for entry/exit */
+		int arg_cnt = 0;
+		int int_cnt = 0;
+		for (int i = 0; i < cfg->param_cnt; i++) {
+			const struct utrace_param *p = &cfg->params[i];
+			if (p->type != UTRACE_PARAM_ARG)
+				continue;
+			if (e->kind == EV_UTRACE_ENTRY && p->arg.arg_idx == UTRACE_ARG_RET)
+				continue;
+			if (e->kind == EV_UTRACE_EXIT && p->arg.arg_idx != UTRACE_ARG_RET)
+				continue;
+			if (p->arg.arg_type != UTRACE_ARG_STR)
+				int_cnt++;
+			arg_cnt++;
+		}
+
+		u16 wsz = WEVENT_SZ(utrace) + arg_cnt * sizeof(u32) + int_cnt * sizeof(u64);
+		fill_wevent_hdr(dst, e, task_id, wsz);
+
+		dst->utrace.utrace_id = utrace_id;
+		dst->utrace.utrace_stack_id = bpf_event_stack_id(e, ST_UTRACE);
+
+		/* Walk BPF event trailing data using arg_len[] */
+		const void *dyn_data = (const void *)e + EV_SZ(utrace);
+		/* skip past stack trace data if present */
+		dyn_data += bpf_event_stack_traces_sz(e);
+
+		u32 *arg_refs = (u32 *)((void *)dst + WEVENT_SZ(utrace));
+		u64 *int_vals = (u64 *)((void *)arg_refs + arg_cnt * sizeof(u32));
+		int int_idx = 0;
+		int dyn_off = 0;
+
+		for (int i = 0; i < arg_cnt && i < MAX_UTRACE_ARGS; i++) {
+			s16 len = e->utrace.arg_len[i];
+
+			if (len <= 0) {
+				/* Error reading arg — store empty string / zero */
+				arg_refs[i] = 0;
+				continue;
+			}
+
+			/* Determine type from config arg at position i */
+			int cfg_arg_idx = 0;
+			const struct utrace_param *p = NULL;
+			for (int j = 0; j < cfg->param_cnt; j++) {
+				p = &cfg->params[j];
+				if (p->type != UTRACE_PARAM_ARG)
+					continue;
+				if (e->kind == EV_UTRACE_ENTRY && p->arg.arg_idx == UTRACE_ARG_RET)
+					continue;
+				if (e->kind == EV_UTRACE_EXIT && p->arg.arg_idx != UTRACE_ARG_RET)
+					continue;
+				if (cfg_arg_idx == i)
+					break;
+				cfg_arg_idx++;
+			}
+
+			if (p && p->arg.arg_type == UTRACE_ARG_STR) {
+				const char *str = (const char *)dyn_data + dyn_off;
+				arg_refs[i] = persist_stroff(ps, str);
+			} else {
+				u64 val;
+				memcpy(&val, dyn_data + dyn_off, sizeof(u64));
+				arg_refs[i] = int_idx * sizeof(u64);
+				int_vals[int_idx] = val;
+				int_idx++;
+			}
+			dyn_off += len;
+		}
+		break;
+	}
 
 	/* ephemeral */
 	case EV_CUDA_CALL: {
