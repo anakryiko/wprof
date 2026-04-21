@@ -17,6 +17,8 @@ struct bpf_state {
 	struct wprof_bpf *skel;
 	struct bpf_link **links;
 	int link_cnt;
+	int *link_fds;
+	int link_fd_cnt;
 	struct ring_buffer **rb_managers;
 	pthread_t *rb_threads;
 	int *perf_timer_fds;

@@ -3493,6 +3493,9 @@ static const char *utrace_probe_name(const struct utrace_cfg *cfg)
 	case UTRACE_USDT:		return cfg->usdt.name;
 	case UTRACE_TRACEPOINT:		return cfg->tp.name;
 	case UTRACE_RAW_TRACEPOINT:	return cfg->raw_tp.name;
+	case UTRACE_BPF_PROBE:
+	case UTRACE_BPF_RETPROBE:
+	case UTRACE_BPF_SPAN:		return cfg->bpf_prog.name;
 	default:			return "?";
 	}
 }
