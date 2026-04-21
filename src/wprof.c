@@ -796,14 +796,11 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 			}
 		}
 
-		utrace_setup_autoload(skel);
-		/* Count total map entries needed (spans need 2 entries each) */
-		int map_cnt = 0;
-		for (int i = 0; i < env.utrace_cfg_cnt; i++) {
-			enum utrace_type t = env.utrace_cfgs[i].type;
-			map_cnt += (t == UTRACE_UPROBE_SPAN || t == UTRACE_KPROBE_SPAN) ? 2 : 1;
+		err = utrace_setup(skel);
+		if (err) {
+			eprintf("Failed to setup utrace: %d\n", err);
+			return err;
 		}
-		bpf_map__set_max_entries(skel->maps.utrace_probe_cfgs, map_cnt);
 	} else {
 		bpf_map__set_autocreate(skel->maps.utrace_probe_cfgs, false);
 		bpf_map__set_autocreate(skel->maps.utrace_scratch, false);
@@ -817,6 +814,20 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 		if (st->stats_fd < 0)
 			eprintf("Failed to enable BPF run stats tracking: %d!\n", st->stats_fd);
 	}
+
+	err = bpf_object__prepare(skel->obj);
+	if (err) {
+		eprintf("Failed to prepare BPF skeleton: %d\n", err);
+		return err;
+	}
+
+	/*
+	 * BPF fentry/fexit templates needed to be autoloaded for prepare() to
+	 * process them, but must not be loaded into the kernel — they are only
+	 * used as clone sources. Unconditionally disable; harmless if unused.
+	 */
+	bpf_program__set_autoload(skel->progs.utrace_bpf_entry, false);
+	bpf_program__set_autoload(skel->progs.utrace_bpf_exit, false);
 
 	err = wprof_bpf__load(skel);
 	if (err) {
@@ -969,9 +980,9 @@ static int attach_bpf(struct bpf_state *st, struct worker_state *workers, int nu
 	}
 
 	if (env.utrace_cfg_cnt > 0) {
-		err = utrace_setup(st, st->skel);
+		err = utrace_attach(st, st->skel);
 		if (err) {
-			eprintf("Failed to setup utrace probes: %d\n", err);
+			eprintf("Failed to attach utrace probes: %d\n", err);
 			return err;
 		}
 	}
@@ -1025,6 +1036,11 @@ static void detach_bpf(struct bpf_state *st, int num_cpus)
 		for (int i = 0; i < st->link_cnt; i++)
 			bpf_link__destroy(st->links[i]);
 		free(st->links);
+	}
+	if (st->link_fds) {
+		for (int i = 0; i < st->link_fd_cnt; i++)
+			close(st->link_fds[i]);
+		free(st->link_fds);
 	}
 	if (st->perf_timer_fds) {
 		for (int i = 0; i < num_cpus; i++) {

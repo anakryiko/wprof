@@ -19,6 +19,9 @@ enum utrace_type {
 	UTRACE_RAW_TRACEPOINT,	/* raw_tp:name */
 	UTRACE_UPROBE_SPAN,	/* uspan:func */
 	UTRACE_KPROBE_SPAN,	/* kspan:func */
+	UTRACE_BPF_PROBE,	/* bpf:prog_name */
+	UTRACE_BPF_RETPROBE,	/* bpfret:prog_name */
+	UTRACE_BPF_SPAN,	/* bpfspan:prog_name */
 	UTRACE_SPAN,		/* two non-span probes joined by + */
 };
 
@@ -137,6 +140,14 @@ struct utrace_cfg {
 			char *name;
 		} raw_tp;
 
+		/* BPF_PROBE, BPF_RETPROBE, BPF_SPAN */
+		struct {
+			char *name;
+			int prog_fd;	/* resolved target prog fd (filled during setup) */
+			unsigned int btf_func_id; /* BTF func type ID */
+			struct btf *btf; /* target prog BTF (valid during setup only) */
+		} bpf_prog;
+
 		/* GENERIC SPAN */
 		struct {
 			struct utrace_cfg *entry;
@@ -146,6 +157,11 @@ struct utrace_cfg {
 };
 
 struct sbuf;
+
+static inline bool cfg_is_span(const struct utrace_cfg *cfg)
+{
+	return cfg->type == UTRACE_UPROBE_SPAN || cfg->type == UTRACE_KPROBE_SPAN || cfg->type == UTRACE_BPF_SPAN;
+}
 
 int utrace_cfg_parse(const char *def);
 int utrace_cfg_parse_file(const char *path);
