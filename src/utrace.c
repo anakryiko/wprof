@@ -690,52 +690,55 @@ int utrace_setup(struct wprof_bpf *skel)
 
 	for (int i = 0; i < env.utrace_cfg_cnt; i++) {
 		struct utrace_cfg *cfg = &env.utrace_cfgs[i];
-		int err;
 
 		map_cnt += cfg_is_span(cfg) ? 2 : 1;
 
-		switch (cfg->type) {
-		case UTRACE_UPROBE:
-		case UTRACE_URETPROBE:
-		case UTRACE_UPROBE_SPAN:
-			if (cfg_needs_uprobe(cfg))
-				bpf_program__set_autoload(skel->progs.utrace_uprobe, true);
-			if (cfg_needs_uretprobe(cfg))
-				bpf_program__set_autoload(skel->progs.utrace_uretprobe, true);
-			err = resolve_uprobe_cfg(cfg);
-			if (err)
-				return err;
-			break;
-		case UTRACE_KPROBE:
-		case UTRACE_KRETPROBE:
-		case UTRACE_KPROBE_SPAN:
-			if (cfg_needs_kprobe(cfg))
-				bpf_program__set_autoload(skel->progs.utrace_kprobe, true);
-			if (cfg_needs_kretprobe(cfg))
-				bpf_program__set_autoload(skel->progs.utrace_kretprobe, true);
-			break;
-		case UTRACE_BPF_PROBE:
-		case UTRACE_BPF_RETPROBE:
-		case UTRACE_BPF_SPAN:
-			err = find_bpf_prog_by_name(cfg->bpf_prog.name,
-						    &cfg->bpf_prog.prog_fd,
-						    &cfg->bpf_prog.btf_func_id,
-						    &cfg->bpf_prog.btf);
-			if (err) {
-				eprintf("utrace: failed to find BPF program '%s': %d\n", cfg->bpf_prog.name, err);
-				return err;
+		utrace_for_each_leg(leg, cfg) {
+			int err;
+
+			switch (leg->type) {
+			case UTRACE_UPROBE:
+			case UTRACE_URETPROBE:
+			case UTRACE_UPROBE_SPAN:
+				if (cfg_needs_uprobe(leg))
+					bpf_program__set_autoload(skel->progs.utrace_uprobe, true);
+				if (cfg_needs_uretprobe(leg))
+					bpf_program__set_autoload(skel->progs.utrace_uretprobe, true);
+				err = resolve_uprobe_cfg(leg);
+				if (err)
+					return err;
+				break;
+			case UTRACE_KPROBE:
+			case UTRACE_KRETPROBE:
+			case UTRACE_KPROBE_SPAN:
+				if (cfg_needs_kprobe(leg))
+					bpf_program__set_autoload(skel->progs.utrace_kprobe, true);
+				if (cfg_needs_kretprobe(leg))
+					bpf_program__set_autoload(skel->progs.utrace_kretprobe, true);
+				break;
+			case UTRACE_BPF_PROBE:
+			case UTRACE_BPF_RETPROBE:
+			case UTRACE_BPF_SPAN:
+				err = find_bpf_prog_by_name(leg->bpf_prog.name,
+							    &leg->bpf_prog.prog_fd,
+							    &leg->bpf_prog.btf_func_id,
+							    &leg->bpf_prog.btf);
+				if (err) {
+					eprintf("utrace: failed to find BPF program '%s': %d\n", leg->bpf_prog.name, err);
+					return err;
+				}
+				if (first_prog_fd < 0) {
+					first_prog_fd = leg->bpf_prog.prog_fd;
+					first_func_name = leg->bpf_prog.name;
+				}
+				if (leg->type == UTRACE_BPF_PROBE || leg->type == UTRACE_BPF_SPAN)
+					need_fentry = true;
+				if (leg->type == UTRACE_BPF_RETPROBE || leg->type == UTRACE_BPF_SPAN)
+					need_fexit = true;
+				break;
+			default:
+				break;
 			}
-			if (first_prog_fd < 0) {
-				first_prog_fd = cfg->bpf_prog.prog_fd;
-				first_func_name = cfg->bpf_prog.name;
-			}
-			if (cfg->type == UTRACE_BPF_PROBE || cfg->type == UTRACE_BPF_SPAN)
-				need_fentry = true;
-			if (cfg->type == UTRACE_BPF_RETPROBE || cfg->type == UTRACE_BPF_SPAN)
-				need_fexit = true;
-			break;
-		default:
-			break;
 		}
 	}
 	bpf_map__set_autocreate(skel->maps.utrace_probe_cfgs, true);
@@ -773,12 +776,113 @@ int utrace_setup(struct wprof_bpf *skel)
 
 	/* Free BPF program BTFs — only needed for arg resolution above */
 	for (int i = 0; i < env.utrace_cfg_cnt; i++) {
-		if (cfg_is_bpf_type(&env.utrace_cfgs[i])) {
-			btf__free(env.utrace_cfgs[i].bpf_prog.btf);
-			env.utrace_cfgs[i].bpf_prog.btf = NULL;
+		utrace_for_each_leg(leg, &env.utrace_cfgs[i]) {
+			if (cfg_is_bpf_type(leg)) {
+				btf__free(leg->bpf_prog.btf);
+				leg->bpf_prog.btf = NULL;
+			}
 		}
 	}
 
+	return 0;
+}
+
+/*
+ * Attach one probe instance for the given cfg (which may be a simple type or a
+ * native span). Callers of native spans (UPROBE_SPAN/KPROBE_SPAN/BPF_SPAN) invoke
+ * this twice with is_retprobe false/true for entry/exit sides. For simple ret
+ * types (URETPROBE/KRETPROBE/BPF_RETPROBE) callers pass is_retprobe=true.
+ */
+static int attach_utrace_probe(struct bpf_state *st, struct wprof_bpf *skel,
+			       struct utrace_cfg *cfg, int utrace_id,
+			       enum utrace_event_type event_type, bool is_exit,
+			       bool is_retprobe, int map_fd, u32 *map_idx)
+{
+	struct utrace_probe_cfg pcfg;
+	int err;
+
+	fill_probe_cfg(&pcfg, cfg, utrace_id, event_type, is_exit);
+	err = bpf_map_update_elem(map_fd, map_idx, &pcfg, BPF_ANY);
+	if (err)
+		return err;
+
+	switch (cfg->type) {
+	case UTRACE_UPROBE:
+	case UTRACE_URETPROBE:
+	case UTRACE_UPROBE_SPAN: {
+		struct bpf_program *prog = is_retprobe ? skel->progs.utrace_uretprobe
+						       : skel->progs.utrace_uprobe;
+		LIBBPF_OPTS(bpf_uprobe_opts, opts, .bpf_cookie = *map_idx, .retprobe = is_retprobe);
+		struct bpf_link *link = bpf_program__attach_uprobe_opts(prog, cfg_pid(cfg),
+									cfg->uprobe.attach_path,
+									cfg->uprobe.attach_off, &opts);
+		if (!link) {
+			err = -errno;
+			eprintf("utrace: failed to attach %s to '%s' in '%s': %d\n",
+				is_retprobe ? "uretprobe" : "uprobe",
+				cfg->uprobe.name, cfg->uprobe.display_path, err);
+			return err;
+		}
+		err = add_link(st, link);
+		if (err)
+			return err;
+		break;
+	}
+	case UTRACE_KPROBE:
+	case UTRACE_KRETPROBE:
+	case UTRACE_KPROBE_SPAN: {
+		struct bpf_program *prog = is_retprobe ? skel->progs.utrace_kretprobe
+						       : skel->progs.utrace_kprobe;
+		LIBBPF_OPTS(bpf_kprobe_opts, opts, .bpf_cookie = *map_idx, .retprobe = is_retprobe);
+		struct bpf_link *link = bpf_program__attach_kprobe_opts(prog, cfg->kprobe.name, &opts);
+		if (!link) {
+			err = -errno;
+			eprintf("utrace: failed to attach %s to '%s': %d\n",
+				is_retprobe ? "kretprobe" : "kprobe", cfg->kprobe.name, err);
+			return err;
+		}
+		err = add_link(st, link);
+		if (err)
+			return err;
+		break;
+	}
+	case UTRACE_BPF_PROBE:
+	case UTRACE_BPF_RETPROBE:
+	case UTRACE_BPF_SPAN: {
+		struct bpf_program *tmpl = is_retprobe ? skel->progs.utrace_bpf_exit
+						       : skel->progs.utrace_bpf_entry;
+		enum bpf_attach_type atype = is_retprobe ? BPF_TRACE_FEXIT : BPF_TRACE_FENTRY;
+
+		LIBBPF_OPTS(bpf_prog_load_opts, clone_opts,
+			    .attach_prog_fd = cfg->bpf_prog.prog_fd,
+			    .attach_btf_id = cfg->bpf_prog.btf_func_id);
+		int clone_fd = bpf_program__clone(tmpl, &clone_opts);
+		if (clone_fd < 0) {
+			eprintf("utrace: failed to clone %s for BPF prog '%s': %d\n",
+				is_retprobe ? "fexit" : "fentry", cfg->bpf_prog.name, clone_fd);
+			return clone_fd;
+		}
+
+		LIBBPF_OPTS(bpf_link_create_opts, link_opts, .tracing.cookie = *map_idx);
+		int link_fd = bpf_link_create(clone_fd, 0, atype, &link_opts);
+		close(clone_fd);
+		if (link_fd < 0) {
+			err = -errno;
+			eprintf("utrace: failed to attach %s to BPF prog '%s': %d\n",
+				is_retprobe ? "fexit" : "fentry", cfg->bpf_prog.name, err);
+			return err;
+		}
+		err = add_link_fd(st, link_fd);
+		if (err)
+			return err;
+		break;
+	}
+	default:
+		eprintf("utrace: probe type %d not yet supported\n", cfg->type);
+		return -EOPNOTSUPP;
+	}
+
+	(*map_idx)++;
 	return 0;
 }
 
@@ -789,159 +893,44 @@ int utrace_attach(struct bpf_state *st, struct wprof_bpf *skel)
 	u32 map_idx = 0;
 
 	for (int i = 0; i < env.utrace_cfg_cnt; i++) {
-		const struct utrace_cfg *cfg = &env.utrace_cfgs[i];
-		struct utrace_probe_cfg pcfg;
-		struct bpf_link *link;
+		struct utrace_cfg *cfg = &env.utrace_cfgs[i];
 
 		switch (cfg->type) {
 		case UTRACE_UPROBE:
 		case UTRACE_URETPROBE:
-		case UTRACE_UPROBE_SPAN: {
-			const char *attach_path = cfg->uprobe.attach_path;
-			const char *display_path = cfg->uprobe.display_path;
-			unsigned long attach_off = cfg->uprobe.attach_off;
-			int pid = cfg_pid(cfg);
-
-			if (cfg->type == UTRACE_UPROBE || cfg->type == UTRACE_UPROBE_SPAN) {
-				fill_probe_cfg(&pcfg, cfg, i, cfg_is_span(cfg) ? UTRACE_ENTRY : UTRACE_INSTANT, false);
-				err = bpf_map_update_elem(map_fd, &map_idx, &pcfg, BPF_ANY);
-				if (err)
-					return err;
-
-				LIBBPF_OPTS(bpf_uprobe_opts, opts, .bpf_cookie = map_idx);
-				link = bpf_program__attach_uprobe_opts(skel->progs.utrace_uprobe, pid, attach_path, attach_off, &opts);
-				if (!link) {
-					err = -errno;
-					eprintf("utrace: failed to attach uprobe to '%s' in '%s': %d\n",
-						cfg->uprobe.name, display_path, err);
-					return err;
-				}
-				err = add_link(st, link);
-				if (err)
-					return err;
-				map_idx++;
-			}
-			if (cfg->type == UTRACE_URETPROBE || cfg->type == UTRACE_UPROBE_SPAN) {
-				fill_probe_cfg(&pcfg, cfg, i, cfg_is_span(cfg) ? UTRACE_EXIT : UTRACE_INSTANT, cfg_is_span(cfg));
-				err = bpf_map_update_elem(map_fd, &map_idx, &pcfg, BPF_ANY);
-				if (err)
-					return err;
-
-				LIBBPF_OPTS(bpf_uprobe_opts, opts, .bpf_cookie = map_idx, .retprobe = true);
-				link = bpf_program__attach_uprobe_opts(skel->progs.utrace_uretprobe, pid, attach_path, attach_off, &opts);
-				if (!link) {
-					err = -errno;
-					eprintf("utrace: failed to attach uretprobe to '%s' in '%s': %d\n",
-						cfg->uprobe.name, display_path, err);
-					return err;
-				}
-				err = add_link(st, link);
-				if (err)
-					return err;
-				map_idx++;
-			}
-			break;
-		}
 		case UTRACE_KPROBE:
 		case UTRACE_KRETPROBE:
-		case UTRACE_KPROBE_SPAN: {
-			if (cfg->type == UTRACE_KPROBE || cfg->type == UTRACE_KPROBE_SPAN) {
-				fill_probe_cfg(&pcfg, cfg, i, cfg_is_span(cfg) ? UTRACE_ENTRY : UTRACE_INSTANT, false);
-				err = bpf_map_update_elem(map_fd, &map_idx, &pcfg, BPF_ANY);
-				if (err)
-					return err;
-
-				LIBBPF_OPTS(bpf_kprobe_opts, opts, .bpf_cookie = map_idx);
-				link = bpf_program__attach_kprobe_opts(skel->progs.utrace_kprobe, cfg->kprobe.name, &opts);
-				if (!link) {
-					err = -errno;
-					eprintf("utrace: failed to attach kprobe to '%s': %d\n", cfg->kprobe.name, err);
-					return err;
-				}
-				err = add_link(st, link);
-				if (err)
-					return err;
-				map_idx++;
-			}
-			if (cfg->type == UTRACE_KRETPROBE || cfg->type == UTRACE_KPROBE_SPAN) {
-				fill_probe_cfg(&pcfg, cfg, i, cfg_is_span(cfg) ? UTRACE_EXIT : UTRACE_INSTANT, cfg_is_span(cfg));
-				err = bpf_map_update_elem(map_fd, &map_idx, &pcfg, BPF_ANY);
-				if (err)
-					return err;
-
-				LIBBPF_OPTS(bpf_kprobe_opts, opts, .bpf_cookie = map_idx, .retprobe = true);
-				link = bpf_program__attach_kprobe_opts(skel->progs.utrace_kretprobe, cfg->kprobe.name, &opts);
-				if (!link) {
-					err = -errno;
-					eprintf("utrace: failed to attach kretprobe to '%s': %d\n", cfg->kprobe.name, err);
-					return err;
-				}
-				err = add_link(st, link);
-				if (err)
-					return err;
-				map_idx++;
-			}
-			break;
-		}
 		case UTRACE_BPF_PROBE:
 		case UTRACE_BPF_RETPROBE:
-		case UTRACE_BPF_SPAN: {
-			if (cfg->type == UTRACE_BPF_PROBE || cfg->type == UTRACE_BPF_SPAN) {
-				fill_probe_cfg(&pcfg, cfg, i, cfg_is_span(cfg) ? UTRACE_ENTRY : UTRACE_INSTANT, false);
-				err = bpf_map_update_elem(map_fd, &map_idx, &pcfg, BPF_ANY);
-				if (err)
-					return err;
+			err = attach_utrace_probe(st, skel, cfg, i, UTRACE_INSTANT, false,
+						  cfg_is_ret_probe(cfg->type), map_fd, &map_idx);
+			if (err)
+				return err;
+			break;
+		case UTRACE_UPROBE_SPAN:
+		case UTRACE_KPROBE_SPAN:
+		case UTRACE_BPF_SPAN:
+			err = attach_utrace_probe(st, skel, cfg, i, UTRACE_ENTRY, false,
+						  false, map_fd, &map_idx);
+			if (err)
+				return err;
+			err = attach_utrace_probe(st, skel, cfg, i, UTRACE_EXIT, true,
+						  true, map_fd, &map_idx);
+			if (err)
+				return err;
+			break;
+		case UTRACE_SPAN: {
+			struct utrace_cfg *entry = cfg->span.entry;
+			struct utrace_cfg *exit = cfg->span.exit;
 
-				LIBBPF_OPTS(bpf_prog_load_opts, clone_opts,
-					    .attach_prog_fd = cfg->bpf_prog.prog_fd,
-					    .attach_btf_id = cfg->bpf_prog.btf_func_id);
-				int clone_fd = bpf_program__clone(skel->progs.utrace_bpf_entry, &clone_opts);
-				if (clone_fd < 0) {
-					eprintf("utrace: failed to clone fentry for BPF prog '%s': %d\n", cfg->bpf_prog.name, clone_fd);
-					return clone_fd;
-				}
-
-				LIBBPF_OPTS(bpf_link_create_opts, link_opts, .tracing.cookie = map_idx);
-				int link_fd = bpf_link_create(clone_fd, 0, BPF_TRACE_FENTRY, &link_opts);
-				close(clone_fd);
-				if (link_fd < 0) {
-					err = -errno;
-					eprintf("utrace: failed to attach fentry to BPF prog '%s': %d\n", cfg->bpf_prog.name, err);
-					return err;
-				}
-				err = add_link_fd(st, link_fd);
-				if (err)
-					return err;
-				map_idx++;
-			}
-			if (cfg->type == UTRACE_BPF_RETPROBE || cfg->type == UTRACE_BPF_SPAN) {
-				fill_probe_cfg(&pcfg, cfg, i, cfg_is_span(cfg) ? UTRACE_EXIT : UTRACE_INSTANT, cfg_is_span(cfg));
-				err = bpf_map_update_elem(map_fd, &map_idx, &pcfg, BPF_ANY);
-				if (err)
-					return err;
-
-				LIBBPF_OPTS(bpf_prog_load_opts, clone_opts,
-					    .attach_prog_fd = cfg->bpf_prog.prog_fd,
-					    .attach_btf_id = cfg->bpf_prog.btf_func_id);
-				int clone_fd = bpf_program__clone(skel->progs.utrace_bpf_exit, &clone_opts);
-				if (clone_fd < 0) {
-					eprintf("utrace: failed to clone fexit for BPF prog '%s': %d\n", cfg->bpf_prog.name, clone_fd);
-					return clone_fd;
-				}
-
-				LIBBPF_OPTS(bpf_link_create_opts, link_opts, .tracing.cookie = map_idx);
-				int link_fd = bpf_link_create(clone_fd, 0, BPF_TRACE_FEXIT, &link_opts);
-				close(clone_fd);
-				if (link_fd < 0) {
-					err = -errno;
-					eprintf("utrace: failed to attach fexit to BPF prog '%s': %d\n", cfg->bpf_prog.name, err);
-					return err;
-				}
-				err = add_link_fd(st, link_fd);
-				if (err)
-					return err;
-				map_idx++;
-			}
+			err = attach_utrace_probe(st, skel, entry, i, UTRACE_ENTRY, false,
+						  cfg_is_ret_probe(entry->type), map_fd, &map_idx);
+			if (err)
+				return err;
+			err = attach_utrace_probe(st, skel, exit, i, UTRACE_EXIT, true,
+						  cfg_is_ret_probe(exit->type), map_fd, &map_idx);
+			if (err)
+				return err;
 			break;
 		}
 		default:
