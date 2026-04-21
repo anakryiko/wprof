@@ -119,6 +119,9 @@ struct utrace_cfg {
 		struct {
 			char *name;
 			long off;
+			const char *attach_path;	/* resolved path used to attach (/proc/<pid>/map_files/... or user path) */
+			const char *display_path;	/* human-readable path for logging/output */
+			unsigned long attach_off;	/* resolved total offset: sym_offset + off */
 		} uprobe;
 		/* USDT */
 		struct {
