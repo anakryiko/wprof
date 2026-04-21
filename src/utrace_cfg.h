@@ -163,8 +163,22 @@ struct sbuf;
 
 static inline bool cfg_is_span(const struct utrace_cfg *cfg)
 {
-	return cfg->type == UTRACE_UPROBE_SPAN || cfg->type == UTRACE_KPROBE_SPAN || cfg->type == UTRACE_BPF_SPAN;
+	return cfg->type == UTRACE_UPROBE_SPAN || cfg->type == UTRACE_KPROBE_SPAN ||
+	       cfg->type == UTRACE_BPF_SPAN || cfg->type == UTRACE_SPAN;
 }
+
+/*
+ * Iterate the simple sub-configs of a utrace_cfg: for generic UTRACE_SPAN,
+ * yields entry then exit leg; for all other cfgs, yields cfg itself once.
+ */
+#define utrace_for_each_leg(leg, cfg)						\
+	for (struct utrace_cfg *___legs[3] = {					\
+			(cfg)->type == UTRACE_SPAN ? (cfg)->span.entry : (cfg),	\
+			(cfg)->type == UTRACE_SPAN ? (cfg)->span.exit : NULL,	\
+			NULL,							\
+		}, **___p = ___legs, *leg = *___p;				\
+		leg;								\
+		leg = *++___p)
 
 int utrace_cfg_parse(const char *def);
 int utrace_cfg_parse_file(const char *path);
