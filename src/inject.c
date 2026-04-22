@@ -770,7 +770,7 @@ struct tracee_state *tracee_inject(int pid)
 	snprintf(lib_path, sizeof(lib_path), "/proc/%d/map_files/%lx-%lx", pid, libc_start, libc_end);
 	const char *sym_names[] = {"dlopen", "dlclose", "dlsym"};
 	unsigned long sym_offs[] = {0, 0, 0};
-	err = elf_find_syms(lib_path, STT_FUNC, sym_names, sym_offs, ARRAY_SIZE(sym_names));
+	err = elf_find_syms(lib_path, STT_FUNC, sym_names, ARRAY_SIZE(sym_names), sym_offs, NULL);
 	if (err) {
 		elog("Failed to find dlopen/dlclose/dlsym symbols: %d\n", err);
 		goto cleanup;

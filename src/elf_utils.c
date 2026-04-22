@@ -222,17 +222,25 @@ int elf_read_sym_value(const char *binary_path, const char *sym_name,
 }
 
 /*
- * Find virtual address offsets relative to binary's base load address for given ELF symbols.
+ * Resolve ELF symbols and, for each, optionally compute:
+ *   - virt_offs: virtual address offset relative to the binary's base load
+ *     address (first PT_LOAD's p_vaddr - p_offset). Callers typically add the
+ *     runtime load base (vma_start - vma_offset) to get a runtime address.
+ *     For shared libs / PIE binaries this is simply st_value.
+ *   - file_offs: file offset of the symbol within the binary file, computed
+ *     per-symbol via its containing section's (sh_addr, sh_offset). This is
+ *     what uprobe attach APIs want.
  *
- * For shared libs and PIE executables (ET_DYN) this will be just straight st_value,
- * but for normal executables (ET_EXEC), we'll subtract base load address from st_value.
- * This allows caller to calculate absolute symbol addresses by adding base load address without
- * having to take into account whether the binary is position independent or not.
+ * Either output array may be NULL. Both are populated with 0 for symbols
+ * that were not found.
  */
 int elf_find_syms(const char *binary_path, int st_type,
-		  const char **syms, unsigned long *offs, size_t cnt)
+		  const char **syms, size_t cnt,
+		  unsigned long *virt_offs, unsigned long *file_offs)
 {
 	int sh_types[2] = { SHT_DYNSYM, SHT_SYMTAB };
+	unsigned long st_values[cnt];
+	unsigned long sh_addrs[cnt], sh_offsets[cnt];
 	int cnt_done = 0;
 	struct elf_fd elf_fd;
 	int err;
@@ -241,7 +249,7 @@ int elf_find_syms(const char *binary_path, int st_type,
 	if (err)
 		return err;
 
-	memset(offs, 0, sizeof(*offs) * cnt);
+	memset(st_values, 0, sizeof(st_values));
 
 	/*
 	 * All PT_LOAD segments in ELF should (according to ELF spec) have the same
@@ -274,21 +282,17 @@ int elf_find_syms(const char *binary_path, int st_type,
 
 		wprof_for_each(elf_sym, sym, elf_fd.elf, binary_path, sh_types[ti], st_type) {
 			int bind = GELF_ST_BIND(sym->sym.st_info);
-			unsigned long off = sym->sym.st_value;
 
-			/*
-			 * We initially store st_value into offs array as is to avoid
-			 * complications of having a valid zero offset interacting unexpectedly
-			 * with STB_WEAK logic below. We'll subtract base_vaddr before returning.
-			 */
 			for (int i = 0; i < cnt; i++) {
 				if (strcmp(syms[i], sym->name) != 0)
 					continue;
-				if (offs[i] && bind == STB_WEAK)
+				if (st_values[i] && bind == STB_WEAK)
 					continue;
-				if (offs[i] == 0)
+				if (st_values[i] == 0)
 					cnt_done++;
-				offs[i] = off;
+				st_values[i] = sym->sym.st_value;
+				sh_addrs[i] = sym->sh.sh_addr;
+				sh_offsets[i] = sym->sh.sh_offset;
 				break;
 			}
 
@@ -300,8 +304,10 @@ int elf_find_syms(const char *binary_path, int st_type,
 	elf_close(&elf_fd);
 
 	for (int i = 0; i < cnt; i++) {
-		if (offs[i] != 0)
-			offs[i] -= base_vaddr;
+		if (virt_offs)
+			virt_offs[i] = st_values[i] ? st_values[i] - base_vaddr : 0;
+		if (file_offs)
+			file_offs[i] = st_values[i] ? st_values[i] - sh_addrs[i] + sh_offsets[i] : 0;
 	}
 
 	return cnt_done == cnt ? 0 : -ENOENT;

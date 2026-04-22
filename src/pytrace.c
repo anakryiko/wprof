@@ -75,7 +75,7 @@ static int pytrace_resolve_symbols(int pid, struct py_binary_info *bi, unsigned 
 	unsigned long offsets[PYTRACE_SYM_CNT] = {};
 	int err;
 
-	err = elf_find_syms(bi->host_path, STT_FUNC, pytrace_sym_names, offsets, ARRAY_SIZE(offsets));
+	err = elf_find_syms(bi->host_path, STT_FUNC, pytrace_sym_names, ARRAY_SIZE(offsets), offsets, NULL);
 	if (err) {
 		for (int i = 0; i < PYTRACE_SYM_CNT; i++) {
 			if (offsets[i])
@@ -129,7 +129,7 @@ static int torch_resolve_symbols(int pid, unsigned long *sym_addrs)
 		snprintf(host_path, sizeof(host_path), "/proc/%d/map_files/%llx-%llx",
 			 pid, (unsigned long long)vma->vma_start, (unsigned long long)vma->vma_end);
 		base_addr = vma->vma_start - vma->vma_offset;
-		if (elf_find_syms(host_path, STT_FUNC, torch_sym_names, offsets, TORCH_SYM_CNT) == 0) {
+		if (elf_find_syms(host_path, STT_FUNC, torch_sym_names, TORCH_SYM_CNT, offsets, NULL) == 0) {
 			for (int i = 0; i < TORCH_SYM_CNT; i++) {
 				sym_addrs[i] = base_addr + offsets[i];
 				dlogf(PYTRACE, 1, "  %s: offset=0x%lx addr=0x%lx\n", torch_sym_names[i], offsets[i], sym_addrs[i]);

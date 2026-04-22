@@ -82,7 +82,7 @@ static bool has_pyruntime_sym(const char *binary_path)
 	const char *syms[] = { "_PyRuntime" };
 	unsigned long offs[1] = {};
 
-	return elf_find_syms(binary_path, STT_OBJECT, syms, offs, ARRAY_SIZE(offs)) == 0;
+	return elf_find_syms(binary_path, STT_OBJECT, syms, ARRAY_SIZE(offs), offs, NULL) == 0;
 }
 
 /*
@@ -160,7 +160,7 @@ static int setup_pid(int pid, const char *binary_path, unsigned long base_addr,
 	/* resolve _PyRuntime address */
 	const char *syms[] = { "_PyRuntime" };
 	unsigned long offs[1] = {};
-	err = elf_find_syms(binary_path, STT_OBJECT, syms, offs, ARRAY_SIZE(offs));
+	err = elf_find_syms(binary_path, STT_OBJECT, syms, ARRAY_SIZE(offs), offs, NULL);
 	if (err) {
 		eprintf("Failed to find _PyRuntime symbol in '%s' for PID %d: %d\n", binary_path, pid, err);
 		return err;
