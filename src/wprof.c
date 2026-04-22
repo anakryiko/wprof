@@ -1164,6 +1164,7 @@ int main(int argc, char **argv)
 	env.actual_start_ts = ktime_now_ns();
 
 	/* Parse command line arguments */
+	setenv("ARGP_HELP_FMT", "opt-doc-col=35,rmargin=150", 0); /* widen default --help output */
 	err = argp_parse(&argp, argc, argv, 0, NULL, NULL);
 	if (err) {
 		err = -1;
