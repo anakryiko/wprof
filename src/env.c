@@ -56,6 +56,8 @@ struct env env = {
 	.capture_pytrace = UNSET,
 	.capture_pytorch = UNSET,
 	.capture_utrace = UNSET,
+	.capture_softirq = UNSET,
+	.capture_hardirq = UNSET,
 	.pmu_real_cnt = -1,
 	.pmu_deriv_cnt = -1,
 	.pmu_unresolved_cnt = -1,
@@ -133,8 +135,9 @@ static const struct argp_option opts[] = {
 
 	/* event subset targeting */
 	{ "feature", 'f', "FEAT", 0,
-	  "Data capture feature selector. Supported: ipi, req[=PATH|PID], scx, cuda, py-stacks[=nvidia-smi|PID], py-trace[=nvidia-smi|PID], py-torch[=nvidia-smi|PID].\n"
-	  "All features can be prefixed with 'no-' to disable them explicitly." },
+	  "Data capture feature selector. Supported: ipi, req[=PATH|PID], scx, cuda, "
+	  "py-stacks[=nvidia-smi|PID], py-trace[=nvidia-smi|PID], py-torch[=nvidia-smi|PID], "
+	  "softirq, hardirq, irq. All features can be prefixed with 'no-' to disable them explicitly." },
 
 	/* trace emitting options */
 	{ "emit-feature", 'e', "FEAT", 0,
@@ -476,6 +479,13 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			}
 			env.capture_pytrace = val;
 			env.capture_pytorch = val;
+		} else if (strcasecmp(arg, "softirq") == 0) {
+			env.capture_softirq = val;
+		} else if (strcasecmp(arg, "hardirq") == 0) {
+			env.capture_hardirq = val;
+		} else if (strcasecmp(arg, "irq") == 0) {
+			env.capture_softirq = val;
+			env.capture_hardirq = val;
 		} else {
 			fprintf(stderr, "Unrecognized data feature '%s!\n", arg);
 			return -EINVAL;

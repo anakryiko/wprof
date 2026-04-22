@@ -2018,6 +2018,9 @@ static void emit_hardirq_exit_json(struct worker_state *w, const struct wevent *
 
 static int process_hardirq_exit(struct worker_state *w, const struct wevent *e)
 {
+	if (env.capture_hardirq != TRUE)
+		return 0;
+
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
 
 	if (!should_trace_task(&task))
@@ -2090,6 +2093,9 @@ static void emit_softirq_exit_json(struct worker_state *w, const struct wevent *
 
 static int process_softirq_exit(struct worker_state *w, const struct wevent *e)
 {
+	if (env.capture_softirq != TRUE)
+		return 0;
+
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
 
 	if (!should_trace_task(&task))
@@ -3844,6 +3850,8 @@ static void emit_header_json(struct worker_state *w)
 	json_kv_bool(j, "capture_pytrace", cfg->capture_pytrace);
 	json_kv_bool(j, "capture_pytorch", cfg->capture_pytorch);
 	json_kv_bool(j, "capture_utrace", cfg->capture_utrace);
+	json_kv_bool(j, "capture_softirq", cfg->capture_softirq);
+	json_kv_bool(j, "capture_hardirq", cfg->capture_hardirq);
 
 	json_subarr_start(j, "stacks");
 	if (cfg->captured_stack_traces & ST_TIMER)

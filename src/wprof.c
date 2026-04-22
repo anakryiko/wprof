@@ -86,6 +86,10 @@ const struct capture_feature capture_features[] = {
 	 offsetof(struct env, capture_pytorch), cfg_get_capture_pytorch, cfg_set_capture_pytorch},
 	{"user-defined tracing", "Utrace:", DEFAULT_CAPTURE_UTRACE,
 	 offsetof(struct env, capture_utrace), cfg_get_capture_utrace, cfg_set_capture_utrace},
+	{"softirqs", "Softirqs:", DEFAULT_CAPTURE_SOFTIRQ,
+	 offsetof(struct env, capture_softirq), cfg_get_capture_softirq, cfg_set_capture_softirq},
+	{"hardireqs", "Hardirqs:", DEFAULT_CAPTURE_HARDIRQ,
+	 offsetof(struct env, capture_hardirq), cfg_get_capture_hardirq, cfg_set_capture_hardirq},
 };
 
 const int capture_feature_cnt = ARRAY_SIZE(capture_features);
@@ -505,6 +509,15 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 		bpf_program__set_autoload(skel->progs.wprof_ipi_resched_exit, true);
 	}
 #endif
+
+	if (env.capture_softirq) {
+		bpf_program__set_autoload(skel->progs.wprof_softirq_entry, true);
+		bpf_program__set_autoload(skel->progs.wprof_softirq_exit, true);
+	}
+	if (env.capture_hardirq) {
+		bpf_program__set_autoload(skel->progs.wprof_hardirq_entry, true);
+		bpf_program__set_autoload(skel->progs.wprof_hardirq_exit, true);
+	}
 
 	if (env.req_pid_cnt > 0 || env.req_path_cnt > 0 || env.req_global_discovery) {
 		err = setup_req_tracking_discovery();

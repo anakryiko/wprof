@@ -28,6 +28,8 @@
 #define DEFAULT_CAPTURE_PYTRACE FALSE
 #define DEFAULT_CAPTURE_TORCH_PROFILER FALSE
 #define DEFAULT_CAPTURE_UTRACE FALSE
+#define DEFAULT_CAPTURE_SOFTIRQ TRUE
+#define DEFAULT_CAPTURE_HARDIRQ TRUE
 
 extern bool env_verbose;
 extern int env_debug_level;
@@ -82,6 +84,8 @@ struct env {
 	enum tristate capture_pytrace;
 	enum tristate capture_pytorch;
 	enum tristate capture_utrace;
+	enum tristate capture_softirq;
+	enum tristate capture_hardirq;
 
 	/* trace visualization features */
 	bool emit_sched_view;
@@ -217,6 +221,12 @@ static inline void cfg_set_capture_pytorch(struct wprof_data_cfg *cfg, bool val)
 
 static inline bool cfg_get_capture_utrace(const struct wprof_data_cfg *cfg) { return cfg->capture_utrace; }
 static inline void cfg_set_capture_utrace(struct wprof_data_cfg *cfg, bool val) { cfg->capture_utrace = val; }
+
+static inline bool cfg_get_capture_softirq(const struct wprof_data_cfg *cfg) { return cfg->capture_softirq; }
+static inline void cfg_set_capture_softirq(struct wprof_data_cfg *cfg, bool val) { cfg->capture_softirq = val; }
+
+static inline bool cfg_get_capture_hardirq(const struct wprof_data_cfg *cfg) { return cfg->capture_hardirq; }
+static inline void cfg_set_capture_hardirq(struct wprof_data_cfg *cfg, bool val) { cfg->capture_hardirq = val; }
 
 struct capture_feature {
 	const char *name;
