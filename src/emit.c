@@ -2470,7 +2470,8 @@ static u64 ensure_thread_req_track(const struct wprof_task *t)
 	u64 track_uuid = TRACK_UUID(TK_THREAD_REQ, track_tid(t));
 
 	if (!s->exists) {
-		emit_track_descr(cur_stream, track_uuid, trackid_thread_meta(t), t->comm, TK_THREAD_REQ);
+		emit_track_descr_impl(cur_stream, track_uuid, trackid_thread(t),
+				      "REQUESTS", TK_THREAD_REQ, CHILD_ORDER_CHRONO, MERGE_NONE);
 		s->exists = true;
 	}
 	return track_uuid;
