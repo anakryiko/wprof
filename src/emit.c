@@ -3902,21 +3902,39 @@ static void emit_header_json(struct worker_state *w)
 	json_arr_end(j);
 
 	{
-		bool has_metadata = false;
+		int metadata_cnt = 0, extras_cnt = 0;
 		for (u64 i = 0; i < hdr->extra_cnt; i++) {
-			struct wprof_extra_param *e = wevent_extra_param(hdr, i);
-			if (e->kind != WEXTRA_METADATA)
-				continue;
-			if (!has_metadata) {
-				json_subobj_start(j, "metadata");
-				has_metadata = true;
-			}
-			const char *kv = wevent_str(hdr, e->stroff);
-			const char *eq = strchr(kv, '=');
-			json_kv_str(j, sfmt("%.*s", (int)(eq - kv), kv), eq + 1);
+			if (wevent_extra_param(hdr, i)->kind == WEXTRA_METADATA)
+				metadata_cnt++;
+			else
+				extras_cnt++;
 		}
-		if (has_metadata)
+		if (metadata_cnt) {
+			json_subobj_start(j, "metadata");
+			for (u64 i = 0; i < hdr->extra_cnt; i++) {
+				struct wprof_extra_param *e = wevent_extra_param(hdr, i);
+				if (e->kind != WEXTRA_METADATA)
+					continue;
+				const char *kv = wevent_str(hdr, e->stroff);
+				const char *eq = strchr(kv, '=');
+				json_kv_str(j, sfmt("%.*s", (int)(eq - kv), kv), eq + 1);
+			}
 			json_obj_end(j);
+		}
+		if (extras_cnt) {
+			json_subarr_start(j, "extras");
+			for (u64 i = 0; i < hdr->extra_cnt; i++) {
+				struct wprof_extra_param *e = wevent_extra_param(hdr, i);
+				if (e->kind == WEXTRA_METADATA)
+					continue;
+				const char *val = e->stroff ? wevent_str(hdr, e->stroff) : NULL;
+				if (val)
+					json_arr_str(j, sfmt("%s %s", extra_param_kind_name(e->kind), val));
+				else
+					json_arr_str(j, extra_param_kind_name(e->kind));
+			}
+			json_arr_end(j);
+		}
 	}
 
 	json_obj_end(j);
