@@ -25,6 +25,8 @@ struct wprof_data_cfg {
 	u64 capture_pytrace : 1;
 	u64 capture_pytorch : 1;
 	u64 capture_utrace : 1;
+	u64 capture_softirq : 1;
+	u64 capture_hardirq : 1;
 
 	enum stack_trace_kind captured_stack_traces;
 

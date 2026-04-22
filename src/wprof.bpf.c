@@ -991,7 +991,7 @@ static int handle_hardirq(u64 now_ts, struct task_struct *task,
 	return 0;
 }
 
-SEC("tp_btf/irq_handler_entry")
+SEC("?tp_btf/irq_handler_entry")
 int BPF_PROG(wprof_hardirq_entry, int irq, struct irqaction *action)
 {
 	u64 now_ts = bpf_ktime_get_ns();
@@ -1003,7 +1003,7 @@ int BPF_PROG(wprof_hardirq_entry, int irq, struct irqaction *action)
 	return handle_hardirq(now_ts, task, action, irq, true /*start*/);
 }
 
-SEC("tp_btf/irq_handler_exit")
+SEC("?tp_btf/irq_handler_exit")
 int BPF_PROG(wprof_hardirq_exit, int irq, struct irqaction *action, int ret)
 {
 	u64 now_ts = bpf_ktime_get_ns();
@@ -1055,7 +1055,7 @@ static int handle_softirq(u64 now_ts, struct task_struct *task, int vec_nr, bool
 	return 0;
 }
 
-SEC("tp_btf/softirq_entry")
+SEC("?tp_btf/softirq_entry")
 int BPF_PROG(wprof_softirq_entry, int vec_nr)
 {
 	u64 now_ts = bpf_ktime_get_ns();
@@ -1067,7 +1067,7 @@ int BPF_PROG(wprof_softirq_entry, int vec_nr)
 	return handle_softirq(now_ts, task, vec_nr, true /*start*/);
 }
 
-SEC("tp_btf/softirq_exit")
+SEC("?tp_btf/softirq_exit")
 int BPF_PROG(wprof_softirq_exit, int vec_nr)
 {
 	u64 now_ts = bpf_ktime_get_ns();
