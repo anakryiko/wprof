@@ -3869,6 +3869,7 @@ static void emit_header_json(struct worker_state *w)
 
 	json_obj_start(j);
 	json_kv_fmt(j, "version", "%d.%d", hdr->version_major, hdr->version_minor);
+	json_kv_str(j, "timestamp", fmt_timestamp_ns(cfg->realtime_start_ns));
 	json_kv_float(j, "dur", "%.9lf", (env.sess_end_ts - env.sess_start_ts) / 1e9);
 	json_kv_int(j, "timer_freq_hz", cfg->timer_freq_hz);
 	for (int i = 0; i < capture_feature_cnt; i++) {

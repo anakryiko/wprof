@@ -1281,8 +1281,9 @@ int main(int argc, char **argv)
 
 			wprintf("Replay info:\n");
 			wprintf("============\n");
-			wprintf("%-*s%u.%u\n", w, "Data version:", dump_hdr->version_major, dump_hdr->version_minor);
+			wprintf("%-*s%s\n", w, "Timestamp:", fmt_timestamp_ns(cfg->realtime_start_ns));
 			wprintf("%-*s%.3lfs (%.3lfms)\n", w, "Duration:", cfg->duration_ns / S, cfg->duration_ns / ms);
+			wprintf("%-*s%u.%u\n", w, "Data version:", dump_hdr->version_major, dump_hdr->version_minor);
 			if (cfg->captured_stack_traces) {
 				wprintf("%-*s\n", w, "Stack traces:");
 				if (cfg->captured_stack_traces & ST_TIMER)
