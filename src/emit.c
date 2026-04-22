@@ -2789,6 +2789,14 @@ static int process_req_task_event(struct worker_state *w, const struct wevent *e
 	return 0;
 }
 
+/*
+ * Per-PID CUDA fallback track for orphan sync events that have no stream
+ * association (or reference a stream we never saw a kernel/memcpy/memset on,
+ * meaning we don't know its device). Emitted lazily from process_cuda_sync;
+ * the regular kernel/memcpy/memset paths attach directly to the GPU+stream
+ * tracks and never trigger this. PIDs without orphan syncs produce no
+ * fallback row, keeping the top-level CUDA folder clean.
+ */
 static u64 ensure_cuda_proc_track(int pid, const char *proc_name)
 {
 	struct track_state *s = track_state_get_or_add(TK_CUDA_PROC, pid, 0);
@@ -2808,21 +2816,21 @@ static u64 ensure_cuda_proc_gpu_track(int pid, u32 gpu_id)
 	u64 track_uuid = trackid_cuda_proc_gpu(pid, gpu_id);
 
 	if (!s->exists) {
-		emit_track_descr(cur_stream, track_uuid, trackid_cuda_proc(pid),
-				 sfmt("GPU #%u", gpu_id), 0);
+		emit_track_descr(cur_stream, track_uuid, TRACK_UUID_CUDA,
+				 sfmt("GPU #%u", gpu_id), gpu_id + 1);
 		s->exists = true;
 	}
 	return track_uuid;
 }
 
-static u64 ensure_cuda_proc_stream_track(int pid, u32 gpu_id, u32 stream_id)
+static u64 ensure_cuda_proc_stream_track(int pid, u32 gpu_id, u32 stream_id, const char *proc_name)
 {
 	struct track_state *s = track_state_get_or_add(TK_CUDA_PROC_STREAM, pid, stream_id);
 	u64 track_uuid = trackid_cuda_proc_stream(pid, stream_id);
 
 	if (!s->exists) {
 		emit_track_descr(cur_stream, track_uuid, trackid_cuda_proc_gpu(pid, gpu_id),
-				 sfmt("Stream #%u", stream_id), 0);
+				 sfmt("Stream #%u (%s %d)", stream_id, proc_name, pid), 0);
 		s->exists = true;
 	}
 	return track_uuid;
@@ -2908,9 +2916,8 @@ static void emit_cuda_kernel(struct worker_state *w, const struct wevent *e)
 	struct wprof_data_hdr *hdr = w->dump_hdr;
 	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
 
-	ensure_cuda_proc_track(task.pid, task.pcomm);
 	ensure_cuda_proc_gpu_track(task.pid, cu->device_id);
-	u64 track_uuid = ensure_cuda_proc_stream_track(task.pid, cu->device_id, cu->stream_id);
+	u64 track_uuid = ensure_cuda_proc_stream_track(task.pid, cu->device_id, cu->stream_id, task.pcomm);
 
 	const char *cuda_kern_name = wevent_str(hdr, cu->name_stroff);
 
@@ -3005,9 +3012,8 @@ static void emit_cuda_memcpy(struct worker_state *w, const struct wevent *e)
 	struct wprof_data_hdr *hdr = w->dump_hdr;
 	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
 
-	ensure_cuda_proc_track(task.pid, task.pcomm);
 	ensure_cuda_proc_gpu_track(task.pid, cu->device_id);
-	u64 track_uuid = ensure_cuda_proc_stream_track(task.pid, cu->device_id, cu->stream_id);
+	u64 track_uuid = ensure_cuda_proc_stream_track(task.pid, cu->device_id, cu->stream_id, task.pcomm);
 
 	pb_iid name_iid, kind_iid;
 	if (cu->copy_kind >= CUDA_MEMCPY_UNKN && cu->copy_kind < NR_CUDA_MEMCPY_KIND) {
@@ -3094,9 +3100,8 @@ static void emit_cuda_memset(struct worker_state *w, const struct wevent *e)
 	struct wprof_data_hdr *hdr = w->dump_hdr;
 	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
 
-	ensure_cuda_proc_track(task.pid, task.pcomm);
 	ensure_cuda_proc_gpu_track(task.pid, cu->device_id);
-	u64 track_uuid = ensure_cuda_proc_stream_track(task.pid, cu->device_id, cu->stream_id);
+	u64 track_uuid = ensure_cuda_proc_stream_track(task.pid, cu->device_id, cu->stream_id, task.pcomm);
 
 	pb_iid name_iid, kind_iid;
 	if (cu->mem_kind >= CUDA_MEM_UNKN && cu->mem_kind < NR_CUDA_MEMORY_KIND) {
@@ -3172,7 +3177,6 @@ static void emit_cuda_sync(struct worker_state *w, const struct wevent *e)
 	struct wprof_data_hdr *hdr = w->dump_hdr;
 	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
 
-	u64 proc_track_uuid = ensure_cuda_proc_track(task.pid, task.pcomm);
 	u64 track_uuid;
 
 	if ((int)cu->stream_id == -1 /* CUPTI_SYNCHRONIZATION_INVALID_VALUE */) {
@@ -3180,7 +3184,7 @@ static void emit_cuda_sync(struct worker_state *w, const struct wevent *e)
 		 * some SYNC events don't have stream association,
 		 * so we put them on "global" (CUDA) process track
 		 */
-		track_uuid = proc_track_uuid;
+		track_uuid = ensure_cuda_proc_track(task.pid, task.pcomm);
 	} else if (track_state_find(TK_CUDA_PROC_STREAM, task.pid, cu->stream_id)) {
 		/*
 		 * SYNC events don't record device ID (only in CUDA 13+, which we don't take
@@ -3193,7 +3197,7 @@ static void emit_cuda_sync(struct worker_state *w, const struct wevent *e)
 		 * otherwise we don't have GPU ID to ensure proper track structure, so put this
 		 * sync event on (CUDA) process track
 		 */
-		track_uuid = proc_track_uuid;
+		track_uuid = ensure_cuda_proc_track(task.pid, task.pcomm);
 	}
 
 	pb_iid name_iid, kind_iid;
@@ -3411,7 +3415,7 @@ static void emit_pytrace_event(struct worker_state *w, const struct wevent *e)
 	const char *base = file ? strrchr(file, '/') : NULL;
 	base = base ? base + 1 : file;
 
-	const char *display_name = base ? sfmt("%s(%u):%s", base, e->pytrace.lineno, func_name) : func_name;
+	const char *display_name = base ? sfmt("%s (%s:%u)", func_name, base, e->pytrace.lineno) : func_name;
 	pb_iid name_iid = emit_intern_str(w, display_name);
 
 	if (e->kind == EV_PYTRACE_ENTRY) {
@@ -4005,7 +4009,7 @@ int emit_trace(struct worker_state *w)
 		if (env.capture_requests)
 			emit_track_descr(cur_stream, TRACK_UUID_REQUESTS, 0, "REQUESTS", 1000);
 		if (env.capture_cuda)
-			emit_track_descr(cur_stream, TRACK_UUID_CUDA, 0, "CUDA", 2000);
+			emit_track_descr_explicit(cur_stream, TRACK_UUID_CUDA, 0, "CUDA", 2000);
 
 		if (env.requested_stack_traces) {
 			struct wprof_stacks_hdr *shdr = wprof_stacks_hdr(w->dump_hdr);
