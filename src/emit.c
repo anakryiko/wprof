@@ -3506,7 +3506,18 @@ static u64 ensure_utrace_thread_track(const struct wprof_task *t, u32 utrace_id)
 
 	if (!s->exists) {
 		const struct utrace_cfg *cfg = &env.utrace_cfgs[utrace_id];
-		const char *name = cfg->settings.id ? cfg->settings.id : utrace_probe_name(cfg);
+		char span_name[256];
+		const char *name;
+
+		if (cfg->settings.id) {
+			name = cfg->settings.id;
+		} else if (cfg->type == UTRACE_SPAN) {
+			snprintf(span_name, sizeof(span_name), "%s — %s",
+				 utrace_probe_name(cfg->span.entry), utrace_probe_name(cfg->span.exit));
+			name = span_name;
+		} else {
+			name = utrace_probe_name(cfg);
+		}
 
 		emit_track_descr(cur_stream, s->track_id, trackid_thread(t), name, utrace_id);
 		s->exists = true;
