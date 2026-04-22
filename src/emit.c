@@ -2992,6 +2992,10 @@ static int process_cuda_kernel(struct worker_state *w, const struct wevent *e)
 	if (env.capture_cuda != TRUE)
 		return 0;
 
+	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
+	if (!should_trace_task(&task))
+		return 0;
+
 	if (!is_time_range_in_session(e->ts, e->cuda_kernel.end_ts))
 		return 0;
 
@@ -3077,6 +3081,10 @@ static int process_cuda_memcpy(struct worker_state *w, const struct wevent *e)
 	if (env.capture_cuda != TRUE)
 		return 0;
 
+	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
+	if (!should_trace_task(&task))
+		return 0;
+
 	if (!is_time_range_in_session(e->ts, e->cuda_memcpy.end_ts))
 		return 0;
 
@@ -3149,6 +3157,10 @@ static void emit_cuda_memset_json(struct worker_state *w, const struct wevent *e
 static int process_cuda_memset(struct worker_state *w, const struct wevent *e)
 {
 	if (env.capture_cuda != TRUE)
+		return 0;
+
+	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
+	if (!should_trace_task(&task))
 		return 0;
 
 	if (!is_time_range_in_session(e->ts, e->cuda_memset.end_ts))
@@ -3241,6 +3253,10 @@ static void emit_cuda_sync_json(struct worker_state *w, const struct wevent *e)
 static int process_cuda_sync(struct worker_state *w, const struct wevent *e)
 {
 	if (env.capture_cuda != TRUE)
+		return 0;
+
+	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
+	if (!should_trace_task(&task))
 		return 0;
 
 	if (!is_time_range_in_session(e->ts, e->cuda_sync.end_ts))
@@ -3353,6 +3369,8 @@ static int process_cuda_api(struct worker_state *w, const struct wevent *e)
 		return 0;
 
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
+	if (!should_trace_task(&task))
+		return 0;
 
 	if (!is_time_range_in_session(e->ts, e->cuda_api.end_ts))
 		return 0;
@@ -3456,6 +3474,10 @@ static int process_pytrace(struct worker_state *w, const struct wevent *e)
 	if (env.capture_pytrace != TRUE)
 		return 0;
 
+	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
+	if (!should_trace_task(&task))
+		return 0;
+
 	if (!is_ts_in_range(e->ts))
 		return 0;
 
@@ -3504,6 +3526,10 @@ static void emit_pytorch_event_json(struct worker_state *w, const struct wevent 
 static int process_pytorch(struct worker_state *w, const struct wevent *e)
 {
 	if (env.capture_pytorch != TRUE)
+		return 0;
+
+	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
+	if (!should_trace_task(&task))
 		return 0;
 
 	if (!is_ts_in_range(e->ts))
