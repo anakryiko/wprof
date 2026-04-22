@@ -180,6 +180,10 @@ struct env {
 	struct utrace_cfg *utrace_cfgs;
 	int utrace_cfg_cnt;
 
+	/* user-defined metadata (key=value pairs) */
+	char **metadata;
+	int metadata_cnt;
+
 	/* persisted data header, set after merge or before replay */
 	struct wprof_data_hdr *data_hdr;
 };

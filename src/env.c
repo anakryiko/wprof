@@ -18,6 +18,7 @@
 #include "data.h"
 #include "requests.h"
 #include "utrace_cfg.h"
+#include "strs.h"
 
 const char *argp_program_version = "wprof v" WPROF_VERSION;
 
@@ -152,6 +153,10 @@ static const struct argp_option opts[] = {
 	/* user-defined tracing */
 	{ "utrace", 'U', "DEFINITION", 0,
 	  "User-defined trace probe definition (use @<file> to read from file). Repeatable." },
+
+	/* user-provided metadata */
+	{ "metadata", 'M', "KEY=VALUE", 0,
+	  "Attach custom metadata to the recording. Repeatable." },
 
 	/* PMUs */
 	{ "pmu", OPT_PMU_COUNTER, "EVENT", 0,
@@ -698,6 +703,23 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			err = utrace_cfg_parse(arg);
 		if (err)
 			return err;
+		break;
+	}
+	/* METADATA */
+	case 'M': {
+		struct sview key_sv, val_sv;
+
+		key_sv = sv_trim(sv_split(sv_new(arg), "=", &val_sv));
+		val_sv = sv_trim(sv_consume_left(val_sv, 1));
+
+		if (sv_is_empty(key_sv)) {
+			eprintf("Metadata must be in KEY=VALUE format: '%s'\n", arg);
+			return -EINVAL;
+		}
+
+		const char *kv = sfmt("%.*s=%.*s", key_sv.len, key_sv.s, val_sv.len, val_sv.s);
+		env.metadata = realloc(env.metadata, (env.metadata_cnt + 1) * sizeof(*env.metadata));
+		env.metadata[env.metadata_cnt++] = strdup(kv);
 		break;
 	}
 	/* REQUESTS QUERYING */

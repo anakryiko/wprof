@@ -3901,6 +3901,24 @@ static void emit_header_json(struct worker_state *w)
 	}
 	json_arr_end(j);
 
+	{
+		bool has_metadata = false;
+		for (u64 i = 0; i < hdr->extra_cnt; i++) {
+			struct wprof_extra_param *e = wevent_extra_param(hdr, i);
+			if (e->kind != WEXTRA_METADATA)
+				continue;
+			if (!has_metadata) {
+				json_subobj_start(j, "metadata");
+				has_metadata = true;
+			}
+			const char *kv = wevent_str(hdr, e->stroff);
+			const char *eq = strchr(kv, '=');
+			json_kv_str(j, sfmt("%.*s", (int)(eq - kv), kv), eq + 1);
+		}
+		if (has_metadata)
+			json_obj_end(j);
+	}
+
 	json_obj_end(j);
 }
 
