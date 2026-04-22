@@ -133,6 +133,16 @@ static inline void wprof_strlcpy(char *dst, const char *src, size_t sz)
 }
 
 const char *sfmt(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+
+static inline const char *fmt_timestamp_ns(u64 realtime_ns)
+{
+	time_t t = realtime_ns / 1000000000ULL;
+	struct tm *tm = gmtime(&t);
+	static char buf[64];
+	int n = strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", tm);
+	snprintf(buf + n, sizeof(buf) - n, ".%03dZ", (int)((realtime_ns % 1000000000ULL) / 1000000));
+	return buf;
+}
 const char *vsfmt(const char *fmt, va_list ap);
 int parse_int_from_file(const char *file, const char *fmt, void *val);
 int parse_str_from_file(const char *file, char *buf, size_t buf_sz);
