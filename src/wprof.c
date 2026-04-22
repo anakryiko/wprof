@@ -1159,6 +1159,7 @@ static const char *extra_param_kind_name(enum wprof_extra_param_kind kind)
 	case WEXTRA_FILTER_KTHREAD_ALLOW: return "--kthread";
 	case WEXTRA_FILTER_KTHREAD_DENY: return "--no-kthread";
 	case WEXTRA_UTRACE_DEF: return "--utrace";
+	case WEXTRA_METADATA: return "--metadata";
 	default: return sfmt("<unknown:%d>", kind);
 	}
 }
@@ -1322,12 +1323,38 @@ int main(int argc, char **argv)
 			}
 
 			if (dump_hdr->extra_cnt > 0) {
-				wprintf("%-*s\n", w, "Extras:");
+				bool has_extras = false, has_metadata = false;
 				for (u64 i = 0; i < dump_hdr->extra_cnt; i++) {
 					struct wprof_extra_param *e = wevent_extra_param(dump_hdr, i);
-					const char *val = e->stroff ? wevent_str(dump_hdr, e->stroff) : NULL;
-					wprintf("    %s%s%s\n", extra_param_kind_name(e->kind),
-						val ? " " : "", val ?: "");
+					if (e->kind == WEXTRA_METADATA)
+						has_metadata = true;
+					else
+						has_extras = true;
+				}
+				if (has_metadata) {
+					wprintf("%-*s\n", w, "Metadata:");
+					for (u64 i = 0; i < dump_hdr->extra_cnt; i++) {
+						struct wprof_extra_param *e = wevent_extra_param(dump_hdr, i);
+						if (e->kind != WEXTRA_METADATA)
+							continue;
+						const char *kv = wevent_str(dump_hdr, e->stroff);
+						const char *eq = strchr(kv, '=');
+						if (eq)
+							wprintf("    %.*s = %s\n", (int)(eq - kv), kv, eq + 1);
+						else
+							wprintf("    %s\n", kv);
+					}
+				}
+				if (has_extras) {
+					wprintf("%-*s\n", w, "Extras:");
+					for (u64 i = 0; i < dump_hdr->extra_cnt; i++) {
+						struct wprof_extra_param *e = wevent_extra_param(dump_hdr, i);
+						if (e->kind == WEXTRA_METADATA)
+							continue;
+						const char *name = extra_param_kind_name(e->kind);
+						const char *val = e->stroff ? wevent_str(dump_hdr, e->stroff) : NULL;
+						wprintf("    %s%s%s\n", name, val ? " " : "", val ?: "");
+					}
 				}
 			}
 
@@ -1486,6 +1513,8 @@ int main(int argc, char **argv)
 				break;
 			case WEXTRA_UTRACE_DEF:
 				err = utrace_cfg_parse(val);
+				break;
+			case WEXTRA_METADATA:
 				break;
 			default:
 				eprintf("Unrecognized extra param kind %d in data file!\n", ep->kind);

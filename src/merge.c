@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
+#include <sys/utsname.h>
 
 #include "merge.h"
 #include "utils.h"
@@ -148,8 +149,7 @@ static void add_extra(struct wprof_extra_param **extras, u64 *cnt,
 	*cnt += 1;
 }
 
-static void collect_extra_filters(struct persist_state *ps,
-				  struct wprof_extra_param **extras, u64 *cnt)
+static void collect_extras(struct persist_state *ps, struct wprof_extra_param **extras, u64 *cnt)
 {
 	for (int i = 0; i < env.allow_pid_cnt; i++)
 		add_extra(extras, cnt, WEXTRA_FILTER_PID_ALLOW, persist_stroff(ps, sfmt("%d", env.allow_pids[i])));
@@ -187,6 +187,17 @@ static void collect_extra_filters(struct persist_state *ps,
 
 		sbuf_free(&sb);
 	}
+
+	{
+		char hostname[256];
+		struct utsname uts;
+		if (gethostname(hostname, sizeof(hostname)) == 0)
+			add_extra(extras, cnt, WEXTRA_METADATA, persist_stroff(ps, sfmt("hostname=%s", hostname)));
+		if (uname(&uts) == 0)
+			add_extra(extras, cnt, WEXTRA_METADATA, persist_stroff(ps, sfmt("kernel=%s", uts.release)));
+	}
+	for (int i = 0; i < env.metadata_cnt; i++)
+		add_extra(extras, cnt, WEXTRA_METADATA, persist_stroff(ps, env.metadata[i]));
 }
 
 int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
@@ -669,7 +680,7 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 	 */
 	struct wprof_extra_param *extras = NULL;
 	u64 extra_cnt = 0;
-	collect_extra_filters(&ps, &extras, &extra_cnt);
+	collect_extras(&ps, &extras, &extra_cnt);
 
 	/* Write extras section (right after events) */
 	off_t extras_off = 0;
