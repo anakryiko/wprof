@@ -1190,6 +1190,11 @@ int main(int argc, char **argv)
 			err = -EINVAL;
 			goto cleanup;
 		}
+		if (env.replay && output_modes == 0) {
+			eprintf("Replay mode (-R) requires an output: -T, -J, -I, or --req-list.\n");
+			err = -EINVAL;
+			goto cleanup;
+		}
 		if (env.req_list_cfg && !env.req_list) {
 			if (env.req_list_cfg->sort_cnt > 0 || env.req_list_cfg->top_n > 0 || env.req_list_cfg->bottom_n > 0) {
 				eprintf("--req-sort, --req-top-n, and --req-bottom-n require --req-list!\n");
