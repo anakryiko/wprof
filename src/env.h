@@ -197,44 +197,13 @@ static inline bool is_ts_in_range(u64 ts)
 
 extern const struct argp argp;
 
-static inline bool cfg_get_capture_ipis(const struct wprof_data_cfg *cfg) { return cfg->capture_ipis; }
-static inline void cfg_set_capture_ipis(struct wprof_data_cfg *cfg, bool val) { cfg->capture_ipis = val; }
-
-static inline bool cfg_get_capture_reqs(const struct wprof_data_cfg *cfg) { return cfg->capture_requests; }
-static inline void cfg_set_capture_reqs(struct wprof_data_cfg *cfg, bool val) { cfg->capture_requests = val; }
-
-
-static inline bool cfg_get_capture_scx(const struct wprof_data_cfg *cfg) { return cfg->capture_scx; }
-static inline void cfg_set_capture_scx(struct wprof_data_cfg *cfg, bool val) { cfg->capture_scx = val; }
-
-static inline bool cfg_get_capture_cuda(const struct wprof_data_cfg *cfg) { return cfg->capture_cuda; }
-static inline void cfg_set_capture_cuda(struct wprof_data_cfg *cfg, bool val) { cfg->capture_cuda = val; }
-
-static inline bool cfg_get_capture_pystacks(const struct wprof_data_cfg *cfg) { return cfg->capture_pystacks; }
-static inline void cfg_set_capture_pystacks(struct wprof_data_cfg *cfg, bool val) { cfg->capture_pystacks = val; }
-
-static inline bool cfg_get_capture_pytrace(const struct wprof_data_cfg *cfg) { return cfg->capture_pytrace; }
-static inline void cfg_set_capture_pytrace(struct wprof_data_cfg *cfg, bool val) { cfg->capture_pytrace = val; }
-
-static inline bool cfg_get_capture_pytorch(const struct wprof_data_cfg *cfg) { return cfg->capture_pytorch; }
-static inline void cfg_set_capture_pytorch(struct wprof_data_cfg *cfg, bool val) { cfg->capture_pytorch = val; }
-
-static inline bool cfg_get_capture_utrace(const struct wprof_data_cfg *cfg) { return cfg->capture_utrace; }
-static inline void cfg_set_capture_utrace(struct wprof_data_cfg *cfg, bool val) { cfg->capture_utrace = val; }
-
-static inline bool cfg_get_capture_softirq(const struct wprof_data_cfg *cfg) { return cfg->capture_softirq; }
-static inline void cfg_set_capture_softirq(struct wprof_data_cfg *cfg, bool val) { cfg->capture_softirq = val; }
-
-static inline bool cfg_get_capture_hardirq(const struct wprof_data_cfg *cfg) { return cfg->capture_hardirq; }
-static inline void cfg_set_capture_hardirq(struct wprof_data_cfg *cfg, bool val) { cfg->capture_hardirq = val; }
-
 struct capture_feature {
 	const char *name;
 	const char *header;
+	const char *json_key;
 	enum tristate default_val;
 	size_t env_flag_off;
-	bool (*cfg_get_flag)(const struct wprof_data_cfg *cfg);
-	void (*cfg_set_flag)(struct wprof_data_cfg *cfg, bool val);
+	u64 cfg_bit;
 };
 
 extern const struct capture_feature capture_features[];

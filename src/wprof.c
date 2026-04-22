@@ -69,27 +69,26 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va
 }
 
 const struct capture_feature capture_features[] = {
-	{"IPIs", "IPIs:", DEFAULT_CAPTURE_IPIS,
-	 offsetof(struct env, capture_ipis), cfg_get_capture_ipis, cfg_set_capture_ipis},
-	{"requests", "Requests:", DEFAULT_CAPTURE_REQUESTS,
-	 offsetof(struct env, capture_requests), cfg_get_capture_reqs, cfg_set_capture_reqs},
-	{"sched-ext info", "SCX info:", DEFAULT_CAPTURE_SCX,
-	  offsetof(struct env, capture_scx),
-	  cfg_get_capture_scx, cfg_set_capture_scx},
-	{"CUDA", "CUDA:", DEFAULT_CAPTURE_CUDA,
-	 offsetof(struct env, capture_cuda), cfg_get_capture_cuda, cfg_set_capture_cuda},
-	{"Python stacks", "Pystacks:", DEFAULT_CAPTURE_PYSTACKS,
-	 offsetof(struct env, capture_pystacks), cfg_get_capture_pystacks, cfg_set_capture_pystacks},
-	{"Python function tracing", "PyTrace:", DEFAULT_CAPTURE_PYTRACE,
-	 offsetof(struct env, capture_pytrace), cfg_get_capture_pytrace, cfg_set_capture_pytrace},
-	{"PyTorch RecordFunction", "Torch:", DEFAULT_CAPTURE_TORCH_PROFILER,
-	 offsetof(struct env, capture_pytorch), cfg_get_capture_pytorch, cfg_set_capture_pytorch},
-	{"user-defined tracing", "Utrace:", DEFAULT_CAPTURE_UTRACE,
-	 offsetof(struct env, capture_utrace), cfg_get_capture_utrace, cfg_set_capture_utrace},
-	{"softirqs", "Softirqs:", DEFAULT_CAPTURE_SOFTIRQ,
-	 offsetof(struct env, capture_softirq), cfg_get_capture_softirq, cfg_set_capture_softirq},
-	{"hardireqs", "Hardirqs:", DEFAULT_CAPTURE_HARDIRQ,
-	 offsetof(struct env, capture_hardirq), cfg_get_capture_hardirq, cfg_set_capture_hardirq},
+	{"IPIs", "IPIs:", "capture_ipis", DEFAULT_CAPTURE_IPIS,
+	 offsetof(struct env, capture_ipis), CFG_CAPTURE_IPIS},
+	{"requests", "Requests:", "capture_requests", DEFAULT_CAPTURE_REQUESTS,
+	 offsetof(struct env, capture_requests), CFG_CAPTURE_REQUESTS},
+	{"sched-ext info", "SCX info:", "capture_scx", DEFAULT_CAPTURE_SCX,
+	 offsetof(struct env, capture_scx), CFG_CAPTURE_SCX},
+	{"CUDA", "CUDA:", "capture_cuda", DEFAULT_CAPTURE_CUDA,
+	 offsetof(struct env, capture_cuda), CFG_CAPTURE_CUDA},
+	{"Python stacks", "PyStacks:", "capture_pystacks", DEFAULT_CAPTURE_PYSTACKS,
+	 offsetof(struct env, capture_pystacks), CFG_CAPTURE_PYSTACKS},
+	{"Python function tracing", "PyTrace:", "capture_pytrace", DEFAULT_CAPTURE_PYTRACE,
+	 offsetof(struct env, capture_pytrace), CFG_CAPTURE_PYTRACE},
+	{"PyTorch RecordFunction", "PyTorch:", "capture_pytorch", DEFAULT_CAPTURE_TORCH_PROFILER,
+	 offsetof(struct env, capture_pytorch), CFG_CAPTURE_PYTORCH},
+	{"user-defined tracing", "Utrace:", "capture_utrace", DEFAULT_CAPTURE_UTRACE,
+	 offsetof(struct env, capture_utrace), CFG_CAPTURE_UTRACE},
+	{"softirqs", "Softirqs:", "capture_softirq", DEFAULT_CAPTURE_SOFTIRQ,
+	 offsetof(struct env, capture_softirq), CFG_CAPTURE_SOFTIRQ},
+	{"hardirqs", "Hardirqs:", "capture_hardirq", DEFAULT_CAPTURE_HARDIRQ,
+	 offsetof(struct env, capture_hardirq), CFG_CAPTURE_HARDIRQ},
 };
 
 const int capture_feature_cnt = ARRAY_SIZE(capture_features);
@@ -1310,7 +1309,7 @@ int main(int argc, char **argv)
 
 			for (int i = 0; i < ARRAY_SIZE(capture_features); i++) {
 				const struct capture_feature *f = &capture_features[i];
-				wprintf("%-*s%s\n", w, f->header, f->cfg_get_flag(cfg) ? "YES" : "NO");
+				wprintf("%-*s%s\n", w, f->header, (cfg->capture_features & f->cfg_bit) ? "YES" : "NO");
 			}
 
 			if (dump_hdr->extra_cnt > 0) {
@@ -1410,7 +1409,7 @@ int main(int argc, char **argv)
 		for (int i = 0; i < ARRAY_SIZE(capture_features); i++) {
 			const struct capture_feature *f = &capture_features[i];
 			enum tristate *flag = (void *)&env + f->env_flag_off;
-			bool cfg_flag = f->cfg_get_flag(cfg);
+			bool cfg_flag = !!(cfg->capture_features & f->cfg_bit);
 
 			if (*flag == UNSET)
 				*flag = cfg_flag;
