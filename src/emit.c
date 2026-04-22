@@ -38,6 +38,13 @@ enum track_child_order {
 	CHILD_ORDER_EXPLICIT,
 };
 
+enum track_merge_behavior {
+	MERGE_DEFAULT,
+	MERGE_BY_NAME,
+	MERGE_NONE,
+	MERGE_BY_KEY,
+};
+
 struct task_state {
 	int tid, pid;
 	pb_iid name_iid;
@@ -115,6 +122,7 @@ enum dyn_track_kind {
 	DTK_PYTRACE_PROC,	/* Python-traced process track (by PID) */
 	DTK_PYTRACE_PROC_THREAD,/* Python-traced thread track (by TID) */
 	DTK_UTRACE_THREAD,	/* utrace per-config track (id1 = tid, id2 = utrace_id) */
+	DTK_TIMER_THREAD,	/* per-thread timer track (id1 = tid) */
 };
 
 struct track_key {
@@ -772,7 +780,9 @@ static void emit_kind_track_descr(pb_ostream_t *stream, enum task_kind k)
 	emit_trace_packet(stream, &desc_pb);
 }
 
-static void emit_track_descr_impl(pb_ostream_t *stream, __u64 track_uuid, __u64 parent_track_uuid, const char *name, int rank, enum track_child_order child_order)
+static void emit_track_descr_impl(pb_ostream_t *stream, __u64 track_uuid, __u64 parent_track_uuid,
+				  const char *name, int rank,
+				  enum track_child_order child_order, enum track_merge_behavior merge)
 {
 	perfetto_protos_TrackDescriptor_ChildTracksOrdering child_ordering;
 	switch (child_order) {
@@ -787,6 +797,24 @@ static void emit_track_descr_impl(pb_ostream_t *stream, __u64 track_uuid, __u64 
 			eprintf("BUG: invalid child_order in track_child_order()\n");
 			break;
 	}
+
+	perfetto_protos_TrackDescriptor_SiblingMergeBehavior merge_behavior;
+	switch (merge) {
+		case MERGE_BY_NAME:
+			merge_behavior = perfetto_protos_TrackDescriptor_SiblingMergeBehavior_SIBLING_MERGE_BEHAVIOR_BY_TRACK_NAME;
+			break;
+		case MERGE_NONE:
+			merge_behavior = perfetto_protos_TrackDescriptor_SiblingMergeBehavior_SIBLING_MERGE_BEHAVIOR_NONE;
+			break;
+		case MERGE_BY_KEY:
+			merge_behavior = perfetto_protos_TrackDescriptor_SiblingMergeBehavior_SIBLING_MERGE_BEHAVIOR_BY_SIBLING_MERGE_KEY;
+			break;
+		case MERGE_DEFAULT:
+		default:
+			merge_behavior = perfetto_protos_TrackDescriptor_SiblingMergeBehavior_SIBLING_MERGE_BEHAVIOR_UNSPECIFIED;
+			break;
+	}
+
 	TracePacket desc = {
 		PB_TRUST_SEQ_ID(PB_SEQ_ID_GENERIC),
 		PB_ONEOF(data, TracePacket_track_descriptor) = { .track_descriptor = {
@@ -798,7 +826,8 @@ static void emit_track_descr_impl(pb_ostream_t *stream, __u64 track_uuid, __u64 
 			PB_INIT(child_ordering) = child_ordering,
 			.sibling_order_rank = rank,
 			.has_sibling_order_rank = rank != 0,
-			/* sibling_merge_behavior left as default (mergeable) */
+			.has_sibling_merge_behavior = merge != MERGE_DEFAULT,
+			.sibling_merge_behavior = merge_behavior,
 		}},
 	};
 	emit_trace_packet(stream, &desc);
@@ -806,12 +835,12 @@ static void emit_track_descr_impl(pb_ostream_t *stream, __u64 track_uuid, __u64 
 
 static void emit_track_descr(pb_ostream_t *stream, __u64 track_uuid, __u64 parent_track_uuid, const char *name, int rank)
 {
-	emit_track_descr_impl(stream, track_uuid, parent_track_uuid, name, rank, CHILD_ORDER_CHRONO);
+	emit_track_descr_impl(stream, track_uuid, parent_track_uuid, name, rank, CHILD_ORDER_CHRONO, MERGE_DEFAULT);
 }
 
 static void emit_track_descr_explicit(pb_ostream_t *stream, __u64 track_uuid, __u64 parent_track_uuid, const char *name, int rank)
 {
-	emit_track_descr_impl(stream, track_uuid, parent_track_uuid, name, rank, CHILD_ORDER_EXPLICIT);
+	emit_track_descr_impl(stream, track_uuid, parent_track_uuid, name, rank, CHILD_ORDER_EXPLICIT, MERGE_DEFAULT);
 }
 
 static void emit_process_track_descr(pb_ostream_t *stream, const struct wprof_task *t)
@@ -1107,6 +1136,19 @@ static void json_task(struct json_state *j, const char *key, const struct wprof_
 }
 
 /* EV_TIMER */
+
+static u64 ensure_timer_thread_track(const struct wprof_task *t)
+{
+	struct track_state *s = track_state_get_or_add(DTK_TIMER_THREAD, t->tid, 0);
+
+	if (!s->exists) {
+		emit_track_descr_impl(cur_stream, s->track_id, trackid_thread(t),
+				      "TIMER", 0, CHILD_ORDER_CHRONO, MERGE_NONE);
+		s->exists = true;
+	}
+	return s->track_id;
+}
+
 static void emit_timer(struct worker_state *w, const struct wevent *e)
 {
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
@@ -1120,8 +1162,8 @@ static void emit_timer(struct worker_state *w, const struct wevent *e)
 		tr_id = e->timer.pystack_id;
 
 	if (env.emit_timer_ticks || tr_id > 0) {
-		/* task keeps running on CPU */
-		emit_instant(trackid_thread_kernel(&task), e->ts, IID_NAME_TIMER, IID_CAT_TIMER) {
+		u64 track_uuid = ensure_timer_thread_track(&task);
+		emit_instant(track_uuid, e->ts, IID_NAME_TIMER, IID_CAT_TIMER) {
 			emit_kv_int(IID_ANNK_CPU, e->cpu);
 			if (env.emit_numa)
 				emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
