@@ -1186,7 +1186,7 @@ int main(int argc, char **argv)
 	{
 		int output_modes = !!(env.trace_path || env.json_path) + env.req_list + !!env.replay_info;
 		if (output_modes > 1) {
-			eprintf("Only one of -T, --req-list, and --replay-info (-RI) can be specified at a time!\n");
+			eprintf("Only one of -T, -J, --req-list, and --replay-info (-RI) can be specified at a time!\n");
 			err = -EINVAL;
 			goto cleanup;
 		}
@@ -1208,6 +1208,9 @@ int main(int argc, char **argv)
 			}
 		}
 	}
+
+	if (!env.replay && geteuid() != 0)
+		eprintf("WARNING: wprof is not running as root, data capture will most probably FAIL due to insufficient permissions!\n");
 
 	vprintf("wprof v%s (PID %d) started!\n", WPROF_VERSION, getpid());
 
