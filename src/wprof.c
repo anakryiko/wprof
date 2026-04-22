@@ -1143,26 +1143,6 @@ static void cleanup_workers(struct worker_state *workers, int worker_cnt)
 	}
 }
 
-static const char *extra_param_kind_name(enum wprof_extra_param_kind kind)
-{
-	switch (kind) {
-	case WEXTRA_FILTER_PID_ALLOW: return "--pid";
-	case WEXTRA_FILTER_PID_DENY: return "--no-pid";
-	case WEXTRA_FILTER_TID_ALLOW: return "--tid";
-	case WEXTRA_FILTER_TID_DENY: return "--no-tid";
-	case WEXTRA_FILTER_PNAME_ALLOW: return "--process-name";
-	case WEXTRA_FILTER_PNAME_DENY: return "--no-process-name";
-	case WEXTRA_FILTER_TNAME_ALLOW: return "--thread-name";
-	case WEXTRA_FILTER_TNAME_DENY: return "--no-thread-name";
-	case WEXTRA_FILTER_IDLE_ALLOW: return "--idle";
-	case WEXTRA_FILTER_IDLE_DENY: return "--no-idle";
-	case WEXTRA_FILTER_KTHREAD_ALLOW: return "--kthread";
-	case WEXTRA_FILTER_KTHREAD_DENY: return "--no-kthread";
-	case WEXTRA_UTRACE_DEF: return "--utrace";
-	case WEXTRA_METADATA: return "--metadata";
-	default: return sfmt("<unknown:%d>", kind);
-	}
-}
 
 int main(int argc, char **argv)
 {
