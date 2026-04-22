@@ -3395,7 +3395,7 @@ static u64 ensure_pytrace_thread_track(int tid, const char *comm)
 
 	if (!s->exists) {
 		emit_track_descr_impl(cur_stream, track_uuid,
-				      TRACK_UUID(TK_THREAD_META, tid),
+				      TRACK_UUID(TK_THREAD, tid),
 				      comm, tid,
 				      CHILD_ORDER_CHRONO, MERGE_NONE);
 		s->exists = true;
