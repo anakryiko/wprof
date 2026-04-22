@@ -802,6 +802,8 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 			return err;
 		}
 	} else {
+		env.capture_utrace = FALSE;
+		env.requested_stack_traces &= ~ST_UTRACE;
 		bpf_map__set_autocreate(skel->maps.utrace_probe_cfgs, false);
 		bpf_map__set_autocreate(skel->maps.utrace_scratch, false);
 	}
