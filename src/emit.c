@@ -98,7 +98,6 @@ enum track_special {
 
 	TKS_REQUESTS = 4,
 	TKS_CUDA = 5,
-	TKS_PYTRACE = 6,
 };
 
 #define TRACK_UUID(kind, id) (((u64)(id) * TK_MULT) + (u64)kind)
@@ -108,7 +107,6 @@ enum track_special {
 #define TRACK_UUID_KTHREAD	TRACK_UUID(TK_SPECIAL, TKS_KTHREAD)
 #define TRACK_UUID_REQUESTS	TRACK_UUID(TK_SPECIAL, TKS_REQUESTS)
 #define TRACK_UUID_CUDA		TRACK_UUID(TK_SPECIAL, TKS_CUDA)
-#define TRACK_UUID_PYTRACE	TRACK_UUID(TK_SPECIAL, TKS_PYTRACE)
 
 enum dyn_track_kind {
 	__DTK_GAP = TK_MULT - 1,	/* we need to not overlap with enum track_kind */
@@ -117,7 +115,6 @@ enum dyn_track_kind {
 	DTK_REQ,			/* single request of given PID (id1 = pid, id2 = req_id) */
 	DTK_REQ_THREAD,			/* request-participating thread (id1 = tid, id2 = req_id) */
 	DTK_REQ_THREAD_EMBED,		/* first-event-per-thread tracking for embed mode (id1 = tid, id2 = req_id) */
-	DTK_PYTRACE_PROC,	/* Python-traced process track (by PID) */
 	DTK_PYTRACE_PROC_THREAD,/* Python-traced thread track (by TID) */
 	DTK_UTRACE_THREAD,	/* utrace per-config track (id1 = tid, id2 = utrace_id) */
 	DTK_TIMER_THREAD,	/* per-thread timer track (id1 = tid) */
@@ -606,11 +603,6 @@ static inline u64 trackid_cuda_proc_gpu(int pid, u32 dev_id)
 static inline u64 trackid_cuda_proc_stream(int pid, u32 stream_id)
 {
 	return TRACK_UUID(TK_CUDA_PROC_STREAM, pid | ((u64)stream_id << 32));
-}
-
-static inline u64 trackid_pytrace_proc(int pid)
-{
-	return track_state_get_or_add(DTK_PYTRACE_PROC, pid, 0)->track_id;
 }
 
 static inline u64 trackid_pytrace_thread(int tid)
@@ -3392,29 +3384,16 @@ static int process_cuda_api(struct worker_state *w, const struct wevent *e)
 
 /* PYTRACE (Python function tracing) */
 
-static u64 ensure_pytrace_proc_track(int pid, const char *proc_name)
+static u64 ensure_pytrace_thread_track(int tid, const char *comm)
 {
-	struct track_state *s = track_state_get_or_add(DTK_PYTRACE_PROC, pid, 0);
-	u64 track_uuid = trackid_pytrace_proc(pid);
-
-	if (!s->exists) {
-		emit_track_descr_explicit(cur_stream, track_uuid, TRACK_UUID_PYTRACE,
-					  sfmt("%s %d", proc_name, pid), 0);
-		s->exists = true;
-	}
-	return track_uuid;
-}
-
-static u64 ensure_pytrace_thread_track(int pid, int tid, const char *proc_name, const char *comm)
-{
-	ensure_pytrace_proc_track(pid, proc_name);
-
 	struct track_state *s = track_state_get_or_add(DTK_PYTRACE_PROC_THREAD, tid, 0);
 	u64 track_uuid = trackid_pytrace_thread(tid);
 
 	if (!s->exists) {
-		emit_track_descr(cur_stream, track_uuid, trackid_pytrace_proc(pid),
-				 sfmt("%s %d", comm, tid), tid);
+		emit_track_descr_impl(cur_stream, track_uuid,
+				      TRACK_UUID(TK_THREAD_META, tid),
+				      comm, tid,
+				      CHILD_ORDER_CHRONO, MERGE_NONE);
 		s->exists = true;
 	}
 	return track_uuid;
@@ -3425,7 +3404,7 @@ static void emit_pytrace_event(struct worker_state *w, const struct wevent *e)
 	struct wprof_data_hdr *hdr = w->dump_hdr;
 	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
 
-	u64 track_uuid = ensure_pytrace_thread_track(task.pid, task.tid, task.pcomm, task.comm);
+	u64 track_uuid = ensure_pytrace_thread_track(task.tid, task.comm);
 
 	const char *func_name = wevent_str(hdr, e->pytrace.func_name_stroff);
 	const char *file = e->pytrace.file_name_stroff ? wevent_str(hdr, e->pytrace.file_name_stroff) : NULL;
@@ -3494,7 +3473,7 @@ static void emit_pytorch_event(struct worker_state *w, const struct wevent *e)
 	struct wprof_data_hdr *hdr = w->dump_hdr;
 	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
 
-	u64 track_uuid = ensure_pytrace_thread_track(task.pid, task.tid, task.pcomm, task.comm);
+	u64 track_uuid = ensure_pytrace_thread_track(task.tid, task.comm);
 
 	const char *name = e->rf.name_stroff ? wevent_str(hdr, e->rf.name_stroff) : "?";
 	pb_iid name_iid = emit_intern_str(w, name);
@@ -3990,8 +3969,6 @@ int emit_trace(struct worker_state *w)
 			emit_track_descr(cur_stream, TRACK_UUID_REQUESTS, 0, "REQUESTS", 1000);
 		if (env.capture_cuda)
 			emit_track_descr(cur_stream, TRACK_UUID_CUDA, 0, "CUDA", 2000);
-		if (env.capture_pytrace)
-			emit_track_descr(cur_stream, TRACK_UUID_PYTRACE, 0, "PYTRACE", 3000);
 
 		if (env.requested_stack_traces) {
 			struct wprof_stacks_hdr *shdr = wprof_stacks_hdr(w->dump_hdr);

@@ -105,7 +105,7 @@ int py_find_binary(int pid, struct py_binary_info *bi)
 	snprintf(exe_path, sizeof(exe_path), "/proc/%d/exe", pid);
 
 	if (stat(exe_path, &st)) {
-		eprintf("Failed to retrive file status for %s\n", exe_path);
+		vprintf("Failed to retrive file status for %s\n", exe_path);
 		return -errno;
 	}
 	/* Scan static executable or libpython*.so for Py_Version (or _PyRuntime for 3.10).
