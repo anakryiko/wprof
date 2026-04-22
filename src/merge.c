@@ -798,7 +798,10 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 		const struct capture_feature *f = &capture_features[i];
 		enum tristate *flag = (void *)&env + f->env_flag_off;
 
-		f->cfg_set_flag(&hdr.cfg, *flag == TRUE);
+		if (*flag == TRUE)
+			hdr.cfg.capture_features |= f->cfg_bit;
+		else
+			hdr.cfg.capture_features &= ~f->cfg_bit;
 	}
 
 	hdr.cfg.timer_freq_hz = env.timer_freq_hz;

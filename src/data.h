@@ -12,21 +12,25 @@
 #define WPROF_DATA_MINOR 2
 #define WPROF_DATA_FLAG_INCOMPLETE 0xffffffffffffffffULL
 
+enum cfg_feature_bit {
+	CFG_CAPTURE_IPIS	= 0x001,
+	CFG_CAPTURE_REQUESTS	= 0x002,
+	CFG_CAPTURE_SCX		= 0x004,
+	CFG_CAPTURE_CUDA	= 0x008,
+	CFG_CAPTURE_PYSTACKS	= 0x010,
+	CFG_CAPTURE_PYTRACE	= 0x020,
+	CFG_CAPTURE_PYTORCH	= 0x040,
+	CFG_CAPTURE_UTRACE	= 0x080,
+	CFG_CAPTURE_SOFTIRQ	= 0x100,
+	CFG_CAPTURE_HARDIRQ	= 0x200,
+};
+
 struct wprof_data_cfg {
 	u64 ktime_start_ns;
 	u64 realtime_start_ns;
 	u64 duration_ns;
 
-	u64 capture_ipis : 1;
-	u64 capture_requests : 1;
-	u64 capture_scx : 1;
-	u64 capture_cuda : 1;
-	u64 capture_pystacks : 1;
-	u64 capture_pytrace : 1;
-	u64 capture_pytorch : 1;
-	u64 capture_utrace : 1;
-	u64 capture_softirq : 1;
-	u64 capture_hardirq : 1;
+	u64 capture_features;
 
 	enum stack_trace_kind captured_stack_traces;
 

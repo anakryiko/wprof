@@ -3842,16 +3842,10 @@ static void emit_header_json(struct worker_state *w)
 	json_kv_fmt(j, "version", "%d.%d", hdr->version_major, hdr->version_minor);
 	json_kv_float(j, "dur", "%.9lf", (env.sess_end_ts - env.sess_start_ts) / 1e9);
 	json_kv_int(j, "timer_freq_hz", cfg->timer_freq_hz);
-	json_kv_bool(j, "capture_ipis", cfg->capture_ipis);
-	json_kv_bool(j, "capture_requests", cfg->capture_requests);
-	json_kv_bool(j, "capture_scx", cfg->capture_scx);
-	json_kv_bool(j, "capture_cuda", cfg->capture_cuda);
-	json_kv_bool(j, "capture_pystacks", cfg->capture_pystacks);
-	json_kv_bool(j, "capture_pytrace", cfg->capture_pytrace);
-	json_kv_bool(j, "capture_pytorch", cfg->capture_pytorch);
-	json_kv_bool(j, "capture_utrace", cfg->capture_utrace);
-	json_kv_bool(j, "capture_softirq", cfg->capture_softirq);
-	json_kv_bool(j, "capture_hardirq", cfg->capture_hardirq);
+	for (int i = 0; i < capture_feature_cnt; i++) {
+		const struct capture_feature *f = &capture_features[i];
+		json_kv_bool(j, f->json_key, !!(cfg->capture_features & f->cfg_bit));
+	}
 
 	json_subarr_start(j, "stacks");
 	if (cfg->captured_stack_traces & ST_TIMER)
