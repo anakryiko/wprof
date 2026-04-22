@@ -2855,8 +2855,8 @@ static u64 ensure_cuda_api_track(int tid, const char *comm)
 	u64 track_uuid = TRACK_UUID(TK_THREAD_CUDA, tid);
 
 	if (!s->exists) {
-		emit_track_descr(cur_stream, track_uuid, TRACK_UUID(TK_THREAD_META, tid),
-				 comm, TK_THREAD_CUDA);
+		emit_track_descr_impl(cur_stream, track_uuid, TRACK_UUID(TK_THREAD, tid),
+				      "CUDA", TK_THREAD_CUDA, CHILD_ORDER_CHRONO, MERGE_NONE);
 		s->exists = true;
 	}
 	return track_uuid;
