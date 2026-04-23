@@ -86,9 +86,9 @@ static bool has_pyruntime_sym(const char *binary_path)
 }
 
 /*
- * Find the Python binary for a process and compute its load base address.
- * Checks the main executable first (statically-linked Python, e.g. fbpython),
- * then scans loaded libpython*.so shared libraries.
+ * Find the Python binary for a process by scanning executable VMAs for
+ * Py_Version (3.11+) or _PyRuntime (3.10) symbols. Checks both the main
+ * executable (statically-linked Python) and libpython*.so shared libraries.
  *
  * Returns 0 if found (bi populated), -ENOENT if not Python.
  */
@@ -108,9 +108,8 @@ int py_find_binary(int pid, struct py_binary_info *bi)
 		vprintf("Failed to retrive file status for %s\n", exe_path);
 		return -errno;
 	}
-	/* Scan static executable or libpython*.so for Py_Version (or _PyRuntime for 3.10).
-	 * Use first private VMA for correct base_addr. */
-	wprof_for_each(vma, vma, pid, VMA_QUERY_FILE_BACKED_VMA) {
+	/* Scan executable VMAs for Python binary. */
+	wprof_for_each(vma, vma, pid, VMA_QUERY_FILE_BACKED_VMA | VMA_QUERY_VMA_EXECUTABLE) {
 		if (vma->vma_flags & PROCMAP_QUERY_VMA_SHARED)
 			continue;
 		if (vma->vma_name[0] != '/')
@@ -128,6 +127,10 @@ int py_find_binary(int pid, struct py_binary_info *bi)
 		snprintf(bi->host_path, sizeof(bi->host_path), "/proc/%d/map_files/%llx-%llx",
 			 pid, (unsigned long long)vma->vma_start, (unsigned long long)vma->vma_end);
 		bi->base_addr = vma->vma_start - vma->vma_offset;
+		bi->pid = pid;
+		bi->vma_start = vma->vma_start;
+		bi->vma_end = vma->vma_end;
+		bi->vma_offset = vma->vma_offset;
 
 		/* assume 3.10, unless we find elf version symbol */
 		bi->py_major = 3;

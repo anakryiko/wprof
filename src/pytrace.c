@@ -65,35 +65,30 @@ static struct pytrace_tracee *add_pytrace_tracee(struct tracee_state *tracee)
 	return pf;
 }
 
-/*
- * Resolve pytrace Python C API symbols from the binary using elf_find_syms.
- * Computes runtime addresses (base_addr + offset) for each symbol.
- * Returns 0 on success, -ENOENT if any required symbol is missing.
- */
-static int pytrace_resolve_symbols(int pid, struct py_binary_info *bi, unsigned long *sym_addrs)
+static int pytrace_resolve_symbols(struct py_binary_info *bi, unsigned long *sym_addrs)
 {
-	unsigned long offsets[PYTRACE_SYM_CNT] = {};
 	int err;
 
-	err = elf_find_syms(bi->host_path, STT_FUNC, pytrace_sym_names, ARRAY_SIZE(offsets), offsets, NULL);
+	err = elf_resolve_syms(bi->pid, bi->vma_start, bi->vma_end, bi->vma_offset,
+			       STT_FUNC, pytrace_sym_names, PYTRACE_SYM_CNT, sym_addrs);
 	if (err) {
 		for (int i = 0; i < PYTRACE_SYM_CNT; i++) {
-			if (offsets[i])
+			if (sym_addrs[i])
 				continue;
 			/* PyEval_SetProfileAllThreads is 3.12+ only */
 			if (strcmp(pytrace_sym_names[i], "PyEval_SetProfileAllThreads") == 0) {
-				vprintf("PID %d: %s not found, skipping\n", pid, pytrace_sym_names[i]);
+				vprintf("PID %d: %s not found, skipping\n", bi->pid, pytrace_sym_names[i]);
 				continue;
 			}
-			eprintf("PID %d: missing required Python symbol[%s] in %s\n", pid, pytrace_sym_names[i], bi->host_path);
+			eprintf("PID %d: missing required Python symbol[%s] in %s\n",
+				bi->pid, pytrace_sym_names[i], bi->host_path);
 			return -ENOENT;
 		}
 	}
 
 	for (int i = 0; i < PYTRACE_SYM_CNT; i++) {
-		sym_addrs[i] = offsets[i] ? bi->base_addr + offsets[i] : 0;
-		if (offsets[i])
-			dlogf(PYTRACE, 1, "  %s: offset=0x%lx addr=0x%lx\n", pytrace_sym_names[i], offsets[i], sym_addrs[i]);
+		if (sym_addrs[i])
+			dlogf(PYTRACE, 1, "  %s: addr=0x%lx\n", pytrace_sym_names[i], sym_addrs[i]);
 	}
 
 	return 0;
@@ -152,11 +147,11 @@ static int try_inject_to_python_process(int pid, int workdir_fd)
 	vprintf("Process %s is Python 3.%d!\n",
 	      pytrace_proc_str(pid, ns_tid_by_host_tid(pid, pid), proc_name(pid)), bi.py_minor);
 
-	dlogf(PYTRACE, 0, "PID %d: Python binary at '%s', base_addr=0x%lx\n", pid, bi.host_path, bi.base_addr);
+	dlogf(PYTRACE, 0, "PID %d: Python binary at '%s'\n", pid, bi.host_path);
 
 	/* Resolve all required Python C API symbols before injection */
 	u64 ts = ktime_now_ns();
-	err = pytrace_resolve_symbols(pid, &bi, sym_addrs);
+	err = pytrace_resolve_symbols(&bi, sym_addrs);
 	dlogf(PYTRACE, 1, "PID %d: pytrace symbol resolution took %.3lfms\n", pid, (ktime_now_ns() - ts) / 1e6);
 	if (err) {
 		eprintf("Failed to resolve Python symbols for %s, skipping injection\n",

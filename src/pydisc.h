@@ -8,6 +8,10 @@
 struct py_binary_info {
 	char host_path[PATH_MAX];
 	unsigned long base_addr;
+	int pid;
+	unsigned long vma_start;
+	unsigned long vma_end;
+	unsigned long vma_offset;
 	int py_major;
 	int py_minor;
 };
