@@ -106,13 +106,10 @@ static int pytrace_resolve_symbols(int pid, struct py_binary_info *bi, unsigned 
 static int torch_resolve_symbols(int pid, unsigned long *sym_addrs)
 {
 	struct vma_info *vma;
-	char host_path[PATH_MAX];
-	unsigned long offsets[TORCH_SYM_CNT] = {};
-	unsigned long base_addr = 0;
 	__u64 last_dev = 0;
 	__u64 last_inode = 0;
 
-	wprof_for_each(vma, vma, pid, VMA_QUERY_FILE_BACKED_VMA) {
+	wprof_for_each(vma, vma, pid, VMA_QUERY_FILE_BACKED_VMA | VMA_QUERY_VMA_EXECUTABLE) {
 		if (vma->vma_flags & PROCMAP_QUERY_VMA_SHARED)
 			continue;
 		if (vma->vma_name[0] != '/')
@@ -126,14 +123,10 @@ static int torch_resolve_symbols(int pid, unsigned long *sym_addrs)
 		last_inode = vma->inode;
 		last_dev = curr_dev;
 
-		snprintf(host_path, sizeof(host_path), "/proc/%d/map_files/%llx-%llx",
-			 pid, (unsigned long long)vma->vma_start, (unsigned long long)vma->vma_end);
-		base_addr = vma->vma_start - vma->vma_offset;
-		if (elf_find_syms(host_path, STT_FUNC, torch_sym_names, TORCH_SYM_CNT, offsets, NULL) == 0) {
-			for (int i = 0; i < TORCH_SYM_CNT; i++) {
-				sym_addrs[i] = base_addr + offsets[i];
-				dlogf(PYTRACE, 1, "  %s: offset=0x%lx addr=0x%lx\n", torch_sym_names[i], offsets[i], sym_addrs[i]);
-			}
+		if (elf_resolve_syms(pid, vma->vma_start, vma->vma_end, vma->vma_offset,
+				     STT_FUNC, torch_sym_names, TORCH_SYM_CNT, sym_addrs) == 0) {
+			for (int i = 0; i < TORCH_SYM_CNT; i++)
+				dlogf(PYTRACE, 1, "  %s: addr=0x%lx\n", torch_sym_names[i], sym_addrs[i]);
 			return 0;
 		}
 	}
