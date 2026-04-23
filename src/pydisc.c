@@ -126,7 +126,6 @@ int py_find_binary(int pid, struct py_binary_info *bi)
 
 		snprintf(bi->host_path, sizeof(bi->host_path), "/proc/%d/map_files/%llx-%llx",
 			 pid, (unsigned long long)vma->vma_start, (unsigned long long)vma->vma_end);
-		bi->base_addr = vma->vma_start - vma->vma_offset;
 		bi->pid = pid;
 		bi->vma_start = vma->vma_start;
 		bi->vma_end = vma->vma_end;
@@ -148,31 +147,31 @@ int py_find_binary(int pid, struct py_binary_info *bi)
 /*
  * Build PyPidData for a discovered Python process and populate BPF maps.
  */
-static int setup_pid(int pid, const char *binary_path, unsigned long base_addr,
-		     int py_major, int py_minor, struct wprof_bpf *skel)
+static int setup_pid(const struct py_binary_info *bi, struct wprof_bpf *skel)
 {
+	int pid = bi->pid;
 	PyPidData pid_data = {};
 	int err;
 
-	err = pyoffsets_for_version(py_major, py_minor, &pid_data.offsets);
+	err = pyoffsets_for_version(bi->py_major, bi->py_minor, &pid_data.offsets);
 	if (err) {
-		eprintf("Unsupported Python version %d.%d for PID %d\n", py_major, py_minor, pid);
+		eprintf("Unsupported Python version %d.%d for PID %d\n", bi->py_major, bi->py_minor, pid);
 		return -EOPNOTSUPP;
 	}
 
 	/* resolve _PyRuntime address */
 	const char *syms[] = { "_PyRuntime" };
-	unsigned long offs[1] = {};
-	err = elf_find_syms(binary_path, STT_OBJECT, syms, ARRAY_SIZE(offs), offs, NULL);
+	unsigned long addrs[1] = {};
+	err = elf_resolve_syms(pid, bi->vma_start, bi->vma_end, bi->vma_offset,
+			       STT_OBJECT, syms, ARRAY_SIZE(addrs), addrs);
 	if (err) {
-		eprintf("Failed to find _PyRuntime symbol in '%s' for PID %d: %d\n", binary_path, pid, err);
+		eprintf("Failed to resolve _PyRuntime for PID %d: %d\n", pid, err);
 		return err;
 	}
 
-	unsigned long py_runtime_addr = base_addr + offs[0];
+	unsigned long py_runtime_addr = addrs[0];
 
-	vprintf("PID %d: _PyRuntime ELF sym=0x%lx base=0x%lx runtime_addr=0x%lx\n",
-		pid, offs[0], base_addr, py_runtime_addr);
+	vprintf("PID %d: _PyRuntime addr=0x%lx\n", pid, py_runtime_addr);
 
 	pid_data.py_runtime_addr = py_runtime_addr;
 	pid_data.tls_key_addr = py_runtime_addr + pid_data.offsets.TLSKey_offset;
@@ -254,7 +253,7 @@ static int discover_pid(int pid, struct wprof_bpf *skel, bool force)
 		return -EOPNOTSUPP;
 	}
 
-	err = setup_pid(pid, bi.host_path, bi.base_addr, bi.py_major, bi.py_minor, skel);
+	err = setup_pid(&bi, skel);
 	if (err) {
 		eprintf("Failed to set up Python stack tracing for PID %d (%s): %d\n", pid, proc_name(pid), err);
 		return err;
