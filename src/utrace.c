@@ -521,7 +521,7 @@ static int resolve_uprobe_binary(int pid, const char *sym_name,
 			 pid, (unsigned long long)vma->vma_start, (unsigned long long)vma->vma_end);
 
 		unsigned long offset = 0;
-		if (elf_find_syms(map_file, STT_FUNC, &sym_name, 1, NULL, &offset))
+		if (elf_find_syms(map_file, STT_FUNC, &sym_name, 1, &offset))
 			continue;
 
 		*attach_path_out = strdup(map_file);
@@ -551,7 +551,7 @@ static int resolve_uprobe_cfg(struct utrace_cfg *cfg)
 
 	if (binary_path) {
 		const char *sym_name = cfg->uprobe.name;
-		int err = elf_find_syms(binary_path, STT_FUNC, &sym_name, 1, NULL, &sym_offset);
+		int err = elf_find_syms(binary_path, STT_FUNC, &sym_name, 1, &sym_offset);
 		if (err < 0) {
 			eprintf("utrace: failed to resolve symbol '%s' in '%s': %d\n",
 				cfg->uprobe.name, binary_path, err);
