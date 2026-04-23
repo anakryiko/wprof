@@ -82,7 +82,7 @@ static bool has_pyruntime_sym(const char *binary_path)
 	const char *syms[] = { "_PyRuntime" };
 	unsigned long offs[1] = {};
 
-	return elf_find_syms(binary_path, STT_OBJECT, syms, ARRAY_SIZE(offs), offs, NULL) == 0;
+	return elf_find_syms(binary_path, STT_OBJECT, syms, ARRAY_SIZE(offs), offs) == 0;
 }
 
 /*

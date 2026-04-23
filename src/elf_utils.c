@@ -222,25 +222,14 @@ int elf_read_sym_value(const char *binary_path, const char *sym_name,
 }
 
 /*
- * Resolve ELF symbols and, for each, optionally compute:
- *   - virt_offs: virtual address offset relative to the binary's base load
- *     address (first PT_LOAD's p_vaddr - p_offset). Callers typically add the
- *     runtime load base (vma_start - vma_offset) to get a runtime address.
- *     For shared libs / PIE binaries this is simply st_value.
- *   - file_offs: file offset of the symbol within the binary file, computed
- *     per-symbol via its containing section's (sh_addr, sh_offset). This is
- *     what uprobe attach APIs want.
- *
- * Either output array may be NULL. Both are populated with 0 for symbols
- * that were not found.
+ * Find ELF symbols and return their file offsets (for uprobe attach).
+ * File offset is computed per-symbol via its containing section's
+ * (sh_addr, sh_offset): file_off = st_value - sh_addr + sh_offset.
  */
 int elf_find_syms(const char *binary_path, int st_type,
-		  const char **syms, size_t cnt,
-		  unsigned long *virt_offs, unsigned long *file_offs)
+		  const char **syms, size_t cnt, unsigned long *file_offs)
 {
 	int sh_types[2] = { SHT_DYNSYM, SHT_SYMTAB };
-	unsigned long st_values[cnt];
-	unsigned long sh_addrs[cnt], sh_offsets[cnt];
 	int cnt_done = 0;
 	struct elf_fd elf_fd;
 	int err;
@@ -249,33 +238,7 @@ int elf_find_syms(const char *binary_path, int st_type,
 	if (err)
 		return err;
 
-	memset(st_values, 0, sizeof(st_values));
-
-	/*
-	 * All PT_LOAD segments in ELF should (according to ELF spec) have the same
-	 * (p_vaddr - p_offset) difference, which gives us virtual address base address.
-	 *
-	 * For shared libs and PIE executables that difference has to be zero, so we can skip this
-	 * step, but we currently don't for consistency. It's a fast step.
-	 *
-	 * We later will subtract this base address to give pure offsets as an output.
-	 */
-	unsigned long base_vaddr = 0;
-	GElf_Ehdr ehdr;
-	size_t phnum;
-	if (!gelf_getehdr(elf_fd.elf, &ehdr) || elf_getphdrnum(elf_fd.elf, &phnum) != 0)
-		return -EINVAL; /* invalid ELF */
-
-	for (size_t i = 0; i < phnum; i++) {
-		GElf_Phdr phdr;
-		if (!gelf_getphdr(elf_fd.elf, i, &phdr))
-			return -EINVAL; /* invalid ELF */
-		if (phdr.p_type != PT_LOAD)
-			continue;
-
-		base_vaddr = phdr.p_vaddr - phdr.p_offset;
-		break;
-	}
+	memset(file_offs, 0, sizeof(*file_offs) * cnt);
 
 	for (int ti = 0; ti < ARRAY_SIZE(sh_types) && cnt_done < cnt; ti++) {
 		struct elf_sym *sym;
@@ -286,13 +249,17 @@ int elf_find_syms(const char *binary_path, int st_type,
 			for (int i = 0; i < cnt; i++) {
 				if (strcmp(syms[i], sym->name) != 0)
 					continue;
-				if (st_values[i] && bind == STB_WEAK)
+				if (file_offs[i] && bind == STB_WEAK)
 					continue;
-				if (st_values[i] == 0)
+				unsigned long off = sym->sym.st_value - sym->sh.sh_addr + sym->sh.sh_offset;
+				if (file_offs[i] && file_offs[i] != off) {
+					eprintf("elf: ambiguous symbol '%s' in '%s'\n", syms[i], binary_path);
+					elf_close(&elf_fd);
+					return -EEXIST;
+				}
+				if (file_offs[i] == 0)
 					cnt_done++;
-				st_values[i] = sym->sym.st_value;
-				sh_addrs[i] = sym->sh.sh_addr;
-				sh_offsets[i] = sym->sh.sh_offset;
+				file_offs[i] = off;
 				break;
 			}
 
@@ -302,13 +269,6 @@ int elf_find_syms(const char *binary_path, int st_type,
 	}
 
 	elf_close(&elf_fd);
-
-	for (int i = 0; i < cnt; i++) {
-		if (virt_offs)
-			virt_offs[i] = st_values[i] ? st_values[i] - base_vaddr : 0;
-		if (file_offs)
-			file_offs[i] = st_values[i] ? st_values[i] - sh_addrs[i] + sh_offsets[i] : 0;
-	}
 
 	return cnt_done == cnt ? 0 : -ENOENT;
 }
