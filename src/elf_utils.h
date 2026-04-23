@@ -48,4 +48,8 @@ int elf_find_syms(const char *binary_path, int st_type,
 		  const char **syms, size_t cnt,
 		  unsigned long *virt_offs, unsigned long *file_offs);
 
+int elf_resolve_syms(int pid, unsigned long vma_start, unsigned long vma_end,
+		     unsigned long vma_offset, int st_type,
+		     const char **syms, size_t cnt, unsigned long *addrs);
+
 #endif /* __ELF_UTILS_H__ */

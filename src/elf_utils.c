@@ -313,3 +313,89 @@ int elf_find_syms(const char *binary_path, int st_type,
 	return cnt_done == cnt ? 0 : -ENOENT;
 }
 
+/*
+ * Resolve symbols to absolute runtime addresses. Opens the ELF once via
+ * /proc/<pid>/map_files/, computes the base load address from the VMA's
+ * corresponding PT_LOAD segment, and returns base + st_value for each symbol.
+ */
+int elf_resolve_syms(int pid, unsigned long vma_start, unsigned long vma_end,
+		     unsigned long vma_offset, int st_type,
+		     const char **syms, size_t cnt, unsigned long *addrs)
+{
+	int sh_types[2] = { SHT_DYNSYM, SHT_SYMTAB };
+	unsigned long st_values[cnt];
+	int cnt_done = 0;
+	char path[128];
+	struct elf_fd ef;
+	long base = -ENOENT;
+	int err;
+
+	memset(st_values, 0, sizeof(st_values));
+
+	snprintf(path, sizeof(path), "/proc/%d/map_files/%llx-%llx",
+		 pid, (unsigned long long)vma_start, (unsigned long long)vma_end);
+
+	err = elf_open(path, &ef);
+	if (err)
+		return err;
+
+	/* find base load address by matching VMA file offset to a PT_LOAD segment */
+	GElf_Ehdr ehdr;
+	size_t phnum;
+	if (!gelf_getehdr(ef.elf, &ehdr) || elf_getphdrnum(ef.elf, &phnum) != 0) {
+		elf_close(&ef);
+		return -EINVAL;
+	}
+	for (size_t i = 0; i < phnum; i++) {
+		GElf_Phdr phdr;
+		if (!gelf_getphdr(ef.elf, i, &phdr)) {
+			elf_close(&ef);
+			return -EINVAL;
+		}
+		if (phdr.p_type != PT_LOAD)
+			continue;
+		if ((phdr.p_offset & ~(phdr.p_align - 1)) != vma_offset)
+			continue;
+		base = vma_start - (phdr.p_vaddr & ~(phdr.p_align - 1));
+		break;
+	}
+	if (base < 0) {
+		elf_close(&ef);
+		return base;
+	}
+
+	/* resolve symbol st_values */
+	for (int ti = 0; ti < ARRAY_SIZE(sh_types) && cnt_done < cnt; ti++) {
+		struct elf_sym *sym;
+
+		wprof_for_each(elf_sym, sym, ef.elf, path, sh_types[ti], st_type) {
+			int bind = GELF_ST_BIND(sym->sym.st_info);
+
+			for (int i = 0; i < cnt; i++) {
+				if (strcmp(syms[i], sym->name) != 0)
+					continue;
+				if (st_values[i] && bind == STB_WEAK)
+					continue;
+				if (st_values[i] && st_values[i] != sym->sym.st_value) {
+					eprintf("elf: ambiguous symbol '%s' in '%s'\n", syms[i], path);
+					elf_close(&ef);
+					return -EEXIST;
+				}
+				if (st_values[i] == 0)
+					cnt_done++;
+				st_values[i] = sym->sym.st_value;
+				break;
+			}
+
+			if (cnt_done == cnt)
+				break;
+		}
+	}
+
+	elf_close(&ef);
+
+	for (size_t i = 0; i < cnt; i++)
+		addrs[i] = st_values[i] ? base + st_values[i] : 0;
+
+	return cnt_done == cnt ? 0 : -ENOENT;
+}

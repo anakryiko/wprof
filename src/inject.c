@@ -766,28 +766,20 @@ struct tracee_state *tracee_inject(int pid)
 		goto cleanup;
 	}
 
-	char lib_path[128];
-	snprintf(lib_path, sizeof(lib_path), "/proc/%d/map_files/%lx-%lx", pid, libc_start, libc_end);
 	const char *sym_names[] = {"dlopen", "dlclose", "dlsym"};
-	unsigned long sym_offs[] = {0, 0, 0};
-	err = elf_find_syms(lib_path, STT_FUNC, sym_names, ARRAY_SIZE(sym_names), sym_offs, NULL);
+	unsigned long sym_addrs[3] = {};
+	err = elf_resolve_syms(pid, libc_start, libc_end, libc_fileoff,
+			       STT_FUNC, sym_names, ARRAY_SIZE(sym_names), sym_addrs);
 	if (err) {
-		elog("Failed to find dlopen/dlclose/dlsym symbols: %d\n", err);
+		elog("Failed to resolve dlopen/dlclose/dlsym: %d\n", err);
 		goto cleanup;
 	}
-	unsigned long dlopen_tracee_off = sym_offs[0];
-	unsigned long dlclose_tracee_off = sym_offs[1];
-	unsigned long dlsym_tracee_off = sym_offs[2];
+	tracee->dlopen_addr = sym_addrs[0];
+	tracee->dlclose_addr = sym_addrs[1];
+	tracee->dlsym_addr = sym_addrs[2];
 
-	tracee->dlopen_addr = libc_start - libc_fileoff + dlopen_tracee_off;
-	tracee->dlclose_addr = libc_start - libc_fileoff + dlclose_tracee_off;
-	tracee->dlsym_addr = libc_start - libc_fileoff + dlsym_tracee_off;
-
-	dlog("Remote libc found at '%s' base 0x%lx fileoff 0x%lx (dlopen off %lx -> %lx, dlclose off %lx -> %lx, dlsym off %lx -> %lx)\n",
-	     libc_path, libc_start, libc_fileoff,
-	     dlopen_tracee_off, tracee->dlopen_addr,
-	     dlclose_tracee_off, tracee->dlclose_addr,
-	     dlsym_tracee_off, tracee->dlsym_addr);
+	dlog("Remote libc '%s' (dlopen=%lx, dlclose=%lx, dlsym=%lx)\n",
+	     libc_path, tracee->dlopen_addr, tracee->dlclose_addr, tracee->dlsym_addr);
 
 	u64 ptrace_start_ts = ktime_now_ns();
 
