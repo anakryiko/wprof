@@ -48,6 +48,7 @@
 #include "pytrace.h"
 #include "pytrace_data.h"
 #include "bpf_utils.h"
+#include "elf_utils.h"
 #include "sys.h"
 #include "inject.h"
 #include "inj_common.h"
@@ -57,13 +58,9 @@
 #include "pysym.h"
 #include "utrace.h"
 
-static bool ignore_libbpf_warns;
-
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
 {
 	if (level == LIBBPF_DEBUG && !(env.log_set & LOG_LIBBPF))
-		return 0;
-	if (ignore_libbpf_warns)
 		return 0;
 	return vfprintf(stderr, format, args);
 }
@@ -932,24 +929,24 @@ int attach_usdt_probe(struct bpf_state *st, struct bpf_program *prog,
 		      const char *usdt_provider, const char *usdt_name)
 {
 	struct bpf_link *link, **tmp;
+	struct usdt_info info;
 
-	/* given we don't know for sure if requested binary
-	 * does have our USDT, we just silence libbpf's
-	 * warning and move on if there is an error
-	 */
-	ignore_libbpf_warns = true;
-	link = bpf_program__attach_usdt(prog, -1, binary_attach_path,
-					usdt_provider, usdt_name,
-					NULL);
-	ignore_libbpf_warns = false;
-	if (!link) {
-		dlogf(USDT, 2, "Failed to attach USDT %s:%s to %s (%s), ignoring...\n",
+	if (elf_find_usdt(binary_attach_path, usdt_provider, usdt_name, &info)) {
+		dlogf(USDT, 2, "No USDT %s:%s in %s (%s), skipping.\n",
 		      usdt_provider, usdt_name, binary_path, binary_attach_path);
 		return -ENOENT;
-	} else {
-		dlogf(USDT, 1, "Attached USDT %s:%s to %s (%s).\n",
-			usdt_provider, usdt_name, binary_path, binary_attach_path);
 	}
+
+	link = bpf_program__attach_usdt(prog, -1, binary_attach_path,
+					usdt_provider, usdt_name, NULL);
+	if (!link) {
+		eprintf("Failed to attach USDT %s:%s to %s (%s): %d\n",
+			usdt_provider, usdt_name, binary_path, binary_attach_path, -errno);
+		return -errno;
+	}
+
+	dlogf(USDT, 1, "Attached USDT %s:%s to %s (%s).\n",
+	      usdt_provider, usdt_name, binary_path, binary_attach_path);
 
 	tmp = realloc(st->links, (st->link_cnt + 1) * sizeof(struct bpf_link *));
 	if (!tmp)
