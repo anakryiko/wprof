@@ -200,18 +200,9 @@ static const struct btf_type *btf_skip_modifiers(const struct btf *btf, __u32 id
 	return t;
 }
 
-static int resolve_btf_arg_type(const struct btf *btf, const char *func_name,
-				int arg_idx, enum utrace_arg_type *out, const char **name_out)
+static int resolve_btf_proto_arg_type(const struct btf *btf, const struct btf_type *proto,
+				      int arg_idx, enum utrace_arg_type *out, const char **name_out)
 {
-	__s32 func_id = btf__find_by_name_kind(btf, func_name, BTF_KIND_FUNC);
-	if (func_id < 0)
-		return -ENOENT;
-
-	const struct btf_type *func = btf__type_by_id(btf, func_id);
-	const struct btf_type *proto = btf__type_by_id(btf, func->type);
-	if (!proto || !btf_is_func_proto(proto))
-		return -EINVAL;
-
 	__u32 type_id;
 	if (arg_idx == UTRACE_ARG_RET) {
 		type_id = proto->type;
@@ -272,6 +263,93 @@ static int resolve_btf_arg_type(const struct btf *btf, const char *func_name,
 	}
 }
 
+static const struct btf_type *btf_find_func_proto(const struct btf *btf, const char *func_name)
+{
+	__s32 func_id = btf__find_by_name_kind(btf, func_name, BTF_KIND_FUNC);
+	if (func_id < 0)
+		return NULL;
+
+	const struct btf_type *func = btf__type_by_id(btf, func_id);
+	const struct btf_type *proto = btf__type_by_id(btf, func->type);
+	if (!proto || !btf_is_func_proto(proto))
+		return NULL;
+	return proto;
+}
+
+static int resolve_btf_arg_type(const struct btf *btf, const char *func_name,
+				int arg_idx, enum utrace_arg_type *out, const char **name_out)
+{
+	const struct btf_type *proto = btf_find_func_proto(btf, func_name);
+	if (!proto)
+		return -ENOENT;
+	return resolve_btf_proto_arg_type(btf, proto, arg_idx, out, name_out);
+}
+
+/*
+ * Resolve BTF type info for a raw tracepoint. The first argument of any
+ * raw tracepoint is always void *__data and should be skipped.
+ *
+ * We first try __bpf_trace_<name>, which is a real FUNC with both correct
+ * types and parameter names. If found, it's the single source of truth.
+ *
+ * If not, we fall back to 'btf_trace_<name>' BTF TYPEDEF -> PTR -> FUNC_PROTO,
+ * which has correct types but loses parameter names. E.g.:
+ *
+ *   typedef void (*btf_trace_module_get)(void *, struct module *, unsigned long);
+ *
+ * To recover names in that case, we look for __traceiter_<name> or
+ * __tracepoint_iter_<name> (older naming) which are FUNCs that preserve
+ * the original prototype with named params. __traceiter_ may be missing
+ * from BTF for some tracepoints (e.g., sched_switch) due to missing DWARF
+ * in their compilation units. Names are optional.
+ */
+static int resolve_raw_tp_btf(const struct btf *btf, struct utrace_cfg *cfg)
+{
+	char buf[256];
+	const struct btf_type *t;
+
+	/* try __bpf_trace_<name> first: has both types and names */
+	snprintf(buf, sizeof(buf), "__bpf_trace_%s", cfg->raw_tp.name);
+	t = btf_find_func_proto(btf, buf);
+	if (t) {
+		cfg->raw_tp.proto = t;
+		cfg->raw_tp.arg_cnt = btf_vlen(t) - 1; /* skip void *__data */
+		return 0;
+	}
+
+	/* fall back to btf_trace_<name> TYPEDEF -> PTR -> FUNC_PROTO for types */
+	snprintf(buf, sizeof(buf), "btf_trace_%s", cfg->raw_tp.name);
+	__s32 btf_id = btf__find_by_name_kind(btf, buf, BTF_KIND_TYPEDEF);
+	if (btf_id < 0)
+		return -ESRCH;
+
+	t = btf__type_by_id(btf, btf_id);
+	if (!t || !btf_is_typedef(t))
+		return -ESRCH;
+	t = btf_skip_modifiers(btf, t->type, NULL);
+	if (!btf_is_ptr(t))
+		return -ESRCH;
+	t = btf__type_by_id(btf, t->type);
+	if (!t || !btf_is_func_proto(t))
+		return -ESRCH;
+
+	cfg->raw_tp.proto = t;
+	cfg->raw_tp.arg_cnt = btf_vlen(t) - 1; /* skip void *__data */
+
+	/* try to recover parameter names from traceiter functions */
+	const char *name_funcs[] = { "__traceiter_%s", "__tracepoint_iter_%s" };
+	for (int i = 0; i < ARRAY_SIZE(name_funcs); i++) {
+		snprintf(buf, sizeof(buf), name_funcs[i], cfg->raw_tp.name);
+		t = btf_find_func_proto(btf, buf);
+		if (t) {
+			cfg->raw_tp.name_proto = t;
+			break;
+		}
+	}
+
+	return 0;
+}
+
 static bool cfg_is_ret_probe(enum utrace_type t)
 {
 	return t == UTRACE_URETPROBE || t == UTRACE_KRETPROBE || t == UTRACE_BPF_RETPROBE;
@@ -328,6 +406,8 @@ static void expand_wildcard_args(struct utrace_cfg *cfg, const struct btf *btf)
 		arg_cnt = 0;
 	} else if (cfg->type == UTRACE_USDT) {
 		arg_cnt = cfg->usdt.info.arg_cnt;
+	} else if (cfg->type == UTRACE_RAW_TRACEPOINT) {
+		arg_cnt = cfg->raw_tp.arg_cnt;
 	} else if (cfg_is_kprobe_type(cfg)) {
 		arg_cnt = btf_func_arg_cnt(btf, cfg->kprobe.name);
 		if (arg_cnt < 0)
@@ -397,6 +477,9 @@ static bool cfg_needs_btf(const struct utrace_cfg *cfg)
 	if (cfg->type == UTRACE_SPAN)
 		return cfg_needs_btf(cfg->span.entry) || cfg_needs_btf(cfg->span.exit);
 
+	if (cfg->type == UTRACE_RAW_TRACEPOINT)
+		return true;
+
 	if (cfg->wildcard_args && cfg_is_kprobe_type(cfg))
 		return true;
 
@@ -433,6 +516,11 @@ static void augment_cfg_args(struct utrace_cfg *cfg, const struct btf *btf)
 		return;
 	}
 
+	if (cfg->type == UTRACE_RAW_TRACEPOINT && btf) {
+		if (resolve_raw_tp_btf(btf, cfg))
+			eprintf("utrace: failed to find BTF for raw tracepoint '%s'\n", cfg->raw_tp.name);
+	}
+
 	if (cfg->wildcard_args)
 		expand_wildcard_args(cfg, btf);
 
@@ -443,6 +531,32 @@ static void augment_cfg_args(struct utrace_cfg *cfg, const struct btf *btf)
 			continue;
 		if (p->arg.arg_type != UTRACE_ARG_UNKNOWN && p->arg.name)
 			continue;
+
+		if (cfg->type == UTRACE_RAW_TRACEPOINT) {
+			if (btf && cfg->raw_tp.proto) {
+				int btf_idx = p->arg.arg_idx + 1; /* skip void *__data at index 0 */
+				enum utrace_arg_type arg_type;
+				const char *param_name = NULL;
+
+				if (resolve_btf_proto_arg_type(btf, cfg->raw_tp.proto,
+							      btf_idx, &arg_type, &param_name) == 0) {
+					if (p->arg.arg_type == UTRACE_ARG_UNKNOWN)
+						p->arg.arg_type = arg_type;
+					if (!p->arg.name && param_name)
+						p->arg.name = strdup(param_name);
+				}
+				/* if proto had no names, try name_proto */
+				if (!p->arg.name && cfg->raw_tp.name_proto) {
+					param_name = NULL;
+					if (resolve_btf_proto_arg_type(btf, cfg->raw_tp.name_proto,
+								      btf_idx, &arg_type, &param_name) == 0 && param_name)
+						p->arg.name = strdup(param_name);
+				}
+			}
+			if (p->arg.arg_type == UTRACE_ARG_UNKNOWN)
+				p->arg.arg_type = UTRACE_ARG_U64;
+			continue;
+		}
 
 		if (cfg->type == UTRACE_USDT) {
 			if (p->arg.arg_type == UTRACE_ARG_UNKNOWN) {
@@ -824,6 +938,9 @@ int utrace_setup(struct wprof_bpf *skel)
 				if (err)
 					return err;
 				break;
+			case UTRACE_RAW_TRACEPOINT:
+				bpf_program__set_autoload(skel->progs.utrace_raw_tp, true);
+				break;
 			case UTRACE_BPF_PROBE:
 			case UTRACE_BPF_RETPROBE:
 			case UTRACE_BPF_SPAN:
@@ -985,6 +1102,21 @@ static int attach_utrace_probe(struct bpf_state *st, struct wprof_bpf *skel,
 			return err;
 		break;
 	}
+	case UTRACE_RAW_TRACEPOINT: {
+		LIBBPF_OPTS(bpf_raw_tracepoint_opts, opts, .cookie = *map_idx);
+		struct bpf_link *link = bpf_program__attach_raw_tracepoint_opts(
+						skel->progs.utrace_raw_tp,
+						cfg->raw_tp.name, &opts);
+		if (!link) {
+			err = -errno;
+			eprintf("utrace: failed to attach raw tracepoint '%s': %d\n", cfg->raw_tp.name, err);
+			return err;
+		}
+		err = add_link(st, link);
+		if (err)
+			return err;
+		break;
+	}
 	case UTRACE_USDT: {
 		LIBBPF_OPTS(bpf_usdt_opts, opts, .usdt_cookie = *map_idx);
 		struct bpf_link *link = bpf_program__attach_usdt(skel->progs.utrace_usdt,
@@ -1029,6 +1161,7 @@ int utrace_attach(struct bpf_state *st, struct wprof_bpf *skel)
 		case UTRACE_BPF_PROBE:
 		case UTRACE_BPF_RETPROBE:
 		case UTRACE_USDT:
+		case UTRACE_RAW_TRACEPOINT:
 			err = attach_utrace_probe(st, skel, cfg, i, UTRACE_INSTANT, false,
 						  cfg_is_ret_probe(cfg->type), map_fd, &map_idx);
 			if (err)

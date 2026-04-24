@@ -1621,10 +1621,21 @@ static __always_inline u64 utrace_read_arg_fentry(void *ctx, int idx)
 	return val;
 }
 
+static __always_inline u64 utrace_read_arg_raw_tp(void *ctx, int idx)
+{
+	u64 val = 0;
+	void *args;
+
+	bpf_probe_read_kernel(&args, sizeof(args), &ctx);
+	bpf_probe_read_kernel(&val, sizeof(val), args + idx * sizeof(u64));
+	return val;
+}
+
 enum utrace_handler_flags {
 	UTRACE_PF_KERNEL	= 1 << 0,
 	UTRACE_PF_FENTRY	= 1 << 1,
 	UTRACE_PF_USDT		= 1 << 2,
+	UTRACE_PF_RAW_TP	= 1 << 3,
 };
 
 static __always_inline int utrace_handle_probe(void *ctx, enum utrace_handler_flags flags)
@@ -1670,6 +1681,8 @@ static __always_inline int utrace_handle_probe(void *ctx, enum utrace_handler_fl
 			long usdt_val = 0;
 			bpf_usdt_arg(ctx, arg_idx, &usdt_val);
 			arg_val = (u64)usdt_val;
+		} else if (flags & UTRACE_PF_RAW_TP) {
+			arg_val = utrace_read_arg_raw_tp(ctx, arg_idx);
 		} else if (flags & UTRACE_PF_FENTRY) {
 			arg_val = utrace_read_arg_fentry(ctx, arg_idx);
 		} else {
@@ -1766,6 +1779,12 @@ SEC("?usdt.s")
 int utrace_usdt(struct pt_regs *ctx)
 {
 	return utrace_handle_probe(ctx, UTRACE_PF_USDT);
+}
+
+SEC("?raw_tp")
+int utrace_raw_tp(struct bpf_raw_tracepoint_args *ctx)
+{
+	return utrace_handle_probe(ctx, UTRACE_PF_KERNEL | UTRACE_PF_RAW_TP);
 }
 
 SEC("?kprobe")
