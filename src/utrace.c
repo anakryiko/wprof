@@ -618,7 +618,8 @@ static void augment_cfg_args(struct utrace_cfg *cfg, const struct btf *btf)
 		if (p->arg.arg_type != UTRACE_ARG_UNKNOWN && p->arg.name)
 			continue;
 
-		if (cfg->type == UTRACE_TRACEPOINT) {
+		switch (cfg->type) {
+		case UTRACE_TRACEPOINT: {
 			int idx = p->arg.arg_idx;
 			if (idx >= 0 && idx < cfg->tp.field_cnt) {
 				const struct tp_field *field = &cfg->tp.fields[idx];
@@ -641,12 +642,9 @@ static void augment_cfg_args(struct utrace_cfg *cfg, const struct btf *btf)
 					}
 				}
 			}
-			if (p->arg.arg_type == UTRACE_ARG_UNKNOWN)
-				p->arg.arg_type = UTRACE_ARG_U64;
-			continue;
+			break;
 		}
-
-		if (cfg->type == UTRACE_RAW_TRACEPOINT) {
+		case UTRACE_RAW_TRACEPOINT: {
 			if (btf && cfg->raw_tp.proto) {
 				int btf_idx = p->arg.arg_idx + 1; /* skip void *__data at index 0 */
 				enum utrace_arg_type arg_type;
@@ -667,53 +665,47 @@ static void augment_cfg_args(struct utrace_cfg *cfg, const struct btf *btf)
 						p->arg.name = strdup(param_name);
 				}
 			}
-			if (p->arg.arg_type == UTRACE_ARG_UNKNOWN)
-				p->arg.arg_type = UTRACE_ARG_U64;
-			continue;
+			break;
 		}
-
-		if (cfg->type == UTRACE_USDT) {
+		case UTRACE_USDT:
 			if (p->arg.arg_type == UTRACE_ARG_UNKNOWN) {
 				int idx = p->arg.arg_idx;
 				if (idx >= 0 && idx < cfg->usdt.info.arg_cnt)
 					p->arg.arg_type = usdt_arg_to_utrace_type(&cfg->usdt.info.args[idx]);
-				else
-					p->arg.arg_type = UTRACE_ARG_U64;
 			}
-			continue;
-		}
-
-		if (!cfg_is_kprobe_type(cfg) && !cfg_is_bpf_type(cfg)) {
-			if (p->arg.arg_type == UTRACE_ARG_UNKNOWN)
-				p->arg.arg_type = UTRACE_ARG_U64;
-			continue;
-		}
-
-		const struct btf *resolve_btf = cfg_is_bpf_type(cfg) ? cfg->bpf_prog.btf : btf;
-		const char *func_name = cfg_is_bpf_type(cfg) ? cfg->bpf_prog.name : cfg->kprobe.name;
-
-		if (!resolve_btf) {
-			if (p->arg.arg_type == UTRACE_ARG_UNKNOWN)
-				p->arg.arg_type = UTRACE_ARG_U64;
-			continue;
-		}
-
-		enum utrace_arg_type arg_type;
-		const char *param_name = NULL;
-		int err = resolve_btf_arg_type(resolve_btf, func_name,
-					       p->arg.arg_idx, &arg_type, &param_name);
-		if (err) {
-			if (p->arg.arg_type == UTRACE_ARG_UNKNOWN) {
-				wprintf("utrace: failed to resolve BTF type for %s arg %d, defaulting to u64\n",
-					func_name,
-					p->arg.arg_idx == UTRACE_ARG_RET ? -1 : p->arg.arg_idx);
+			break;
+		case UTRACE_KPROBE:
+		case UTRACE_KRETPROBE:
+		case UTRACE_KPROBE_SPAN:
+		case UTRACE_BPF_PROBE:
+		case UTRACE_BPF_RETPROBE:
+		case UTRACE_BPF_SPAN: {
+			const struct btf *resolve_btf = cfg_is_bpf_type(cfg) ? cfg->bpf_prog.btf : btf;
+			const char *func_name = cfg_is_bpf_type(cfg) ? cfg->bpf_prog.name : cfg->kprobe.name;
+			if (!resolve_btf)
+				break;
+			enum utrace_arg_type arg_type;
+			const char *param_name = NULL;
+			int err = resolve_btf_arg_type(resolve_btf, func_name,
+						       p->arg.arg_idx, &arg_type, &param_name);
+			if (err) {
+				if (p->arg.arg_type == UTRACE_ARG_UNKNOWN)
+					wprintf("utrace: failed to resolve BTF type for %s arg %d, defaulting to u64\n",
+						func_name, p->arg.arg_idx == UTRACE_ARG_RET ? -1 : p->arg.arg_idx);
+				break;
 			}
-			arg_type = UTRACE_ARG_U64;
+			if (p->arg.arg_type == UTRACE_ARG_UNKNOWN)
+				p->arg.arg_type = arg_type;
+			if (!p->arg.name && param_name)
+				p->arg.name = strdup(param_name);
+			break;
 		}
+		default:
+			break;
+		}
+
 		if (p->arg.arg_type == UTRACE_ARG_UNKNOWN)
-			p->arg.arg_type = arg_type;
-		if (!p->arg.name && param_name)
-			p->arg.name = strdup(param_name);
+			p->arg.arg_type = UTRACE_ARG_U64;
 	}
 
 	qsort(cfg->params, cfg->param_cnt, sizeof(*cfg->params), cmp_params);
