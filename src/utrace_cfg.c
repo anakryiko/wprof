@@ -335,7 +335,7 @@ static int parse_settings(struct sview orig, struct sview def, struct utrace_set
 	return 0;
 }
 
-static void utrace_compile_fmt(const char *fmt, const struct utrace_param *params, int param_cnt,
+void utrace_compile_fmt(const char *fmt, const struct utrace_param *params, int param_cnt,
 			       struct utrace_fmt_seg **out_segs, int *out_seg_cnt)
 {
 	struct utrace_fmt_seg *segs = NULL;
@@ -378,14 +378,16 @@ static void utrace_compile_fmt(const char *fmt, const struct utrace_param *param
 			if (p->arg.arg_idx == UTRACE_ARG_RET)
 				continue;
 
-			const char *pname = p->arg.name;
 			char auto_name[32];
-			if (!pname) {
-				snprintf(auto_name, sizeof(auto_name), "arg%d", p->arg.arg_idx);
-				pname = auto_name;
-			}
+			snprintf(auto_name, sizeof(auto_name), "arg%d", p->arg.arg_idx);
 
-			if (strlen(pname) == name_len && strncmp(pname, fmt + 1, name_len) == 0) {
+			bool name_match = p->arg.name &&
+				strlen(p->arg.name) == name_len &&
+				strncmp(p->arg.name, fmt + 1, name_len) == 0;
+			bool auto_match = strlen(auto_name) == name_len &&
+				strncmp(auto_name, fmt + 1, name_len) == 0;
+
+			if (name_match || auto_match) {
 				segs = realloc(segs, (seg_cnt + 1) * sizeof(*segs));
 				segs[seg_cnt].type = UTRACE_FMT_SEG_ARG;
 				segs[seg_cnt].arg.arg_idx = arg_idx;
@@ -574,9 +576,6 @@ static int parse_cfg(struct sview def, struct utrace_cfg *cfg)
 		err = parse_probe_def(orig, def, cfg);
 		if (err)
 			return err;
-		if (cfg->settings.name_fmt)
-			utrace_compile_fmt(cfg->settings.name_fmt, cfg->params, cfg->param_cnt,
-					   &cfg->settings.name_segs, &cfg->settings.name_seg_cnt);
 	} else {
 		right = sv_trim(sv_consume_left(right, 2));
 
@@ -591,10 +590,6 @@ static int parse_cfg(struct sview def, struct utrace_cfg *cfg)
 
 		if (is_span_probe(cfg->span.entry->type) || is_span_probe(cfg->span.exit->type))
 			return utrace_err(orig, def, "nested spans are not allowed\n");
-
-		if (cfg->settings.name_fmt)
-			utrace_compile_fmt(cfg->settings.name_fmt, cfg->span.entry->params, cfg->span.entry->param_cnt,
-					   &cfg->settings.name_segs, &cfg->settings.name_seg_cnt);
 		return 0;
 	}
 
