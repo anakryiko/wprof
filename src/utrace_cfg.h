@@ -187,6 +187,8 @@ static inline bool cfg_is_span(const struct utrace_cfg *cfg)
 		leg;								\
 		leg = *++___p)
 
+void utrace_compile_fmt(const char *fmt, const struct utrace_param *params, int param_cnt,
+			struct utrace_fmt_seg **out_segs, int *out_seg_cnt);
 int utrace_cfg_parse(const char *def);
 int utrace_cfg_parse_file(const char *path);
 void utrace_cfg_format(const struct utrace_cfg *cfg, struct sbuf *sb);
