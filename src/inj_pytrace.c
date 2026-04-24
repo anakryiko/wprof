@@ -429,18 +429,16 @@ cleanup:
 	return err;
 }
 
-int pytrace_session_finalize(void)
+static void pytrace_uninstall_profiler(void)
 {
-	int err = 0;
-
-	if (!pytrace_dump)
-		return 0;
-
-	/* Uninstall torch profiler first (doesn't need GIL) */
-	torch_profiler_teardown();
-
-	/* Uninstall profiler */
-	pytrace_active = false;
+	/*
+	 * If the Python process is exiting, the interpreter may already be
+	 * finalized (Py_FinalizeEx runs before library destructors). Calling
+	 * PyGILState_Ensure on a dead interpreter segfaults — just skip;
+	 * the callback can never fire.
+	 */
+	if (!py_is_initialized())
+		return;
 
 	PyGILState_STATE gstate = py_gilstate_ensure();
 
@@ -459,6 +457,21 @@ int pytrace_session_finalize(void)
 	}
 
 	py_gilstate_release(gstate);
+}
+
+int pytrace_session_finalize(void)
+{
+	int err = 0;
+
+	if (!pytrace_dump)
+		return 0;
+
+	/* Uninstall torch profiler first (doesn't need GIL) */
+	torch_profiler_teardown();
+
+	/* Uninstall profiler */
+	pytrace_active = false;
+	pytrace_uninstall_profiler();
 
 	fflush(pytrace_dump);
 
