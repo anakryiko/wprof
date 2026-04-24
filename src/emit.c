@@ -3745,7 +3745,6 @@ static void emit_utrace_json(struct worker_state *w, const struct wevent *e)
 	json_obj_start(j);
 	json_kv_ts(j, "ts", e->ts - env.sess_start_ts);
 	json_kv_str(j, "t", type_str);
-	json_kv_int(j, "utrace_id", utrace_id);
 	json_task(j, "task", &task);
 	json_kv_int(j, "cpu", e->cpu);
 	if (env.emit_numa)
@@ -3765,11 +3764,16 @@ static void emit_utrace_json(struct worker_state *w, const struct wevent *e)
 	}
 
 	/* Emit formatted name and probe id */
+	if (cfg->settings.id) {
+		json_kv_str(j, "utrace_id", cfg->settings.id);
+	} else {
+		char id_buf[16];
+		snprintf(id_buf, sizeof(id_buf), "%u", utrace_id);
+		json_kv_str(j, "utrace_id", id_buf);
+	}
 	char name_buf[256];
 	format_utrace_name(name_buf, sizeof(name_buf), hdr, e, cfg);
 	json_kv_str(j, "name", name_buf);
-	if (cfg->settings.id)
-		json_kv_str(j, "utrace_id", cfg->settings.id);
 
 	/* Decode args from wevent trailing data */
 	const u32 *arg_refs = (const u32 *)((const void *)e + WEVENT_SZ(utrace));
