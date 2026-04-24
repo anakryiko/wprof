@@ -145,6 +145,9 @@ struct utrace_cfg {
 		/* RAW_TRACEPOINT */
 		struct {
 			char *name;
+			const struct btf_type *proto;		/* resolved FUNC_PROTO from btf_trace_<name> */
+			const struct btf_type *name_proto;	/* FUNC_PROTO from __traceiter_<name> (for param names) */
+			int arg_cnt;				/* number of tracepoint args (excluding void* ctx) */
 		} raw_tp;
 
 		/* BPF_PROBE, BPF_RETPROBE, BPF_SPAN */
