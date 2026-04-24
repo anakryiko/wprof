@@ -130,7 +130,12 @@ static void fill_probe_cfg(struct utrace_probe_cfg *pcfg, const struct utrace_cf
 			continue;
 
 		pcfg->args[arg_idx].type = p->arg.arg_type;
-		pcfg->args[arg_idx].idx = p->arg.arg_idx;
+		if (cfg->type == UTRACE_TRACEPOINT) {
+			pcfg->args[arg_idx].idx = p->arg.tp_byte_off;
+			pcfg->args[arg_idx].tp_data_loc = p->arg.tp_data_loc;
+		} else {
+			pcfg->args[arg_idx].idx = p->arg.arg_idx;
+		}
 		arg_idx++;
 	}
 	pcfg->arg_cnt = arg_idx;
@@ -192,7 +197,7 @@ static const struct btf_type *btf_skip_modifiers(const struct btf *btf, __u32 id
 {
 	const struct btf_type *t;
 
-	for (t = btf__type_by_id(btf, id); btf_is_mod(t); t = btf__type_by_id(btf, id))
+	for (t = btf__type_by_id(btf, id); btf_is_mod(t) || btf_is_typedef(t); t = btf__type_by_id(btf, id))
 		id = t->type;
 
 	if (res_id)
@@ -350,6 +355,81 @@ static int resolve_raw_tp_btf(const struct btf *btf, struct utrace_cfg *cfg)
 	return 0;
 }
 
+/*
+ * Parse tracefs format file to get tracepoint field info. Works for both
+ * TRACE_EVENT and DEFINE_EVENT tracepoints since the format file always
+ * exists for the event name with the correct fields.
+ */
+static int resolve_tp_format(struct utrace_cfg *cfg)
+{
+	char path[256], line[512];
+
+	snprintf(path, sizeof(path), "/sys/kernel/debug/tracing/events/%s/%s/format",
+		 cfg->tp.cat, cfg->tp.name);
+
+	FILE *f = fopen(path, "r");
+	if (!f)
+		return -errno;
+
+	struct tp_field *fields = NULL;
+	int cnt = 0;
+	bool in_fields = false;
+
+	while (fgets(line, sizeof(line), f)) {
+		char type[128], name[128];
+		int offset, size, is_signed;
+
+		if (strncmp(line, "format:", 7) == 0) {
+			in_fields = true;
+			continue;
+		}
+		if (!in_fields)
+			continue;
+		if (strncmp(line, "print fmt:", 10) == 0)
+			break;
+
+		if (sscanf(line, " field:%127[^;]; offset:%d; size:%d; signed:%d;",
+			   type, &offset, &size, &is_signed) != 4)
+			continue;
+
+		/* skip common_* fields (trace_entry header) */
+		char *last_space = strrchr(type, ' ');
+		if (!last_space)
+			continue;
+		char *fname = last_space + 1;
+
+		/* strip trailing [] from array names like "prev_comm[16]" */
+		char *bracket = strchr(fname, '[');
+
+		if (strncmp(fname, "common_", 7) == 0)
+			continue;
+
+		if (bracket)
+			*bracket = '\0';
+
+		fields = realloc(fields, (cnt + 1) * sizeof(*fields));
+		struct tp_field *field = &fields[cnt];
+		memset(field, 0, sizeof(*field));
+
+		bool is_data_loc = strncmp(type, "__data_loc", 10) == 0;
+		bool is_char_arr = !is_data_loc && bracket && strstr(type, "char") != NULL;
+
+		field->name = strdup(fname);
+		field->offset = offset;
+		field->size = size;
+		field->is_signed = is_signed;
+		field->is_data_loc = is_data_loc;
+		field->is_string = is_data_loc || is_char_arr;
+		cnt++;
+	}
+
+	fclose(f);
+
+	cfg->tp.fields = fields;
+	cfg->tp.field_cnt = cnt;
+	return cnt > 0 ? 0 : -ENOENT;
+}
+
 static bool cfg_is_ret_probe(enum utrace_type t)
 {
 	return t == UTRACE_URETPROBE || t == UTRACE_KRETPROBE || t == UTRACE_BPF_RETPROBE;
@@ -408,6 +488,8 @@ static void expand_wildcard_args(struct utrace_cfg *cfg, const struct btf *btf)
 		arg_cnt = cfg->usdt.info.arg_cnt;
 	} else if (cfg->type == UTRACE_RAW_TRACEPOINT) {
 		arg_cnt = cfg->raw_tp.arg_cnt;
+	} else if (cfg->type == UTRACE_TRACEPOINT) {
+		arg_cnt = cfg->tp.field_cnt;
 	} else if (cfg_is_kprobe_type(cfg)) {
 		arg_cnt = btf_func_arg_cnt(btf, cfg->kprobe.name);
 		if (arg_cnt < 0)
@@ -520,6 +602,10 @@ static void augment_cfg_args(struct utrace_cfg *cfg, const struct btf *btf)
 		if (resolve_raw_tp_btf(btf, cfg))
 			eprintf("utrace: failed to find BTF for raw tracepoint '%s'\n", cfg->raw_tp.name);
 	}
+	if (cfg->type == UTRACE_TRACEPOINT) {
+		if (resolve_tp_format(cfg))
+			eprintf("utrace: failed to parse format for tracepoint '%s:%s'\n", cfg->tp.cat, cfg->tp.name);
+	}
 
 	if (cfg->wildcard_args)
 		expand_wildcard_args(cfg, btf);
@@ -531,6 +617,34 @@ static void augment_cfg_args(struct utrace_cfg *cfg, const struct btf *btf)
 			continue;
 		if (p->arg.arg_type != UTRACE_ARG_UNKNOWN && p->arg.name)
 			continue;
+
+		if (cfg->type == UTRACE_TRACEPOINT) {
+			int idx = p->arg.arg_idx;
+			if (idx >= 0 && idx < cfg->tp.field_cnt) {
+				const struct tp_field *field = &cfg->tp.fields[idx];
+
+				p->arg.tp_byte_off = field->offset;
+				p->arg.tp_data_loc = field->is_data_loc;
+
+				if (!p->arg.name)
+					p->arg.name = strdup(field->name);
+				if (p->arg.arg_type == UTRACE_ARG_UNKNOWN) {
+					if (field->is_string) {
+						p->arg.arg_type = UTRACE_ARG_STR;
+					} else {
+						switch (field->size) {
+						case 1: p->arg.arg_type = field->is_signed ? UTRACE_ARG_S8  : UTRACE_ARG_U8;  break;
+						case 2: p->arg.arg_type = field->is_signed ? UTRACE_ARG_S16 : UTRACE_ARG_U16; break;
+						case 4: p->arg.arg_type = field->is_signed ? UTRACE_ARG_S32 : UTRACE_ARG_U32; break;
+						default: p->arg.arg_type = field->is_signed ? UTRACE_ARG_S64 : UTRACE_ARG_U64; break;
+						}
+					}
+				}
+			}
+			if (p->arg.arg_type == UTRACE_ARG_UNKNOWN)
+				p->arg.arg_type = UTRACE_ARG_U64;
+			continue;
+		}
 
 		if (cfg->type == UTRACE_RAW_TRACEPOINT) {
 			if (btf && cfg->raw_tp.proto) {
@@ -961,6 +1075,9 @@ int utrace_setup(struct wprof_bpf *skel)
 			case UTRACE_RAW_TRACEPOINT:
 				bpf_program__set_autoload(skel->progs.utrace_raw_tp, true);
 				break;
+			case UTRACE_TRACEPOINT:
+				bpf_program__set_autoload(skel->progs.utrace_tp, true);
+				break;
 			case UTRACE_BPF_PROBE:
 			case UTRACE_BPF_RETPROBE:
 			case UTRACE_BPF_SPAN:
@@ -1122,6 +1239,20 @@ static int attach_utrace_probe(struct bpf_state *st, struct wprof_bpf *skel,
 			return err;
 		break;
 	}
+	case UTRACE_TRACEPOINT: {
+		LIBBPF_OPTS(bpf_tracepoint_opts, opts, .bpf_cookie = *map_idx);
+		struct bpf_link *link = bpf_program__attach_tracepoint_opts(skel->progs.utrace_tp,
+									    cfg->tp.cat, cfg->tp.name, &opts);
+		if (!link) {
+			err = -errno;
+			eprintf("utrace: failed to attach tracepoint '%s:%s': %d\n", cfg->tp.cat, cfg->tp.name, err);
+			return err;
+		}
+		err = add_link(st, link);
+		if (err)
+			return err;
+		break;
+	}
 	case UTRACE_RAW_TRACEPOINT: {
 		LIBBPF_OPTS(bpf_raw_tracepoint_opts, opts, .cookie = *map_idx);
 		struct bpf_link *link = bpf_program__attach_raw_tracepoint_opts(
@@ -1182,6 +1313,7 @@ int utrace_attach(struct bpf_state *st, struct wprof_bpf *skel)
 		case UTRACE_BPF_RETPROBE:
 		case UTRACE_USDT:
 		case UTRACE_RAW_TRACEPOINT:
+		case UTRACE_TRACEPOINT:
 			err = attach_utrace_probe(st, skel, cfg, i, UTRACE_INSTANT, false,
 						  cfg_is_ret_probe(cfg->type), map_fd, &map_idx);
 			if (err)

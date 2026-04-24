@@ -63,6 +63,15 @@ enum utrace_param_type {
 
 #ifndef __bpf__
 
+struct tp_field {
+	char *name;
+	int offset;
+	int size;
+	bool is_signed;
+	bool is_data_loc;
+	bool is_string;		/* char[] array */
+};
+
 struct utrace_param {
 	enum utrace_param_type type;
 	union {
@@ -70,6 +79,8 @@ struct utrace_param {
 			int arg_idx;			/* 0-based arg index, or UTRACE_ARG_RET */
 			enum utrace_arg_type arg_type; 	/* defaults to UTRACE_ARG_U64 if omitted */
 			char *name;			/* annotation name, NULL = auto "arg<N>" / "ret" */
+			int tp_byte_off;		/* TP: byte offset into event struct */
+			bool tp_data_loc;		/* TP: __data_loc encoded string field */
 		} arg;
 		struct {
 			char *path;
@@ -141,6 +152,8 @@ struct utrace_cfg {
 		struct {
 			char *cat;
 			char *name;
+			struct tp_field *fields;	/* parsed from tracefs format file */
+			int field_cnt;
 		} tp;
 		/* RAW_TRACEPOINT */
 		struct {

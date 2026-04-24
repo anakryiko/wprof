@@ -1631,11 +1631,40 @@ static __always_inline u64 utrace_read_arg_raw_tp(void *ctx, int idx)
 	return val;
 }
 
+static __always_inline u64 utrace_read_arg_tp(void *ctx, int byte_off)
+{
+	u64 val = 0;
+	void *args;
+
+	bpf_probe_read_kernel(&args, sizeof(args), &ctx);
+	bpf_probe_read_kernel(&val, sizeof(val), args + byte_off);
+	return val;
+}
+
+static __always_inline int utrace_read_tp_inline_str(void *ctx, int byte_off, void *buf, int buf_sz)
+{
+	void *args;
+
+	bpf_probe_read_kernel(&args, sizeof(args), &ctx);
+	return bpf_probe_read_kernel_str(buf, buf_sz, args + byte_off);
+}
+
+static __always_inline int utrace_read_tp_data_loc_str(void *ctx, int byte_off, void *buf, int buf_sz)
+{
+	u32 data_loc;
+	void *args;
+
+	bpf_probe_read_kernel(&args, sizeof(args), &ctx);
+	bpf_probe_read_kernel(&data_loc, sizeof(data_loc), args + byte_off);
+	return bpf_probe_read_kernel_str(buf, buf_sz, args + (data_loc & 0xffff));
+}
+
 enum utrace_handler_flags {
 	UTRACE_PF_KERNEL	= 1 << 0,
 	UTRACE_PF_FENTRY	= 1 << 1,
 	UTRACE_PF_USDT		= 1 << 2,
 	UTRACE_PF_RAW_TP	= 1 << 3,
+	UTRACE_PF_TP		= 1 << 4,
 };
 
 static __always_inline int utrace_handle_probe(void *ctx, enum utrace_handler_flags flags)
@@ -1674,8 +1703,29 @@ static __always_inline int utrace_handle_probe(void *ctx, enum utrace_handler_fl
 			break;
 
 		u8 arg_type = cfg->args[i].type;
-		s8 arg_idx = cfg->args[i].idx;
+		int arg_idx = cfg->args[i].idx;
 		u64 arg_val;
+
+		/* TP string fields: either __data_loc encoded or inline char[] */
+		if ((flags & UTRACE_PF_TP) && arg_type == UTRACE_ARG_STR) {
+			void *p = bpf_dynptr_data(&scratch_dptr, scratch_off, MAX_UTRACE_STR_SZ);
+			if (!p) {
+				scratch->arg_lens[i] = -ENOSPC;
+				continue;
+			}
+			int len;
+			if (cfg->args[i].tp_data_loc)
+				len = utrace_read_tp_data_loc_str(ctx, arg_idx, p, MAX_UTRACE_STR_SZ);
+			else
+				len = utrace_read_tp_inline_str(ctx, arg_idx, p, MAX_UTRACE_STR_SZ);
+			if (len > 0) {
+				scratch->arg_lens[i] = len;
+				scratch_off += len;
+			} else {
+				scratch->arg_lens[i] = len;
+			}
+			continue;
+		}
 
 		if (flags & UTRACE_PF_USDT) {
 			long usdt_val = 0;
@@ -1683,6 +1733,8 @@ static __always_inline int utrace_handle_probe(void *ctx, enum utrace_handler_fl
 			arg_val = (u64)usdt_val;
 		} else if (flags & UTRACE_PF_RAW_TP) {
 			arg_val = utrace_read_arg_raw_tp(ctx, arg_idx);
+		} else if (flags & UTRACE_PF_TP) {
+			arg_val = utrace_read_arg_tp(ctx, arg_idx);
 		} else if (flags & UTRACE_PF_FENTRY) {
 			arg_val = utrace_read_arg_fentry(ctx, arg_idx);
 		} else {
@@ -1785,6 +1837,12 @@ SEC("?raw_tp")
 int utrace_raw_tp(struct bpf_raw_tracepoint_args *ctx)
 {
 	return utrace_handle_probe(ctx, UTRACE_PF_KERNEL | UTRACE_PF_RAW_TP);
+}
+
+SEC("?tp")
+int utrace_tp(void *ctx)
+{
+	return utrace_handle_probe(ctx, UTRACE_PF_KERNEL | UTRACE_PF_TP);
 }
 
 SEC("?kprobe")
