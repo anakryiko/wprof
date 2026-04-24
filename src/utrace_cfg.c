@@ -485,7 +485,7 @@ static int parse_probe_def(struct sview orig, struct sview def, struct utrace_cf
 
 		provider = sv_split(def, ":", &name);
 		provider = sv_trim(provider);
-		name = sv_trim(name);
+		name = sv_consume_left(sv_trim(name), 1); /* skip ':' delimiter */
 
 		if (sv_is_empty(provider) || sv_is_empty(name))
 			return utrace_err(orig, def, "USDT probe requires 'provider:name' format\n");
@@ -499,7 +499,7 @@ static int parse_probe_def(struct sview orig, struct sview def, struct utrace_cf
 
 		cat = sv_split(def, ":", &name);
 		cat = sv_trim(cat);
-		name = sv_trim(name);
+		name = sv_consume_left(sv_trim(name), 1); /* skip ':' delimiter */
 
 		if (sv_is_empty(cat) || sv_is_empty(cat))
 			return utrace_err(orig, def, "tracepoint probe requires 'category:name' format\n");

@@ -51,4 +51,19 @@ int elf_resolve_syms(int pid, unsigned long vma_start, unsigned long vma_end,
 		     unsigned long vma_offset, int st_type,
 		     const char **syms, size_t cnt, unsigned long *addrs);
 
+#define MAX_USDT_ARGS 12
+
+struct usdt_arg_info {
+	int size;	/* byte size: 1, 2, 4, 8 */
+	bool is_signed;
+};
+
+struct usdt_info {
+	int arg_cnt;
+	struct usdt_arg_info args[MAX_USDT_ARGS];
+};
+
+int elf_find_usdt(const char *binary_path, const char *provider, const char *name,
+		  struct usdt_info *info);
+
 #endif /* __ELF_UTILS_H__ */

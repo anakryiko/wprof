@@ -359,3 +359,154 @@ int elf_resolve_syms(int pid, unsigned long vma_start, unsigned long vma_end,
 
 	return cnt_done == cnt ? 0 : -ENOENT;
 }
+
+#define USDT_NOTE_SEC  ".note.stapsdt"
+#define USDT_NOTE_TYPE 3
+#define USDT_NOTE_NAME "stapsdt"
+
+static Elf_Scn *elf_find_sec_by_name(Elf *elf, const char *name, GElf_Shdr *shdr_out)
+{
+	size_t shstrndx;
+
+	if (elf_getshdrstrndx(elf, &shstrndx))
+		return NULL;
+
+	Elf_Scn *scn = NULL;
+	while ((scn = elf_nextscn(elf, scn)) != NULL) {
+		GElf_Shdr sh;
+
+		if (!gelf_getshdr(scn, &sh))
+			continue;
+		const char *sec_name = elf_strptr(elf, shstrndx, sh.sh_name);
+		if (sec_name && strcmp(sec_name, name) == 0) {
+			if (shdr_out)
+				*shdr_out = sh;
+			return scn;
+		}
+	}
+	return NULL;
+}
+
+/*
+ * Parse a single USDT ELF note from '.note.stapsdt' section.
+ * Adapted from libbpf's parse_usdt_note().
+ */
+static int parse_usdt_note(GElf_Nhdr *nhdr, const char *data, size_t name_off, size_t desc_off,
+			   const char **provider_out, const char **name_out, const char **args_out)
+{
+	const char *provider, *name, *args;
+	long addrs[3];
+	size_t len;
+
+	if (strncmp(data + name_off, USDT_NOTE_NAME, nhdr->n_namesz) != 0)
+		return -EINVAL;
+	if (nhdr->n_type != USDT_NOTE_TYPE)
+		return -EINVAL;
+
+	len = nhdr->n_descsz;
+	data = data + desc_off;
+
+	/* descriptor: 3 longs (loc, base, sema) followed by null-terminated strings */
+	if (len < sizeof(addrs) + 3)
+		return -EINVAL;
+
+	provider = data + sizeof(addrs);
+
+	name = memchr(provider, '\0', data + len - provider);
+	if (!name)
+		return -EINVAL;
+	name++;
+	if (name >= data + len || *name == '\0')
+		return -EINVAL;
+
+	args = memchr(name, '\0', data + len - name);
+	if (!args)
+		return -EINVAL;
+	args++;
+	if (args >= data + len)
+		return -EINVAL;
+
+	*provider_out = provider;
+	*name_out = name;
+	*args_out = (*args == '\0' || *args == ':') ? "" : args;
+	return 0;
+}
+
+/*
+ * Parse USDT arg spec string to extract count and sizes.
+ * Format: "-4@%edi -4@-1204(%rbp) 8@%rdx" -- we only parse the <size>@ prefix.
+ */
+static int parse_usdt_arg_info(const char *args, struct usdt_info *info)
+{
+	const char *s = args;
+	int i = 0;
+
+	memset(info, 0, sizeof(*info));
+
+	while (*s && i < MAX_USDT_ARGS) {
+		int sz, n = 0;
+
+		if (sscanf(s, " %d @ %n", &sz, &n) < 1 || n == 0)
+			return -EINVAL;
+		info->args[i].is_signed = sz < 0;
+		info->args[i].size = sz < 0 ? -sz : sz;
+		i++;
+		s += n;
+		while (*s && *s != ' ')
+			s++;
+	}
+	info->arg_cnt = i;
+	return 0;
+}
+
+int elf_find_usdt(const char *binary_path, const char *provider, const char *name,
+		  struct usdt_info *info)
+{
+	struct elf_fd ef;
+	int err;
+
+	err = elf_open(binary_path, &ef);
+	if (err)
+		return err;
+
+	GElf_Shdr shdr;
+	Elf_Scn *scn = elf_find_sec_by_name(ef.elf, USDT_NOTE_SEC, &shdr);
+	if (!scn || shdr.sh_type != SHT_NOTE) {
+		elf_close(&ef);
+		return -ENOENT;
+	}
+
+	Elf_Data *data = elf_getdata(scn, 0);
+	if (!data) {
+		elf_close(&ef);
+		return -EINVAL;
+	}
+
+	size_t off = 0, name_off, desc_off;
+	GElf_Nhdr nhdr;
+	err = -ENOENT;
+
+	while ((off = gelf_getnote(data, off, &nhdr, &name_off, &desc_off)) > 0) {
+		const char *note_provider, *note_name, *note_args;
+
+		if (parse_usdt_note(&nhdr, data->d_buf, name_off, desc_off,
+				    &note_provider, &note_name, &note_args))
+			continue;
+
+		if (strcmp(note_provider, provider) != 0 || strcmp(note_name, name) != 0)
+			continue;
+
+		err = parse_usdt_arg_info(note_args, info);
+		if (err) {
+			eprintf("usdt: failed to parse arg spec '%s' for '%s:%s' in '%s'\n",
+				note_args, provider, name, binary_path);
+			elf_close(&ef);
+			return err;
+		}
+		elf_close(&ef);
+		return 0;
+	}
+
+	elf_close(&ef);
+	return -ENOENT;
+}

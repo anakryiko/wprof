@@ -1621,7 +1621,7 @@ static __always_inline u64 utrace_read_arg_fentry(void *ctx, int idx)
 	return val;
 }
 
-static __always_inline int utrace_handle_probe(void *ctx, bool is_kernel, bool is_fentry)
+static __always_inline int utrace_handle_probe(void *ctx, bool is_kernel, bool is_fentry, bool is_usdt)
 {
 	u64 now_ts = bpf_ktime_get_ns();
 	struct task_struct *task = bpf_get_current_task_btf();
@@ -1629,7 +1629,7 @@ static __always_inline int utrace_handle_probe(void *ctx, bool is_kernel, bool i
 	if (!should_trace_task(task, now_ts))
 		return 0;
 
-	u32 cookie = bpf_get_attach_cookie(ctx);
+	u32 cookie = is_usdt ? bpf_usdt_cookie(ctx) : bpf_get_attach_cookie(ctx);
 	struct utrace_probe_cfg *cfg = bpf_map_lookup_elem(&utrace_probe_cfgs, &cookie);
 	if (!cfg)
 		return 0;
@@ -1658,7 +1658,17 @@ static __always_inline int utrace_handle_probe(void *ctx, bool is_kernel, bool i
 
 		u8 arg_type = cfg->args[i].type;
 		s8 arg_idx = cfg->args[i].idx;
-		u64 arg_val = is_fentry ? utrace_read_arg_fentry(ctx, arg_idx) : utrace_read_arg(ctx, arg_idx);
+		u64 arg_val;
+
+		if (is_usdt) {
+			long usdt_val = 0;
+			bpf_usdt_arg(ctx, arg_idx, &usdt_val);
+			arg_val = (u64)usdt_val;
+		} else if (is_fentry) {
+			arg_val = utrace_read_arg_fentry(ctx, arg_idx);
+		} else {
+			arg_val = utrace_read_arg(ctx, arg_idx);
+		}
 
 		if (arg_type == UTRACE_ARG_STR) {
 			void *p = bpf_dynptr_data(&scratch_dptr, scratch_off, MAX_UTRACE_STR_SZ);
@@ -1737,35 +1747,41 @@ static __always_inline int utrace_handle_probe(void *ctx, bool is_kernel, bool i
 SEC("?uprobe.s")
 int utrace_uprobe(struct pt_regs *ctx)
 {
-	return utrace_handle_probe(ctx, false, false);
+	return utrace_handle_probe(ctx, false, false, false);
 }
 
 SEC("?uretprobe.s")
 int utrace_uretprobe(struct pt_regs *ctx)
 {
-	return utrace_handle_probe(ctx, false, false);
+	return utrace_handle_probe(ctx, false, false, false);
+}
+
+SEC("?usdt.s")
+int utrace_usdt(struct pt_regs *ctx)
+{
+	return utrace_handle_probe(ctx, false, false, true);
 }
 
 SEC("?kprobe")
 int utrace_kprobe(struct pt_regs *ctx)
 {
-	return utrace_handle_probe(ctx, true, false);
+	return utrace_handle_probe(ctx, true, false, false);
 }
 
 SEC("?kretprobe")
 int utrace_kretprobe(struct pt_regs *ctx)
 {
-	return utrace_handle_probe(ctx, true, false);
+	return utrace_handle_probe(ctx, true, false, false);
 }
 
 SEC("?fentry")
 int utrace_bpf_entry(void *ctx)
 {
-	return utrace_handle_probe(ctx, true, true);
+	return utrace_handle_probe(ctx, true, true, false);
 }
 
 SEC("?fexit")
 int utrace_bpf_exit(void *ctx)
 {
-	return utrace_handle_probe(ctx, true, true);
+	return utrace_handle_probe(ctx, true, true, false);
 }
