@@ -6,6 +6,7 @@
 #ifndef __bpf__
 #include <stdbool.h>
 #include <stddef.h>
+#include "elf_utils.h"
 #endif
 
 enum utrace_type {
@@ -127,6 +128,9 @@ struct utrace_cfg {
 		struct {
 			char *provider;
 			char *name;
+			const char *attach_path;	/* resolved path for attachment */
+			const char *display_path;	/* human-readable path for logging */
+			struct usdt_info info;		/* discovered arg metadata */
 		} usdt;
 		/* KPROBE, KRETPROBE, KPROBE_SPAN */
 		struct {

@@ -19,6 +19,17 @@
 #include "proc.h"
 #include "wprof.skel.h"
 
+static enum utrace_arg_type usdt_arg_to_utrace_type(const struct usdt_arg_info *arg)
+{
+	switch (arg->size) {
+	case 1: return arg->is_signed ? UTRACE_ARG_S8  : UTRACE_ARG_U8;
+	case 2: return arg->is_signed ? UTRACE_ARG_S16 : UTRACE_ARG_U16;
+	case 4: return arg->is_signed ? UTRACE_ARG_S32 : UTRACE_ARG_U32;
+	case 8: return arg->is_signed ? UTRACE_ARG_S64 : UTRACE_ARG_U64;
+	default: return UTRACE_ARG_U64;
+	}
+}
+
 static int add_link(struct bpf_state *st, struct bpf_link *link)
 {
 	struct bpf_link **tmp;
@@ -315,6 +326,8 @@ static void expand_wildcard_args(struct utrace_cfg *cfg, const struct btf *btf)
 	if (cfg_is_ret_probe(cfg->type)) {
 		/* ret probes only get arg:ret, no positional args */
 		arg_cnt = 0;
+	} else if (cfg->type == UTRACE_USDT) {
+		arg_cnt = cfg->usdt.info.arg_cnt;
 	} else if (cfg_is_kprobe_type(cfg)) {
 		arg_cnt = btf_func_arg_cnt(btf, cfg->kprobe.name);
 		if (arg_cnt < 0)
@@ -430,6 +443,17 @@ static void augment_cfg_args(struct utrace_cfg *cfg, const struct btf *btf)
 			continue;
 		if (p->arg.arg_type != UTRACE_ARG_UNKNOWN && p->arg.name)
 			continue;
+
+		if (cfg->type == UTRACE_USDT) {
+			if (p->arg.arg_type == UTRACE_ARG_UNKNOWN) {
+				int idx = p->arg.arg_idx;
+				if (idx >= 0 && idx < cfg->usdt.info.arg_cnt)
+					p->arg.arg_type = usdt_arg_to_utrace_type(&cfg->usdt.info.args[idx]);
+				else
+					p->arg.arg_type = UTRACE_ARG_U64;
+			}
+			continue;
+		}
 
 		if (!cfg_is_kprobe_type(cfg) && !cfg_is_bpf_type(cfg)) {
 			if (p->arg.arg_type == UTRACE_ARG_UNKNOWN)
@@ -580,6 +604,83 @@ static int resolve_uprobe_cfg(struct utrace_cfg *cfg)
 	return 0;
 }
 
+/*
+ * Scan /proc/<pid>/maps for a binary containing a USDT matching provider:name.
+ * Returns the /proc/<pid>/map_files/ path in attach_path_out and the
+ * human-readable VMA name in display_path_out.
+ */
+static int resolve_usdt_binary(int pid, const char *provider, const char *name,
+			       char **attach_path_out, char **display_path_out,
+			       struct usdt_info *info)
+{
+	__u32 last_dev_major = 0, last_dev_minor = 0;
+	__u64 last_inode = 0;
+	struct vma_info *vma;
+
+	wprof_for_each(vma, vma, pid, VMA_QUERY_FILE_BACKED_VMA | VMA_QUERY_VMA_EXECUTABLE) {
+		if (vma->vma_name[0] != '/')
+			continue;
+		if (vma->dev_major == last_dev_major && vma->dev_minor == last_dev_minor && vma->inode == last_inode)
+			continue;
+		last_dev_major = vma->dev_major;
+		last_dev_minor = vma->dev_minor;
+		last_inode = vma->inode;
+
+		char map_file[128];
+		snprintf(map_file, sizeof(map_file), "/proc/%d/map_files/%llx-%llx",
+			 pid, (unsigned long long)vma->vma_start, (unsigned long long)vma->vma_end);
+
+		if (elf_find_usdt(map_file, provider, name, info))
+			continue;
+
+		*attach_path_out = strdup(map_file);
+		const char *vma_name = vma->vma_name;
+		if (str_has_suffix(vma_name, " (deleted)"))
+			*display_path_out = strndup(vma_name, strlen(vma_name) - 10);
+		else
+			*display_path_out = strdup(vma_name);
+		return 0;
+	}
+
+	return -ENOENT;
+}
+
+static int resolve_usdt_cfg(struct utrace_cfg *cfg)
+{
+	const char *binary_path = cfg_binary_path(cfg);
+	int pid = cfg_pid(cfg);
+
+	if (binary_path) {
+		int err = elf_find_usdt(binary_path, cfg->usdt.provider, cfg->usdt.name,
+					&cfg->usdt.info);
+		if (err) {
+			eprintf("utrace: USDT '%s:%s' not found in '%s': %d\n",
+				cfg->usdt.provider, cfg->usdt.name, binary_path, err);
+			return err;
+		}
+		cfg->usdt.attach_path = binary_path;
+		cfg->usdt.display_path = binary_path;
+	} else if (pid >= 0) {
+		char *attach_path = NULL, *display_path = NULL;
+		int err = resolve_usdt_binary(pid, cfg->usdt.provider, cfg->usdt.name,
+					      &attach_path, &display_path, &cfg->usdt.info);
+		if (err) {
+			eprintf("utrace: USDT '%s:%s' not found in any binary of PID %d: %d\n",
+				cfg->usdt.provider, cfg->usdt.name, pid, err);
+			return err;
+		}
+		cfg->usdt.attach_path = attach_path;
+		cfg->usdt.display_path = display_path;
+		cfg_set_binary_path(cfg, display_path);
+	} else {
+		eprintf("utrace: USDT '%s:%s' requires a binary path (path:) or process (pid:)\n",
+			cfg->usdt.provider, cfg->usdt.name);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 static int find_bpf_prog_by_name(const char *name, int *prog_fd_out,
 				 __u32 *btf_func_id_out, struct btf **btf_out)
 {
@@ -715,6 +816,13 @@ int utrace_setup(struct wprof_bpf *skel)
 					bpf_program__set_autoload(skel->progs.utrace_kprobe, true);
 				if (cfg_needs_kretprobe(leg))
 					bpf_program__set_autoload(skel->progs.utrace_kretprobe, true);
+				break;
+			case UTRACE_USDT:
+				bpf_program__set_autoload(skel->progs.utrace_usdt, true);
+				bpf_program__set_autoattach(skel->progs.utrace_usdt, false);
+				err = resolve_usdt_cfg(leg);
+				if (err)
+					return err;
 				break;
 			case UTRACE_BPF_PROBE:
 			case UTRACE_BPF_RETPROBE:
@@ -877,6 +985,24 @@ static int attach_utrace_probe(struct bpf_state *st, struct wprof_bpf *skel,
 			return err;
 		break;
 	}
+	case UTRACE_USDT: {
+		LIBBPF_OPTS(bpf_usdt_opts, opts, .usdt_cookie = *map_idx);
+		struct bpf_link *link = bpf_program__attach_usdt(skel->progs.utrace_usdt,
+								 cfg_pid(cfg),
+								 cfg->usdt.attach_path,
+								 cfg->usdt.provider,
+								 cfg->usdt.name, &opts);
+		if (!link) {
+			err = -errno;
+			eprintf("utrace: failed to attach USDT '%s:%s' in '%s': %d\n",
+				cfg->usdt.provider, cfg->usdt.name, cfg->usdt.display_path, err);
+			return err;
+		}
+		err = add_link(st, link);
+		if (err)
+			return err;
+		break;
+	}
 	default:
 		eprintf("utrace: probe type %d not yet supported\n", cfg->type);
 		return -EOPNOTSUPP;
@@ -902,6 +1028,7 @@ int utrace_attach(struct bpf_state *st, struct wprof_bpf *skel)
 		case UTRACE_KRETPROBE:
 		case UTRACE_BPF_PROBE:
 		case UTRACE_BPF_RETPROBE:
+		case UTRACE_USDT:
 			err = attach_utrace_probe(st, skel, cfg, i, UTRACE_INSTANT, false,
 						  cfg_is_ret_probe(cfg->type), map_fd, &map_idx);
 			if (err)
