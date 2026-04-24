@@ -1621,7 +1621,13 @@ static __always_inline u64 utrace_read_arg_fentry(void *ctx, int idx)
 	return val;
 }
 
-static __always_inline int utrace_handle_probe(void *ctx, bool is_kernel, bool is_fentry, bool is_usdt)
+enum utrace_handler_flags {
+	UTRACE_PF_KERNEL	= 1 << 0,
+	UTRACE_PF_FENTRY	= 1 << 1,
+	UTRACE_PF_USDT		= 1 << 2,
+};
+
+static __always_inline int utrace_handle_probe(void *ctx, enum utrace_handler_flags flags)
 {
 	u64 now_ts = bpf_ktime_get_ns();
 	struct task_struct *task = bpf_get_current_task_btf();
@@ -1629,7 +1635,7 @@ static __always_inline int utrace_handle_probe(void *ctx, bool is_kernel, bool i
 	if (!should_trace_task(task, now_ts))
 		return 0;
 
-	u32 cookie = is_usdt ? bpf_usdt_cookie(ctx) : bpf_get_attach_cookie(ctx);
+	u32 cookie = (flags & UTRACE_PF_USDT) ? bpf_usdt_cookie(ctx) : bpf_get_attach_cookie(ctx);
 	struct utrace_probe_cfg *cfg = bpf_map_lookup_elem(&utrace_probe_cfgs, &cookie);
 	if (!cfg)
 		return 0;
@@ -1660,11 +1666,11 @@ static __always_inline int utrace_handle_probe(void *ctx, bool is_kernel, bool i
 		s8 arg_idx = cfg->args[i].idx;
 		u64 arg_val;
 
-		if (is_usdt) {
+		if (flags & UTRACE_PF_USDT) {
 			long usdt_val = 0;
 			bpf_usdt_arg(ctx, arg_idx, &usdt_val);
 			arg_val = (u64)usdt_val;
-		} else if (is_fentry) {
+		} else if (flags & UTRACE_PF_FENTRY) {
 			arg_val = utrace_read_arg_fentry(ctx, arg_idx);
 		} else {
 			arg_val = utrace_read_arg(ctx, arg_idx);
@@ -1679,9 +1685,9 @@ static __always_inline int utrace_handle_probe(void *ctx, bool is_kernel, bool i
 
 			int len;
 			/* kernel addresses have high bit set (negative as s64) */
-			if (is_kernel && (s64)arg_val >= 0)
+			if ((flags & UTRACE_PF_KERNEL) && (s64)arg_val >= 0)
 				len = bpf_probe_read_user_str(p, MAX_UTRACE_STR_SZ, (void *)arg_val);
-			else if (is_kernel)
+			else if (flags & UTRACE_PF_KERNEL)
 				len = bpf_probe_read_kernel_str(p, MAX_UTRACE_STR_SZ, (void *)arg_val);
 			else
 				len = bpf_copy_from_user_str(p, MAX_UTRACE_STR_SZ, (void *)arg_val, 0);
@@ -1708,7 +1714,7 @@ static __always_inline int utrace_handle_probe(void *ctx, bool is_kernel, bool i
 	struct stack_trace *tr = NULL;
 	size_t tr_sz = 0;
 	if ((cfg->flags & UTRACE_FL_CAPTURE_STACK) && (requested_stack_traces & ST_UTRACE)) {
-		if (is_kernel)
+		if (flags & UTRACE_PF_KERNEL)
 			tr = grab_stack_trace(ctx, NULL, ST_UTRACE, &tr_sz);
 		else
 			tr = grab_stack_trace_user(ctx, NULL, ST_UTRACE, &tr_sz);
@@ -1747,41 +1753,41 @@ static __always_inline int utrace_handle_probe(void *ctx, bool is_kernel, bool i
 SEC("?uprobe.s")
 int utrace_uprobe(struct pt_regs *ctx)
 {
-	return utrace_handle_probe(ctx, false, false, false);
+	return utrace_handle_probe(ctx, 0);
 }
 
 SEC("?uretprobe.s")
 int utrace_uretprobe(struct pt_regs *ctx)
 {
-	return utrace_handle_probe(ctx, false, false, false);
+	return utrace_handle_probe(ctx, 0);
 }
 
 SEC("?usdt.s")
 int utrace_usdt(struct pt_regs *ctx)
 {
-	return utrace_handle_probe(ctx, false, false, true);
+	return utrace_handle_probe(ctx, UTRACE_PF_USDT);
 }
 
 SEC("?kprobe")
 int utrace_kprobe(struct pt_regs *ctx)
 {
-	return utrace_handle_probe(ctx, true, false, false);
+	return utrace_handle_probe(ctx, UTRACE_PF_KERNEL);
 }
 
 SEC("?kretprobe")
 int utrace_kretprobe(struct pt_regs *ctx)
 {
-	return utrace_handle_probe(ctx, true, false, false);
+	return utrace_handle_probe(ctx, UTRACE_PF_KERNEL);
 }
 
 SEC("?fentry")
 int utrace_bpf_entry(void *ctx)
 {
-	return utrace_handle_probe(ctx, true, true, false);
+	return utrace_handle_probe(ctx, UTRACE_PF_KERNEL | UTRACE_PF_FENTRY);
 }
 
 SEC("?fexit")
 int utrace_bpf_exit(void *ctx)
 {
-	return utrace_handle_probe(ctx, true, true, false);
+	return utrace_handle_probe(ctx, UTRACE_PF_KERNEL | UTRACE_PF_FENTRY);
 }
