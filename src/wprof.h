@@ -231,7 +231,8 @@ struct utrace_probe_cfg {
 	enum utrace_type probe_type;
 	struct {
 		enum utrace_arg_type type;
-		int idx;	/* 0-based arg index, or UTRACE_ARG_RET (-1) */
+		int idx;	/* 0-based arg index, or byte offset for TP fields */
+		bool tp_data_loc;	/* TP __data_loc encoded string field */
 	} args[MAX_UTRACE_ARGS];
 };
 
