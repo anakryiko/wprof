@@ -121,6 +121,7 @@ struct env {
 	char *data_path;
 	char *trace_path;
 	char *json_path;
+	bool output_sealed;
 
 	bool pb_debug_interns;
 	bool pb_disable_interns;
