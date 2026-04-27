@@ -58,10 +58,12 @@ The first line contains session metadata. Example:
 | `capture_pystacks` | bool            | Whether Python stack traces were captured                            |
 | `capture_pytrace`   | bool            | Whether Python function tracing was captured                         |
 | `capture_pytorch`   | bool            | Whether PyTorch RecordFunction tracing was captured                   |
+| `capture_utrace`   | bool            | Whether user-defined tracing (utrace) was enabled                    |
 | `stacks`           | array of string | Stack trace kinds captured (e.g., `["timer","offcpu"]`, `[]` if none)|
 | `stack_cnt`        | int             | Number of stack trace lines that follow (0 if none)                  |
 | `event_cnt`        | int             | Total number of event lines that follow                              |
 | `pmus`             | array of string | PMU counter names (e.g., `["instructions","cycles"]`, `[]` if none)  |
+| `extras`           | array of string | *(optional)* Extra config (e.g., `--utrace` definitions)             |
 
 ## Callstacks (stack traces)
 
@@ -680,6 +682,61 @@ They represent deterministic function call/return events captured via
   "t": "pytrace_exit",
   "task": {"tid": 1234, "pid": 1000, "comm": "python3"},
   "name": "module.MyClass.process"
+}
+```
+
+---
+
+### User-defined tracing (utrace) events
+
+These events are emitted when user-defined probes are configured via `-U`.
+See [UTRACE.md](UTRACE.md) for the full probe definition syntax.
+
+Three event types are emitted depending on the probe kind:
+
+- `utrace_instant` — point-in-time event (non-span probes)
+- `utrace_entry` — span start (entry side of span probes)
+- `utrace_exit` — span end (exit side of span probes)
+
+#### `utrace_instant` / `utrace_entry` / `utrace_exit`
+
+| Field       | Type            | Description                                                           |
+|-------------|-----------------|-----------------------------------------------------------------------|
+| `task`      | task            | Thread where the probe fired                                          |
+| `utrace_id` | string         | Custom probe ID (from `id:` setting) or numeric index as string       |
+| `name`      | string          | Event name (probe name or formatted via `name:` template)             |
+| `args`      | object          | *(optional)* Captured arguments as key-value pairs                    |
+| `stack_id`  | int             | *(optional)* Stack trace ID (when `stack` parameter is enabled)       |
+
+Argument values are formatted by type: integers as decimal numbers,
+pointers as `"0x..."` hex strings, strings as JSON strings.
+
+```json
+{
+  "ts": 0.001234000,
+  "t": "utrace_instant",
+  "task": {"tid": 1234, "pid": 1000, "comm": "myapp", "pcomm": "myapp"},
+  "cpu": 3,
+  "utrace_id": "syscalls",
+  "name": "syscall #1",
+  "args": {"id": 1}
+}
+```
+
+```json
+{
+  "ts": 0.005000000,
+  "t": "utrace_entry",
+  "task": {"tid": 1234, "pid": 1000, "comm": "myapp", "pcomm": "myapp"},
+  "cpu": 3,
+  "utrace_id": "0",
+  "name": "sched_switch",
+  "args": {
+    "prev_comm": "myapp",
+    "prev_pid": 1234,
+    "next_comm": "worker",
+    "next_pid": 5678
+  }
 }
 ```
 
