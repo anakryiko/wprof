@@ -96,6 +96,8 @@ enum {
 	OPT_REQ_FILTER = 3004,
 	OPT_REQ_TOP_N = 3005,
 	OPT_REQ_BOTTOM_N = 3006,
+
+	OPT_SEAL_OUTPUT = 4000,
 };
 
 static const struct argp_option opts[] = {
@@ -174,6 +176,7 @@ static const struct argp_option opts[] = {
 	{ "req-filter", OPT_REQ_FILTER, "EXPR", 0, "Filter requests: <field><op><value> (e.g., latency>1ms, pid=1234, name=foo). Repeatable." },
 	{ "req-top-n", OPT_REQ_TOP_N, "N", 0, "Show only the first N requests" },
 	{ "req-bottom-n", OPT_REQ_BOTTOM_N, "N", 0, "Show only the last N requests" },
+	{ "seal-output", OPT_SEAL_OUTPUT, NULL, OPTION_HIDDEN, "Prevent subsequent file-output options" },
 	{},
 };
 
@@ -262,6 +265,10 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		env.duration_ns *= 1000000;
 		break;
 	case 'D':
+		if (env.output_sealed) {
+			fprintf(stderr, "Output file options are disabled by --seal-output\n");
+			return -EINVAL;
+		}
 		env.data_path = strdup(arg);
 		break;
 	case 'R':
@@ -285,6 +292,10 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		}
 		break;
 	case 'T':
+		if (env.output_sealed) {
+			fprintf(stderr, "Output file options are disabled by --seal-output\n");
+			return -EINVAL;
+		}
 		if (env.trace_path || env.json_path) {
 			fprintf(stderr, "Only one trace output can be specified (-T and -J are mutually exclusive)!\n");
 			return -EINVAL;
@@ -292,6 +303,10 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		env.trace_path = strdup(arg);
 		break;
 	case 'J':
+		if (env.output_sealed) {
+			fprintf(stderr, "Output file options are disabled by --seal-output\n");
+			return -EINVAL;
+		}
 		if (env.trace_path || env.json_path) {
 			fprintf(stderr, "Only one trace output can be specified (-T and -J are mutually exclusive)!\n");
 			return -EINVAL;
@@ -773,6 +788,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		}
 		break;
 	}
+	case OPT_SEAL_OUTPUT:
+		env.output_sealed = true;
+		break;
 	case ARGP_KEY_ARG:
 		argp_usage(state);
 		break;
