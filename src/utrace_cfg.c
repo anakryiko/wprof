@@ -125,9 +125,14 @@ static int parse_arg_param(struct sview orig, struct sview def, struct utrace_pa
 
 	if (sv_eq(arg, "ret")) {
 		idx = UTRACE_ARG_RET;
-	} else {
+	} else if (arg.len > 0 && isdigit(arg.s[0])) {
 		if (!sv_as_long(arg, &idx) || idx < 0 || idx > INT_MAX)
 			return utrace_err(orig, arg, "invalid arg index\n");
+	} else if (arg.len > 0) {
+		idx = UTRACE_ARG_UNRESOLVED;
+		p->arg.ref_name = sv_strdup(arg);
+	} else {
+		return utrace_err(orig, arg, "empty arg index or name\n");
 	}
 
 	if (!sv_is_empty(arg_type)) {

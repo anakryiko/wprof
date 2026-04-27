@@ -376,7 +376,7 @@ static int resolve_tp_format(struct utrace_cfg *cfg)
 	bool in_fields = false;
 
 	while (fgets(line, sizeof(line), f)) {
-		char type[128], name[128];
+		char type[128];
 		int offset, size, is_signed;
 
 		if (strncmp(line, "format:", 7) == 0) {
@@ -577,6 +577,55 @@ static bool cfg_needs_btf(const struct utrace_cfg *cfg)
 	return false;
 }
 
+static int resolve_arg_name(const struct utrace_cfg *cfg, const struct btf *btf, const char *name)
+{
+	switch (cfg->type) {
+	case UTRACE_TRACEPOINT:
+		for (int i = 0; i < cfg->tp.field_cnt; i++) {
+			if (strcmp(cfg->tp.fields[i].name, name) == 0)
+				return i;
+		}
+		break;
+	case UTRACE_RAW_TRACEPOINT: {
+		const struct btf_type *proto = cfg->raw_tp.name_proto ?: cfg->raw_tp.proto;
+		if (!proto)
+			return -ENOENT;
+		const struct btf_param *p = btf_params(proto) + 1; /* skip void *__data */
+		for (int i = 1; i < btf_vlen(proto); i++, p++) {
+			const char *pname = btf__name_by_offset(btf, p->name_off);
+			if (pname && strcmp(pname, name) == 0)
+				return i - 1;
+		}
+		break;
+	}
+	case UTRACE_KPROBE:
+	case UTRACE_KRETPROBE:
+	case UTRACE_KPROBE_SPAN:
+	case UTRACE_BPF_PROBE:
+	case UTRACE_BPF_RETPROBE:
+	case UTRACE_BPF_SPAN: {
+		const struct btf *resolve_btf = cfg_is_bpf_type(cfg) ? cfg->bpf_prog.btf : btf;
+		const char *func_name = cfg_is_bpf_type(cfg) ? cfg->bpf_prog.name : cfg->kprobe.name;
+		if (!resolve_btf)
+			return -ENOENT;
+		const struct btf_type *proto = btf_find_func_proto(resolve_btf, func_name);
+		if (!proto)
+			return -ENOENT;
+		const struct btf_param *p = btf_params(proto);
+		for (int i = 0; i < btf_vlen(proto); i++, p++) {
+			const char *pname = btf__name_by_offset(resolve_btf, p->name_off);
+			if (pname && strcmp(pname, name) == 0)
+				return i;
+		}
+		break;
+	}
+	default:
+		eprintf("utrace: name-based arg references not supported for probe type %d\n", cfg->type);
+		return -EOPNOTSUPP;
+	}
+	return -ENOENT;
+}
+
 static int param_sort_key(const struct utrace_param *p)
 {
 	if (p->type == UTRACE_PARAM_ARG)
@@ -609,6 +658,25 @@ static void augment_cfg_args(struct utrace_cfg *cfg, const struct btf *btf)
 
 	if (cfg->wildcard_args)
 		expand_wildcard_args(cfg, btf);
+
+	/* resolve name-based arg references (arg:prev_pid) to indices */
+	for (int j = 0; j < cfg->param_cnt; j++) {
+		struct utrace_param *p = &cfg->params[j];
+		if (p->type != UTRACE_PARAM_ARG || !p->arg.ref_name)
+			continue;
+
+		int resolved = resolve_arg_name(cfg, btf, p->arg.ref_name);
+		if (resolved < 0) {
+			eprintf("utrace: failed to find argument '%s'\n", p->arg.ref_name);
+		} else {
+			p->arg.arg_idx = resolved;
+			if (!p->arg.name)
+				p->arg.name = p->arg.ref_name;
+		}
+		if (p->arg.name != p->arg.ref_name)
+			free(p->arg.ref_name);
+		p->arg.ref_name = NULL;
+	}
 
 	for (int j = 0; j < cfg->param_cnt; j++) {
 		struct utrace_param *p = &cfg->params[j];

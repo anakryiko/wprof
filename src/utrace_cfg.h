@@ -60,6 +60,7 @@ enum utrace_param_type {
 };
 
 #define UTRACE_ARG_RET (-1)
+#define UTRACE_ARG_UNRESOLVED (-2)	/* name-based ref, resolved during augmentation */
 
 #ifndef __bpf__
 
@@ -79,6 +80,7 @@ struct utrace_param {
 			int arg_idx;			/* 0-based arg index, or UTRACE_ARG_RET */
 			enum utrace_arg_type arg_type; 	/* defaults to UTRACE_ARG_U64 if omitted */
 			char *name;			/* annotation name, NULL = auto "arg<N>" / "ret" */
+			char *ref_name;			/* name-based arg reference, resolved to arg_idx during augmentation */
 			int tp_byte_off;		/* TP: byte offset into event struct */
 			bool tp_data_loc;		/* TP: __data_loc encoded string field */
 		} arg;
