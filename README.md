@@ -39,6 +39,11 @@ details.
 $ ./wprof -R -d500 -T trace-500ms.pb
 ```
 
+## User-defined tracing (utrace)
 
+wprof supports user-defined probes for capturing custom events alongside
+its built-in tracing. Supports uprobes, kprobes, USDT, tracepoints, raw
+tracepoints, and BPF program probes with argument capture, stack traces,
+and name formatting.
 
-
+See [UTRACE.md](UTRACE.md) for full documentation.
