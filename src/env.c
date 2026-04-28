@@ -98,6 +98,7 @@ enum {
 	OPT_REQ_BOTTOM_N = 3006,
 
 	OPT_SEAL_OUTPUT = 4000,
+	OPT_RECORD = 4001,
 };
 
 static const struct argp_option opts[] = {
@@ -113,7 +114,10 @@ static const struct argp_option opts[] = {
 	{ "json-trace", 'J', "FILE", 0, "Emit JSON trace to specified file (use '-' for stdout; see --json-schema)" },
 	{ "json-schema", OPT_JSON_SCHEMA, NULL, 0, "Print JSON output schema and exit" },
 
-	{ "replay", 'R', NULL, 0, "Re-process raw dump (no actual BPF data gathering)" },
+	{ "record", OPT_RECORD, NULL, 0, "Record mode (default, mutually exclusive with --replay)" },
+	{ "seal-output", OPT_SEAL_OUTPUT, NULL, OPTION_HIDDEN, "Prevent subsequent file-output options" },
+
+	{ "replay", 'R', NULL, 0, "Replay mode" },
 	{ "replay-start", OPT_REPLAY_OFFSET_START, "TIME_OFFSET", 0, "Session start time offset (replay mode only). Supported syntax: 2s, 1.03s, 10.5ms, 12us, 101213ns" },
 	{ "replay-end", OPT_REPLAY_OFFSET_END, "TIME_OFFSET", 0, "Session end time offset (replay mode only). Supported syntax: 2s, 1.03s, 10.5ms, 12us, 101213ns" },
 	{ "replay-info", 'I', NULL, 0, "Print recorded data information" },
@@ -176,7 +180,6 @@ static const struct argp_option opts[] = {
 	{ "req-filter", OPT_REQ_FILTER, "EXPR", 0, "Filter requests: <field><op><value> (e.g., latency>1ms, pid=1234, name=foo). Repeatable." },
 	{ "req-top-n", OPT_REQ_TOP_N, "N", 0, "Show only the first N requests" },
 	{ "req-bottom-n", OPT_REQ_BOTTOM_N, "N", 0, "Show only the last N requests" },
-	{ "seal-output", OPT_SEAL_OUTPUT, NULL, OPTION_HIDDEN, "Prevent subsequent file-output options" },
 	{},
 };
 
@@ -272,6 +275,10 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		env.data_path = strdup(arg);
 		break;
 	case 'R':
+		if (env.record) {
+			fprintf(stderr, "Only one of --record or --replay modes should be enabled\n");
+			return -EINVAL;
+		}
 		env.replay = true;
 		break;
 	case 'I':
@@ -788,6 +795,13 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		}
 		break;
 	}
+	case OPT_RECORD:
+		if (env.replay) {
+			fprintf(stderr, "Only one of --record or --replay modes should be enabled\n");
+			return -EINVAL;
+		}
+		env.record = true;
+		break;
 	case OPT_SEAL_OUTPUT:
 		env.output_sealed = true;
 		break;
