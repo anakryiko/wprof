@@ -60,6 +60,7 @@ struct env {
 	int debug_level;
 	enum log_subset log_set;
 	bool stats;
+	bool record;
 	bool replay;
 	bool replay_info;
 	bool symbolize_frugally;
