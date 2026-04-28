@@ -847,6 +847,7 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 	}
 
 	st->rb_map_fds = calloc(env.ringbuf_cnt, sizeof(*st->rb_map_fds));
+	u32 *rb_keys = calloc(env.ringbuf_cnt, sizeof(*rb_keys));
 	for (int i = 0; i < env.ringbuf_cnt; i++) {
 		int map_fd;
 
@@ -856,14 +857,18 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 			return map_fd;
 		}
 
-		err = bpf_map_update_elem(bpf_map__fd(skel->maps.rbs), &i, &map_fd, BPF_NOEXIST);
-		if (err < 0) {
-			eprintf("Failed to set BPF ringbuf #%d into ringbuf map-of-maps: %d\n", i, err);
-			close(map_fd);
-			return err;
-		}
-
+		rb_keys[i] = i;
 		st->rb_map_fds[i] = map_fd;
+	}
+
+	u32 rb_cnt = env.ringbuf_cnt;
+	LIBBPF_OPTS(bpf_map_batch_opts, batch_opts);
+	err = bpf_map_update_batch(bpf_map__fd(skel->maps.rbs), rb_keys, st->rb_map_fds,
+				   &rb_cnt, &batch_opts);
+	free(rb_keys);
+	if (err < 0) {
+		eprintf("Failed to set BPF ringbufs into ringbuf map-of-maps: %d\n", err);
+		return err;
 	}
 
 	/* Prepare ring buffers to receive events from the BPF program. */
