@@ -267,7 +267,7 @@ static int pytrace_profile_callback(PyObject *obj, PyFrameObject *frame, int wha
 		return 0;
 	}
 
-	pytrace_event_cnt++;
+	atomic_add(&pytrace_event_cnt, 1);
 	return 0;
 }
 
