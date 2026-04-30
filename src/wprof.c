@@ -945,9 +945,9 @@ int attach_usdt_probe(struct bpf_state *st, struct bpf_program *prog,
 	link = bpf_program__attach_usdt(prog, -1, binary_attach_path,
 					usdt_provider, usdt_name, NULL);
 	if (!link) {
-		eprintf("Failed to attach USDT %s:%s to %s (%s): %d\n",
-			usdt_provider, usdt_name, binary_path, binary_attach_path, -errno);
-		return -errno;
+		vprintf("Failed to attach USDT %s:%s to %s (%s): %d, skipping.\n",
+		      usdt_provider, usdt_name, binary_path, binary_attach_path, -errno);
+		return -ENOENT;
 	}
 
 	dlogf(USDT, 1, "Attached USDT %s:%s to %s (%s).\n",
