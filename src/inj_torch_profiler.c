@@ -82,7 +82,7 @@ static bool rf_active;
  * Shuffle to match rf_start_cb_impl(x0=ret_slot, x1=record_fn).
  * Top-level asm avoids GCC ignoring __attribute__((naked)) in some versions.
  */
-__attribute__((visibility("hidden")))
+__attribute__((used, visibility("hidden")))
 void *rf_start_cb_impl(void *ret_slot, const void *record_fn);
 
 __asm__(
@@ -97,7 +97,7 @@ __asm__(
 /* Declare the asm-defined symbol so C code can reference it */
 extern void *rf_start_cb();
 
-__attribute__((visibility("hidden")))
+__attribute__((used, visibility("hidden")))
 void *rf_start_cb_impl(void *ret_slot, const void *record_fn)
 #else
 static void *rf_start_cb(void *ret_slot, const void *record_fn)
