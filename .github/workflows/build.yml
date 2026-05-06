@@ -8,7 +8,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build & Test (${{ matrix.arch }}, ${{ matrix.static && 'static' || 'dynamic' }})
+    name: Build & Test (${{ matrix.arch }}, ${{ matrix.static && 'static' || 'dynamic' }}${{ matrix.lto && ', LTO' || '' }})
     runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
@@ -26,6 +26,7 @@ jobs:
             runner: ubuntu-24.04-arm
             static: false
 
+          # Static builds
           - arch: amd64
             file_str: x86-64
             target: x86_64-unknown-linux-gnu
@@ -37,6 +38,21 @@ jobs:
             target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
             static: true
+
+          # LTO builds
+          - arch: amd64
+            file_str: x86-64
+            target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            static: false
+            lto: true
+
+          - arch: arm64
+            file_str: aarch64
+            target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            static: false
+            lto: true
 
     steps:
       - name: Install dependencies
@@ -53,7 +69,7 @@ jobs:
       - name: Build wprof
         working-directory: 'wprof'
         run: |
-          make -j$(nproc) -C src V=1 ${{ matrix.static && 'STATIC=1' || '' }}
+          make -j$(nproc) -C src V=1 ${{ matrix.static && 'STATIC=1' || '' }} ${{ matrix.lto && 'LTO=1' || '' }}
 
       - name: Test wprof binary
         working-directory: 'wprof/src'
@@ -108,7 +124,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: wprof-${{ matrix.arch }}-${{ matrix.static && 'static' || 'dynamic' }}
+          name: wprof-${{ matrix.arch }}-${{ matrix.static && 'static' || 'dynamic' }}${{ matrix.lto && '-lto' || '' }}
           path: |
             wprof/src/wprof
             wprof/src/trace.pb
