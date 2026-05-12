@@ -8,7 +8,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build & Test (${{ matrix.arch }}, ${{ matrix.static && 'static' || 'dynamic' }}${{ matrix.lto && ', LTO' || '' }})
+    name: Build & Test (${{ matrix.arch }}, ${{ matrix.static && 'static' || 'dynamic' }}${{ matrix.nolto && ', no-LTO' || '' }})
     runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
@@ -39,20 +39,20 @@ jobs:
             runner: ubuntu-24.04-arm
             static: true
 
-          # LTO builds
+          # Non-LTO builds (LTO is on by default, these test with it disabled)
           - arch: amd64
             file_str: x86-64
             target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
             static: false
-            lto: true
+            nolto: true
 
           - arch: arm64
             file_str: aarch64
             target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
             static: false
-            lto: true
+            nolto: true
 
     steps:
       - name: Install dependencies
@@ -69,7 +69,7 @@ jobs:
       - name: Build wprof
         working-directory: 'wprof'
         run: |
-          make -j$(nproc) -C src V=1 ${{ matrix.static && 'STATIC=1' || '' }} ${{ matrix.lto && 'LTO=1' || '' }}
+          make -j$(nproc) -C src V=1 ${{ matrix.static && 'STATIC=1' || '' }} ${{ matrix.nolto && 'LTO=0' || '' }}
 
       - name: Test wprof binary
         working-directory: 'wprof/src'
@@ -124,7 +124,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: wprof-${{ matrix.arch }}-${{ matrix.static && 'static' || 'dynamic' }}${{ matrix.lto && '-lto' || '' }}
+          name: wprof-${{ matrix.arch }}-${{ matrix.static && 'static' || 'dynamic' }}${{ matrix.nolto && '-nolto' || '' }}
           path: |
             wprof/src/wprof
             wprof/src/trace.pb
