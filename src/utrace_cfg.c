@@ -630,7 +630,7 @@ int utrace_cfg_parse_file(const char *path)
 		line_nr++;
 
 		/* strip newline */
-		while (line_len > 0 && line[line_len - 1])
+		while (line_len > 0 && isspace(line[line_len - 1]))
 			line[--line_len] = '\0';
 
 		/* skip blank lines and comments */
