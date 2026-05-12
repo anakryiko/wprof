@@ -1169,8 +1169,6 @@ int BPF_PROG(wprof_wq_exec_end, struct work_struct *work /* , work_func_t functi
 	return handle_workqueue(now_ts, task, work, false /*!start*/);
 }
 
-#ifdef __TARGET_ARCH_x86
-
 static struct cpu_state all_cpus_state;
 
 static int handle_ipi_send(u64 now_ts, struct task_struct *task,
@@ -1227,10 +1225,7 @@ int BPF_PROG(wprof_ipi_send_mask, struct cpumask *mask)
 	return handle_ipi_send(now_ts, task, IPI_MULTI, -1);
 }
 
-#define RESCHEDULE_VECTOR		0xfd
-#define CALL_FUNCTION_VECTOR		0xfc
-#define CALL_FUNCTION_SINGLE_VECTOR	0xfb
-
+__attribute__((unused))
 static int handle_ipi(u64 now_ts, struct task_struct *task, enum wprof_ipi_kind ipi_kind, bool start)
 {
 	struct cpu_state *s;
@@ -1284,6 +1279,12 @@ static int handle_ipi(u64 now_ts, struct task_struct *task, enum wprof_ipi_kind 
 
 	return 0;
 }
+
+#if defined(__TARGET_ARCH_x86)
+
+#define RESCHEDULE_VECTOR		0xfd
+#define CALL_FUNCTION_VECTOR		0xfc
+#define CALL_FUNCTION_SINGLE_VECTOR	0xfb
 
 SEC("?tp_btf/call_function_entry")
 int BPF_PROG(wprof_ipi_multi_entry, int vector)
@@ -1387,7 +1388,64 @@ int BPF_PROG(wprof_ipi_resched_exit, int vector)
 	return handle_ipi(now_ts, task, IPI_RESCHED, false /*!start*/);
 }
 
-#endif /* __TARGET_ARCH_x86 */
+#elif defined(__TARGET_ARCH_arm64)
+
+/*
+ * arm64 ipi_entry/ipi_exit tracepoints pass a reason string from
+ * ipi_types[] array. We only need the first character to distinguish:
+ *   'R' -> "Rescheduling interrupts"  -> IPI_RESCHED
+ *   'F' -> "Function call interrupts" -> IPI_SINGLE (no single vs multi distinction on arm64)
+ */
+static __always_inline enum wprof_ipi_kind ipi_reason_to_kind(const char *reason)
+{
+	char c = 0;
+	bpf_probe_read_kernel(&c, 1, reason);
+	switch (c) {
+	case 'R': return IPI_RESCHED;
+	case 'F': return IPI_SINGLE;
+	default: return IPI_INVALID;
+	}
+}
+
+SEC("?tp_btf/ipi_entry")
+int BPF_PROG(wprof_ipi_entry, const char *reason)
+{
+	u64 now_ts;
+	struct task_struct *task;
+	enum wprof_ipi_kind kind;
+
+	kind = ipi_reason_to_kind(reason);
+	if (kind == IPI_INVALID)
+		return 0;
+
+	now_ts = bpf_ktime_get_ns();
+	task = bpf_get_current_task_btf();
+	if (!should_trace_task(task, now_ts))
+		return 0;
+
+	return handle_ipi(now_ts, task, kind, true /*start*/);
+}
+
+SEC("?tp_btf/ipi_exit")
+int BPF_PROG(wprof_ipi_exit, const char *reason)
+{
+	u64 now_ts;
+	struct task_struct *task;
+	enum wprof_ipi_kind kind;
+
+	kind = ipi_reason_to_kind(reason);
+	if (kind == IPI_INVALID)
+		return 0;
+
+	now_ts = bpf_ktime_get_ns();
+	task = bpf_get_current_task_btf();
+	if (!should_trace_task(task, now_ts))
+		return 0;
+
+	return handle_ipi(now_ts, task, kind, false /*!start*/);
+}
+
+#endif
 
 struct req_state {
 	u64 start_ts;

@@ -469,12 +469,12 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 	struct wprof_bpf *skel;
 	int i, err = 0;
 
-#ifndef __x86_64__
+#if !defined(__x86_64__) && !defined(__aarch64__)
 	if (env.capture_ipis) {
-		eprintf("IPI capture is supported only on x86-64 architecture!\n");
+		eprintf("IPI capture is supported only on x86-64 and arm64 architectures!\n");
 		return -EOPNOTSUPP;
 	}
-#endif /* __x86_64 */
+#endif
 
 	libbpf_set_print(libbpf_print_fn);
 
@@ -493,18 +493,21 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 		return err;
 	}
 
-#ifdef __x86_64__
 	if (env.capture_ipis) {
 		bpf_program__set_autoload(skel->progs.wprof_ipi_send_cpu, true);
 		bpf_program__set_autoload(skel->progs.wprof_ipi_send_mask, true);
+#if defined(__x86_64__)
 		bpf_program__set_autoload(skel->progs.wprof_ipi_single_entry, true);
 		bpf_program__set_autoload(skel->progs.wprof_ipi_single_exit, true);
 		bpf_program__set_autoload(skel->progs.wprof_ipi_multi_entry, true);
 		bpf_program__set_autoload(skel->progs.wprof_ipi_multi_exit, true);
 		bpf_program__set_autoload(skel->progs.wprof_ipi_resched_entry, true);
 		bpf_program__set_autoload(skel->progs.wprof_ipi_resched_exit, true);
-	}
+#elif defined(__aarch64__)
+		bpf_program__set_autoload(skel->progs.wprof_ipi_entry, true);
+		bpf_program__set_autoload(skel->progs.wprof_ipi_exit, true);
 #endif
+	}
 
 	if (env.capture_softirq) {
 		bpf_program__set_autoload(skel->progs.wprof_softirq_entry, true);
