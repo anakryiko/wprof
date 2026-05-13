@@ -57,6 +57,12 @@ enum utrace_param_type {
 	UTRACE_PARAM_CAPTURE_STACK = 1000,
 	UTRACE_PARAM_BINARY_PATH,
 	UTRACE_PARAM_PID,
+	UTRACE_PARAM_PID_DISCOVERY,
+};
+
+enum utrace_pid_discovery {
+	UTRACE_PID_DISCOVER_NONE = 0,
+	UTRACE_PID_DISCOVER_NVIDIA_SMI,
 };
 
 #define UTRACE_ARG_RET (-1)
@@ -90,6 +96,9 @@ struct utrace_param {
 		struct {
 			int pid;
 		} pid;
+		struct {
+			enum utrace_pid_discovery method;
+		} pid_discovery;
 	};
 };
 

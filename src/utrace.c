@@ -168,6 +168,15 @@ static int cfg_pid(const struct utrace_cfg *cfg)
 	return -1; /* system-wide */
 }
 
+static enum utrace_pid_discovery cfg_pid_discovery(const struct utrace_cfg *cfg)
+{
+	for (int i = 0; i < cfg->param_cnt; i++) {
+		if (cfg->params[i].type == UTRACE_PARAM_PID_DISCOVERY)
+			return cfg->params[i].pid_discovery.method;
+	}
+	return UTRACE_PID_DISCOVER_NONE;
+}
+
 static bool cfg_is_kprobe_type(const struct utrace_cfg *cfg)
 {
 	switch (cfg->type) {
@@ -877,6 +886,10 @@ static int resolve_uprobe_binary(int pid, const char *sym_name,
  */
 static int resolve_uprobe_cfg(struct utrace_cfg *cfg)
 {
+	/* already resolved by utrace_expand_pid_discovery() */
+	if (cfg->uprobe.attach_path)
+		return 0;
+
 	const char *binary_path = cfg_binary_path(cfg);
 	int pid = cfg_pid(cfg);
 	unsigned long sym_offset = 0;
@@ -955,6 +968,10 @@ static int resolve_usdt_binary(int pid, const char *provider, const char *name,
 
 static int resolve_usdt_cfg(struct utrace_cfg *cfg)
 {
+	/* already resolved by utrace_expand_pid_discovery() */
+	if (cfg->usdt.attach_path)
+		return 0;
+
 	const char *binary_path = cfg_binary_path(cfg);
 	int pid = cfg_pid(cfg);
 
@@ -1090,8 +1107,175 @@ out:
 	return err;
 }
 
+static int clone_cfg_with_pid(const struct utrace_cfg *src,
+			      struct utrace_cfg *dst, int pid)
+{
+	*dst = *src;
+
+	switch (src->type) {
+	case UTRACE_USDT:
+		dst->usdt.provider = strdup(src->usdt.provider);
+		dst->usdt.name = strdup(src->usdt.name);
+		dst->usdt.attach_path = NULL;
+		dst->usdt.display_path = NULL;
+		memset(&dst->usdt.info, 0, sizeof(dst->usdt.info));
+		break;
+	case UTRACE_UPROBE:
+	case UTRACE_URETPROBE:
+	case UTRACE_UPROBE_SPAN:
+		dst->uprobe.name = strdup(src->uprobe.name);
+		dst->uprobe.attach_path = NULL;
+		dst->uprobe.display_path = NULL;
+		dst->uprobe.attach_off = 0;
+		break;
+	default:
+		break;
+	}
+
+	dst->settings.id = src->settings.id ? strdup(src->settings.id) : NULL;
+	dst->settings.name_fmt = src->settings.name_fmt ? strdup(src->settings.name_fmt) : NULL;
+	dst->settings.name_segs = NULL;
+	dst->settings.name_seg_cnt = 0;
+
+	dst->params = calloc(src->param_cnt, sizeof(*dst->params));
+	dst->param_cnt = src->param_cnt;
+
+	for (int i = 0; i < src->param_cnt; i++) {
+		const struct utrace_param *sp = &src->params[i];
+		struct utrace_param *dp = &dst->params[i];
+
+		if (sp->type == UTRACE_PARAM_PID_DISCOVERY) {
+			dp->type = UTRACE_PARAM_PID;
+			dp->pid.pid = pid;
+			continue;
+		}
+
+		*dp = *sp;
+		switch (sp->type) {
+		case UTRACE_PARAM_ARG:
+			dp->arg.name = sp->arg.name ? strdup(sp->arg.name) : NULL;
+			dp->arg.ref_name = sp->arg.ref_name ? strdup(sp->arg.ref_name) : NULL;
+			break;
+		case UTRACE_PARAM_BINARY_PATH:
+			dp->binary.path = sp->binary.path ? strdup(sp->binary.path) : NULL;
+			break;
+		default:
+			break;
+		}
+	}
+	return 0;
+}
+
+/*
+ * Automatically discover uprobe-family probe PIDs (currently only nvidia-smi).
+ * Streams the PID iterator once and, for each PID, fans out into the discovery
+ * cfgs. Mutates env.utrace_cfgs and env.utrace_cfg_cnt in place.
+ */
+static int utrace_expand_pid_discovery(void)
+{
+	struct utrace_cfg *concrete_cfgs = NULL;
+	int concrete_cnt = 0;
+	bool has_discovery = false;
+
+	/*
+	 * Copy PID-known cfgs straight through; discovery cfgs are expanded
+	 * per streamed PID in the second pass.
+	 */
+	for (int i = 0; i < env.utrace_cfg_cnt; i++) {
+		struct utrace_cfg *src = &env.utrace_cfgs[i];
+		if (cfg_pid_discovery(src) != UTRACE_PID_DISCOVER_NONE) {
+			has_discovery = true;
+			continue;
+		}
+		concrete_cfgs = realloc(concrete_cfgs, (concrete_cnt + 1) * sizeof(*concrete_cfgs));
+		concrete_cfgs[concrete_cnt++] = *src;
+	}
+
+	if (has_discovery) {
+		int total_pids = 0, total_attached = 0;
+
+		vprintf("Using nvidia-smi to discover GPU PIDs for USDT probes...\n");
+		int *pidp;
+		wprof_for_each(gpu_pid, pidp) {
+			int pid = *pidp;
+			total_pids++;
+			vprintf("nvidia-smi returned PID %d (%s)\n", pid, proc_name(pid));
+
+			for (int i = 0; i < env.utrace_cfg_cnt; i++) {
+				struct utrace_cfg *src = &env.utrace_cfgs[i];
+				if (cfg_pid_discovery(src) == UTRACE_PID_DISCOVER_NONE)
+					continue;
+				struct utrace_cfg cand;
+				clone_cfg_with_pid(src, &cand, pid);
+				int err = (src->type == UTRACE_USDT)
+					? resolve_usdt_cfg(&cand)
+					: resolve_uprobe_cfg(&cand);
+				if (err) {
+					wprintf("utrace: skipping PID %d (%s)\n", pid, proc_name(pid));
+					continue;
+				}
+				concrete_cfgs = realloc(concrete_cfgs, (concrete_cnt + 1) * sizeof(*concrete_cfgs));
+				concrete_cfgs[concrete_cnt++] = cand;
+				total_attached++;
+			}
+		}
+
+		if (total_pids == 0) {
+			for (int i = 0; i < env.utrace_cfg_cnt; i++) {
+				struct utrace_cfg *src = &env.utrace_cfgs[i];
+				if (cfg_pid_discovery(src) == UTRACE_PID_DISCOVER_NONE)
+					continue;
+				if (src->type == UTRACE_USDT)
+					wprintf("utrace: nvidia-smi returned no PIDs, dropping USDT '%s:%s'\n",
+						src->usdt.provider, src->usdt.name);
+				else
+					wprintf("utrace: nvidia-smi returned no PIDs, dropping uprobe '%s'\n",
+						src->uprobe.name);
+			}
+		} else if (total_attached == 0) {
+			eprintf("utrace: no GPU PID exposes any discovery probe (tried %d candidate(s) from nvidia-smi)\n",
+				total_pids);
+			free(concrete_cfgs);
+			return -ENOENT;
+		}
+	}
+
+	free(env.utrace_cfgs);
+	env.utrace_cfgs = concrete_cfgs;
+	env.utrace_cfg_cnt = concrete_cnt;
+	return 0;
+}
+
 int utrace_setup(struct wprof_bpf *skel)
 {
+	int err = utrace_expand_pid_discovery();
+	if (err) {
+		eprintf("Failed to expand utrace PID discovery: %d\n", err);
+		return err;
+	}
+
+	if (env.utrace_cfg_cnt == 0) {
+		env.capture_utrace = FALSE;
+		env.requested_stack_traces &= ~ST_UTRACE;
+		bpf_map__set_autocreate(skel->maps.utrace_probe_cfgs, false);
+		bpf_map__set_autocreate(skel->maps.utrace_scratch, false);
+		return 0;
+	}
+
+	env.capture_utrace = TRUE;
+
+	if (!(env.requested_stack_traces & ST_UTRACE)) {
+		for (int i = 0; i < env.utrace_cfg_cnt; i++) {
+			const struct utrace_cfg *cfg = &env.utrace_cfgs[i];
+			for (int j = 0; j < cfg->param_cnt; j++) {
+				if (cfg->params[j].type == UTRACE_PARAM_CAPTURE_STACK) {
+					eprintf("utrace config #%d requests 'stack' capture, but -Sutrace is not enabled\n", i + 1);
+					return -EINVAL;
+				}
+			}
+		}
+	}
+
 	bool need_fentry = false, need_fexit = false;
 	int first_prog_fd = -1;
 	const char *first_func_name = NULL;

@@ -34,6 +34,9 @@ wprof -U 'usdt:app:req_start (arg:0) ~~ usdt:app:req_end (arg:0)'
 
 # multiple probes from a config file
 wprof -U @probes.utrace
+
+# auto resolve pid via nvidia-smi
+wprof -U 'usdt:myapp:request_start (arg:0, pid:nvidia-smi)'
 ```
 
 ## Probe types
@@ -135,6 +138,18 @@ Captures the call stack when the probe fires. Enable stack output with
 
 For generic spans with USDT, `path:`/`pid:` on the first probe are
 inherited by the second.
+
+#### Auto-discovery (USDT only)
+
+- `pid:nvidia-smi` -- attach to every GPU process reported by
+  `nvidia-smi --query-compute-apps=pid`. The cfg is expanded at setup
+  time into one concrete attachment per discovered PID; PIDs that don't
+  expose the requested USDT are skipped with a warning. Setup fails only
+  if no discovered PID exposes the USDT. Example:
+
+  ```
+  wprof -U 'usdt:myapp:request_start (arg:0, pid:nvidia-smi)'
+  ```
 
 ## Settings
 

@@ -202,12 +202,17 @@ static int parse_params(struct sview orig, struct sview def, struct utrace_param
 		} else if (sv_starts_with(param, "pid:")) {
 			param = sv_trim(sv_consume_left(param, 4));
 
-			long pid = -1;
-			if (!sv_as_long(param, &pid) || pid <= 0 || pid > INT_MAX)
-				return utrace_err(orig, param, "invalid PID value\n");
+			if (sv_eq(param, "nvidia-smi")) {
+				p->type = UTRACE_PARAM_PID_DISCOVERY;
+				p->pid_discovery.method = UTRACE_PID_DISCOVER_NVIDIA_SMI;
+			} else {
+				long pid = -1;
+				if (!sv_as_long(param, &pid) || pid <= 0 || pid > INT_MAX)
+					return utrace_err(orig, param, "invalid PID value\n");
 
-			p->type = UTRACE_PARAM_PID;
-			p->pid.pid = (int)pid;
+				p->type = UTRACE_PARAM_PID;
+				p->pid.pid = (int)pid;
+			}
 		} else if (sv_starts_with(param, "arg:")) {
 			param = sv_trim(sv_consume_left(param, 4));
 			int err = parse_arg_param(orig, param, p);
@@ -257,6 +262,8 @@ static bool is_span_probe(enum utrace_type t)
 
 static int validate_probe_def(struct sview orig, const struct utrace_cfg *cfg)
 {
+	int pid_param_cnt = 0;
+
 	for (int i = 0; i < cfg->param_cnt; i++) {
 		const struct utrace_param *p = &cfg->params[i];
 
@@ -268,7 +275,14 @@ static int validate_probe_def(struct sview orig, const struct utrace_cfg *cfg)
 		}
 		if (p->type == UTRACE_PARAM_BINARY_PATH && !is_uprobe(cfg->type))
 			return utrace_err(orig, orig, "'path' parameter is only valid for uprobe-based probes\n");
+		if (p->type == UTRACE_PARAM_PID_DISCOVERY && !is_uprobe(cfg->type))
+			return utrace_err(orig, orig, "'pid:nvidia-smi' is only valid for uprobe-based probes (u/uret/uspan/usdt)\n");
+		if (p->type == UTRACE_PARAM_PID || p->type == UTRACE_PARAM_PID_DISCOVERY)
+			pid_param_cnt++;
 	}
+
+	if (pid_param_cnt > 1)
+		return utrace_err(orig, orig, "only one 'pid:' parameter is allowed per probe\n");
 
 	return 0;
 }
@@ -728,6 +742,15 @@ static void format_probe(const struct utrace_cfg *cfg, struct sbuf *sb)
 				break;
 			case UTRACE_PARAM_PID:
 				sbuf_appendf(sb, "pid:%d", p->pid.pid);
+				break;
+			case UTRACE_PARAM_PID_DISCOVERY:
+				switch (p->pid_discovery.method) {
+				case UTRACE_PID_DISCOVER_NONE:
+					break;
+				case UTRACE_PID_DISCOVER_NVIDIA_SMI:
+					sbuf_appendf(sb, "pid:nvidia-smi");
+					break;
+				}
 				break;
 			case UTRACE_PARAM_ARG:
 				if (p->arg.arg_idx == UTRACE_ARG_RET)
