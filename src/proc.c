@@ -6,6 +6,7 @@
 #include <linux/fs.h>
 #include <unistd.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <sys/ioctl.h>
 #include <dirent.h>
 #include <fcntl.h>
@@ -352,4 +353,51 @@ void vma_iter_destroy(struct vma_iter *it)
 	}
 
 	errno = old_errno;
+}
+
+int gpu_pid_iter_new(struct gpu_pid_iter *it)
+{
+	memset(it, 0, sizeof(*it));
+	it->f = popen("nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null", "r");
+	if (!it->f) {
+		wprintf("Failed to invoke nvidia-smi: %s\n", strerror(errno));
+		return -errno;
+	}
+	return 0;
+}
+
+int *gpu_pid_iter_next(struct gpu_pid_iter *it)
+{
+	if (!it->f)
+		return NULL;
+
+	char pidbuf[32];
+	while (fgets(pidbuf, sizeof(pidbuf), it->f)) {
+		if (sscanf(pidbuf, "%d", &it->cur_pid) != 1) {
+			eprintf("nvidia-smi returned invalid PID '%s', skipping...\n", pidbuf);
+			continue;
+		}
+		return &it->cur_pid;
+	}
+	return NULL;
+}
+
+void gpu_pid_iter_destroy(struct gpu_pid_iter *it)
+{
+	if (!it || !it->f)
+		return;
+	int status = pclose(it->f);
+	it->f = NULL;
+
+	if (status == -1) {
+		wprintf("nvidia-smi: pclose failed: %s\n", strerror(errno));
+	} else if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
+		int code = WEXITSTATUS(status);
+		if (code == 127)
+			wprintf("nvidia-smi not found in PATH; no GPU PIDs discovered\n");
+		else
+			wprintf("nvidia-smi exited with status %d; no GPU PIDs discovered\n", code);
+	} else if (WIFSIGNALED(status)) {
+		wprintf("nvidia-smi terminated by signal %d\n", WTERMSIG(status));
+	}
 }
