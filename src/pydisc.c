@@ -283,23 +283,11 @@ static void discover_nvidia_smi(struct wprof_bpf *skel)
 {
 	vprintf("Using nvidia-smi to find GPU Python processes...\n");
 
-	FILE *f = popen("nvidia-smi --query-compute-apps=pid --format=csv,noheader", "r");
-	if (!f) {
-		eprintf("Failed to query nvidia-smi for Python process discovery\n");
-		return;
+	int *pidp;
+	wprof_for_each(gpu_pid, pidp) {
+		vprintf("nvidia-smi returned PID %d (%s)\n", *pidp, proc_name(*pidp));
+		discover_pid(*pidp, skel, true);
 	}
-
-	char pidbuf[32];
-	int pid;
-	while (fgets(pidbuf, sizeof(pidbuf), f)) {
-		if (sscanf(pidbuf, "%d", &pid) != 1) {
-			eprintf("nvidia-smi returned invalid PID '%s', skipping...\n", pidbuf);
-			continue;
-		}
-		vprintf("nvidia-smi returned PID %d (%s)\n", pid, proc_name(pid));
-		discover_pid(pid, skel, true);
-	}
-	pclose(f);
 }
 
 int pydisc_discover(struct wprof_bpf *skel)

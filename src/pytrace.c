@@ -223,7 +223,6 @@ err_retract:
 
 int pytrace_trace_setup(int workdir_fd)
 {
-retry:
 	switch (env.pytrace_discovery) {
 	case PYTRACE_DISCOVER_PROC: {
 		int *pidp, pid;
@@ -237,23 +236,9 @@ retry:
 	case PYTRACE_DISCOVER_NVIDIA_SMI: {
 		vprintf("Using nvidia-smi to find Python processes using GPU...\n");
 
-		FILE *f = popen("nvidia-smi --query-compute-apps=pid --format=csv,noheader", "r");
-		if (!f) {
-			eprintf("Failed to query nvidia-smi, falling back to process discovery logic...\n");
-			env.pytrace_discovery = PYTRACE_DISCOVER_PROC;
-			goto retry;
-		}
-
-		char pidbuf[32];
-		int pid;
-		while (fgets(pidbuf, sizeof(pidbuf), f)) {
-			if (sscanf(pidbuf, "%d", &pid) != 1)
-				continue;
-
-			try_inject_to_python_process(pid, workdir_fd);
-		}
-
-		pclose(f);
+		int *pidp;
+		wprof_for_each(gpu_pid, pidp)
+			try_inject_to_python_process(*pidp, workdir_fd);
 		break;
 	}
 	case PYTRACE_DISCOVER_NONE:

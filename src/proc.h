@@ -72,4 +72,14 @@ int vma_iter_new(struct vma_iter *it, int pid, enum vma_query_flags query_flags)
 struct vma_info *vma_iter_next(struct vma_iter *it);
 void vma_iter_destroy(struct vma_iter *it);
 
+/* Streams PIDs from `nvidia-smi --query-compute-apps=pid`; use with wprof_for_each(gpu_pid, p). */
+struct gpu_pid_iter {
+	FILE *f;
+	int cur_pid;
+};
+
+int gpu_pid_iter_new(struct gpu_pid_iter *it);
+int *gpu_pid_iter_next(struct gpu_pid_iter *it);
+void gpu_pid_iter_destroy(struct gpu_pid_iter *it);
+
 #endif /* __PROC_H__ */

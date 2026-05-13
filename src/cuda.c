@@ -160,7 +160,6 @@ int cuda_trace_setup(int workdir_fd)
 {
 	int err = 0;
 
-retry:
 	switch (env.cuda_discovery) {
 	case CUDA_DISCOVER_PROC: {
 		int *pidp, pid;
@@ -179,20 +178,9 @@ retry:
 	case CUDA_DISCOVER_SMI: {
 		vprintf("Using nvidia-smi to find processes using CUDA...\n");
 
-		FILE *f = popen("nvidia-smi --query-compute-apps=pid --format=csv,noheader", "r");
-		if (!f) {
-			eprintf("Failed to query nvidia-smi, falling back to process discovery logic...\n");
-			env.cuda_discovery = CUDA_DISCOVER_PROC;
-			goto retry;
-		}
-
-		char pidbuf[32];
-		int pid;
-		while (fgets(pidbuf, sizeof(pidbuf), f)) {
-			if (sscanf(pidbuf, "%d", &pid) != 1) {
-				eprintf("nvidia-smi returned invalid PID '%s', skipping...\n", pidbuf);
-				continue;
-			}
+		int *pidp;
+		wprof_for_each(gpu_pid, pidp) {
+			int pid = *pidp;
 			vprintf("nvidia-smi returned PID %d (%s)\n", pid, proc_name(pid));
 
 			bool found = false;
@@ -212,8 +200,6 @@ retry:
 				continue;
 			}
 		}
-
-		pclose(f);
 		break;
 	}
 	case CUDA_DISCOVER_NONE: {
