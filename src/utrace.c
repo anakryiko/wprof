@@ -639,12 +639,14 @@ static int cmp_params(const void *a, const void *b)
 }
 
 /* Expand wildcards and resolve arg types/names for a single cfg */
-static void augment_cfg_args(struct utrace_cfg *cfg, const struct btf *btf)
+static int augment_cfg_args(struct utrace_cfg *cfg, const struct btf *btf)
 {
 	if (cfg->type == UTRACE_SPAN) {
-		augment_cfg_args(cfg->span.entry, btf);
-		augment_cfg_args(cfg->span.exit, btf);
-		return;
+		int err;
+
+		err = augment_cfg_args(cfg->span.entry, btf);
+		err = err ?: augment_cfg_args(cfg->span.exit, btf);
+		return err;
 	}
 
 	if (cfg->type == UTRACE_RAW_TRACEPOINT && btf) {
@@ -667,7 +669,8 @@ static void augment_cfg_args(struct utrace_cfg *cfg, const struct btf *btf)
 
 		int resolved = resolve_arg_name(cfg, btf, p->arg.ref_name);
 		if (resolved < 0) {
-			eprintf("utrace: failed to find argument '%s'\n", p->arg.ref_name);
+			eprintf("utrace: failed to resolve argument '%s'\n", p->arg.ref_name);
+			return -ESRCH;
 		} else {
 			p->arg.arg_idx = resolved;
 			if (!p->arg.name)
@@ -777,9 +780,10 @@ static void augment_cfg_args(struct utrace_cfg *cfg, const struct btf *btf)
 	}
 
 	qsort(cfg->params, cfg->param_cnt, sizeof(*cfg->params), cmp_params);
+	return 0;
 }
 
-static void utrace_augment_args(void)
+static int utrace_augment_args(void)
 {
 	bool need_btf = false;
 
@@ -797,8 +801,13 @@ static void utrace_augment_args(void)
 			wprintf("utrace: failed to load kernel BTF, arg types will default to u64\n");
 	}
 
-	for (int i = 0; i < env.utrace_cfg_cnt; i++)
-		augment_cfg_args(&env.utrace_cfgs[i], btf);
+	for (int i = 0; i < env.utrace_cfg_cnt; i++) {
+		int err = augment_cfg_args(&env.utrace_cfgs[i], btf);
+		if (err) {
+			btf__free(btf);
+			return err;
+		}
+	}
 
 	btf__free(btf);
 
@@ -821,6 +830,7 @@ static void utrace_augment_args(void)
 		utrace_compile_fmt(cfg->settings.name_fmt, params, param_cnt,
 				   &cfg->settings.name_segs, &cfg->settings.name_seg_cnt);
 	}
+	return 0;
 }
 
 /*
@@ -1095,7 +1105,7 @@ int utrace_setup(struct wprof_bpf *skel)
 	bool need_fentry = false, need_fexit = false;
 	int first_prog_fd = -1;
 	const char *first_func_name = NULL;
-	int map_cnt = 0;
+	int err, map_cnt = 0;
 
 	for (int i = 0; i < env.utrace_cfg_cnt; i++) {
 		struct utrace_cfg *cfg = &env.utrace_cfgs[i];
@@ -1175,8 +1185,8 @@ int utrace_setup(struct wprof_bpf *skel)
 		 * (templates are only used as clone sources).
 		 */
 		if (need_fentry) {
-			int err = bpf_program__set_attach_target(skel->progs.utrace_bpf_entry,
-								 first_prog_fd, first_func_name);
+			err = bpf_program__set_attach_target(skel->progs.utrace_bpf_entry,
+							     first_prog_fd, first_func_name);
 			if (err) {
 				eprintf("utrace: failed to set fentry attach target: %d\n", err);
 				return err;
@@ -1184,8 +1194,8 @@ int utrace_setup(struct wprof_bpf *skel)
 			bpf_program__set_autoload(skel->progs.utrace_bpf_entry, true);
 		}
 		if (need_fexit) {
-			int err = bpf_program__set_attach_target(skel->progs.utrace_bpf_exit,
-								 first_prog_fd, first_func_name);
+			err = bpf_program__set_attach_target(skel->progs.utrace_bpf_exit,
+							     first_prog_fd, first_func_name);
 			if (err) {
 				eprintf("utrace: failed to set fexit attach target: %d\n", err);
 				return err;
@@ -1194,7 +1204,9 @@ int utrace_setup(struct wprof_bpf *skel)
 		}
 	}
 
-	utrace_augment_args();
+	err = utrace_augment_args();
+	if (err)
+		return err;
 
 	/* Free BPF program BTFs — only needed for arg resolution above */
 	for (int i = 0; i < env.utrace_cfg_cnt; i++) {
