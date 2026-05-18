@@ -9,6 +9,7 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <sys/mman.h>
 
 #include "inj.h"
 #include "pytrace_data.h"
@@ -66,42 +67,17 @@ static u64 rf_callback_handle;
 static bool rf_active;
 
 /*
- * RecordFunction start callback (C ABI matching C++ hidden-return-pointer convention).
+ * RecordFunction start callback.
  *
  * C++ signature: std::unique_ptr<ObserverContext> (*)(const RecordFunction&)
  * The hidden return pointer for non-trivial return types is passed differently:
  *   x86_64:  rdi (1st param reg) = ret_slot, rsi (2nd) = record_fn
  *   aarch64: x8 (dedicated reg) = ret_slot, x0 (1st param reg) = record_fn
  *
- * On x86_64 we can map ret_slot to the first C parameter directly.
- * On aarch64 we need a naked thunk to shuffle x8→x0 and x0→x1.
+ * On x86_64 the C ABI maps ret_slot to the first parameter directly.
+ * On aarch64 the trampoline handles the x8→x0, x0→x1 shuffle before calling.
  */
-#if defined(__aarch64__)
-/*
- * aarch64 thunk: the C++ caller passes x8=ret_slot, x0=record_fn.
- * Shuffle to match rf_start_cb_impl(x0=ret_slot, x1=record_fn).
- * Top-level asm avoids GCC ignoring __attribute__((naked)) in some versions.
- */
-__attribute__((used, visibility("hidden")))
-void *rf_start_cb_impl(void *ret_slot, const void *record_fn);
-
-__asm__(
-	".type rf_start_cb, %function\n"
-	"rf_start_cb:\n"
-	"mov x1, x0\n"
-	"mov x0, x8\n"
-	"b rf_start_cb_impl\n"
-	".size rf_start_cb, .-rf_start_cb\n"
-);
-
-/* Declare the asm-defined symbol so C code can reference it */
-extern void *rf_start_cb();
-
-__attribute__((used, visibility("hidden")))
-void *rf_start_cb_impl(void *ret_slot, const void *record_fn)
-#else
 static void *rf_start_cb(void *ret_slot, const void *record_fn)
-#endif
 {
 	if (!torch_active || !torch_dump) {
 		*(void **)ret_slot = NULL;
@@ -162,6 +138,223 @@ static void rf_end_cb(const void *record_fn, void *ctx)
 		atomic_add(&torch_event_cnt, 1);
 }
 
+/* ==================== RecordFunction trampoline ====================
+ *
+ * Permanent trampoline that survives dlclose of libwprofinj.so.
+ * PyTorch's RecordFunction caches callback pointers at construction time;
+ * if those point directly into libwprofinj.so they dangle after dlclose.
+ * The trampoline lives in mmap'd memory that is never freed.
+ *
+ * Critical ordering: refcount++ BEFORE loading the callback pointer.
+ * This pairs with the retract side which stores NULL BEFORE checking
+ * refcount, giving a total order that prevents use-after-unmap.
+ */
+struct rf_tramp_data {
+	void *start_cb;		/* offset 0 */
+	void *end_cb;		/* offset 8 */
+	long refcount;		/* offset 16 */
+};
+
+#if defined(__aarch64__)
+__asm__(
+	".pushsection .trampoline, \"ax\", @progbits\n"
+	".arch_extension lse\n"
+	".globl rf_tramp_start\n"
+	".hidden rf_tramp_start\n"
+"rf_tramp_start:\n"
+
+	/* start trampoline: x8=ret_slot, x0=record_fn (C++ hidden-return-ptr ABI) */
+	".globl rf_tramp_rf_start\n"
+	".hidden rf_tramp_rf_start\n"
+	".type rf_tramp_rf_start, %function\n"
+"rf_tramp_rf_start:\n"
+	/* data = *data_ptr */
+	"adr    x9, rf_tramp_data_ptr\n"
+	"ldr    x9, [x9]\n"
+	/* atomic_fetch_add(&data->refcount, 1, acq_rel) */
+	"add    x11, x9, #16\n"
+	"mov    x10, #1\n"
+	"ldaddal x10, xzr, [x11]\n"
+	/* cb = data->start_cb; if (!cb) goto bail */
+	"ldr    x10, [x9]\n"
+	"cbz    x10, 0f\n"
+	/* save frame + data ptr; shuffle x8/x0 ABI; call rf_start_cb(ret_slot, record_fn) */
+	"stp    x29, x30, [sp, #-32]!\n"
+	"mov    x29, sp\n"
+	"str    x9, [sp, #16]\n"
+	"mov    x1, x0\n"
+	"mov    x0, x8\n"
+	"blr    x10\n"
+	/* atomic_fetch_add(&data->refcount, -1, acq_rel); return */
+	"ldr    x9, [sp, #16]\n"
+	"add    x11, x9, #16\n"
+	"mov    x10, #-1\n"
+	"ldaddal x10, xzr, [x11]\n"
+	"ldp    x29, x30, [sp], #32\n"
+	"ret\n"
+"0:\n"
+	/* bail: refcount--; *ret_slot = NULL; return ret_slot */
+	"mov    x10, #-1\n"
+	"ldaddal x10, xzr, [x11]\n"
+	"str    xzr, [x8]\n"
+	"mov    x0, x8\n"
+	"ret\n"
+	".size rf_tramp_rf_start, .-rf_tramp_rf_start\n"
+
+	/* end trampoline: x0=record_fn, x1=observer_ctx */
+	".globl rf_tramp_rf_end\n"
+	".hidden rf_tramp_rf_end\n"
+	".type rf_tramp_rf_end, %function\n"
+"rf_tramp_rf_end:\n"
+	/* data = *data_ptr */
+	"adr    x9, rf_tramp_data_ptr\n"
+	"ldr    x9, [x9]\n"
+	/* atomic_fetch_add(&data->refcount, 1, acq_rel) */
+	"add    x11, x9, #16\n"
+	"mov    x10, #1\n"
+	"ldaddal x10, xzr, [x11]\n"
+	/* cb = data->end_cb; if (!cb) goto bail */
+	"ldr    x10, [x9, #8]\n"
+	"cbz    x10, 0f\n"
+	/* save frame + data ptr; call rf_end_cb(record_fn, observer_ctx) */
+	"stp    x29, x30, [sp, #-32]!\n"
+	"mov    x29, sp\n"
+	"str    x9, [sp, #16]\n"
+	"blr    x10\n"
+	/* atomic_fetch_add(&data->refcount, -1, acq_rel); return */
+	"ldr    x9, [sp, #16]\n"
+	"add    x11, x9, #16\n"
+	"mov    x10, #-1\n"
+	"ldaddal x10, xzr, [x11]\n"
+	"ldp    x29, x30, [sp], #32\n"
+	"ret\n"
+"0:\n"
+	/* bail: refcount--; return */
+	"mov    x10, #-1\n"
+	"ldaddal x10, xzr, [x11]\n"
+	"ret\n"
+	".size rf_tramp_rf_end, .-rf_tramp_rf_end\n"
+
+	".globl rf_tramp_data_ptr\n"
+	".hidden rf_tramp_data_ptr\n"
+"rf_tramp_data_ptr: .quad 0\n"
+	".globl rf_tramp_end\n"
+	".hidden rf_tramp_end\n"
+"rf_tramp_end:\n"
+	".popsection\n"
+);
+#elif defined(__x86_64__)
+__asm__(
+	".pushsection .trampoline, \"ax\", @progbits\n"
+	".globl rf_tramp_start\n"
+	".hidden rf_tramp_start\n"
+"rf_tramp_start:\n"
+
+	/* start trampoline: rdi=ret_slot, rsi=record_fn */
+	".globl rf_tramp_rf_start\n"
+	".hidden rf_tramp_rf_start\n"
+	".type rf_tramp_rf_start, @function\n"
+"rf_tramp_rf_start:\n"
+	/* data = *data_ptr */
+	"lea    rf_tramp_data_ptr(%rip), %rcx\n"
+	"mov    (%rcx), %rcx\n"
+	/* atomic refcount++ (lock = full barrier on x86) */
+	"lock addq $1, 16(%rcx)\n"
+	/* cb = data->start_cb; if (!cb) goto bail */
+	"mov    (%rcx), %rax\n"
+	"test   %rax, %rax\n"
+	"jz     0f\n"
+	/* save data ptr; call rf_start_cb(ret_slot, record_fn) */
+	"push   %rcx\n"
+	"call   *%rax\n"
+	/* atomic refcount--; return (rax = return value from callback) */
+	"pop    %rcx\n"
+	"lock subq $1, 16(%rcx)\n"
+	"ret\n"
+"0:\n"
+	/* bail: refcount--; *ret_slot = NULL; return ret_slot */
+	"lock subq $1, 16(%rcx)\n"
+	"movq   $0, (%rdi)\n"
+	"mov    %rdi, %rax\n"
+	"ret\n"
+	".size rf_tramp_rf_start, .-rf_tramp_rf_start\n"
+
+	/* end trampoline: rdi=record_fn, rsi=observer_ctx */
+	".globl rf_tramp_rf_end\n"
+	".hidden rf_tramp_rf_end\n"
+	".type rf_tramp_rf_end, @function\n"
+"rf_tramp_rf_end:\n"
+	/* data = *data_ptr */
+	"lea    rf_tramp_data_ptr(%rip), %rcx\n"
+	"mov    (%rcx), %rcx\n"
+	/* atomic refcount++ */
+	"lock addq $1, 16(%rcx)\n"
+	/* cb = data->end_cb; if (!cb) goto bail */
+	"mov    8(%rcx), %rax\n"
+	"test   %rax, %rax\n"
+	"jz     0f\n"
+	/* save data ptr; call rf_end_cb(record_fn, observer_ctx) */
+	"push   %rcx\n"
+	"call   *%rax\n"
+	/* atomic refcount--; return */
+	"pop    %rcx\n"
+	"lock subq $1, 16(%rcx)\n"
+	"ret\n"
+"0:\n"
+	/* bail: refcount--; return */
+	"lock subq $1, 16(%rcx)\n"
+	"ret\n"
+	".size rf_tramp_rf_end, .-rf_tramp_rf_end\n"
+
+	".globl rf_tramp_data_ptr\n"
+	".hidden rf_tramp_data_ptr\n"
+"rf_tramp_data_ptr: .quad 0\n"
+	".globl rf_tramp_end\n"
+	".hidden rf_tramp_end\n"
+"rf_tramp_end:\n"
+	".popsection\n"
+);
+#endif
+
+extern char rf_tramp_start[], rf_tramp_end[];
+extern char rf_tramp_rf_start[], rf_tramp_rf_end[];
+extern char rf_tramp_data_ptr[];
+
+static struct rf_tramp_data *tramp_data;
+static void *tramp_start_fn;
+static void *tramp_end_fn;
+
+static int rf_tramp_install(void)
+{
+	long page_sz = sysconf(_SC_PAGESIZE);
+	size_t code_sz = rf_tramp_end - rf_tramp_start;
+
+	void *mem = mmap(NULL, 2 * page_sz, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (mem == MAP_FAILED)
+		return -errno;
+
+	memcpy(mem, rf_tramp_start, code_sz);
+
+	struct rf_tramp_data *data = mem + page_sz;
+	memset(data, 0, sizeof(*data));
+
+	/* Patch the data pointer embedded in the copied trampoline code */
+	size_t dp_off = rf_tramp_data_ptr - rf_tramp_start;
+	*(void **)(mem + dp_off) = data;
+
+	if (mprotect(mem, page_sz, PROT_READ | PROT_EXEC) < 0) {
+		int err = -errno;
+		munmap(mem, 2 * page_sz);
+		return err;
+	}
+
+	tramp_data = data;
+	tramp_start_fn = mem + (rf_tramp_rf_start - rf_tramp_start);
+	tramp_end_fn = mem + (rf_tramp_rf_end - rf_tramp_start);
+
+	return 0;
+}
+
 /* RecordScope enum values from ATen/record_function.h */
 #define RF_SCOPE_FUNCTION          0
 #define RF_SCOPE_BACKWARD_FUNCTION 1
@@ -170,9 +363,17 @@ static void rf_end_cb(const void *record_fn, void *ctx)
 
 static void rf_register(void)
 {
+	if (rf_tramp_install() < 0) {
+		elog("Failed to install RecordFunction trampoline, skipping callback registration\n");
+		return;
+	}
+
+	__atomic_store_n(&tramp_data->start_cb, (void *)rf_start_cb, __ATOMIC_RELEASE);
+	__atomic_store_n(&tramp_data->end_cb, (void *)rf_end_cb, __ATOMIC_RELEASE);
+
 	struct rf_callback_struct cb = {
-		.start = (void *)rf_start_cb,
-		.end = (void *)rf_end_cb,
+		.start = tramp_start_fn,
+		.end = tramp_end_fn,
 		.prob = 1.0,
 		.scopes = { [RF_SCOPE_FUNCTION] = true, [RF_SCOPE_BACKWARD_FUNCTION] = true, [RF_SCOPE_USER_SCOPE] = true },
 	};
@@ -180,7 +381,7 @@ static void rf_register(void)
 	rf_callback_handle = rf_add_global_callback(cb);
 	rf_active = true;
 
-	vlog("RecordFunction callback registered (handle=%llu)\n", (unsigned long long)rf_callback_handle);
+	vlog("RecordFunction callback registered via trampoline (handle=%llu)\n", (unsigned long long)rf_callback_handle);
 }
 
 static void rf_unregister(void)
@@ -188,9 +389,16 @@ static void rf_unregister(void)
 	if (!rf_active)
 		return;
 
-	rf_remove_callback(rf_callback_handle);
-	vlog("RecordFunction callback unregistered (handle=%llu)\n", (unsigned long long)rf_callback_handle);
+	__atomic_store_n(&tramp_data->start_cb, NULL, __ATOMIC_SEQ_CST);
+	__atomic_store_n(&tramp_data->end_cb, NULL, __ATOMIC_SEQ_CST);
 
+	rf_remove_callback(rf_callback_handle);
+
+	vlog("Draining in-flight RecordFunction trampoline calls...\n");
+	while (__atomic_load_n(&tramp_data->refcount, __ATOMIC_ACQUIRE) != 0)
+		usleep(1);
+
+	vlog("RecordFunction callback unregistered (handle=%llu)\n", (unsigned long long)rf_callback_handle);
 	rf_active = false;
 }
 
