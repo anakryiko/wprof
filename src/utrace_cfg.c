@@ -202,12 +202,17 @@ static int parse_params(struct sview orig, struct sview def, struct utrace_param
 		} else if (sv_starts_with(param, "pid:")) {
 			param = sv_trim(sv_consume_left(param, 4));
 
-			long pid = -1;
-			if (!sv_as_long(param, &pid) || pid <= 0 || pid > INT_MAX)
-				return utrace_err(orig, param, "invalid PID value\n");
-
 			p->type = UTRACE_PARAM_PID;
-			p->pid.pid = (int)pid;
+			if (sv_eq(param, "nvidia-smi") || sv_eq(param, "nv-smi")) {
+				p->pid.pid = 0;
+				p->pid.discovery = UTRACE_PID_DISCOVER_NV_SMI;
+			} else {
+				long pid = -1;
+				if (!sv_as_long(param, &pid) || pid <= 0 || pid > INT_MAX)
+					return utrace_err(orig, param, "invalid PID value\n");
+				p->pid.pid = (int)pid;
+				p->pid.discovery = UTRACE_PID_DISCOVER_NONE;
+			}
 		} else if (sv_starts_with(param, "arg:")) {
 			param = sv_trim(sv_consume_left(param, 4));
 			int err = parse_arg_param(orig, param, p);
@@ -255,8 +260,31 @@ static bool is_span_probe(enum utrace_type t)
 	}
 }
 
+static const struct utrace_param *find_pid_param(const struct utrace_cfg *cfg)
+{
+	for (int i = 0; i < cfg->param_cnt; i++)
+		if (cfg->params[i].type == UTRACE_PARAM_PID)
+			return &cfg->params[i];
+	return NULL;
+}
+
+void utrace_cfg_add_pid(struct utrace_cfg *cfg, int pid, enum utrace_pid_discovery discovery)
+{
+	for (int i = 0; i < cfg->param_cnt; i++)
+		if (cfg->params[i].type == UTRACE_PARAM_PID)
+			return;
+	cfg->params = realloc(cfg->params, (cfg->param_cnt + 1) * sizeof(*cfg->params));
+	struct utrace_param *p = &cfg->params[cfg->param_cnt++];
+	memset(p, 0, sizeof(*p));
+	p->type = UTRACE_PARAM_PID;
+	p->pid.pid = pid;
+	p->pid.discovery = discovery;
+}
+
 static int validate_probe_def(struct sview orig, const struct utrace_cfg *cfg)
 {
+	int pid_param_cnt = 0;
+
 	for (int i = 0; i < cfg->param_cnt; i++) {
 		const struct utrace_param *p = &cfg->params[i];
 
@@ -268,7 +296,14 @@ static int validate_probe_def(struct sview orig, const struct utrace_cfg *cfg)
 		}
 		if (p->type == UTRACE_PARAM_BINARY_PATH && !is_uprobe(cfg->type))
 			return utrace_err(orig, orig, "'path' parameter is only valid for uprobe-based probes\n");
+		if (p->type == UTRACE_PARAM_PID && p->pid.discovery != UTRACE_PID_DISCOVER_NONE && !is_uprobe(cfg->type))
+			return utrace_err(orig, orig, "'pid:nv-smi' is only valid for uprobe-based probes (u/uret/uspan/usdt)\n");
+		if (p->type == UTRACE_PARAM_PID)
+			pid_param_cnt++;
 	}
+
+	if (pid_param_cnt > 1)
+		return utrace_err(orig, orig, "only one 'pid:' parameter is allowed per probe\n");
 
 	return 0;
 }
@@ -595,6 +630,19 @@ static int parse_cfg(struct sview def, struct utrace_cfg *cfg)
 
 		if (is_span_probe(cfg->span.entry->type) || is_span_probe(cfg->span.exit->type))
 			return utrace_err(orig, def, "nested spans are not allowed\n");
+
+		/* check and inherit `pid:` specs between compatible entry/exit spans */
+		const struct utrace_param *ep = find_pid_param(cfg->span.entry);
+		const struct utrace_param *xp = find_pid_param(cfg->span.exit);
+		if (ep && xp) {
+			if (ep->pid.discovery != xp->pid.discovery || ep->pid.pid != xp->pid.pid)
+				return utrace_err(orig, def, "span legs have incompatible pid: specs\n");
+		} else if (ep && is_uprobe(cfg->span.exit->type)) {
+			utrace_cfg_add_pid(cfg->span.exit, ep->pid.pid, ep->pid.discovery);
+		} else if (xp && is_uprobe(cfg->span.entry->type)) {
+			utrace_cfg_add_pid(cfg->span.entry, xp->pid.pid, xp->pid.discovery);
+		}
+
 		return 0;
 	}
 
@@ -727,7 +775,10 @@ static void format_probe(const struct utrace_cfg *cfg, struct sbuf *sb)
 				sbuf_appendf(sb, "path:%s", p->binary.path);
 				break;
 			case UTRACE_PARAM_PID:
-				sbuf_appendf(sb, "pid:%d", p->pid.pid);
+				if (p->pid.pid > 0)
+					sbuf_appendf(sb, "pid:%d", p->pid.pid);
+				else if (p->pid.discovery == UTRACE_PID_DISCOVER_NV_SMI)
+					sbuf_appendf(sb, "pid:nv-smi");
 				break;
 			case UTRACE_PARAM_ARG:
 				if (p->arg.arg_idx == UTRACE_ARG_RET)

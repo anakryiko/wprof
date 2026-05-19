@@ -161,11 +161,28 @@ static const char *cfg_binary_path(const struct utrace_cfg *cfg)
 
 static int cfg_pid(const struct utrace_cfg *cfg)
 {
+	if (cfg->type == UTRACE_SPAN) {
+		int pid = cfg_pid(cfg->span.entry);
+		return pid >= 0 ? pid : cfg_pid(cfg->span.exit);
+	}
 	for (int i = 0; i < cfg->param_cnt; i++) {
 		if (cfg->params[i].type == UTRACE_PARAM_PID)
 			return cfg->params[i].pid.pid;
 	}
 	return -1; /* system-wide */
+}
+
+static enum utrace_pid_discovery cfg_pid_discovery(const struct utrace_cfg *cfg)
+{
+	if (cfg->type == UTRACE_SPAN)
+		return cfg_pid_discovery(cfg->span.entry) ?: cfg_pid_discovery(cfg->span.exit);
+
+	for (int i = 0; i < cfg->param_cnt; i++) {
+		if (cfg->params[i].type == UTRACE_PARAM_PID)
+			return cfg->params[i].pid.discovery;
+	}
+
+	return UTRACE_PID_DISCOVER_NONE;
 }
 
 static bool cfg_is_kprobe_type(const struct utrace_cfg *cfg)
@@ -676,9 +693,6 @@ static int augment_cfg_args(struct utrace_cfg *cfg, const struct btf *btf)
 			if (!p->arg.name)
 				p->arg.name = p->arg.ref_name;
 		}
-		if (p->arg.name != p->arg.ref_name)
-			free(p->arg.ref_name);
-		p->arg.ref_name = NULL;
 	}
 
 	for (int j = 0; j < cfg->param_cnt; j++) {
@@ -885,8 +899,9 @@ static int resolve_uprobe_binary(int pid, const char *sym_name,
  * cfg->uprobe.attach_path (malloc'd) and cfg->uprobe.attach_off with the final
  * path and total offset so attach time is a straight lookup.
  */
-static int resolve_uprobe_cfg(struct utrace_cfg *cfg)
+static int resolve_uprobe_cfg(struct utrace_cfg *cfg, bool mandatory)
 {
+	int lvl = mandatory ? -1 : 1;
 	const char *binary_path = cfg_binary_path(cfg);
 	int pid = cfg_pid(cfg);
 	unsigned long sym_offset = 0;
@@ -895,8 +910,8 @@ static int resolve_uprobe_cfg(struct utrace_cfg *cfg)
 		const char *sym_name = cfg->uprobe.name;
 		int err = elf_find_syms(binary_path, STT_FUNC, &sym_name, 1, &sym_offset);
 		if (err < 0) {
-			eprintf("utrace: failed to resolve symbol '%s' in '%s': %d\n",
-				cfg->uprobe.name, binary_path, err);
+			log_printf(lvl, "utrace: failed to resolve symbol '%s' in '%s': %d\n",
+				   cfg->uprobe.name, binary_path, err);
 			return err;
 		}
 		cfg->uprobe.attach_path = binary_path;
@@ -906,8 +921,8 @@ static int resolve_uprobe_cfg(struct utrace_cfg *cfg)
 		int err = resolve_uprobe_binary(pid, cfg->uprobe.name,
 						&attach_path, &display_path, &sym_offset);
 		if (err) {
-			eprintf("utrace: failed to find symbol '%s' in any binary of PID %d: %d\n",
-				cfg->uprobe.name, pid, err);
+			log_printf(lvl, "utrace: failed to find symbol '%s' in any binary of PID %d: %d\n",
+				   cfg->uprobe.name, pid, err);
 			return err;
 		}
 		cfg->uprobe.attach_path = attach_path;
@@ -963,8 +978,9 @@ static int resolve_usdt_binary(int pid, const char *provider, const char *name,
 	return -ENOENT;
 }
 
-static int resolve_usdt_cfg(struct utrace_cfg *cfg)
+static int resolve_usdt_cfg(struct utrace_cfg *cfg, bool mandatory)
 {
+	int lvl = mandatory ? -1 : 1;
 	const char *binary_path = cfg_binary_path(cfg);
 	int pid = cfg_pid(cfg);
 
@@ -972,8 +988,8 @@ static int resolve_usdt_cfg(struct utrace_cfg *cfg)
 		int err = elf_find_usdt(binary_path, cfg->usdt.provider, cfg->usdt.name,
 					&cfg->usdt.info);
 		if (err) {
-			eprintf("utrace: USDT '%s:%s' not found in '%s': %d\n",
-				cfg->usdt.provider, cfg->usdt.name, binary_path, err);
+			log_printf(lvl, "utrace: USDT '%s:%s' not found in '%s': %d\n",
+				   cfg->usdt.provider, cfg->usdt.name, binary_path, err);
 			return err;
 		}
 		cfg->usdt.attach_path = binary_path;
@@ -983,8 +999,8 @@ static int resolve_usdt_cfg(struct utrace_cfg *cfg)
 		int err = resolve_usdt_binary(pid, cfg->usdt.provider, cfg->usdt.name,
 					      &attach_path, &display_path, &cfg->usdt.info);
 		if (err) {
-			eprintf("utrace: USDT '%s:%s' not found in any binary of PID %d: %d\n",
-				cfg->usdt.provider, cfg->usdt.name, pid, err);
+			log_printf(lvl, "utrace: USDT '%s:%s' not found in any binary of PID %d: %d\n",
+				   cfg->usdt.provider, cfg->usdt.name, pid, err);
 			return err;
 		}
 		cfg->usdt.attach_path = attach_path;
@@ -1100,20 +1116,178 @@ out:
 	return err;
 }
 
+static void ensure_nv_smi_pids(void)
+{
+	if (env.nv_smi_discovered)
+		return;
+	env.nv_smi_discovered = true;
+
+	vprintf("Using nvidia-smi to discover GPU PIDs...\n");
+	int *pidp;
+	wprof_for_each(gpu_pid, pidp) {
+		vprintf("nvidia-smi returned PID %d (%s)\n", *pidp, proc_name(*pidp));
+		env.nv_smi_pids = realloc(env.nv_smi_pids,
+					      (env.nv_smi_pid_cnt + 1) * sizeof(int));
+		env.nv_smi_pids[env.nv_smi_pid_cnt++] = *pidp;
+	}
+	if (env.nv_smi_pid_cnt == 0)
+		wprintf("nvidia-smi returned no GPU PIDs\n");
+}
+
+static bool is_uprobe_family(enum utrace_type type)
+{
+	switch (type) {
+	case UTRACE_UPROBE:
+	case UTRACE_URETPROBE:
+	case UTRACE_UPROBE_SPAN:
+	case UTRACE_USDT:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static struct utrace_param *clone_params(const struct utrace_param *src, int cnt)
+{
+	if (!cnt)
+		return NULL;
+	struct utrace_param *dst = malloc(cnt * sizeof(*dst));
+	memcpy(dst, src, cnt * sizeof(*dst));
+	return dst;
+}
+
+static void params_set_pid(struct utrace_param *params, int cnt, int pid)
+{
+	for (int i = 0; i < cnt; i++) {
+		if (params[i].type == UTRACE_PARAM_PID && params[i].pid.discovery != UTRACE_PID_DISCOVER_NONE) {
+			params[i].pid.pid = pid;
+			return;
+		}
+	}
+}
+
+static void clone_leg_with_pid(const struct utrace_cfg *src, struct utrace_cfg *dst,
+			       int pid, enum utrace_pid_discovery discovery)
+{
+	*dst = *src;
+	dst->params = clone_params(src->params, src->param_cnt);
+	params_set_pid(dst->params, dst->param_cnt, pid);
+	if (is_uprobe_family(dst->type))
+		utrace_cfg_add_pid(dst, pid, discovery);
+}
+
+static void clone_cfg_with_pid(const struct utrace_cfg *src,
+			       struct utrace_cfg *dst, int pid)
+{
+	*dst = *src;
+	dst->settings.name_segs = NULL;
+	dst->settings.name_seg_cnt = 0;
+
+	if (src->type == UTRACE_SPAN) {
+		enum utrace_pid_discovery d = cfg_pid_discovery(src);
+		dst->span.entry = malloc(sizeof(*dst->span.entry));
+		clone_leg_with_pid(src->span.entry, dst->span.entry, pid, d);
+		dst->span.exit = malloc(sizeof(*dst->span.exit));
+		clone_leg_with_pid(src->span.exit, dst->span.exit, pid, d);
+	} else {
+		dst->params = clone_params(src->params, src->param_cnt);
+		params_set_pid(dst->params, dst->param_cnt, pid);
+	}
+}
+
+/*
+ * Expand pid:nv-smi probes into concrete per-PID cfgs.  Discovers GPU PIDs
+ * lazily (cached in env), then clones each discovery cfg once per PID.
+ * Resolution and filtering happen later in the normal utrace_setup loop.
+ */
+static int utrace_discover_pids(void)
+{
+	bool has_discovery = false;
+	for (int i = 0; i < env.utrace_cfg_cnt; i++) {
+		if (cfg_pid_discovery(&env.utrace_cfgs[i])) {
+			has_discovery = true;
+			break;
+		}
+	}
+	if (!has_discovery)
+		return 0;
+
+	ensure_nv_smi_pids();
+
+	struct utrace_cfg *new_cfgs = NULL;
+	int new_cnt = 0;
+
+	for (int i = 0; i < env.utrace_cfg_cnt; i++) {
+		struct utrace_cfg *src = &env.utrace_cfgs[i];
+
+		if (!cfg_pid_discovery(src)) {
+			new_cfgs = realloc(new_cfgs, (new_cnt + 1) * sizeof(*new_cfgs));
+			new_cfgs[new_cnt++] = *src;
+			continue;
+		}
+
+		for (int j = 0; j < env.nv_smi_pid_cnt; j++) {
+			struct utrace_cfg clone;
+			clone_cfg_with_pid(src, &clone, env.nv_smi_pids[j]);
+
+			new_cfgs = realloc(new_cfgs, (new_cnt + 1) * sizeof(*new_cfgs));
+			new_cfgs[new_cnt++] = clone;
+		}
+	}
+
+	free(env.utrace_cfgs);
+	env.utrace_cfgs = new_cfgs;
+	env.utrace_cfg_cnt = new_cnt;
+
+	return 0;
+}
+
 int utrace_setup(struct wprof_bpf *skel)
 {
+	int err = utrace_discover_pids();
+	if (err) {
+		eprintf("Failed to expand utrace PID discovery: %d\n", err);
+		return err;
+	}
+
+	if (env.utrace_cfg_cnt == 0) {
+		env.capture_utrace = FALSE;
+		env.requested_stack_traces &= ~ST_UTRACE;
+		bpf_map__set_autocreate(skel->maps.utrace_probe_cfgs, false);
+		bpf_map__set_autocreate(skel->maps.utrace_scratch, false);
+		return 0;
+	}
+
+	env.capture_utrace = TRUE;
+
+	if (!(env.requested_stack_traces & ST_UTRACE)) {
+		for (int i = 0; i < env.utrace_cfg_cnt; i++) {
+			const struct utrace_cfg *cfg = &env.utrace_cfgs[i];
+			for (int j = 0; j < cfg->param_cnt; j++) {
+				if (cfg->params[j].type == UTRACE_PARAM_CAPTURE_STACK) {
+					eprintf("utrace config #%d requests 'stack' capture, but -Sutrace is not enabled\n", i + 1);
+					return -EINVAL;
+				}
+			}
+		}
+	}
+
 	bool need_fentry = false, need_fexit = false;
 	int first_prog_fd = -1;
 	const char *first_func_name = NULL;
-	int err, map_cnt = 0;
+	int map_cnt = 0;
+	bool had_discovery = false;
 
 	for (int i = 0; i < env.utrace_cfg_cnt; i++) {
 		struct utrace_cfg *cfg = &env.utrace_cfgs[i];
+		bool discovered = cfg_pid_discovery(cfg);
+		int err = 0;
 
-		map_cnt += cfg_is_span(cfg) ? 2 : 1;
+		if (discovered)
+			had_discovery = true;
 
 		utrace_for_each_leg(leg, cfg) {
-			int err;
+			bool mandatory = cfg_pid_discovery(leg) == UTRACE_PID_DISCOVER_NONE;
 
 			switch (leg->type) {
 			case UTRACE_UPROBE:
@@ -1123,9 +1297,7 @@ int utrace_setup(struct wprof_bpf *skel)
 					bpf_program__set_autoload(skel->progs.utrace_uprobe, true);
 				if (cfg_needs_uretprobe(leg))
 					bpf_program__set_autoload(skel->progs.utrace_uretprobe, true);
-				err = resolve_uprobe_cfg(leg);
-				if (err)
-					return err;
+				err = resolve_uprobe_cfg(leg, mandatory);
 				break;
 			case UTRACE_KPROBE:
 			case UTRACE_KRETPROBE:
@@ -1138,9 +1310,7 @@ int utrace_setup(struct wprof_bpf *skel)
 			case UTRACE_USDT:
 				bpf_program__set_autoload(skel->progs.utrace_usdt, true);
 				bpf_program__set_autoattach(skel->progs.utrace_usdt, false);
-				err = resolve_usdt_cfg(leg);
-				if (err)
-					return err;
+				err = resolve_usdt_cfg(leg, mandatory);
 				break;
 			case UTRACE_RAW_TRACEPOINT:
 				bpf_program__set_autoload(skel->progs.utrace_raw_tp, true);
@@ -1152,11 +1322,12 @@ int utrace_setup(struct wprof_bpf *skel)
 			case UTRACE_BPF_RETPROBE:
 			case UTRACE_BPF_SPAN:
 				err = find_bpf_prog_by_name(leg->bpf_prog.name,
-							    &leg->bpf_prog.prog_fd,
-							    &leg->bpf_prog.btf_func_id,
-							    &leg->bpf_prog.btf);
+								    &leg->bpf_prog.prog_fd,
+								    &leg->bpf_prog.btf_func_id,
+								    &leg->bpf_prog.btf);
 				if (err) {
-					eprintf("utrace: failed to find BPF program '%s': %d\n", leg->bpf_prog.name, err);
+					eprintf("utrace: failed to find BPF program '%s': %d\n",
+						leg->bpf_prog.name, err);
 					return err;
 				}
 				if (first_prog_fd < 0) {
@@ -1171,8 +1342,47 @@ int utrace_setup(struct wprof_bpf *skel)
 			default:
 				break;
 			}
+
+			if (err) {
+				if (mandatory)
+					return err;
+				break;
+			}
+		}
+
+		if (err) {
+			int pid = cfg_pid(cfg);
+			wprintf("utrace: discovered PID %d (%s) doesn't contain matching probe, skipping...\n",
+				pid, proc_name(pid));
+			cfg->type = UTRACE_INVALID;
+			continue;
+		}
+
+		map_cnt += cfg_is_span(cfg) ? 2 : 1;
+	}
+
+	/* Remove failed discovery cfgs and check if any survived */
+	if (had_discovery) {
+		int nv_smi_ok = 0, j = 0;
+
+		for (int i = 0; i < env.utrace_cfg_cnt; i++) {
+			if (env.utrace_cfgs[i].type == UTRACE_INVALID)
+				continue;
+
+			if (cfg_pid_discovery(&env.utrace_cfgs[i]))
+				nv_smi_ok += 1;
+
+			env.utrace_cfgs[j] = env.utrace_cfgs[i];
+			j += 1;
+		}
+		env.utrace_cfg_cnt = j;
+
+		if (nv_smi_ok == 0) {
+			eprintf("utrace: no discovered PIDs contain matching probe(s)!\n");
+			return -ESRCH;
 		}
 	}
+
 	bpf_map__set_autocreate(skel->maps.utrace_probe_cfgs, true);
 	bpf_map__set_max_entries(skel->maps.utrace_probe_cfgs, map_cnt);
 
