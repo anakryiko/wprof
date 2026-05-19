@@ -137,57 +137,35 @@ static int handle_rb_event(void *ctx, void *data, size_t size)
 	return 0;
 }
 
-static void print_stats(const struct wprof_stats *s, struct wprof_bpf *skel, int num_cpus, int exit_code)
+static void print_stats(const struct wprof_stats *s, int exit_code)
 {
-	int err;
 	double dur_s = env.duration_ns / 1000000000.0;
 	u64 total_handled_cnt = 0, total_handled_sz = 0;
 	u64 total_drops = 0, total_rescues = 0;
 
-	if (!skel)
+	if (!s || !env.emit_stats)
 		goto skip_prog_stats;
 
-	if (env.emit_stats)
-		wprintf("BPF program stats:\n");
+	wprintf("BPF program stats:\n");
 
-	struct bpf_program *prog;
-	u64 total_run_cnt = 0, total_run_ns = 0;
-	bpf_object__for_each_program(prog, skel->obj) {
-		struct bpf_prog_info info;
-		u32 info_sz = sizeof(info);
+	int num_cpus = s->cpu_cnt;
+	for (int i = 0; i < s->prog_cnt; i++) {
+		u64 name_off = wstat(s, WSTAT_PROG_NAME, 1 + i);
+		u64 run_cnt = wstat(s, WSTAT_PROG_RUN_CNT, 1 + i);
+		u64 run_time_ns = wstat(s, WSTAT_PROG_RUN_TIME_NS, 1 + i);
+		const char *name = wevent_str(env.data_hdr, name_off);
 
-		if (bpf_program__fd(prog) < 0) /* optional inactive program */
-			continue;
-
-		memset(&info, 0, sizeof(info));
-		err = bpf_prog_get_info_by_fd(bpf_program__fd(prog), &info, &info_sz);
-		if (err) {
-			eprintf("!!! %s: failed to fetch prog info: %d\n",
-				bpf_program__name(prog), err);
-			continue;
-		}
-
-		if (info.recursion_misses) {
-			eprintf("!!! %s: %llu recursion misses!\n",
-				bpf_program__name(prog), info.recursion_misses);
-		}
-
-		if (env.emit_stats) {
-			wprintf("\t%s%-*s %8llu (%6.0lf/CPU/s) runs for total of %.3lfms (%.3lfms/CPU/s).\n",
-				bpf_program__name(prog),
-				(int)max(1UL, 24 - strlen(bpf_program__name(prog))), ":",
-				info.run_cnt,
-				info.run_cnt / num_cpus / dur_s,
-				info.run_time_ns / 1000000.0,
-				info.run_time_ns / 1000000.0 / num_cpus / dur_s);
-			total_run_cnt += info.run_cnt;
-			total_run_ns += info.run_time_ns;
-		}
+		wprintf("\t%s%-*s %8llu (%6.0lf/CPU/s) runs for total of %.3lfms (%.3lfms/CPU/s).\n",
+			name,
+			(int)max(1UL, 24 - strlen(name)), ":",
+			run_cnt,
+			run_cnt / num_cpus / dur_s,
+			run_time_ns / 1000000.0,
+			run_time_ns / 1000000.0 / num_cpus / dur_s);
 	}
 
-	if (!env.emit_stats)
-		goto skip_prog_stats;
-
+	u64 total_run_cnt = wstat(s, WSTAT_PROG_RUN_CNT, 0);
+	u64 total_run_ns = wstat(s, WSTAT_PROG_RUN_TIME_NS, 0);
 	wprintf("\t%-24s %8llu (%6.0lf/CPU/s) runs for total of %.3lfms (%.3lfms/CPU/s).\n",
 		"TOTAL:", total_run_cnt,
 		total_run_cnt / num_cpus / dur_s,
@@ -281,7 +259,7 @@ skip_rusage:
 		eprintf("!!! Ringbuf fetch misses: %llu\n", rb_misses);
 
 	if (total_drops) {
-		for (int i = 0; i < num_cpus; i++) {
+		for (int i = 0; i < s->cpu_cnt; i++) {
 			u64 cpu_drops = wstat(s, WSTAT_RB_DROPS, 1 + s->rb_cnt + i);
 			if (cpu_drops == 0)
 				continue;
@@ -323,6 +301,13 @@ skip_rusage:
 		wprintf("Pystacks: %llu attempted, %llu found (%.1lf%%)\n",
 			pystacks_attempted, pystacks_found,
 			pystacks_found * 100.0 / pystacks_attempted);
+	for (int i = 0; i < s->prog_cnt; i++) {
+		u64 rec_misses = wstat(s, WSTAT_PROG_RECURSION_MISSES, 1 + i);
+		if (rec_misses) {
+			const char *name = wevent_str(env.data_hdr, wstat(s, WSTAT_PROG_NAME, 1 + i));
+			eprintf("!!! %s: %llu recursion misses!\n", name, rec_misses);
+		}
+	}
 
 skip_error_diag:
 	return;
@@ -1231,6 +1216,10 @@ int main(int argc, char **argv)
 			const double S = 1000000000.0;
 			const double ms = 1000000.0;
 
+			env.replay_start_offset_ns = 0;
+			env.replay_end_offset_ns = cfg->duration_ns;
+			env.duration_ns = cfg->duration_ns;
+
 			wprintf("Replay info:\n");
 			wprintf("============\n");
 			wprintf("%-*s%s\n", w, "Timestamp:", fmt_timestamp_ns(cfg->realtime_start_ns));
@@ -1304,11 +1293,10 @@ int main(int argc, char **argv)
 							continue;
 						const char *name = extra_param_kind_name(e->kind);
 						const char *val;
-						if (e->kind == WEXTRA_STATS) {
-							wprintf("    %s\n", name);
-							continue;
-						}
-						val = e->stroff ? wevent_str(dump_hdr, e->stroff) : NULL;
+						if (e->kind == WEXTRA_STATS)
+							val = NULL;
+						else
+							val = e->stroff ? wevent_str(dump_hdr, e->stroff) : NULL;
 						wprintf("    %s%s%s\n", name, val ? " " : "", val ?: "");
 					}
 				}
@@ -1355,6 +1343,18 @@ int main(int argc, char **argv)
 			if (env.stats)
 				wprintf("    %-*s%u bytes (%u stats, %u CPUs, %u RBs)\n", w - 4, "Stats:", env.stats->sz, env.stats->stat_cnt, env.stats->cpu_cnt, env.stats->rb_cnt);
 
+			/*
+			 * If --stats is not set, we'll still print all the drops and recursion
+			 * misses warnings, just like in normal recording mode.
+			 */
+			print_stats(env.stats, 0);
+
+			goto cleanup;
+		}
+
+		if (env.emit_stats) {
+			eprintf("replay: --stats should only be used with --replay-info!\n");
+			err = -EINVAL;
 			goto cleanup;
 		}
 
@@ -1781,8 +1781,9 @@ skip_data_collection:
 				file_sz / (1024.0 * 1024.0), output_path);
 		}
 	}
+	print_stats(env.stats, err);
+
 cleanup:
-	print_stats(env.stats, bpf_state.skel, num_cpus, err);
 	if (env.cuda_cnt > 0)
 		cuda_trace_teardown();
 	if (env.pytrace_cnt > 0)
