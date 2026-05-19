@@ -150,8 +150,9 @@ struct wprof_stats {
 	u32 cpu_cnt;
 	u32 rb_cnt;
 	u32 prog_cnt;
-	u32 reserved_0;
-	u64 reserved[3];
+	u32 ringbuf_sz;
+	u32 task_state_sz;
+	u32 reserved[55];
 	u64 stats[];
 } __attribute__((aligned(8)));
 
