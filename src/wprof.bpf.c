@@ -43,7 +43,7 @@ struct {
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__type(key, u32);
-	__type(value, struct wprof_stats);
+	__type(value, struct wprof_bpf_stats);
 	__uint(max_entries, 1);
 } stats SEC(".maps");
 
@@ -66,7 +66,7 @@ struct {
 
 #define inc_stat(stat) ({							\
 	u64 __s = 0;								\
-	struct wprof_stats *s = bpf_map_lookup_elem(&stats, (void *)&zero);	\
+	struct wprof_bpf_stats *s = bpf_map_lookup_elem(&stats, (void *)&zero);	\
 	if (s) { s->stat++; __s = s->stat; }					\
 	__s;									\
 })

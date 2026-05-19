@@ -9,8 +9,10 @@
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <sys/utsname.h>
+#include <sys/resource.h>
 
 #include "merge.h"
+#include "wprof.skel.h"
 #include "utils.h"
 #include "wprof.h"
 #include "data.h"
@@ -200,7 +202,176 @@ static void collect_extras(struct persist_state *ps, struct wprof_extra_param **
 		add_extra(extras, cnt, WEXTRA_METADATA, persist_stroff(ps, env.metadata[i]));
 }
 
-int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
+static int stat_elem_cnt(enum wprof_stat_id id, int rb_cnt, int cpu_cnt)
+{
+	switch (id) {
+	case WSTAT_INVALID:
+		return __WSTAT_CNT + 1;
+	/* global + per-rb + per-cpu */
+	case WSTAT_RB_DROPS:
+	case WSTAT_RB_RESCUES:
+	case WSTAT_RB_MISSES:
+		return 1 + rb_cnt + cpu_cnt;
+	/* global + per-rb */
+	case WSTAT_RB_HANDLED_CNT:
+	case WSTAT_RB_HANDLED_SZ:
+	case WSTAT_RB_IGNORED_CNT:
+	case WSTAT_RB_IGNORED_SZ:
+		return 1 + rb_cnt;
+	/* global + per-cpu */
+	case WSTAT_TASK_STATE_DROPS:
+	case WSTAT_REQ_STATE_DROPS:
+	case WSTAT_PYSTACKS_ATTEMPTED:
+	case WSTAT_PYSTACKS_FOUND:
+		return 1 + cpu_cnt;
+	/* global only */
+	case WSTAT_RUSAGE_UTIME_US:
+	case WSTAT_RUSAGE_STIME_US:
+	case WSTAT_RUSAGE_MAXRSS_KB:
+	case WSTAT_RUSAGE_MAJFLT:
+	case WSTAT_RUSAGE_MINFLT:
+	case WSTAT_RUSAGE_INBLOCK:
+	case WSTAT_RUSAGE_OUBLOCK:
+	case WSTAT_RUSAGE_NVCSW:
+	case WSTAT_RUSAGE_NIVCSW:
+		return 1;
+	default:
+		eprintf("BUG: unknown stat id %d\n", id);
+		exit(1);
+	}
+}
+
+static struct wprof_stats *alloc_stats(int rb_cnt, int cpu_cnt)
+{
+	int offs[__WSTAT_CNT + 1];
+
+	/*
+	 * s->stats[0] is always zero
+	 * s->stats[__WSTAT_CNT] is total count of stats in s->stats[]
+	 */
+	offs[0] = 0;
+	for (int i = 1; i <= __WSTAT_CNT; i++)
+		offs[i] = offs[i - 1] + stat_elem_cnt(i - 1, rb_cnt, cpu_cnt);
+
+	u32 sz = sizeof(struct wprof_stats) + offs[__WSTAT_CNT] * sizeof(u64);
+	struct wprof_stats *s = calloc(1, sz);
+	s->sz = sz;
+	s->stat_cnt = __WSTAT_CNT;
+	s->cpu_cnt = cpu_cnt;
+	s->rb_cnt = rb_cnt;
+
+	for (int i = 1; i <= __WSTAT_CNT; i++)
+		s->stats[i] = offs[i];
+
+	return s;
+}
+
+static void collect_stats(struct wprof_stats *s, struct worker_state *workers)
+{
+	int zero = 0;
+	struct wprof_bpf *skel = env.skel;
+	int num_cpus = s->cpu_cnt;
+	int rb_cnt = s->rb_cnt;
+
+	u64 *rb_handled_cnt = wstats(s, WSTAT_RB_HANDLED_CNT, NULL);
+	u64 *rb_handled_sz = wstats(s, WSTAT_RB_HANDLED_SZ, NULL);
+	u64 *rb_ignored_cnt = wstats(s, WSTAT_RB_IGNORED_CNT, NULL);
+	u64 *rb_ignored_sz = wstats(s, WSTAT_RB_IGNORED_SZ, NULL);
+
+	for (int i = 0; i < rb_cnt; i++) {
+		struct worker_state *w = &workers[i];
+
+		/* global */
+		rb_handled_cnt[0] += w->rb_handled_cnt;
+		rb_handled_sz[0] += w->rb_handled_sz;
+		rb_ignored_cnt[0] += w->rb_ignored_cnt;
+		rb_ignored_sz[0] += w->rb_ignored_sz;
+
+		/* per-rb */
+		rb_handled_cnt[1 + i] = w->rb_handled_cnt;
+		rb_handled_sz[1 + i] = w->rb_handled_sz;
+		rb_ignored_cnt[1 + i] = w->rb_ignored_cnt;
+		rb_ignored_sz[1 + i] = w->rb_ignored_sz;
+	}
+
+	struct wprof_bpf_stats bpf_stats[num_cpus];
+	int err = bpf_map__lookup_elem(skel->maps.stats, &zero, sizeof(int),
+				       bpf_stats, sizeof(bpf_stats[0]) * num_cpus, 0);
+	if (err) {
+		eprintf("Failed to fetch BPF-side stats for persistence: %d\n", err);
+		goto skip_bpf_stats;
+	}
+
+	u64 *rb_drops = wstats(s, WSTAT_RB_DROPS, NULL);
+	u64 *rb_rescues = wstats(s, WSTAT_RB_RESCUES, NULL);
+	u64 *rb_misses = wstats(s, WSTAT_RB_MISSES, NULL);
+	u64 *task_drops = wstats(s, WSTAT_TASK_STATE_DROPS, NULL);
+	u64 *req_drops = wstats(s, WSTAT_REQ_STATE_DROPS, NULL);
+	u64 *py_attempted = wstats(s, WSTAT_PYSTACKS_ATTEMPTED, NULL);
+	u64 *py_found = wstats(s, WSTAT_PYSTACKS_FOUND, NULL);
+
+	for (int i = 0; i < num_cpus; i++) {
+		struct wprof_bpf_stats *bs = &bpf_stats[i];
+		int rb_id = skel->data_rb_cpu_map->rb_cpu_map[i];
+
+		/* global */
+		rb_drops[0] += bs->rb_drops;
+		rb_rescues[0] += bs->rb_rescues;
+		rb_misses[0] += bs->rb_misses;
+
+		/* per-rb */
+		rb_drops[1 + rb_id] += bs->rb_drops;
+		rb_rescues[1 + rb_id] += bs->rb_rescues;
+		rb_misses[1 + rb_id] += bs->rb_misses;
+
+		/* per-cpu */
+		rb_drops[1 + rb_cnt + i] = bs->rb_drops;
+		rb_rescues[1 + rb_cnt + i] = bs->rb_rescues;
+		rb_misses[1 + rb_cnt + i] = bs->rb_misses;
+
+		/* global */
+		task_drops[0] += bs->task_state_drops;
+		req_drops[0] += bs->req_state_drops;
+		py_attempted[0] += bs->pystacks_attempted;
+		py_found[0] += bs->pystacks_found;
+
+		/* per-cpu */
+		task_drops[1 + i] = bs->task_state_drops;
+		req_drops[1 + i] = bs->req_state_drops;
+		py_attempted[1 + i] = bs->pystacks_attempted;
+		py_found[1 + i] = bs->pystacks_found;
+	}
+
+skip_bpf_stats:
+	struct rusage ru;
+	if (getrusage(RUSAGE_SELF, &ru)) {
+		eprintf("Failed to get wprof's resource usage data!..\n");
+		goto skip_rusage;
+	}
+
+	u64 *utime_us = wstats(s, WSTAT_RUSAGE_UTIME_US, NULL);
+	u64 *stime_us = wstats(s, WSTAT_RUSAGE_STIME_US, NULL);
+	u64 *maxrss_kb = wstats(s, WSTAT_RUSAGE_MAXRSS_KB, NULL);
+	u64 *majflt = wstats(s, WSTAT_RUSAGE_MAJFLT, NULL);
+	u64 *minflt = wstats(s, WSTAT_RUSAGE_MINFLT, NULL);
+	u64 *inblock = wstats(s, WSTAT_RUSAGE_INBLOCK, NULL);
+	u64 *oublock = wstats(s, WSTAT_RUSAGE_OUBLOCK, NULL);
+	u64 *nvcsw = wstats(s, WSTAT_RUSAGE_NVCSW, NULL);
+	u64 *nivcsw = wstats(s, WSTAT_RUSAGE_NIVCSW, NULL);
+
+	utime_us[0] = (u64)ru.ru_utime.tv_sec * 1000000 + ru.ru_utime.tv_usec;
+	stime_us[0] = (u64)ru.ru_stime.tv_sec * 1000000 + ru.ru_stime.tv_usec;
+	maxrss_kb[0] = ru.ru_maxrss;
+	majflt[0] = ru.ru_majflt;
+	minflt[0] = ru.ru_minflt;
+	inblock[0] = ru.ru_inblock;
+	oublock[0] = ru.ru_oublock;
+	nvcsw[0] = ru.ru_nvcsw;
+	nivcsw[0] = ru.ru_nivcsw;
+skip_rusage:
+}
+
+int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 {
 	struct persist_state ps;
 	int err;
@@ -682,6 +853,11 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 	u64 extra_cnt = 0;
 	collect_extras(&ps, &extras, &extra_cnt);
 
+	/* Allocate stats placeholder in blob pool */
+	struct wprof_stats *stats = alloc_stats(env.ringbuf_cnt, env.num_cpus);
+	int stats_off = persist_bloboff(&ps, stats, stats->sz, 8);
+	add_extra(&extras, &extra_cnt, WEXTRA_STATS, stats_off);
+
 	/* Write extras section (right after events) */
 	off_t extras_off = 0;
 	size_t extras_sz = 0;
@@ -786,14 +962,33 @@ int wprof_merge_data(const char *workdir_name, struct worker_state *workers)
 			unlink(stacks_path);
 	}
 
-	persist_state_free(&ps);
-
 	long dump_sz = ftell(data_dump);
 	if (dump_sz < 0) {
 		err = -errno;
 		eprintf("Failed to get data dump file position: %d\n", -err);
 		return err;
 	}
+
+	fflush(data_dump);
+	fsync(fileno(data_dump));
+
+	persist_state_free(&ps);
+
+	/* Collect final stats (as late as possible to capture merge I/O in rusage) */
+	collect_stats(stats, workers);
+
+	err = fseek(data_dump, sizeof(struct wprof_data_hdr) + blobs_off + stats_off, SEEK_SET);
+	if (err) {
+		err = -errno;
+		eprintf("Failed to fseek() to stats blob: %d\n", err);
+		return err;
+	}
+	if (fwrite(stats, stats->sz, 1, data_dump) != 1) {
+		err = -errno;
+		eprintf("Failed to fwrite() stats blob: %d\n", err);
+		return err;
+	}
+	env.stats = stats;
 
 	/* Finalize data dump header */
 	struct wprof_data_hdr hdr;

@@ -137,24 +137,17 @@ static int handle_rb_event(void *ctx, void *data, size_t size)
 	return 0;
 }
 
-static void print_exit_summary(struct worker_state *workers, int worker_cnt,
-			       struct wprof_bpf *skel, int num_cpus, int exit_code)
+static void print_stats(const struct wprof_stats *s, struct wprof_bpf *skel, int num_cpus, int exit_code)
 {
 	int err;
-	u64 rb_handled_cnt = 0;
-	u64 rb_handled_sz = 0;
-	struct wprof_stats stats_by_cpu[num_cpus];
-	struct wprof_stats stats_by_rb[env.ringbuf_cnt];
-	struct wprof_stats s = {};
 	double dur_s = env.duration_ns / 1000000000.0;
-
-	memset(&stats_by_cpu, 0, sizeof(stats_by_cpu));
-	memset(&stats_by_rb, 0, sizeof(stats_by_rb));
+	u64 total_handled_cnt = 0, total_handled_sz = 0;
+	u64 total_drops = 0, total_rescues = 0;
 
 	if (!skel)
 		goto skip_prog_stats;
 
-	if (env.stats)
+	if (env.emit_stats)
 		wprintf("BPF program stats:\n");
 
 	struct bpf_program *prog;
@@ -179,7 +172,7 @@ static void print_exit_summary(struct worker_state *workers, int worker_cnt,
 				bpf_program__name(prog), info.recursion_misses);
 		}
 
-		if (env.stats) {
+		if (env.emit_stats) {
 			wprintf("\t%s%-*s %8llu (%6.0lf/CPU/s) runs for total of %.3lfms (%.3lfms/CPU/s).\n",
 				bpf_program__name(prog),
 				(int)max(1UL, 24 - strlen(bpf_program__name(prog))), ":",
@@ -192,91 +185,67 @@ static void print_exit_summary(struct worker_state *workers, int worker_cnt,
 		}
 	}
 
-	if (env.stats) {
-		wprintf("\t%-24s %8llu (%6.0lf/CPU/s) runs for total of %.3lfms (%.3lfms/CPU/s).\n",
-			"TOTAL:", total_run_cnt,
-			total_run_cnt / num_cpus / dur_s,
-			total_run_ns / 1000000.0,
-			total_run_ns / 1000000.0 / num_cpus / dur_s);
-	}
+	if (!env.emit_stats)
+		goto skip_prog_stats;
+
+	wprintf("\t%-24s %8llu (%6.0lf/CPU/s) runs for total of %.3lfms (%.3lfms/CPU/s).\n",
+		"TOTAL:", total_run_cnt,
+		total_run_cnt / num_cpus / dur_s,
+		total_run_ns / 1000000.0,
+		total_run_ns / 1000000.0 / num_cpus / dur_s);
 
 skip_prog_stats:
-	if (!skel || bpf_map__fd(skel->maps.stats) < 0)
+	if (!s)
 		goto skip_rb_stats;
 
-	if (env.stats)
-		wprintf("Data procesing stats:\n");
+	total_handled_cnt = wstat(s, WSTAT_RB_HANDLED_CNT, 0);
+	total_handled_sz = wstat(s, WSTAT_RB_HANDLED_SZ, 0);
+	total_drops = wstat(s, WSTAT_RB_DROPS, 0);
+	total_rescues = wstat(s, WSTAT_RB_RESCUES, 0);
 
-	for (int i = 0; i < worker_cnt; i++) {
-		struct worker_state *w = &workers[i];
-		rb_handled_cnt += w->rb_handled_cnt;
-		rb_handled_sz += w->rb_handled_sz;
-	}
-
-	int zero = 0;
-	err = bpf_map__lookup_elem(skel->maps.stats, &zero, sizeof(int),
-				   stats_by_cpu, sizeof(stats_by_cpu[0]) * num_cpus, 0);
-	if (err) {
-		eprintf("Failed to fetch BPF-side stats: %d\n", err);
+	if (!env.emit_stats)
 		goto skip_rb_stats;
+
+	wprintf("Data procesing stats:\n");
+
+	for (int i = 0; i < s->rb_cnt; i++) {
+		u64 handled_cnt = wstat(s, WSTAT_RB_HANDLED_CNT, 1 + i);
+		u64 handled_sz = wstat(s, WSTAT_RB_HANDLED_SZ, 1 + i);
+		u64 drops = wstat(s, WSTAT_RB_DROPS, 1 + i);
+		u64 rescues = wstat(s, WSTAT_RB_RESCUES, 1 + i);
+
+		char rb_name[32];
+		snprintf(rb_name, sizeof(rb_name), "RB #%d:", i);
+
+		wprintf("\t%-8s %8llu (%.3lf%%) records (%.3lfMB, %.3lfMB/s) processed, %llu rescued (%.3lf%%), %llu dropped (%.3lf%%).\n",
+			rb_name,
+			handled_cnt, handled_cnt * 100.0 / (handled_cnt + drops),
+			handled_sz / 1024.0 / 1024.0, handled_sz / 1024.0 / 1024.0 / dur_s,
+			rescues, rescues * 100.0 / (handled_cnt + drops),
+			drops, drops * 100.0 / (handled_cnt + drops));
 	}
-
-	for (int i = 0; i < num_cpus; i++) {
-		s.task_state_drops += stats_by_cpu[i].task_state_drops;
-		s.req_state_drops += stats_by_cpu[i].req_state_drops;
-		s.pystacks_attempted += stats_by_cpu[i].pystacks_attempted;
-		s.pystacks_found += stats_by_cpu[i].pystacks_found;
-
-		s.rb_rescues += stats_by_cpu[i].rb_rescues;
-		s.rb_misses += stats_by_cpu[i].rb_misses;
-		s.rb_drops += stats_by_cpu[i].rb_drops;
-
-		int rb_id = skel->data_rb_cpu_map->rb_cpu_map[i];
-		stats_by_rb[rb_id].rb_rescues += stats_by_cpu[i].rb_rescues;
-		stats_by_rb[rb_id].rb_drops += stats_by_cpu[i].rb_drops;
-		stats_by_rb[rb_id].rb_misses += stats_by_cpu[i].rb_misses;
-	}
-
-	if (env.stats) {
-		for (int i = 0; i < env.ringbuf_cnt; i++) {
-			struct worker_state *w = &workers[i];
-
-			char rb_name[32];
-			snprintf(rb_name, sizeof(rb_name), "RB #%d:", i);
-
-			wprintf("\t%-8s %8llu (%.3lf%%) records (%.3lfMB, %.3lfMB/s) processed, %llu rescued (%.3lf%%), %llu dropped (%.3lf%%).\n",
-				rb_name,
-				w->rb_handled_cnt, w->rb_handled_cnt * 100.0 / (w->rb_handled_cnt + stats_by_rb[i].rb_drops),
-				w->rb_handled_sz / 1024.0 / 1024.0, w->rb_handled_sz / 1024.0 / 1024.0 / dur_s,
-				stats_by_rb[i].rb_rescues, stats_by_rb[i].rb_rescues * 100.0 / (w->rb_handled_cnt + stats_by_rb[i].rb_drops),
-				stats_by_rb[i].rb_drops, stats_by_rb[i].rb_drops * 100.0 / (w->rb_handled_cnt + stats_by_rb[i].rb_drops));
-		}
-		wprintf("\t%-8s %8llu (%.3lf%%) records (%.3lfMB, %.3lfMB/s, %.3lfMB/RB/s) processed, %llu rescued (%.3lf%%), %llu dropped (%.3lf%%).\n",
-			"TOTAL:",
-			rb_handled_cnt, rb_handled_cnt * 100.0 / (rb_handled_cnt + s.rb_drops),
-			rb_handled_sz / 1024.0 / 1024.0, rb_handled_sz / 1024.0 / 1024.0 / dur_s,
-			rb_handled_sz / 1024.0 / 1024.0 / dur_s / env.ringbuf_cnt,
-			s.rb_rescues, s.rb_rescues * 100.0 / (rb_handled_cnt + s.rb_drops),
-			s.rb_drops, s.rb_drops * 100.0 / (rb_handled_cnt + s.rb_drops));
-	}
+	wprintf("\t%-8s %8llu (%.3lf%%) records (%.3lfMB, %.3lfMB/s, %.3lfMB/RB/s) processed, %llu rescued (%.3lf%%), %llu dropped (%.3lf%%).\n",
+		"TOTAL:",
+		total_handled_cnt, total_handled_cnt * 100.0 / (total_handled_cnt + total_drops),
+		total_handled_sz / 1024.0 / 1024.0, total_handled_sz / 1024.0 / 1024.0 / dur_s,
+		total_handled_sz / 1024.0 / 1024.0 / dur_s / s->rb_cnt,
+		total_rescues, total_rescues * 100.0 / (total_handled_cnt + total_drops),
+		total_drops, total_drops * 100.0 / (total_handled_cnt + total_drops));
 
 skip_rb_stats:
-	if (!env.stats)
+	if (!s || !env.emit_stats)
 		goto skip_rusage;
-
-	struct rusage ru;
-	if (getrusage(RUSAGE_SELF, &ru)) {
-		eprintf("Failed to get wprof's resource usage data!..\n");
-		goto skip_rusage;
-	}
 
 	wprintf("wprof's own resource usage:\n");
-	wprintf("\tCPU time (user/system, s):\t\t%.3lf/%.3lf\n",	ru.ru_utime.tv_sec + ru.ru_utime.tv_usec / 1000000.0,
-									ru.ru_stime.tv_sec + ru.ru_stime.tv_usec / 1000000.0);
-	wprintf("\tMemory (max RSS, MB):\t\t\t%.3lf\n", 		ru.ru_maxrss / 1024.0);
-	wprintf("\tPage faults (maj/min, K)\t\t%.3lf/%.3lf\n", 		ru.ru_majflt / 1000.0, ru.ru_minflt / 1000.0);
-	wprintf("\tBlock I/Os (K):\t\t\t\t%.3lf/%.3lf\n", 		ru.ru_inblock / 1000.0, ru.ru_oublock / 1000.0);
-	wprintf("\tContext switches (vol/invol, K):\t%.3lf/%.3lf\n", 	ru.ru_nvcsw / 1000.0, ru.ru_nivcsw / 1000.0);
+	wprintf("\tCPU time (user/system, s):\t\t%.3lf/%.3lf\n",     wstat(s, WSTAT_RUSAGE_UTIME_US, 0) / 1000000.0,
+								     wstat(s, WSTAT_RUSAGE_STIME_US, 0) / 1000000.0);
+	wprintf("\tMemory (max RSS, MB):\t\t\t%.3lf\n",		     wstat(s, WSTAT_RUSAGE_MAXRSS_KB, 0) / 1024.0);
+	wprintf("\tPage faults (maj/min, K)\t\t%.3lf/%.3lf\n",	     wstat(s, WSTAT_RUSAGE_MAJFLT, 0) / 1000.0,
+								     wstat(s, WSTAT_RUSAGE_MINFLT, 0) / 1000.0);
+	wprintf("\tBlock I/Os (K):\t\t\t\t%.3lf/%.3lf\n",	     wstat(s, WSTAT_RUSAGE_INBLOCK, 0) / 1000.0,
+								     wstat(s, WSTAT_RUSAGE_OUBLOCK, 0) / 1000.0);
+	wprintf("\tContext switches (vol/invol, K):\t%.3lf/%.3lf\n", wstat(s, WSTAT_RUSAGE_NVCSW, 0) / 1000.0,
+								     wstat(s, WSTAT_RUSAGE_NIVCSW, 0) / 1000.0);
 
 skip_rusage:
 	for (int i = 0; i < env.cuda_cnt; i++) {
@@ -296,7 +265,7 @@ skip_rusage:
 				i, cuda_str(cuda),
 				cuda->ctx->cupti_drop_cnt, cuda->ctx->cupti_err_cnt);
 		}
-		if (env.verbose || env.stats) {
+		if (env.verbose || env.emit_stats) {
 			eprintf("CUDA tracee #%d (%s): %ld records (%ld ignored), %ld buffers, %.3lfMBs.\n",
 				i, cuda_str(cuda),
 				cuda->ctx->cupti_rec_cnt, cuda->ctx->cupti_ignore_cnt,
@@ -304,48 +273,59 @@ skip_rusage:
 		}
 	}
 
-	if (s.rb_misses)
-		eprintf("!!! Ringbuf fetch misses: %llu\n", s.rb_misses);
-	if (s.rb_drops) {
+	if (!s)
+		goto skip_error_diag;
+
+	u64 rb_misses = wstat(s, WSTAT_RB_MISSES, 0);
+	if (rb_misses)
+		eprintf("!!! Ringbuf fetch misses: %llu\n", rb_misses);
+
+	if (total_drops) {
 		for (int i = 0; i < num_cpus; i++) {
-			if (stats_by_cpu[i].rb_drops == 0)
+			u64 cpu_drops = wstat(s, WSTAT_RB_DROPS, 1 + s->rb_cnt + i);
+			if (cpu_drops == 0)
 				continue;
 
-			eprintf("!!! Drops (CPU #%d): %llu (%.3lf%% handled, %.3lf%% rescued, %.3lf%% dropped)\n",
-				i, stats_by_cpu[i].rb_drops,
-				stats_by_cpu[i].rb_handled * 100.0 / (stats_by_cpu[i].rb_handled + stats_by_cpu[i].rb_drops),
-				stats_by_cpu[i].rb_rescues * 100.0 / (stats_by_cpu[i].rb_handled + stats_by_cpu[i].rb_drops),
-				stats_by_cpu[i].rb_drops * 100.0 / (stats_by_cpu[i].rb_handled + stats_by_cpu[i].rb_drops));
+			u64 cpu_rescues = wstat(s, WSTAT_RB_RESCUES, 1 + s->rb_cnt + i);
+			eprintf("!!! Drops (CPU #%d): %llu dropped, %llu rescued\n",
+				i, cpu_drops, cpu_rescues);
 		}
-		for (int i = 0; i < env.ringbuf_cnt; i++) {
-			if (stats_by_rb[i].rb_drops == 0)
+		for (int i = 0; i < s->rb_cnt; i++) {
+			u64 rb_drops = wstat(s, WSTAT_RB_DROPS, 1 + i);
+			if (rb_drops == 0)
 				continue;
 
-			struct worker_state *w = &workers[i];
+			u64 rb_hcnt = wstat(s, WSTAT_RB_HANDLED_CNT, 1 + i);
+			u64 rb_rescues = wstat(s, WSTAT_RB_RESCUES, 1 + i);
 			eprintf("!!! Drops (RB #%d): %llu (%.3lf%% handled, %.3lf%% rescued, %.3lf%% dropped)\n",
-				i, stats_by_rb[i].rb_drops,
-				w->rb_handled_cnt * 100.0 / (w->rb_handled_cnt + stats_by_rb[i].rb_drops),
-				stats_by_rb[i].rb_rescues * 100.0 / (w->rb_handled_cnt + stats_by_rb[i].rb_drops),
-				stats_by_rb[i].rb_drops * 100.0 / (w->rb_handled_cnt + stats_by_rb[i].rb_drops));
+				i, rb_drops,
+				rb_hcnt * 100.0 / (rb_hcnt + rb_drops),
+				rb_rescues * 100.0 / (rb_hcnt + rb_drops),
+				rb_drops * 100.0 / (rb_hcnt + rb_drops));
 		}
 		eprintf("!!! Drops (TOTAL): %llu (%.3lf%% handled, %.3lf%% rescued, %.3lf%% dropped)\n",
-			s.rb_drops,
-			rb_handled_cnt * 100.0 / (rb_handled_cnt + s.rb_drops),
-			s.rb_rescues * 100.0 / (rb_handled_cnt + s.rb_drops),
-			s.rb_drops * 100.0 / (rb_handled_cnt + s.rb_drops));
+			total_drops,
+			total_handled_cnt * 100.0 / (total_handled_cnt + total_drops),
+			total_rescues * 100.0 / (total_handled_cnt + total_drops),
+			total_drops * 100.0 / (total_handled_cnt + total_drops));
 	}
-	if (s.task_state_drops)
-		eprintf("!!! Task state drops: %llu\n", s.task_state_drops);
-	if (s.req_state_drops)
-		eprintf("!!! Request state drops: %llu\n", s.req_state_drops);
-	if (s.pystacks_attempted)
-		wprintf("Pystacks: %llu attempted, %llu found (%.1lf%%)\n",
-			s.pystacks_attempted, s.pystacks_found,
-			s.pystacks_found * 100.0 / s.pystacks_attempted);
 
-	wprintf("Exited %s (after %.3lfs).\n",
-		exit_code ? "with errors" : "cleanly",
-		(ktime_now_ns() - env.actual_start_ts) / 1000000000.0);
+	u64 task_drops = wstat(s, WSTAT_TASK_STATE_DROPS, 0);
+	u64 req_drops = wstat(s, WSTAT_REQ_STATE_DROPS, 0);
+	u64 pystacks_attempted = wstat(s, WSTAT_PYSTACKS_ATTEMPTED, 0);
+	u64 pystacks_found = wstat(s, WSTAT_PYSTACKS_FOUND, 0);
+
+	if (task_drops)
+		eprintf("!!! Task state drops: %llu\n", task_drops);
+	if (req_drops)
+		eprintf("!!! Request state drops: %llu\n", req_drops);
+	if (pystacks_attempted)
+		wprintf("Pystacks: %llu attempted, %llu found (%.1lf%%)\n",
+			pystacks_attempted, pystacks_found,
+			pystacks_found * 100.0 / pystacks_attempted);
+
+skip_error_diag:
+	return;
 }
 
 struct timer_plan {
@@ -486,7 +466,7 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 
 	calibrate_ktime();
 
-	st->skel = skel = wprof_bpf__open();
+	env.skel = st->skel = skel = wprof_bpf__open();
 	if (!skel) {
 		err = -errno;
 		eprintf("Failed to open and load BPF skeleton: %d\n", err);
@@ -801,7 +781,7 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 	 /* force RB notification when at least 2.0MB or 25% of ringbuf (whichever is less) is full */
 	skel->rodata->rb_submit_threshold_bytes = min(2 * 1024 * 1024, env.ringbuf_sz / 4);
 
-	if (env.stats) {
+	if (env.emit_stats) {
 		st->stats_fd = bpf_enable_stats(BPF_STATS_RUN_TIME);
 		if (st->stats_fd < 0)
 			eprintf("Failed to enable BPF run stats tracking: %d!\n", st->stats_fd);
@@ -1178,7 +1158,7 @@ int main(int argc, char **argv)
 
 	vprintf("wprof v%s (PID %d) started!\n", WPROF_VERSION, getpid());
 
-	num_cpus = libbpf_num_possible_cpus();
+	env.num_cpus = num_cpus = libbpf_num_possible_cpus();
 	if (num_cpus <= 0) {
 		eprintf("Failed to get the number of processors\n");
 		err = -1;
@@ -1236,6 +1216,14 @@ int main(int argc, char **argv)
 		struct wprof_data_hdr *dump_hdr = worker->dump_hdr;
 		const struct wprof_data_cfg *cfg = &dump_hdr->cfg;
 		env.data_hdr = dump_hdr;
+
+		for (u64 i = 0; i < dump_hdr->extra_cnt; i++) {
+			struct wprof_extra_param *ep = wevent_extra_param(dump_hdr, i);
+			if (ep->kind == WEXTRA_STATS) {
+				env.stats = wevent_blob(dump_hdr, ep->stroff);
+				break;
+			}
+		}
 
 		if (env.replay_info) {
 			const int w = 26;
@@ -1315,7 +1303,12 @@ int main(int argc, char **argv)
 						if (e->kind == WEXTRA_METADATA)
 							continue;
 						const char *name = extra_param_kind_name(e->kind);
-						const char *val = e->stroff ? wevent_str(dump_hdr, e->stroff) : NULL;
+						const char *val;
+						if (e->kind == WEXTRA_STATS) {
+							wprintf("    %s\n", name);
+							continue;
+						}
+						val = e->stroff ? wevent_str(dump_hdr, e->stroff) : NULL;
 						wprintf("    %s%s%s\n", name, val ? " " : "", val ?: "");
 					}
 				}
@@ -1359,6 +1352,8 @@ int main(int argc, char **argv)
 			}
 			if (dump_hdr->pmu_def_real_cnt + dump_hdr->pmu_def_deriv_cnt)
 				wprintf("    %-*s%.3lfMB (%llu entries)\n", w - 4, "PMU data:", dump_hdr->pmu_vals_sz / MB, dump_hdr->pmu_val_cnt);
+			if (env.stats)
+				wprintf("    %-*s%u bytes (%u stats, %u CPUs, %u RBs)\n", w - 4, "Stats:", env.stats->sz, env.stats->stat_cnt, env.stats->cpu_cnt, env.stats->rb_cnt);
 
 			goto cleanup;
 		}
@@ -1401,6 +1396,7 @@ int main(int argc, char **argv)
 		env.sess_start_ts = cfg->ktime_start_ns + env.replay_start_offset_ns;
 		env.sess_end_ts = cfg->ktime_start_ns + env.replay_end_offset_ns;
 		set_ktime_off(cfg->ktime_start_ns, cfg->realtime_start_ns);
+		env.duration_ns = env.replay_end_offset_ns - env.replay_start_offset_ns;
 
 		env.timer_freq_hz = cfg->timer_freq_hz;
 
@@ -1478,6 +1474,7 @@ int main(int argc, char **argv)
 				err = utrace_cfg_parse(val);
 				break;
 			case WEXTRA_METADATA:
+			case WEXTRA_STATS:
 				break;
 			default:
 				eprintf("Unrecognized extra param kind %d in data file!\n", ep->kind);
@@ -1698,7 +1695,7 @@ int main(int argc, char **argv)
 	if (env.pytrace_cnt == 0)
 		env.capture_pytrace = false;
 
-	err = wprof_merge_data(workdir_name, workers);
+	err = wprof_persist_data(workdir_name, workers);
 	if (err) {
 		eprintf("Failed to finalize data dump: %d\n", err);
 		goto cleanup;
@@ -1785,6 +1782,7 @@ skip_data_collection:
 		}
 	}
 cleanup:
+	print_stats(env.stats, bpf_state.skel, num_cpus, err);
 	if (env.cuda_cnt > 0)
 		cuda_trace_teardown();
 	if (env.pytrace_cnt > 0)
@@ -1792,11 +1790,13 @@ cleanup:
 	cleanup_workers(workers, worker_cnt);
 	detach_bpf(&bpf_state, num_cpus);
 	drain_bpf(&bpf_state, num_cpus);
-	print_exit_summary(workers, worker_cnt, bpf_state.skel, num_cpus, err);
 	cleanup_bpf(&bpf_state);
 	if (workdir_fd >= 0)
 		close(workdir_fd);
 	if (!env.keep_workdir && workdir_name[0])
 		delete_dir(workdir_name);
+	wprintf("Exited %s (after %.3lfs).\n",
+		err ? "with errors" : "cleanly",
+		(ktime_now_ns() - env.actual_start_ts) / 1000000000.0);
 	return -err;
 }

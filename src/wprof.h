@@ -53,7 +53,7 @@ enum wprof_filt_mode {
 	FILT_DENY_KTHREAD = FILT_ALLOW_KTHREAD << 16,
 };
 
-struct wprof_stats {
+struct wprof_bpf_stats {
 	u64 rb_handled;
 	u64 rb_drops;
 	u64 rb_rescues;
