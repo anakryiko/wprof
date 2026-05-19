@@ -276,6 +276,8 @@ static struct wprof_stats *prepare_stats(struct persist_state *ps, struct worker
 	s->stat_cnt = __WSTAT_CNT;
 	s->cpu_cnt = cpu_cnt;
 	s->rb_cnt = rb_cnt;
+	s->ringbuf_sz = env.ringbuf_sz;
+	s->task_state_sz = env.task_state_sz;
 	s->prog_cnt = prog_cnt;
 
 	for (int i = 1; i <= __WSTAT_CNT; i++)

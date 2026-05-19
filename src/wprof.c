@@ -214,7 +214,7 @@ skip_rb_stats:
 	if (!s || !env.emit_stats)
 		goto skip_rusage;
 
-	wprintf("wprof's own resource usage:\n");
+	wprintf("Resource usage:\n");
 	wprintf("\tCPU time (user/system, s):\t\t%.3lf/%.3lf\n",     wstat(s, WSTAT_RUSAGE_UTIME_US, 0) / 1000000.0,
 								     wstat(s, WSTAT_RUSAGE_STIME_US, 0) / 1000000.0);
 	wprintf("\tMemory (max RSS, MB):\t\t\t%.3lf\n",		     wstat(s, WSTAT_RUSAGE_MAXRSS_KB, 0) / 1024.0);
@@ -1240,9 +1240,6 @@ int main(int argc, char **argv)
 			} else {
 				wprintf("%-*s%s\n", w, "Stack traces:", "NONE");
 			}
-			if (cfg->captured_stack_traces & ST_TIMER)
-				wprintf("%-*s%dHz\n", w, "Timer frequency:", cfg->timer_freq_hz);
-
 			if (dump_hdr->pmu_def_real_cnt + dump_hdr->pmu_def_deriv_cnt) {
 				wprintf("%-*s\n", w, "PMU counters:");
 				for (int i = 0; i < dump_hdr->pmu_def_real_cnt; i++) {
@@ -1268,8 +1265,18 @@ int main(int argc, char **argv)
 					struct wprof_extra_param *e = wevent_extra_param(dump_hdr, i);
 					if (e->kind == WEXTRA_METADATA)
 						has_metadata = true;
-					else
+					else if (e->kind != WEXTRA_STATS)
 						has_extras = true;
+				}
+				if (env.stats || (cfg->captured_stack_traces & ST_TIMER)) {
+					wprintf("%-*s\n", w, "Config:");
+					if (env.stats) {
+						wprintf("    %-*s%u\n", w - 4, "CPUs:", env.stats->cpu_cnt);
+						wprintf("    %-*s%u x %uMB\n", w - 4, "Ringbufs:", env.stats->rb_cnt, env.stats->ringbuf_sz / 1024 / 1024);
+						wprintf("    %-*s%u\n", w - 4, "Tasks capacity:", env.stats->task_state_sz);
+					}
+					if (cfg->captured_stack_traces & ST_TIMER)
+						wprintf("    %-*s%dHz\n", w - 4, "Timer frequency:", cfg->timer_freq_hz);
 				}
 				if (has_metadata) {
 					wprintf("%-*s\n", w, "Metadata:");
@@ -1289,14 +1296,10 @@ int main(int argc, char **argv)
 					wprintf("%-*s\n", w, "Extras:");
 					for (u64 i = 0; i < dump_hdr->extra_cnt; i++) {
 						struct wprof_extra_param *e = wevent_extra_param(dump_hdr, i);
-						if (e->kind == WEXTRA_METADATA)
+						if (e->kind == WEXTRA_METADATA || e->kind == WEXTRA_STATS)
 							continue;
 						const char *name = extra_param_kind_name(e->kind);
-						const char *val;
-						if (e->kind == WEXTRA_STATS)
-							val = NULL;
-						else
-							val = e->stroff ? wevent_str(dump_hdr, e->stroff) : NULL;
+						const char *val = e->stroff ? wevent_str(dump_hdr, e->stroff) : NULL;
 						wprintf("    %s%s%s\n", name, val ? " " : "", val ?: "");
 					}
 				}
@@ -1341,7 +1344,7 @@ int main(int argc, char **argv)
 			if (dump_hdr->pmu_def_real_cnt + dump_hdr->pmu_def_deriv_cnt)
 				wprintf("    %-*s%.3lfMB (%llu entries)\n", w - 4, "PMU data:", dump_hdr->pmu_vals_sz / MB, dump_hdr->pmu_val_cnt);
 			if (env.stats)
-				wprintf("    %-*s%u bytes (%u stats, %u CPUs, %u RBs)\n", w - 4, "Stats:", env.stats->sz, env.stats->stat_cnt, env.stats->cpu_cnt, env.stats->rb_cnt);
+				wprintf("    %-*s%u bytes\n", w - 4, "Stats:", env.stats->sz);
 
 			/*
 			 * If --stats is not set, we'll still print all the drops and recursion
