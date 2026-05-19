@@ -226,33 +226,37 @@ skip_rb_stats:
 								     wstat(s, WSTAT_RUSAGE_NIVCSW, 0) / 1000.0);
 
 skip_rusage:
-	for (int i = 0; i < env.cuda_cnt; i++) {
-		struct cuda_tracee *cuda = &env.cudas[i];
-
-		if (cuda->state == TRACEE_IGNORED)
-			continue;
-
-		if (cuda->state != TRACEE_INACTIVE) {
-			eprintf("!!! CUDA tracee #%d (%s) encountered problem. Last state: %s\n",
-				i, cuda_str(cuda), cuda_tracee_state_str(cuda->state));
-			continue;
-		}
-
-		if (cuda->ctx->cupti_err_cnt + cuda->ctx->cupti_drop_cnt > 0) {
-			eprintf("!!! CUDA tracee #%d (%s): %ld records dropped, %ld errors.\n",
-				i, cuda_str(cuda),
-				cuda->ctx->cupti_drop_cnt, cuda->ctx->cupti_err_cnt);
-		}
-		if (env.verbose || env.emit_stats) {
-			eprintf("CUDA tracee #%d (%s): %ld records (%ld ignored), %ld buffers, %.3lfMBs.\n",
-				i, cuda_str(cuda),
-				cuda->ctx->cupti_rec_cnt, cuda->ctx->cupti_ignore_cnt,
-				cuda->ctx->cupti_buf_cnt, cuda->ctx->cupti_data_sz / 1024.0 / 1024.0);
-		}
-	}
-
 	if (!s)
 		goto skip_error_diag;
+
+	for (int i = 0; i < s->cuda_cnt; i++) {
+		u64 state = wstat(s, WSTAT_CUDA_STATE, 1 + i);
+		const char *name = wevent_str(env.data_hdr, wstat(s, WSTAT_CUDA_NAME, 1 + i));
+
+		if (state == TRACEE_IGNORED)
+			continue;
+
+		if (state != TRACEE_INACTIVE) {
+			eprintf("!!! CUDA tracee #%d (%s) encountered problem. Last state: %s\n",
+				i, name, cuda_tracee_state_str(state));
+			continue;
+		}
+
+		u64 drop_cnt = wstat(s, WSTAT_CUDA_DROP_CNT, 1 + i);
+		u64 err_cnt = wstat(s, WSTAT_CUDA_ERR_CNT, 1 + i);
+		if (drop_cnt + err_cnt > 0) {
+			eprintf("!!! CUDA tracee #%d (%s): %llu records dropped, %llu errors.\n",
+				i, name, drop_cnt, err_cnt);
+		}
+		if (env.verbose || env.emit_stats) {
+			eprintf("CUDA tracee #%d (%s): %llu records (%llu ignored), %llu buffers, %.3lfMBs.\n",
+				i, name,
+				wstat(s, WSTAT_CUDA_REC_CNT, 1 + i),
+				wstat(s, WSTAT_CUDA_IGNORE_CNT, 1 + i),
+				wstat(s, WSTAT_CUDA_BUF_CNT, 1 + i),
+				wstat(s, WSTAT_CUDA_DATA_SZ, 1 + i) / 1024.0 / 1024.0);
+		}
+	}
 
 	u64 rb_misses = wstat(s, WSTAT_RB_MISSES, 0);
 	if (rb_misses)

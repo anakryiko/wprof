@@ -118,11 +118,26 @@ enum wprof_stat_id {
 	WSTAT_RUSAGE_NVCSW,
 	WSTAT_RUSAGE_NIVCSW,
 
-	/* BPF program stats (prog_cnt entries each) */
+	/* BPF program stats (total + prog_cnt entries each) */
 	WSTAT_PROG_NAME,
 	WSTAT_PROG_RUN_CNT,
 	WSTAT_PROG_RUN_TIME_NS,
 	WSTAT_PROG_RECURSION_MISSES,
+
+	/* CUDA tracee stats (total + cuda_cnt entries each) */
+	WSTAT_CUDA_NAME,
+	WSTAT_CUDA_STATE,
+	WSTAT_CUDA_REC_CNT,
+	WSTAT_CUDA_DROP_CNT,
+	WSTAT_CUDA_ERR_CNT,
+	WSTAT_CUDA_IGNORE_CNT,
+	WSTAT_CUDA_BUF_CNT,
+	WSTAT_CUDA_DATA_SZ,
+
+	/* PyTrace tracee stats (total + pytrace_cnt entries each) */
+	WSTAT_PYTRACE_NAME,
+	WSTAT_PYTRACE_EVENT_CNT,
+	WSTAT_PYTRACE_CODE_CACHE_CNT,
 
 	__WSTAT_CNT,
 };
@@ -150,9 +165,11 @@ struct wprof_stats {
 	u32 cpu_cnt;
 	u32 rb_cnt;
 	u32 prog_cnt;
+	u32 cuda_cnt;
+	u32 pytrace_cnt;
 	u32 ringbuf_sz;
 	u32 task_state_sz;
-	u32 reserved[55];
+	u32 reserved[53];
 	u64 stats[];
 } __attribute__((aligned(8)));
 

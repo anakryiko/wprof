@@ -203,7 +203,8 @@ static void collect_extras(struct persist_state *ps, struct wprof_extra_param **
 		add_extra(extras, cnt, WEXTRA_METADATA, persist_stroff(ps, env.metadata[i]));
 }
 
-static int stat_elem_cnt(enum wprof_stat_id id, int rb_cnt, int cpu_cnt, int prog_cnt)
+static int stat_elem_cnt(enum wprof_stat_id id, int rb_cnt, int cpu_cnt,
+			 int prog_cnt, int cuda_cnt, int pytrace_cnt)
 {
 	switch (id) {
 	case WSTAT_INVALID:
@@ -242,6 +243,21 @@ static int stat_elem_cnt(enum wprof_stat_id id, int rb_cnt, int cpu_cnt, int pro
 	case WSTAT_PROG_RUN_TIME_NS:
 	case WSTAT_PROG_RECURSION_MISSES:
 		return 1 + prog_cnt;
+	/* per-CUDA tracee */
+	case WSTAT_CUDA_NAME:
+	case WSTAT_CUDA_STATE:
+	case WSTAT_CUDA_REC_CNT:
+	case WSTAT_CUDA_DROP_CNT:
+	case WSTAT_CUDA_ERR_CNT:
+	case WSTAT_CUDA_IGNORE_CNT:
+	case WSTAT_CUDA_BUF_CNT:
+	case WSTAT_CUDA_DATA_SZ:
+		return 1 + cuda_cnt;
+	/* per-pytrace tracee */
+	case WSTAT_PYTRACE_NAME:
+	case WSTAT_PYTRACE_EVENT_CNT:
+	case WSTAT_PYTRACE_CODE_CACHE_CNT:
+		return 1 + pytrace_cnt;
 	default:
 		eprintf("BUG: unknown stat id %d\n", id);
 		exit(1);
@@ -253,6 +269,8 @@ static struct wprof_stats *prepare_stats(struct persist_state *ps, struct worker
 	struct wprof_bpf *skel = env.skel;
 	int rb_cnt = env.ringbuf_cnt;
 	int cpu_cnt = env.num_cpus;
+	int cuda_cnt = env.cuda_cnt;
+	int pytrace_cnt = env.pytrace_cnt;
 	int prog_cnt = 0;
 
 	struct bpf_program *p;
@@ -268,7 +286,7 @@ static struct wprof_stats *prepare_stats(struct persist_state *ps, struct worker
 	int offs[__WSTAT_CNT + 1];
 	offs[0] = 0;
 	for (int i = 1; i <= __WSTAT_CNT; i++)
-		offs[i] = offs[i - 1] + stat_elem_cnt(i - 1, rb_cnt, cpu_cnt, prog_cnt);
+		offs[i] = offs[i - 1] + stat_elem_cnt(i - 1, rb_cnt, cpu_cnt, prog_cnt, cuda_cnt, pytrace_cnt);
 
 	u32 sz = sizeof(struct wprof_stats) + offs[__WSTAT_CNT] * sizeof(u64);
 	struct wprof_stats *s = calloc(1, sz);
@@ -276,9 +294,11 @@ static struct wprof_stats *prepare_stats(struct persist_state *ps, struct worker
 	s->stat_cnt = __WSTAT_CNT;
 	s->cpu_cnt = cpu_cnt;
 	s->rb_cnt = rb_cnt;
+	s->prog_cnt = prog_cnt;
+	s->cuda_cnt = cuda_cnt;
+	s->pytrace_cnt = pytrace_cnt;
 	s->ringbuf_sz = env.ringbuf_sz;
 	s->task_state_sz = env.task_state_sz;
-	s->prog_cnt = prog_cnt;
 
 	for (int i = 1; i <= __WSTAT_CNT; i++)
 		s->stats[i] = offs[i];
@@ -391,6 +411,64 @@ skip_bpf_stats:
 		prog_run_time[0] += info.run_time_ns;
 		prog_rec_misses[0] += info.recursion_misses;
 		idx++;
+	}
+
+	/* CUDA tracee stats (per-tracee) */
+	u64 *cuda_name = wstats(s, WSTAT_CUDA_NAME, NULL);
+	u64 *cuda_state = wstats(s, WSTAT_CUDA_STATE, NULL);
+	u64 *cuda_rec_cnt = wstats(s, WSTAT_CUDA_REC_CNT, NULL);
+	u64 *cuda_drop_cnt = wstats(s, WSTAT_CUDA_DROP_CNT, NULL);
+	u64 *cuda_err_cnt = wstats(s, WSTAT_CUDA_ERR_CNT, NULL);
+	u64 *cuda_ignore_cnt = wstats(s, WSTAT_CUDA_IGNORE_CNT, NULL);
+	u64 *cuda_buf_cnt = wstats(s, WSTAT_CUDA_BUF_CNT, NULL);
+	u64 *cuda_data_sz = wstats(s, WSTAT_CUDA_DATA_SZ, NULL);
+
+	for (int i = 0; i < cuda_cnt; i++) {
+		struct cuda_tracee *cuda = &env.cudas[i];
+
+		/* per-tracee */
+		cuda_name[1 + i] = persist_stroff(ps, cuda_str(cuda));
+		cuda_state[1 + i] = cuda->state;
+
+		if (cuda->state == TRACEE_IGNORED || !cuda->ctx)
+			continue;
+
+		cuda_rec_cnt[1 + i] = cuda->ctx->cupti_rec_cnt;
+		cuda_drop_cnt[1 + i] = cuda->ctx->cupti_drop_cnt;
+		cuda_err_cnt[1 + i] = cuda->ctx->cupti_err_cnt;
+		cuda_ignore_cnt[1 + i] = cuda->ctx->cupti_ignore_cnt;
+		cuda_buf_cnt[1 + i] = cuda->ctx->cupti_buf_cnt;
+		cuda_data_sz[1 + i] = cuda->ctx->cupti_data_sz;
+
+		/* global */
+		cuda_rec_cnt[0] += cuda->ctx->cupti_rec_cnt;
+		cuda_drop_cnt[0] += cuda->ctx->cupti_drop_cnt;
+		cuda_err_cnt[0] += cuda->ctx->cupti_err_cnt;
+		cuda_ignore_cnt[0] += cuda->ctx->cupti_ignore_cnt;
+		cuda_buf_cnt[0] += cuda->ctx->cupti_buf_cnt;
+		cuda_data_sz[0] += cuda->ctx->cupti_data_sz;
+	}
+
+	/* PyTrace tracee stats (per-tracee) */
+	u64 *pytrace_name = wstats(s, WSTAT_PYTRACE_NAME, NULL);
+	u64 *pytrace_event_cnt = wstats(s, WSTAT_PYTRACE_EVENT_CNT, NULL);
+	u64 *pytrace_code_cache_cnt = wstats(s, WSTAT_PYTRACE_CODE_CACHE_CNT, NULL);
+
+	for (int i = 0; i < pytrace_cnt; i++) {
+		struct pytrace_tracee *py = &env.pytraces[i];
+
+		/* per-tracee */
+		pytrace_name[1 + i] = persist_stroff(ps, pytrace_str(py));
+
+		if (!py->ctx)
+			continue;
+
+		pytrace_event_cnt[1 + i] = py->ctx->pytrace_event_cnt;
+		pytrace_code_cache_cnt[1 + i] = py->ctx->pytrace_code_cache_cnt;
+
+		/* global */
+		pytrace_event_cnt[0] += py->ctx->pytrace_event_cnt;
+		pytrace_code_cache_cnt[0] += py->ctx->pytrace_code_cache_cnt;
 	}
 
 	return s;
