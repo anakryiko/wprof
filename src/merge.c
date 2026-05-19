@@ -10,6 +10,7 @@
 #include <sys/mman.h>
 #include <sys/utsname.h>
 #include <sys/resource.h>
+#include <bpf/bpf.h>
 
 #include "merge.h"
 #include "wprof.skel.h"
@@ -202,7 +203,7 @@ static void collect_extras(struct persist_state *ps, struct wprof_extra_param **
 		add_extra(extras, cnt, WEXTRA_METADATA, persist_stroff(ps, env.metadata[i]));
 }
 
-static int stat_elem_cnt(enum wprof_stat_id id, int rb_cnt, int cpu_cnt)
+static int stat_elem_cnt(enum wprof_stat_id id, int rb_cnt, int cpu_cnt, int prog_cnt)
 {
 	switch (id) {
 	case WSTAT_INVALID:
@@ -235,23 +236,39 @@ static int stat_elem_cnt(enum wprof_stat_id id, int rb_cnt, int cpu_cnt)
 	case WSTAT_RUSAGE_NVCSW:
 	case WSTAT_RUSAGE_NIVCSW:
 		return 1;
+	/* per-program */
+	case WSTAT_PROG_NAME:
+	case WSTAT_PROG_RUN_CNT:
+	case WSTAT_PROG_RUN_TIME_NS:
+	case WSTAT_PROG_RECURSION_MISSES:
+		return 1 + prog_cnt;
 	default:
 		eprintf("BUG: unknown stat id %d\n", id);
 		exit(1);
 	}
 }
 
-static struct wprof_stats *alloc_stats(int rb_cnt, int cpu_cnt)
+static struct wprof_stats *prepare_stats(struct persist_state *ps, struct worker_state *workers)
 {
-	int offs[__WSTAT_CNT + 1];
+	struct wprof_bpf *skel = env.skel;
+	int rb_cnt = env.ringbuf_cnt;
+	int cpu_cnt = env.num_cpus;
+	int prog_cnt = 0;
+
+	struct bpf_program *p;
+	bpf_object__for_each_program(p, skel->obj) {
+		if (bpf_program__fd(p) >= 0)
+			prog_cnt++;
+	}
 
 	/*
 	 * s->stats[0] is always zero
 	 * s->stats[__WSTAT_CNT] is total count of stats in s->stats[]
 	 */
+	int offs[__WSTAT_CNT + 1];
 	offs[0] = 0;
 	for (int i = 1; i <= __WSTAT_CNT; i++)
-		offs[i] = offs[i - 1] + stat_elem_cnt(i - 1, rb_cnt, cpu_cnt);
+		offs[i] = offs[i - 1] + stat_elem_cnt(i - 1, rb_cnt, cpu_cnt, prog_cnt);
 
 	u32 sz = sizeof(struct wprof_stats) + offs[__WSTAT_CNT] * sizeof(u64);
 	struct wprof_stats *s = calloc(1, sz);
@@ -259,20 +276,12 @@ static struct wprof_stats *alloc_stats(int rb_cnt, int cpu_cnt)
 	s->stat_cnt = __WSTAT_CNT;
 	s->cpu_cnt = cpu_cnt;
 	s->rb_cnt = rb_cnt;
+	s->prog_cnt = prog_cnt;
 
 	for (int i = 1; i <= __WSTAT_CNT; i++)
 		s->stats[i] = offs[i];
 
-	return s;
-}
-
-static void collect_stats(struct wprof_stats *s, struct worker_state *workers)
-{
-	int zero = 0;
-	struct wprof_bpf *skel = env.skel;
-	int num_cpus = s->cpu_cnt;
-	int rb_cnt = s->rb_cnt;
-
+	/* Worker stats (per-rb) */
 	u64 *rb_handled_cnt = wstats(s, WSTAT_RB_HANDLED_CNT, NULL);
 	u64 *rb_handled_sz = wstats(s, WSTAT_RB_HANDLED_SZ, NULL);
 	u64 *rb_ignored_cnt = wstats(s, WSTAT_RB_IGNORED_CNT, NULL);
@@ -294,9 +303,11 @@ static void collect_stats(struct wprof_stats *s, struct worker_state *workers)
 		rb_ignored_sz[1 + i] = w->rb_ignored_sz;
 	}
 
-	struct wprof_bpf_stats bpf_stats[num_cpus];
+	/* BPF map stats (per-cpu) */
+	int zero = 0;
+	struct wprof_bpf_stats bpf_stats[cpu_cnt];
 	int err = bpf_map__lookup_elem(skel->maps.stats, &zero, sizeof(int),
-				       bpf_stats, sizeof(bpf_stats[0]) * num_cpus, 0);
+				       bpf_stats, sizeof(bpf_stats[0]) * cpu_cnt, 0);
 	if (err) {
 		eprintf("Failed to fetch BPF-side stats for persistence: %d\n", err);
 		goto skip_bpf_stats;
@@ -307,10 +318,10 @@ static void collect_stats(struct wprof_stats *s, struct worker_state *workers)
 	u64 *rb_misses = wstats(s, WSTAT_RB_MISSES, NULL);
 	u64 *task_drops = wstats(s, WSTAT_TASK_STATE_DROPS, NULL);
 	u64 *req_drops = wstats(s, WSTAT_REQ_STATE_DROPS, NULL);
-	u64 *py_attempted = wstats(s, WSTAT_PYSTACKS_ATTEMPTED, NULL);
-	u64 *py_found = wstats(s, WSTAT_PYSTACKS_FOUND, NULL);
+	u64 *pystacks_attempted = wstats(s, WSTAT_PYSTACKS_ATTEMPTED, NULL);
+	u64 *pystacks_found = wstats(s, WSTAT_PYSTACKS_FOUND, NULL);
 
-	for (int i = 0; i < num_cpus; i++) {
+	for (int i = 0; i < cpu_cnt; i++) {
 		struct wprof_bpf_stats *bs = &bpf_stats[i];
 		int rb_id = skel->data_rb_cpu_map->rb_cpu_map[i];
 
@@ -332,21 +343,63 @@ static void collect_stats(struct wprof_stats *s, struct worker_state *workers)
 		/* global */
 		task_drops[0] += bs->task_state_drops;
 		req_drops[0] += bs->req_state_drops;
-		py_attempted[0] += bs->pystacks_attempted;
-		py_found[0] += bs->pystacks_found;
+		pystacks_attempted[0] += bs->pystacks_attempted;
+		pystacks_found[0] += bs->pystacks_found;
 
 		/* per-cpu */
 		task_drops[1 + i] = bs->task_state_drops;
 		req_drops[1 + i] = bs->req_state_drops;
-		py_attempted[1 + i] = bs->pystacks_attempted;
-		py_found[1 + i] = bs->pystacks_found;
+		pystacks_attempted[1 + i] = bs->pystacks_attempted;
+		pystacks_found[1 + i] = bs->pystacks_found;
+	}
+skip_bpf_stats:
+
+	/* BPF program stats (per-prog) */
+	u64 *prog_name = wstats(s, WSTAT_PROG_NAME, NULL);
+	u64 *prog_run_cnt = wstats(s, WSTAT_PROG_RUN_CNT, NULL);
+	u64 *prog_run_time = wstats(s, WSTAT_PROG_RUN_TIME_NS, NULL);
+	u64 *prog_rec_misses = wstats(s, WSTAT_PROG_RECURSION_MISSES, NULL);
+
+	int idx = 0;
+	struct bpf_program *prog;
+	bpf_object__for_each_program(prog, skel->obj) {
+		if (bpf_program__fd(prog) < 0)
+			continue;
+
+		prog_name[1 + idx] = persist_stroff(ps, bpf_program__name(prog));
+
+		struct bpf_prog_info info;
+		u32 info_sz = sizeof(info);
+		memset(&info, 0, sizeof(info));
+		err = bpf_prog_get_info_by_fd(bpf_program__fd(prog), &info, &info_sz);
+		if (err) {
+			eprintf("!!! %s: failed to fetch prog info: %d\n",
+				bpf_program__name(prog), err);
+			idx++;
+			continue;
+		}
+
+		/* per-prog */
+		prog_run_cnt[1 + idx] = info.run_cnt;
+		prog_run_time[1 + idx] = info.run_time_ns;
+		prog_rec_misses[1 + idx] = info.recursion_misses;
+
+		/* global */
+		prog_run_cnt[0] += info.run_cnt;
+		prog_run_time[0] += info.run_time_ns;
+		prog_rec_misses[0] += info.recursion_misses;
+		idx++;
 	}
 
-skip_bpf_stats:
+	return s;
+}
+
+static void finalize_stats(struct wprof_stats *s)
+{
 	struct rusage ru;
 	if (getrusage(RUSAGE_SELF, &ru)) {
 		eprintf("Failed to get wprof's resource usage data!..\n");
-		goto skip_rusage;
+		return;
 	}
 
 	u64 *utime_us = wstats(s, WSTAT_RUSAGE_UTIME_US, NULL);
@@ -359,6 +412,7 @@ skip_bpf_stats:
 	u64 *nvcsw = wstats(s, WSTAT_RUSAGE_NVCSW, NULL);
 	u64 *nivcsw = wstats(s, WSTAT_RUSAGE_NIVCSW, NULL);
 
+	/* global */
 	utime_us[0] = (u64)ru.ru_utime.tv_sec * 1000000 + ru.ru_utime.tv_usec;
 	stime_us[0] = (u64)ru.ru_stime.tv_sec * 1000000 + ru.ru_stime.tv_usec;
 	maxrss_kb[0] = ru.ru_maxrss;
@@ -368,7 +422,6 @@ skip_bpf_stats:
 	oublock[0] = ru.ru_oublock;
 	nvcsw[0] = ru.ru_nvcsw;
 	nivcsw[0] = ru.ru_nivcsw;
-skip_rusage:
 }
 
 int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
@@ -853,8 +906,8 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 	u64 extra_cnt = 0;
 	collect_extras(&ps, &extras, &extra_cnt);
 
-	/* Allocate stats placeholder in blob pool */
-	struct wprof_stats *stats = alloc_stats(env.ringbuf_cnt, env.num_cpus);
+	/* Prepare stats: allocate, collect everything except rusage, intern prog names */
+	struct wprof_stats *stats = prepare_stats(&ps, workers);
 	int stats_off = persist_bloboff(&ps, stats, stats->sz, 8);
 	add_extra(&extras, &extra_cnt, WEXTRA_STATS, stats_off);
 
@@ -974,8 +1027,8 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 
 	persist_state_free(&ps);
 
-	/* Collect final stats (as late as possible to capture merge I/O in rusage) */
-	collect_stats(stats, workers);
+	/* Finalize stats: capture rusage as late as possible */
+	finalize_stats(stats);
 
 	err = fseek(data_dump, sizeof(struct wprof_data_hdr) + blobs_off + stats_off, SEEK_SET);
 	if (err) {

@@ -118,6 +118,12 @@ enum wprof_stat_id {
 	WSTAT_RUSAGE_NVCSW,
 	WSTAT_RUSAGE_NIVCSW,
 
+	/* BPF program stats (prog_cnt entries each) */
+	WSTAT_PROG_NAME,
+	WSTAT_PROG_RUN_CNT,
+	WSTAT_PROG_RUN_TIME_NS,
+	WSTAT_PROG_RECURSION_MISSES,
+
 	__WSTAT_CNT,
 };
 
@@ -143,7 +149,9 @@ struct wprof_stats {
 	u64 flags;
 	u32 cpu_cnt;
 	u32 rb_cnt;
-	u64 reserved[4];
+	u32 prog_cnt;
+	u32 reserved_0;
+	u64 reserved[3];
 	u64 stats[];
 } __attribute__((aligned(8)));
 
