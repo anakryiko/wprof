@@ -53,13 +53,14 @@ enum pytrace_discover_strategy {
 	PYTRACE_DISCOVER_NV_SMI,	/* use nvidia-smi to find GPU Python processes */
 };
 
+struct wprof_bpf;
 struct req_list_cfg;
 
 struct env {
 	bool verbose;
 	int debug_level;
 	enum log_subset log_set;
-	bool stats;
+	bool emit_stats;
 	bool record;
 	bool replay;
 	bool replay_info;
@@ -100,6 +101,9 @@ struct env {
 
 	int timer_freq_hz;
 
+	struct wprof_bpf *skel;
+	const struct wprof_stats *stats;
+
 	int pmu_real_cnt;
 	struct pmu_event *pmu_reals;
 	int pmu_deriv_cnt;
@@ -114,6 +118,7 @@ struct env {
 	int ringbuf_sz;
 	int task_state_sz;
 	size_t ringbuf_cnt;
+	size_t num_cpus;
 
 	u64 actual_start_ts;
 	u64 sess_start_ts;

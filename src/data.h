@@ -53,6 +53,7 @@ enum wprof_extra_param_kind {
 	WEXTRA_FILTER_KTHREAD_DENY,
 	WEXTRA_UTRACE_DEF,
 	WEXTRA_METADATA,
+	WEXTRA_STATS,
 };
 
 static inline const char *extra_param_kind_name(enum wprof_extra_param_kind kind)
@@ -72,6 +73,7 @@ static inline const char *extra_param_kind_name(enum wprof_extra_param_kind kind
 	case WEXTRA_FILTER_KTHREAD_DENY: return "--no-kthread";
 	case WEXTRA_UTRACE_DEF:		return "--utrace";
 	case WEXTRA_METADATA:		return "--metadata";
+	case WEXTRA_STATS:		return "--stats";
 	default:			return "???";
 	}
 }
@@ -80,6 +82,93 @@ struct wprof_extra_param {
 	enum wprof_extra_param_kind kind;
 	u32 stroff;
 };
+
+/*
+ * Stable enum: positions are append-only, never reorder.
+ * WSTAT_INVALID (index 0) is the cumulative offset table.
+ */
+enum wprof_stat_id {
+	WSTAT_INVALID = 0,
+
+	/* BPF-side ringbuf stats (global + per-rb + per-cpu) */
+	WSTAT_RB_DROPS,
+	WSTAT_RB_RESCUES,
+	WSTAT_RB_MISSES,
+
+	/* Userspace worker stats (global + per-rb) */
+	WSTAT_RB_HANDLED_CNT,
+	WSTAT_RB_HANDLED_SZ,
+	WSTAT_RB_IGNORED_CNT,
+	WSTAT_RB_IGNORED_SZ,
+
+	/* BPF-side resource stats (global + per-cpu) */
+	WSTAT_TASK_STATE_DROPS,
+	WSTAT_REQ_STATE_DROPS,
+	WSTAT_PYSTACKS_ATTEMPTED,
+	WSTAT_PYSTACKS_FOUND,
+
+	/* Resource usage (global only) */
+	WSTAT_RUSAGE_UTIME_US,
+	WSTAT_RUSAGE_STIME_US,
+	WSTAT_RUSAGE_MAXRSS_KB,
+	WSTAT_RUSAGE_MAJFLT,
+	WSTAT_RUSAGE_MINFLT,
+	WSTAT_RUSAGE_INBLOCK,
+	WSTAT_RUSAGE_OUBLOCK,
+	WSTAT_RUSAGE_NVCSW,
+	WSTAT_RUSAGE_NIVCSW,
+
+	__WSTAT_CNT,
+};
+
+/*
+ * Self-describing stats blob. Persisted to blob pool via WEXTRA_STATS.
+ *
+ * stats[] is a concatenation of per-stat arrays. The first stat_cnt + 1 entries
+ * form the cumulative end-offset table (WSTAT_INVALID's "data"):
+ *   stats[0] = stat_cnt's (the offset table is `stat_cnt+1` u64s)
+ *   stats[S] = cumulative end offset of stat S's data in stats[]
+ *   stats[stat_cnt] = is total number of stats in stats[] array
+ *
+ * To find stat S: start = stats[S], count = stats[S] - stats[S-1].
+ *
+ * Per-stat arrays have variable length:
+ *   - per-rb + per-cpu breakdown: [global, rb0..rbN, cpu0..cpuM];
+ *   - per-rb breakdown: [global, rb0..rbN];
+ *   - global-only stats: [global].
+ */
+struct wprof_stats {
+	u32 sz;
+	u32 stat_cnt;
+	u64 flags;
+	u32 cpu_cnt;
+	u32 rb_cnt;
+	u64 reserved[4];
+	u64 stats[];
+} __attribute__((aligned(8)));
+
+static inline u64 *wstats(const struct wprof_stats *s, enum wprof_stat_id id, size_t *cnt)
+{
+	if (!s || id >= s->stat_cnt) {
+		if (cnt)
+			*cnt = 0;
+		return NULL;
+	}
+
+	if (cnt)
+		*cnt = s->stats[id + 1] - s->stats[id];
+
+	return (u64 *)&s->stats[s->stats[id]];
+}
+
+static inline u64 wstat(const struct wprof_stats *s, enum wprof_stat_id id, int idx)
+{
+	size_t cnt;
+	const u64 *v = wstats(s, id, &cnt);
+	if (!v || idx >= cnt)
+		return 0;
+	return v[idx];
+}
 
 struct wprof_data_hdr {
 	char magic[6]; /* "WPROF\0" */

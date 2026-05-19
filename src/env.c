@@ -222,7 +222,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		env_verbose = true;
 		break;
 	case OPT_STATS:
-		env.stats = true;
+		env.emit_stats = true;
 		break;
 	case OPT_DEBUG:
 		if (strcasecmp(arg, "pb-debug-interns") == 0) {
