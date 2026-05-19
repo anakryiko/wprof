@@ -279,7 +279,7 @@ static void discover_proc(struct wprof_bpf *skel)
 	}
 }
 
-static void discover_nvidia_smi(struct wprof_bpf *skel)
+static void discover_nv_smi(struct wprof_bpf *skel)
 {
 	vprintf("Using nvidia-smi to find GPU Python processes...\n");
 
@@ -298,8 +298,8 @@ int pydisc_discover(struct wprof_bpf *skel)
 	case PYSTACKS_DISCOVER_PROC:
 		discover_proc(skel);
 		break;
-	case PYSTACKS_DISCOVER_NVIDIA_SMI:
-		discover_nvidia_smi(skel);
+	case PYSTACKS_DISCOVER_NV_SMI:
+		discover_nv_smi(skel);
 		break;
 	case PYSTACKS_DISCOVER_NONE:
 		break;

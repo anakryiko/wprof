@@ -44,13 +44,13 @@ enum cuda_discover_strategy {
 enum pystacks_discover_strategy {
 	PYSTACKS_DISCOVER_NONE,      /* no automatic discovery */
 	PYSTACKS_DISCOVER_PROC,      /* find Python processes via /proc scan (default) */
-	PYSTACKS_DISCOVER_NVIDIA_SMI, /* use nvidia-smi to find GPU Python processes */
+	PYSTACKS_DISCOVER_NV_SMI, /* use nvidia-smi to find GPU Python processes */
 };
 
 enum pytrace_discover_strategy {
 	PYTRACE_DISCOVER_NONE,		/* no automatic discovery */
 	PYTRACE_DISCOVER_PROC,		/* find Python processes via /proc scan (default) */
-	PYTRACE_DISCOVER_NVIDIA_SMI,	/* use nvidia-smi to find GPU Python processes */
+	PYTRACE_DISCOVER_NV_SMI,	/* use nvidia-smi to find GPU Python processes */
 };
 
 struct req_list_cfg;
@@ -177,6 +177,11 @@ struct env {
 	int pytrace_cnt;
 	bool pytraces_deactivated;
 	bool pytraces_retracted;
+
+	/* nvidia-smi PID discovery (lazy, shared across features) */
+	int *nv_smi_pids;
+	int nv_smi_pid_cnt;
+	bool nv_smi_discovered;
 
 	/* user-defined tracing (utrace) */
 	struct utrace_cfg *utrace_cfgs;

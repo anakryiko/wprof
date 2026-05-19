@@ -233,7 +233,7 @@ int pytrace_trace_setup(int workdir_fd)
 		}
 		break;
 	}
-	case PYTRACE_DISCOVER_NVIDIA_SMI: {
+	case PYTRACE_DISCOVER_NV_SMI: {
 		vprintf("Using nvidia-smi to find Python processes using GPU...\n");
 
 		int *pidp;

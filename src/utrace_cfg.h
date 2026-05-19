@@ -59,6 +59,11 @@ enum utrace_param_type {
 	UTRACE_PARAM_PID,
 };
 
+enum utrace_pid_discovery {
+	UTRACE_PID_DISCOVER_NONE = 0,
+	UTRACE_PID_DISCOVER_NV_SMI,
+};
+
 #define UTRACE_ARG_RET (-1)
 #define UTRACE_ARG_UNRESOLVED (-2)	/* name-based ref, resolved during augmentation */
 
@@ -89,6 +94,7 @@ struct utrace_param {
 		} binary;
 		struct {
 			int pid;
+			enum utrace_pid_discovery discovery;
 		} pid;
 	};
 };
@@ -204,6 +210,7 @@ static inline bool cfg_is_span(const struct utrace_cfg *cfg)
 
 void utrace_compile_fmt(const char *fmt, const struct utrace_param *params, int param_cnt,
 			struct utrace_fmt_seg **out_segs, int *out_seg_cnt);
+void utrace_cfg_add_pid(struct utrace_cfg *cfg, int pid, enum utrace_pid_discovery discovery);
 int utrace_cfg_parse(const char *def);
 int utrace_cfg_parse_file(const char *path);
 void utrace_cfg_format(const struct utrace_cfg *cfg, struct sbuf *sb);

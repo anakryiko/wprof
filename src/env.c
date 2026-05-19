@@ -143,7 +143,7 @@ static const struct argp_option opts[] = {
 	/* event subset targeting */
 	{ "feature", 'f', "FEAT", 0,
 	  "Data capture feature selector. Supported: ipi, req[=PATH|PID], scx, cuda, "
-	  "py-stacks[=nvidia-smi|PID], py-trace[=nvidia-smi|PID], py-torch[=nvidia-smi|PID], "
+	  "py-stacks[=nv-smi|PID], py-trace[=nv-smi|PID], py-torch[=nv-smi|PID], "
 	  "softirq, hardirq, irq. All features can be prefixed with 'no-' to disable them explicitly." },
 
 	/* trace emitting options */
@@ -424,8 +424,8 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		} else if (strcasecmp(arg, "py-stacks") == 0) {
 			env.pystacks_discovery = (val == TRUE) ? PYSTACKS_DISCOVER_PROC : PYSTACKS_DISCOVER_NONE;
 			env.capture_pystacks = val;
-		} else if (strcasecmp(arg, "py-stacks=nvidia-smi") == 0) {
-			env.pystacks_discovery = (val == TRUE) ? PYSTACKS_DISCOVER_NVIDIA_SMI : PYSTACKS_DISCOVER_NONE;
+		} else if (strcasecmp(arg, "py-stacks=nvidia-smi") == 0 || strcasecmp(arg, "py-stacks=nv-smi") == 0) {
+			env.pystacks_discovery = (val == TRUE) ? PYSTACKS_DISCOVER_NV_SMI : PYSTACKS_DISCOVER_NONE;
 			env.capture_pystacks = val;
 		} else if (strncasecmp(arg, "py-stacks=", 10) == 0) {
 			const char *py_arg = arg + 10;
@@ -443,7 +443,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 					return err;
 				}
 			} else {
-				eprintf("Use -fpy-stacks, -fpy-stacks=nvidia-smi, or -fpy-stacks=<PID>!\n");
+				eprintf("Use -fpy-stacks, -fpy-stacks=nv-smi, or -fpy-stacks=<PID>!\n");
 				return -EINVAL;
 			}
 			env.capture_pystacks = val;
@@ -452,8 +452,8 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			env.capture_pytrace = val;
 			if (val == FALSE)
 				env.capture_pytorch = FALSE;
-		} else if (strcasecmp(arg, "py-trace=nvidia-smi") == 0) {
-			env.pytrace_discovery = (val == TRUE) ? PYTRACE_DISCOVER_NVIDIA_SMI : PYTRACE_DISCOVER_NONE;
+		} else if (strcasecmp(arg, "py-trace=nvidia-smi") == 0 || strcasecmp(arg, "py-trace=nv-smi") == 0) {
+			env.pytrace_discovery = (val == TRUE) ? PYTRACE_DISCOVER_NV_SMI : PYTRACE_DISCOVER_NONE;
 			env.capture_pytrace = val;
 			if (val == FALSE)
 				env.capture_pytorch = FALSE;
@@ -473,7 +473,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 					return err;
 				}
 			} else {
-				eprintf("Use -fpy-trace, -fpy-trace=nvidia-smi, or -fpy-trace=<PID>!\n");
+				eprintf("Use -fpy-trace, -fpy-trace=nv-smi, or -fpy-trace=<PID>!\n");
 				return -EINVAL;
 			}
 			env.capture_pytrace = val;
@@ -481,8 +481,8 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			env.pytrace_discovery = (val == TRUE) ? PYTRACE_DISCOVER_PROC : PYTRACE_DISCOVER_NONE;
 			env.capture_pytrace = val;
 			env.capture_pytorch = val;
-		} else if (strcasecmp(arg, "py-torch=nvidia-smi") == 0) {
-			env.pytrace_discovery = (val == TRUE) ? PYTRACE_DISCOVER_NVIDIA_SMI : PYTRACE_DISCOVER_NONE;
+		} else if (strcasecmp(arg, "py-torch=nvidia-smi") == 0 || strcasecmp(arg, "py-torch=nv-smi") == 0) {
+			env.pytrace_discovery = (val == TRUE) ? PYTRACE_DISCOVER_NV_SMI : PYTRACE_DISCOVER_NONE;
 			env.capture_pytrace = val;
 			env.capture_pytorch = val;
 		} else if (strncasecmp(arg, "py-torch=", 9) == 0) {
@@ -501,7 +501,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 					return err;
 				}
 			} else {
-				eprintf("Use -fpy-torch, -fpy-torch=nvidia-smi, or -fpy-torch=<PID>!\n");
+				eprintf("Use -fpy-torch, -fpy-torch=nv-smi, or -fpy-torch=<PID>!\n");
 				return -EINVAL;
 			}
 			env.capture_pytrace = val;

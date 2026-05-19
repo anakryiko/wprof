@@ -792,32 +792,10 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 		return err;
 	}
 
-	if (env.utrace_cfg_cnt > 0) {
-		env.capture_utrace = TRUE;
-
-		/* Validate: if any utrace config requests stack capture, -Sutrace must be enabled */
-		if (!(env.requested_stack_traces & ST_UTRACE)) {
-			for (int i = 0; i < env.utrace_cfg_cnt; i++) {
-				const struct utrace_cfg *cfg = &env.utrace_cfgs[i];
-				for (int j = 0; j < cfg->param_cnt; j++) {
-					if (cfg->params[j].type == UTRACE_PARAM_CAPTURE_STACK) {
-						eprintf("utrace config #%d requests 'stack' capture, but -Sutrace is not enabled\n", i + 1);
-						return -EINVAL;
-					}
-				}
-			}
-		}
-
-		err = utrace_setup(skel);
-		if (err) {
-			eprintf("Failed to setup utrace: %d\n", err);
-			return err;
-		}
-	} else {
-		env.capture_utrace = FALSE;
-		env.requested_stack_traces &= ~ST_UTRACE;
-		bpf_map__set_autocreate(skel->maps.utrace_probe_cfgs, false);
-		bpf_map__set_autocreate(skel->maps.utrace_scratch, false);
+	err = utrace_setup(skel);
+	if (err) {
+		eprintf("Failed to setup utrace: %d\n", err);
+		return err;
 	}
 
 	 /* force RB notification when at least 2.0MB or 25% of ringbuf (whichever is less) is full */
