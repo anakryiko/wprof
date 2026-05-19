@@ -392,7 +392,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 				}
 			}
 			env.capture_requests = val;
-		} else if (strcasecmp(arg, "scx") == 0 || strcasecmp(arg, "scx-layer") == 0) {
+		} else if (strcasecmp(arg, "scx") == 0) {
 			env.capture_scx = val;
 			// TODO(patlu): unified cuda/py-stacks/py-trace
 		} else if (strcasecmp(arg, "cuda") == 0) {
