@@ -213,9 +213,9 @@ static int stat_elem_cnt(enum wprof_stat_id id, int rb_cnt, int cpu_cnt,
 	case WSTAT_RB_DROPS:
 	case WSTAT_RB_RESCUES:
 	case WSTAT_RB_MISSES:
+	case WSTAT_RB_HANDLED_CNT:
 		return 1 + rb_cnt + cpu_cnt;
 	/* global + per-rb */
-	case WSTAT_RB_HANDLED_CNT:
 	case WSTAT_RB_HANDLED_SZ:
 	case WSTAT_RB_IGNORED_CNT:
 	case WSTAT_RB_IGNORED_SZ:
@@ -255,6 +255,7 @@ static int stat_elem_cnt(enum wprof_stat_id id, int rb_cnt, int cpu_cnt,
 		return 1 + cuda_cnt;
 	/* per-pytrace tracee */
 	case WSTAT_PYTRACE_NAME:
+	case WSTAT_PYTRACE_STATE:
 	case WSTAT_PYTRACE_EVENT_CNT:
 	case WSTAT_PYTRACE_CODE_CACHE_CNT:
 		return 1 + pytrace_cnt;
@@ -304,7 +305,6 @@ static struct wprof_stats *prepare_stats(struct persist_state *ps, struct worker
 		s->stats[i] = offs[i];
 
 	/* Worker stats (per-rb) */
-	u64 *rb_handled_cnt = wstats(s, WSTAT_RB_HANDLED_CNT, NULL);
 	u64 *rb_handled_sz = wstats(s, WSTAT_RB_HANDLED_SZ, NULL);
 	u64 *rb_ignored_cnt = wstats(s, WSTAT_RB_IGNORED_CNT, NULL);
 	u64 *rb_ignored_sz = wstats(s, WSTAT_RB_IGNORED_SZ, NULL);
@@ -313,13 +313,11 @@ static struct wprof_stats *prepare_stats(struct persist_state *ps, struct worker
 		struct worker_state *w = &workers[i];
 
 		/* global */
-		rb_handled_cnt[0] += w->rb_handled_cnt;
 		rb_handled_sz[0] += w->rb_handled_sz;
 		rb_ignored_cnt[0] += w->rb_ignored_cnt;
 		rb_ignored_sz[0] += w->rb_ignored_sz;
 
 		/* per-rb */
-		rb_handled_cnt[1 + i] = w->rb_handled_cnt;
 		rb_handled_sz[1 + i] = w->rb_handled_sz;
 		rb_ignored_cnt[1 + i] = w->rb_ignored_cnt;
 		rb_ignored_sz[1 + i] = w->rb_ignored_sz;
@@ -335,6 +333,7 @@ static struct wprof_stats *prepare_stats(struct persist_state *ps, struct worker
 		goto skip_bpf_stats;
 	}
 
+	u64 *rb_handled_cnt = wstats(s, WSTAT_RB_HANDLED_CNT, NULL);
 	u64 *rb_drops = wstats(s, WSTAT_RB_DROPS, NULL);
 	u64 *rb_rescues = wstats(s, WSTAT_RB_RESCUES, NULL);
 	u64 *rb_misses = wstats(s, WSTAT_RB_MISSES, NULL);
@@ -348,16 +347,19 @@ static struct wprof_stats *prepare_stats(struct persist_state *ps, struct worker
 		int rb_id = skel->data_rb_cpu_map->rb_cpu_map[i];
 
 		/* global */
+		rb_handled_cnt[0] += bs->rb_handled;
 		rb_drops[0] += bs->rb_drops;
 		rb_rescues[0] += bs->rb_rescues;
 		rb_misses[0] += bs->rb_misses;
 
 		/* per-rb */
+		rb_handled_cnt[1 + rb_id] += bs->rb_handled;
 		rb_drops[1 + rb_id] += bs->rb_drops;
 		rb_rescues[1 + rb_id] += bs->rb_rescues;
 		rb_misses[1 + rb_id] += bs->rb_misses;
 
 		/* per-cpu */
+		rb_handled_cnt[1 + rb_cnt + i] = bs->rb_handled;
 		rb_drops[1 + rb_cnt + i] = bs->rb_drops;
 		rb_rescues[1 + rb_cnt + i] = bs->rb_rescues;
 		rb_misses[1 + rb_cnt + i] = bs->rb_misses;
@@ -451,6 +453,7 @@ skip_bpf_stats:
 
 	/* PyTrace tracee stats (per-tracee) */
 	u64 *pytrace_name = wstats(s, WSTAT_PYTRACE_NAME, NULL);
+	u64 *pytrace_state = wstats(s, WSTAT_PYTRACE_STATE, NULL);
 	u64 *pytrace_event_cnt = wstats(s, WSTAT_PYTRACE_EVENT_CNT, NULL);
 	u64 *pytrace_code_cache_cnt = wstats(s, WSTAT_PYTRACE_CODE_CACHE_CNT, NULL);
 
@@ -459,6 +462,7 @@ skip_bpf_stats:
 
 		/* per-tracee */
 		pytrace_name[1 + i] = persist_stroff(ps, pytrace_str(py));
+		pytrace_state[1 + i] = py->state;
 
 		if (!py->ctx)
 			continue;

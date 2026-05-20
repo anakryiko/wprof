@@ -91,12 +91,12 @@ enum wprof_stat_id {
 	WSTAT_INVALID = 0,
 
 	/* BPF-side ringbuf stats (global + per-rb + per-cpu) */
+	WSTAT_RB_HANDLED_CNT,
 	WSTAT_RB_DROPS,
 	WSTAT_RB_RESCUES,
 	WSTAT_RB_MISSES,
 
-	/* Userspace worker stats (global + per-rb) */
-	WSTAT_RB_HANDLED_CNT,
+	/* Userspace worker stats (global + per-rb); handled cnt is above with drops */
 	WSTAT_RB_HANDLED_SZ,
 	WSTAT_RB_IGNORED_CNT,
 	WSTAT_RB_IGNORED_SZ,
@@ -136,6 +136,7 @@ enum wprof_stat_id {
 
 	/* PyTrace tracee stats (total + pytrace_cnt entries each) */
 	WSTAT_PYTRACE_NAME,
+	WSTAT_PYTRACE_STATE,
 	WSTAT_PYTRACE_EVENT_CNT,
 	WSTAT_PYTRACE_CODE_CACHE_CNT,
 

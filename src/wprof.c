@@ -258,6 +258,23 @@ skip_rusage:
 		}
 	}
 
+	for (int i = 0; i < s->pytrace_cnt; i++) {
+		u64 state = wstat(s, WSTAT_PYTRACE_STATE, 1 + i);
+		const char *name = wevent_str(env.data_hdr, wstat(s, WSTAT_PYTRACE_NAME, 1 + i));
+
+		if (state != TRACEE_INACTIVE && state != TRACEE_SHUTDOWN_TIMEOUT) {
+			eprintf("!!! PyTrace tracee #%d (%s) encountered problem. Last state: %s\n",
+				i, name, cuda_tracee_state_str(state));
+			continue;
+		}
+		if (env.verbose || env.emit_stats) {
+			eprintf("PyTrace tracee #%d (%s): %llu events, %llu code objects cached.\n",
+				i, name,
+				wstat(s, WSTAT_PYTRACE_EVENT_CNT, 1 + i),
+				wstat(s, WSTAT_PYTRACE_CODE_CACHE_CNT, 1 + i));
+		}
+	}
+
 	u64 rb_misses = wstat(s, WSTAT_RB_MISSES, 0);
 	if (rb_misses)
 		eprintf("!!! Ringbuf fetch misses: %llu\n", rb_misses);
@@ -268,9 +285,13 @@ skip_rusage:
 			if (cpu_drops == 0)
 				continue;
 
+			u64 cpu_handled = wstat(s, WSTAT_RB_HANDLED_CNT, 1 + s->rb_cnt + i);
 			u64 cpu_rescues = wstat(s, WSTAT_RB_RESCUES, 1 + s->rb_cnt + i);
-			eprintf("!!! Drops (CPU #%d): %llu dropped, %llu rescued\n",
-				i, cpu_drops, cpu_rescues);
+			eprintf("!!! Drops (CPU #%d): %llu (%.3lf%% handled, %.3lf%% rescued, %.3lf%% dropped)\n",
+				i, cpu_drops,
+				cpu_handled * 100.0 / (cpu_handled + cpu_drops),
+				cpu_rescues * 100.0 / (cpu_handled + cpu_drops),
+				cpu_drops * 100.0 / (cpu_handled + cpu_drops));
 		}
 		for (int i = 0; i < s->rb_cnt; i++) {
 			u64 rb_drops = wstat(s, WSTAT_RB_DROPS, 1 + i);
