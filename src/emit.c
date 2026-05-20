@@ -124,10 +124,10 @@ enum dyn_track_kind {
 	DTK_REQ,			/* single request of given PID (id1 = pid, id2 = req_id) */
 	DTK_REQ_THREAD,			/* request-participating thread (id1 = tid, id2 = req_id) */
 	DTK_REQ_THREAD_EMBED,		/* first-event-per-thread tracking for embed mode (id1 = tid, id2 = req_id) */
-	DTK_PYTRACE_PROC_THREAD,/* Python-traced thread track (by TID) */
-	DTK_UTRACE_THREAD,	/* utrace per-config track (id1 = tid, id2 = utrace_id) */
-	DTK_TIMER_THREAD,	/* per-thread timer track (id1 = tid) */
-	DTK_TIMER_CALLSTACK_THREAD,	/* per-thread embedded timer callstack slice track (id1 = tid) */
+	DTK_PYTRACE,			/* Python-traced thread track (by TID) */
+	DTK_UTRACE,			/* utrace per-config track (id1 = tid, id2 = utrace_id) */
+	DTK_TIMER,			/* per-thread timer track (id1 = tid) */
+	DTK_TIMER_CALLSTACK,		/* per-thread embedded timer callstack slice track (id1 = tid) */
 };
 
 struct track_key {
@@ -152,7 +152,7 @@ struct track_state {
 			u64 start_ts;	/* earliest request start timestamp */
 		} req;
 
-		/* DTK_TIMER_CALLSTACK_THREAD */
+		/* DTK_TIMER_CALLSTACK */
 		struct {
 			u64 last_ts;
 			u32 last_tr_id;
@@ -163,18 +163,17 @@ struct track_state {
 
 static size_t track_state_size(enum dyn_track_kind kind)
 {
-	/* TODO: drop _THREAD suffix from DTK_xxx names (inconsistent). */
 	switch (kind) {
 	case DTK_REQ:
 		return offsetofend(struct track_state, req);
-	case DTK_TIMER_CALLSTACK_THREAD:
+	case DTK_TIMER_CALLSTACK:
 		return offsetofend(struct track_state, cs);
 	case DTK_PROC_REQS:
 	case DTK_REQ_THREAD:
 	case DTK_REQ_THREAD_EMBED:
-	case DTK_PYTRACE_PROC_THREAD:
-	case DTK_UTRACE_THREAD:
-	case DTK_TIMER_THREAD:
+	case DTK_PYTRACE:
+	case DTK_UTRACE:
+	case DTK_TIMER:
 		return offsetof(struct track_state, req);
 	default:
 		eprintf("BUG: unknown dynamic track kind %d\n", kind);
@@ -658,7 +657,7 @@ static inline u64 trackid_cuda_proc_stream(int pid, u32 stream_id)
 
 static inline u64 trackid_pytrace_thread(int tid)
 {
-	return track_state_get_or_add(DTK_PYTRACE_PROC_THREAD, tid, 0)->track_id;
+	return track_state_get_or_add(DTK_PYTRACE, tid, 0)->track_id;
 }
 
 enum instant_scope {
@@ -1171,7 +1170,7 @@ static void json_task(struct json_state *j, const char *key, const struct wprof_
 
 static u64 ensure_timer_thread_track(const struct wprof_task *t)
 {
-	struct track_state *s = track_state_get_or_add(DTK_TIMER_THREAD, t->tid, 0);
+	struct track_state *s = track_state_get_or_add(DTK_TIMER, t->tid, 0);
 
 	if (!s->exists) {
 		emit_track_descr_impl(cur_stream, s->track_id, trackid_thread(t),
@@ -1192,7 +1191,7 @@ static u64 ensure_timer_thread_track(const struct wprof_task *t)
 static void emit_embed_callstack(struct worker_state *w, const struct wprof_task *t, u64 ts, u32 tr_id)
 {
 	struct wprof_data_hdr *hdr = w->dump_hdr;
-	struct track_state *s = track_state_get_or_add(DTK_TIMER_CALLSTACK_THREAD, t->tid, 0);
+	struct track_state *s = track_state_get_or_add(DTK_TIMER_CALLSTACK, t->tid, 0);
 
 	/*
 	 * Lazy track descriptor emit, once per thread.
@@ -1216,12 +1215,12 @@ static void emit_embed_callstack(struct worker_state *w, const struct wprof_task
 	u32 *old_frame_ids = NULL;
 
 	if (tr_id) {
-		struct wprof_stack_trace *new_st = wprof_stacks_trace(hdr, tr_id);
+		struct wstack_trace *new_st = wstack_trace(hdr, tr_id);
 		new_depth = new_st->frame_mapping_cnt;
-		new_frame_ids = wprof_stacks_frame_ids(hdr, new_st);
+		new_frame_ids = wstack_frame_ids(hdr, new_st);
 	}
 	if (s->cs.last_tr_id)
-		old_frame_ids = wprof_stacks_frame_ids(hdr, wprof_stacks_trace(hdr, s->cs.last_tr_id));
+		old_frame_ids = wstack_frame_ids(hdr, wstack_trace(hdr, s->cs.last_tr_id));
 
 	/*
 	 * Treat the previous sample as consecutive only if it arrived within one
@@ -1235,8 +1234,8 @@ static void emit_embed_callstack(struct worker_state *w, const struct wprof_task
 	if (consecutive) {
 		/* Find common prefix between old and new stacks (matched by func_name_stroff) */
 		while (common < old_depth && common < new_depth) {
-			u32 old_key = wprof_stacks_frame(hdr, old_frame_ids[common])->func_name_stroff;
-			u32 new_key = wprof_stacks_frame(hdr, new_frame_ids[common])->func_name_stroff;
+			u32 old_key = wstack_frame(hdr, old_frame_ids[common])->func_name_stroff;
+			u32 new_key = wstack_frame(hdr, new_frame_ids[common])->func_name_stroff;
 			if (old_key != new_key)
 				break;
 			common++;
@@ -1254,7 +1253,7 @@ static void emit_embed_callstack(struct worker_state *w, const struct wprof_task
 
 	/* Close diverged old slices (deepest first) */
 	for (int d = old_depth - 1; d >= common; d--) {
-		const struct wprof_stack_frame *f = wprof_stacks_frame(hdr, old_frame_ids[d]);
+		const struct wstack_frame *f = wstack_frame(hdr, old_frame_ids[d]);
 		const char *name = format_stack_frame(hdr, f, name_buf, sizeof(name_buf), 0);
 		pb_iid name_iid = emit_intern_str(w, name);
 		emit_slice_end(s->track_id, s->cs.last_ts, iid_str(name_iid, name), IID_CAT_TIMER_CALLSTACK);
@@ -1262,7 +1261,7 @@ static void emit_embed_callstack(struct worker_state *w, const struct wprof_task
 
 	/* Open new slices (shallowest first) */
 	for (int d = common; d < new_depth; d++) {
-		const struct wprof_stack_frame *f = wprof_stacks_frame(hdr, new_frame_ids[d]);
+		const struct wstack_frame *f = wstack_frame(hdr, new_frame_ids[d]);
 		const char *name = format_stack_frame(hdr, f, name_buf, sizeof(name_buf), 0);
 		pb_iid name_iid = emit_intern_str(w, name);
 		emit_slice_begin(s->track_id, start_ts, iid_str(name_iid, name), IID_CAT_TIMER_CALLSTACK);
@@ -1287,13 +1286,13 @@ static void finalize_embed_callstacks(struct worker_state *w)
 	hashmap__for_each_entry(tracks, entry, bkt) {
 		struct track_state *s = entry->pvalue;
 
-		if (s->kind != DTK_TIMER_CALLSTACK_THREAD)
+		if (s->kind != DTK_TIMER_CALLSTACK)
 			continue;
 
-		u32 *frame_ids = wprof_stacks_frame_ids(hdr, wprof_stacks_trace(hdr, s->cs.last_tr_id));
+		u32 *frame_ids = wstack_frame_ids(hdr, wstack_trace(hdr, s->cs.last_tr_id));
 
 		for (int d = s->cs.active_depth - 1; d >= 0; d--) {
-			const struct wprof_stack_frame *f = wprof_stacks_frame(hdr, frame_ids[d]);
+			const struct wstack_frame *f = wstack_frame(hdr, frame_ids[d]);
 			const char *name = format_stack_frame(hdr, f, name_buf, sizeof(name_buf), 0);
 			pb_iid name_iid = emit_intern_str(w, name);
 			emit_slice_end(s->track_id, s->cs.last_ts, iid_str(name_iid, name), IID_CAT_TIMER_CALLSTACK);
@@ -3488,7 +3487,7 @@ static void emit_cuda_api(struct worker_state *w, const struct wevent *e)
 	emit_slice_end(track_uuid, clamp_ts(e->cuda_api.end_ts), iid_str(name_iid, name), IID_CAT_CUDA_API);
 
 	if (env.capture_pytrace) {
-		struct track_state *pf = track_state_get_or_add(DTK_PYTRACE_PROC_THREAD, task.tid, 0);
+		struct track_state *pf = track_state_get_or_add(DTK_PYTRACE, task.tid, 0);
 		if (pf->exists) {
 			u64 pf_track = trackid_pytrace_thread(task.tid);
 			emit_slice_begin(pf_track, clamp_ts(e->ts), iid_str(name_iid, name), IID_CAT_CUDA_API) {
@@ -3558,7 +3557,7 @@ static int process_cuda_api(struct worker_state *w, const struct wevent *e)
 
 static u64 ensure_pytrace_thread_track(int tid, const char *comm)
 {
-	struct track_state *s = track_state_get_or_add(DTK_PYTRACE_PROC_THREAD, tid, 0);
+	struct track_state *s = track_state_get_or_add(DTK_PYTRACE, tid, 0);
 	u64 track_uuid = trackid_pytrace_thread(tid);
 
 	if (!s->exists) {
@@ -3714,7 +3713,7 @@ static const char *utrace_probe_name(const struct utrace_cfg *cfg)
 
 static u64 ensure_utrace_thread_track(const struct wprof_task *t, u32 utrace_id)
 {
-	struct track_state *s = track_state_get_or_add(DTK_UTRACE_THREAD, t->tid, utrace_id);
+	struct track_state *s = track_state_get_or_add(DTK_UTRACE, t->tid, utrace_id);
 
 	if (!s->exists) {
 		const struct utrace_cfg *cfg = &env.utrace_cfgs[utrace_id];
@@ -4045,7 +4044,7 @@ static void emit_header_json(struct worker_state *w)
 	struct wprof_data_hdr *hdr = w->dump_hdr;
 	struct wprof_data_cfg *cfg = &hdr->cfg;
 
-	struct wprof_stacks_hdr *shdr = wprof_stacks_hdr(hdr);
+	struct wstack_hdr *shdr = wstack_hdr(hdr);
 	int stack_cnt = shdr ? shdr->stack_cnt - 1 : 0; /* exclude the dummy zero-entry */
 
 	json_obj_start(j);
@@ -4127,19 +4126,19 @@ static void emit_stacks_json(struct worker_state *w)
 	struct wprof_data_hdr *hdr = w->dump_hdr;
 	char frame_buf[1024];
 
-	struct wprof_stack_trace_record *trec;
-	wprof_for_each_stack_trace(trec, hdr, 0) {
+	struct wstack_trace_record *trec;
+	wstack_for_each_trace(trec, hdr, 0) {
 		json_obj_start(j);
 		json_kv_int(j, "id", trec->idx);
 
 		json_subarr_start(j, "frames");
 		bool has_src = false;
 		for (int i = 0; i < trec->frame_cnt; i++) {
-			const struct wprof_stack_frame *f = wprof_stacks_frame(hdr, trec->frame_ids[i]);
+			const struct wstack_frame *f = wstack_frame(hdr, trec->frame_ids[i]);
 			const char *name = format_stack_frame(hdr, f, frame_buf, sizeof(frame_buf), CS_FMT_FUNC_OFFSET);
 			json_arr_str(j, name);
 			if (!has_src && f->src_path_stroff) {
-				const char *src = wprof_stacks_str(hdr, f->src_path_stroff);
+				const char *src = wstack_str(hdr, f->src_path_stroff);
 				if (src && src[0])
 					has_src = true;
 			}
@@ -4149,8 +4148,8 @@ static void emit_stacks_json(struct worker_state *w)
 		if (has_src) {
 			json_subarr_start(j, "srcs");
 			for (int i = 0; i < trec->frame_cnt; i++) {
-				const struct wprof_stack_frame *f = wprof_stacks_frame(hdr, trec->frame_ids[i]);
-				const char *src = f->src_path_stroff ? wprof_stacks_str(hdr, f->src_path_stroff) : NULL;
+				const struct wstack_frame *f = wstack_frame(hdr, trec->frame_ids[i]);
+				const char *src = f->src_path_stroff ? wstack_str(hdr, f->src_path_stroff) : NULL;
 				if (src && src[0] && f->line_num > 0)
 					json_arr_fmt(j, "%s:%u", src, f->line_num);
 				else
@@ -4184,7 +4183,7 @@ int emit_trace(struct worker_state *w)
 			emit_track_descr_explicit(cur_stream, TRACK_UUID_CUDA, 0, "CUDA", 2000);
 
 		if (env.requested_stack_traces) {
-			struct wprof_stacks_hdr *shdr = wprof_stacks_hdr(w->dump_hdr);
+			struct wstack_hdr *shdr = wstack_hdr(w->dump_hdr);
 			w->stacks_used = calloc((shdr->stack_cnt + 63) / 64, sizeof(u64));
 			w->frames_used = calloc((shdr->frame_cnt + 63) / 64, sizeof(u64));
 		}
