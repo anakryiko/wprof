@@ -123,11 +123,19 @@ enum dyn_track_kind {
 	DTK_PROC_REQS,			/* requests of given PID (by PID) */
 	DTK_REQ,			/* single request of given PID (id1 = pid, id2 = req_id) */
 	DTK_REQ_THREAD,			/* request-participating thread (id1 = tid, id2 = req_id) */
-	DTK_REQ_THREAD_EMBED,		/* first-event-per-thread tracking for embed mode (id1 = tid, id2 = req_id) */
-	DTK_PYTRACE,			/* Python-traced thread track (by TID) */
-	DTK_UTRACE,			/* utrace per-config track (id1 = tid, id2 = utrace_id) */
+
+	/*
+	 * Children of the thread track, in desired display order. The enum value
+	 * is passed as sibling_order_rank, so ordering is implicit in declaration
+	 * order. DTK_UTRACE MUST stay last because utrace tracks use
+	 * (DTK_UTRACE + utrace_id) for their rank to differentiate the multiple
+	 * per-thread tracks under the same kind.
+	 */
 	DTK_TIMER,			/* per-thread timer track (id1 = tid) */
 	DTK_TIMER_CALLSTACK,		/* per-thread embedded timer callstack slice track (id1 = tid) */
+	DTK_PYTRACE,			/* Python-traced thread track (by TID) */
+	DTK_REQ_THREAD_EMBED,		/* first-event-per-thread tracking for embed mode (id1 = tid, id2 = req_id) */
+	DTK_UTRACE,			/* utrace per-config track (id1 = tid, id2 = utrace_id) */
 };
 
 struct track_key {
@@ -1080,7 +1088,8 @@ static void emit_track_descrs(struct worker_state *w, const struct wprof_task *t
 	if (!track_descr_emitted(tdk, t->tid)) {
 		track_descr_mark_emitted(tdk, t->tid);
 		emit_thread_track_descr(&w->stream, t, t->comm);
-		emit_track_descr(&w->stream, trackid_thread(t), trackid_thread_meta(t), t->comm, TK_THREAD);
+		/* EXPLICIT ordering: children sorted by sibling_order_rank (= DTK kind) */
+		emit_track_descr_explicit(&w->stream, trackid_thread(t), trackid_thread_meta(t), t->comm, TK_THREAD);
 	}
 }
 
@@ -1174,7 +1183,7 @@ static u64 ensure_timer_thread_track(const struct wprof_task *t)
 
 	if (!s->exists) {
 		emit_track_descr_impl(cur_stream, s->track_id, trackid_thread(t),
-				      "TIMER", 0, CHILD_ORDER_CHRONO, MERGE_NONE);
+				      "TIMER", s->kind, CHILD_ORDER_CHRONO, MERGE_NONE);
 		s->exists = true;
 	}
 	return s->track_id;
@@ -1193,19 +1202,9 @@ static void emit_embed_callstack(struct worker_state *w, const struct wprof_task
 	struct wprof_data_hdr *hdr = w->dump_hdr;
 	struct track_state *s = track_state_get_or_add(DTK_TIMER_CALLSTACK, t->tid, 0);
 
-	/*
-	 * Lazy track descriptor emit, once per thread.
-	 *
-	 * TODO: TIMER CALLSTACKS often renders before TIMER in Perfetto because
-	 * its first slice starts at (ts - period) which is earlier than TIMER's
-	 * instant at ts, and the parent thread track uses CHILD_ORDER_CHRONO.
-	 * Switching the parent thread track to CHILD_ORDER_EXPLICIT and assigning
-	 * sibling_order_rank to all child tracks (TIMER, TIMER CALLSTACKS,
-	 * REQUESTS, utrace, ...) would fix this.
-	 */
 	if (!s->exists) {
 		emit_track_descr_impl(cur_stream, s->track_id, trackid_thread(t),
-				      "TIMER CALLSTACKS", 0, CHILD_ORDER_CHRONO, MERGE_NONE);
+				      "TIMER CALLSTACKS", s->kind, CHILD_ORDER_CHRONO, MERGE_NONE);
 		s->exists = true;
 	}
 
@@ -2611,15 +2610,14 @@ static u64 ensure_req_thread_track(const struct wprof_task *t, u64 req_id, const
 
 static u64 ensure_thread_req_track(const struct wprof_task *t)
 {
-	struct track_state *s = track_state_get_or_add(TK_THREAD_REQ, t->tid, 0);
-	u64 track_uuid = TRACK_UUID(TK_THREAD_REQ, track_tid(t));
+	struct track_state *s = track_state_get_or_add(DTK_REQ_THREAD_EMBED, t->tid, 0);
 
 	if (!s->exists) {
-		emit_track_descr_impl(cur_stream, track_uuid, trackid_thread(t),
-				      "REQUESTS", TK_THREAD_REQ, CHILD_ORDER_CHRONO, MERGE_NONE);
+		emit_track_descr_impl(cur_stream, s->track_id, trackid_thread(t),
+				      "REQUESTS", s->kind, CHILD_ORDER_CHRONO, MERGE_NONE);
 		s->exists = true;
 	}
-	return track_uuid;
+	return s->track_id;
 }
 
 static bool req_embed_first_event(const struct wprof_task *t, u64 req_id)
@@ -3563,7 +3561,7 @@ static u64 ensure_pytrace_thread_track(int tid, const char *comm)
 	if (!s->exists) {
 		emit_track_descr_impl(cur_stream, track_uuid,
 				      TRACK_UUID(TK_THREAD, tid),
-				      comm, tid,
+				      comm, s->kind,
 				      CHILD_ORDER_CHRONO, MERGE_NONE);
 		s->exists = true;
 	}
@@ -3730,7 +3728,7 @@ static u64 ensure_utrace_thread_track(const struct wprof_task *t, u32 utrace_id)
 			name = utrace_probe_name(cfg);
 		}
 
-		emit_track_descr(cur_stream, s->track_id, trackid_thread(t), name, utrace_id);
+		emit_track_descr(cur_stream, s->track_id, trackid_thread(t), name, s->kind + utrace_id);
 		s->exists = true;
 	}
 	return s->track_id;
