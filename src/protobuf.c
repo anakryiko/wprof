@@ -174,6 +174,7 @@ static const char *pb_static_strs[] = {
 	[IID_CAT_SCX_DSQ] = "SCX_DSQ",
 	[IID_CAT_PYTRACE] = "PYTRACE",
 	[IID_CAT_UTRACE] = "UTRACE",
+	[IID_CAT_TIMER_CALLSTACK] = "TIMER_CALLSTACK",
 
 	[IID_NAME_TIMER] = "TIMER",
 	[IID_NAME_EXEC] = "EXEC",

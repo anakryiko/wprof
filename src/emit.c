@@ -69,6 +69,15 @@ static struct hashmap *tasks;
 static struct hashmap *emitted_descrs;
 static __thread pb_ostream_t *cur_stream;
 
+static inline u64 clamp_ts(u64 ts)
+{
+	if ((long)(ts - env.sess_start_ts) < 0)
+		return env.sess_start_ts;
+	if ((long)(ts - env.sess_end_ts) > 0)
+		return env.sess_end_ts;
+	return ts;
+}
+
 enum track_kind {
 	TK_PROCESS_META,	/* process metadata track (by PID), empty anchor */
 	TK_THREAD_META,		/* thread metadata track (by TID), empty anchor */
@@ -118,6 +127,7 @@ enum dyn_track_kind {
 	DTK_PYTRACE_PROC_THREAD,/* Python-traced thread track (by TID) */
 	DTK_UTRACE_THREAD,	/* utrace per-config track (id1 = tid, id2 = utrace_id) */
 	DTK_TIMER_THREAD,	/* per-thread timer track (id1 = tid) */
+	DTK_TIMER_CALLSTACK_THREAD,	/* per-thread embedded timer callstack slice track (id1 = tid) */
 };
 
 struct track_key {
@@ -126,11 +136,51 @@ struct track_key {
 	u64 id2;
 };
 
+/*
+ * Tagged union of dynamic track state. Common fields are always present;
+ * the per-kind extension union is allocated only for kinds that need extra
+ * state (see track_state_size). The `kind` field discriminates the union.
+ */
 struct track_state {
-	bool exists;
+	u32 kind : 31;		/* enum dyn_track_kind */
+	u32 exists : 1;		/* track descriptor has been emitted */
 	u32 track_id;
-	u64 start_ts;   /* earliest request start timestamp (for DTK_REQ) */
+
+	union {
+		/* DTK_REQ */
+		struct {
+			u64 start_ts;	/* earliest request start timestamp */
+		} req;
+
+		/* DTK_TIMER_CALLSTACK_THREAD */
+		struct {
+			u64 last_ts;
+			u32 last_tr_id;
+			int active_depth;
+		} cs;
+	};
 };
+
+static size_t track_state_size(enum dyn_track_kind kind)
+{
+	/* TODO: drop _THREAD suffix from DTK_xxx names (inconsistent). */
+	switch (kind) {
+	case DTK_REQ:
+		return offsetofend(struct track_state, req);
+	case DTK_TIMER_CALLSTACK_THREAD:
+		return offsetofend(struct track_state, cs);
+	case DTK_PROC_REQS:
+	case DTK_REQ_THREAD:
+	case DTK_REQ_THREAD_EMBED:
+	case DTK_PYTRACE_PROC_THREAD:
+	case DTK_UTRACE_THREAD:
+	case DTK_TIMER_THREAD:
+		return offsetof(struct track_state, req);
+	default:
+		eprintf("BUG: unknown dynamic track kind %d\n", kind);
+		exit(1);
+	}
+}
 
 static inline size_t track_hash_fn(long key, void *ctx)
 {
@@ -166,8 +216,9 @@ static struct track_state *track_state_get_or_add(enum dyn_track_kind kind, u32 
 		return s;
 
 	struct track_key *pk = calloc(1, sizeof(struct track_key));
-	struct track_state *ps = calloc(1, sizeof(struct track_state));
+	struct track_state *ps = calloc(1, track_state_size(kind));
 
+	ps->kind = kind;
 	ps->track_id = TRACK_UUID(TK_DYNAMIC, dyn_track_next_id++);
 
 	*pk = k;
@@ -1130,6 +1181,128 @@ static u64 ensure_timer_thread_track(const struct wprof_task *t)
 	return s->track_id;
 }
 
+/*
+ * Render a timer-sampled call stack as nested Perfetto slices.
+ *
+ * Each consecutive timer sample for the same thread either continues an
+ * already-open slice (frame still on stack) or closes/opens slices as the
+ * stack diverges. Frames are matched by func_name_stroff so that the same
+ * function at different PCs is treated as the same active slice.
+ */
+static void emit_embed_callstack(struct worker_state *w, const struct wprof_task *t, u64 ts, u32 tr_id)
+{
+	struct wprof_data_hdr *hdr = w->dump_hdr;
+	struct track_state *s = track_state_get_or_add(DTK_TIMER_CALLSTACK_THREAD, t->tid, 0);
+
+	/*
+	 * Lazy track descriptor emit, once per thread.
+	 *
+	 * TODO: TIMER CALLSTACKS often renders before TIMER in Perfetto because
+	 * its first slice starts at (ts - period) which is earlier than TIMER's
+	 * instant at ts, and the parent thread track uses CHILD_ORDER_CHRONO.
+	 * Switching the parent thread track to CHILD_ORDER_EXPLICIT and assigning
+	 * sibling_order_rank to all child tracks (TIMER, TIMER CALLSTACKS,
+	 * REQUESTS, utrace, ...) would fix this.
+	 */
+	if (!s->exists) {
+		emit_track_descr_impl(cur_stream, s->track_id, trackid_thread(t),
+				      "TIMER CALLSTACKS", 0, CHILD_ORDER_CHRONO, MERGE_NONE);
+		s->exists = true;
+	}
+
+	int old_depth = s->cs.active_depth;
+	int new_depth = 0;
+	u32 *new_frame_ids = NULL;
+	u32 *old_frame_ids = NULL;
+
+	if (tr_id) {
+		struct wprof_stack_trace *new_st = wprof_stacks_trace(hdr, tr_id);
+		new_depth = new_st->frame_mapping_cnt;
+		new_frame_ids = wprof_stacks_frame_ids(hdr, new_st);
+	}
+	if (s->cs.last_tr_id)
+		old_frame_ids = wprof_stacks_frame_ids(hdr, wprof_stacks_trace(hdr, s->cs.last_tr_id));
+
+	/*
+	 * Treat the previous sample as consecutive only if it arrived within one
+	 * timer period (plus slop for capture-time jitter); otherwise treat the
+	 * current sample as a fresh start.
+	 */
+	const u64 slop_ns = 10000; /* 10us between timer interrupt and capture */
+	bool consecutive = s->cs.last_tr_id && (ts - s->cs.last_ts) <= env.timer_period_ns + slop_ns;
+
+	int common = 0;
+	if (consecutive) {
+		/* Find common prefix between old and new stacks (matched by func_name_stroff) */
+		while (common < old_depth && common < new_depth) {
+			u32 old_key = wprof_stacks_frame(hdr, old_frame_ids[common])->func_name_stroff;
+			u32 new_key = wprof_stacks_frame(hdr, new_frame_ids[common])->func_name_stroff;
+			if (old_key != new_key)
+				break;
+			common++;
+		}
+	}
+
+	/*
+	 * Close diverged slices at the previous sample's ts; open new slices at
+	 * the same point for consecutive samples (no visual gap). For
+	 * non-consecutive (gap too large) or first-ever samples, open at
+	 * ts - period to reflect just the current sample's interval.
+	 */
+	u64 start_ts = consecutive ? s->cs.last_ts : clamp_ts(ts - env.timer_period_ns);
+	char name_buf[512];
+
+	/* Close diverged old slices (deepest first) */
+	for (int d = old_depth - 1; d >= common; d--) {
+		const struct wprof_stack_frame *f = wprof_stacks_frame(hdr, old_frame_ids[d]);
+		const char *name = format_stack_frame(hdr, f, name_buf, sizeof(name_buf), 0);
+		pb_iid name_iid = emit_intern_str(w, name);
+		emit_slice_end(s->track_id, s->cs.last_ts, iid_str(name_iid, name), IID_CAT_TIMER_CALLSTACK);
+	}
+
+	/* Open new slices (shallowest first) */
+	for (int d = common; d < new_depth; d++) {
+		const struct wprof_stack_frame *f = wprof_stacks_frame(hdr, new_frame_ids[d]);
+		const char *name = format_stack_frame(hdr, f, name_buf, sizeof(name_buf), 0);
+		pb_iid name_iid = emit_intern_str(w, name);
+		emit_slice_begin(s->track_id, start_ts, iid_str(name_iid, name), IID_CAT_TIMER_CALLSTACK);
+	}
+
+	s->cs.last_ts = ts;
+	s->cs.last_tr_id = tr_id;
+	s->cs.active_depth = new_depth;
+}
+
+/*
+ * Close all open embed-callstack slices at end of trace, at the last observed
+ * sample timestamp (the timer event represents the end of its slice).
+ */
+static void finalize_embed_callstacks(struct worker_state *w)
+{
+	struct wprof_data_hdr *hdr = w->dump_hdr;
+	struct hashmap_entry *entry;
+	int bkt;
+	char name_buf[512];
+
+	hashmap__for_each_entry(tracks, entry, bkt) {
+		struct track_state *s = entry->pvalue;
+
+		if (s->kind != DTK_TIMER_CALLSTACK_THREAD)
+			continue;
+
+		u32 *frame_ids = wprof_stacks_frame_ids(hdr, wprof_stacks_trace(hdr, s->cs.last_tr_id));
+
+		for (int d = s->cs.active_depth - 1; d >= 0; d--) {
+			const struct wprof_stack_frame *f = wprof_stacks_frame(hdr, frame_ids[d]);
+			const char *name = format_stack_frame(hdr, f, name_buf, sizeof(name_buf), 0);
+			pb_iid name_iid = emit_intern_str(w, name);
+			emit_slice_end(s->track_id, s->cs.last_ts, iid_str(name_iid, name), IID_CAT_TIMER_CALLSTACK);
+		}
+
+		s->cs.active_depth = 0;
+	}
+}
+
 static void emit_timer(struct worker_state *w, const struct wevent *e)
 {
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
@@ -1151,6 +1324,9 @@ static void emit_timer(struct worker_state *w, const struct wevent *e)
 			emit_callstack(w, tr_id);
 		}
 	}
+
+	if (env.emit_embed_stacks)
+		emit_embed_callstack(w, &task, e->ts, tr_id);
 }
 
 static void emit_timer_json(struct worker_state *w, const struct wevent *e)
@@ -1980,14 +2156,6 @@ static int process_waking(struct worker_state *w, const struct wevent *e)
 	return 0;
 }
 
-static inline u64 clamp_ts(u64 ts)
-{
-	if ((long)(ts - env.sess_start_ts) < 0)
-		return env.sess_start_ts;
-	if ((long)(ts - env.sess_end_ts) > 0)
-		return env.sess_end_ts;
-	return ts;
-}
 
 /* EV_HARDIRQ_EXIT */
 static void emit_hardirq_exit(struct worker_state *w, const struct wevent *e)
@@ -2500,10 +2668,10 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e)
 	switch (e->req.req_event) {
 	case REQ_BEGIN: {
 		struct track_state *rs = track_state_get_or_add(DTK_REQ, task.pid, req_id);
-		if (!rs->start_ts || (long)(e->ts - rs->start_ts) < 0)
-			rs->start_ts = e->ts;
+		if (!rs->req.start_ts || (long)(e->ts - rs->req.start_ts) < 0)
+			rs->req.start_ts = e->ts;
 
-		emit_slice_begin(req_track_uuid, rs->start_ts, iid_str(req_name_iid, req_name), IID_CAT_REQUEST) {
+		emit_slice_begin(req_track_uuid, rs->req.start_ts, iid_str(req_name_iid, req_name), IID_CAT_REQUEST) {
 			emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
 			emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
 			emit_flow_id(req_id);
@@ -2559,7 +2727,7 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e)
 		break;
 	case REQ_END: {
 		struct track_state *rs = track_state_find(DTK_REQ, task.pid, req_id);
-		u64 req_start_ts = rs && rs->start_ts ? rs->start_ts : e->req.req_ts;
+		u64 req_start_ts = rs && rs->req.start_ts ? rs->req.start_ts : e->req.req_ts;
 
 		if (env.emit_req_embed) {
 			emit_instant(thread_req_track, e->ts, iid_str(thread_req_name_iid, thread_req_name), IID_CAT_REQUEST_END) {
@@ -2691,8 +2859,8 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e)
 	switch (e->req_task.req_task_event) {
 	case REQ_TASK_ENQUEUE: {
 		struct track_state *rs = track_state_get_or_add(DTK_REQ, task.pid, req_id);
-		if (!rs->start_ts || (long)(e->ts - rs->start_ts) < 0)
-			rs->start_ts = e->ts;
+		if (!rs->req.start_ts || (long)(e->ts - rs->req.start_ts) < 0)
+			rs->req.start_ts = e->ts;
 
 		if (env.emit_req_embed) {
 			emit_instant(thread_req_track, e->ts,
@@ -4025,6 +4193,9 @@ int emit_trace(struct worker_state *w)
 	err = process_events(w, emit_fns, ARRAY_SIZE(emit_fns));
 	if (err)
 		return err;
+
+	if (env.emit_embed_stacks && !env.json_path)
+		finalize_embed_callstacks(w);
 
 	if (!env.json_path) {
 		if (env.emit_sched_view) {

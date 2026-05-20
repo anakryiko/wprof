@@ -1427,6 +1427,7 @@ int main(int argc, char **argv)
 		env.duration_ns = env.replay_end_offset_ns - env.replay_start_offset_ns;
 
 		env.timer_freq_hz = cfg->timer_freq_hz;
+		env.timer_period_ns = 1000000000ULL / env.timer_freq_hz;
 
 		/* validate data capture config compatibility */
 		for (int i = 0; i < ARRAY_SIZE(capture_features); i++) {
@@ -1535,6 +1536,7 @@ int main(int argc, char **argv)
 	/* Init data capture settings defaults, if they were not set */
 	if (env.timer_freq_hz == 0)
 		env.timer_freq_hz = DEFAULT_TIMER_FREQ_HZ;
+	env.timer_period_ns = 1000000000ULL / env.timer_freq_hz;
 	if (env.duration_ns == 0)
 		env.duration_ns = DEFAULT_DURATION_MS * 1000000ULL;
 	if (env.requested_stack_traces == ST_UNSET)
