@@ -98,8 +98,10 @@ struct env {
 	bool emit_pystacks_only;
 	bool emit_req_split;
 	bool emit_req_embed;
+	bool emit_embed_stacks;
 
 	int timer_freq_hz;
+	u64 timer_period_ns;	/* derived from timer_freq_hz */
 
 	struct wprof_bpf *skel;
 	const struct wprof_stats *stats;

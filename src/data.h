@@ -293,6 +293,21 @@ static inline struct wprof_stack_frame *wprof_stacks_frame(struct wprof_data_hdr
 	return (void *)shdr + sizeof(*shdr) + shdr->frames_off + fr_idx * sizeof(struct wprof_stack_frame);
 }
 
+/*
+ * TODO: rename wprof_stacks_* to wstack_* for symmetry with wevent_*.
+ */
+static inline struct wprof_stack_trace *wprof_stacks_trace(struct wprof_data_hdr *hdr, u32 tr_id)
+{
+	struct wprof_stacks_hdr *shdr = (void *)hdr + hdr->hdr_sz + hdr->stacks_off;
+	return (void *)shdr + sizeof(*shdr) + shdr->stacks_off + tr_id * sizeof(struct wprof_stack_trace);
+}
+
+static inline u32 *wprof_stacks_frame_ids(struct wprof_data_hdr *hdr, struct wprof_stack_trace *t)
+{
+	struct wprof_stacks_hdr *shdr = (void *)hdr + hdr->hdr_sz + hdr->stacks_off;
+	return (u32 *)((char *)shdr + sizeof(*shdr) + shdr->frame_mappings_off + t->frame_mapping_idx * sizeof(u32));
+}
+
 static inline const char *wevent_str(struct wprof_data_hdr *hdr, u32 off)
 {
 	return (void *)hdr + hdr->hdr_sz + hdr->strs_off + off;
