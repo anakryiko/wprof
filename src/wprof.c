@@ -1360,10 +1360,10 @@ int main(int argc, char **argv)
 				wprintf("        %-*s%.3lfMB (%llu records)\n", w - 8, wevent_kind_name(i), kind_sz[i] / MB, kind_cnt[i]);
 			}
 			if (cfg->captured_stack_traces) {
-				const struct wprof_stacks_hdr *shdr = wprof_stacks_hdr(dump_hdr);
+				const struct wstack_hdr *shdr = wstack_hdr(dump_hdr);
 				wprintf("    %-*s%.3lfMB (%u unique stacks)\n", w - 4, "Stack traces:", dump_hdr->stacks_sz / MB, shdr->stack_cnt);
-				wprintf("        %-*s%.3lfMB (%u entries)\n", w - 8, "Call stacks:", shdr->stack_cnt * sizeof(struct wprof_stack_trace) / MB, shdr->stack_cnt);
-				wprintf("        %-*s%.3lfMB (%u entries)\n", w - 8, "Frames:", shdr->frame_cnt * sizeof(struct wprof_stack_frame) / MB, shdr->frame_cnt);
+				wprintf("        %-*s%.3lfMB (%u entries)\n", w - 8, "Call stacks:", shdr->stack_cnt * sizeof(struct wstack_trace) / MB, shdr->stack_cnt);
+				wprintf("        %-*s%.3lfMB (%u entries)\n", w - 8, "Frames:", shdr->frame_cnt * sizeof(struct wstack_frame) / MB, shdr->frame_cnt);
 				wprintf("        %-*s%.3lfMB\n", w - 8, "Strings:", shdr->strs_sz / MB);
 			}
 			if (dump_hdr->pmu_def_real_cnt + dump_hdr->pmu_def_deriv_cnt)

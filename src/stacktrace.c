@@ -57,7 +57,7 @@ struct native_stack_info {
  */
 static int pystacks_write_frames(struct worker_state *workers, int worker_cnt,
 				 struct strset *strs, FILE *stacks_dump,
-				 struct wprof_stacks_hdr *hdr,
+				 struct wstack_hdr *hdr,
 				 struct py_stack **py_stacks_out, size_t *py_stack_cnt_out)
 {
 	struct py_stack *py_stacks = NULL;
@@ -86,7 +86,7 @@ static int pystacks_write_frames(struct worker_state *workers, int worker_cnt,
 				const char *func_name = pysym_qualname(sym_id);
 				const char *src_path = pysym_filename(sym_id);
 
-				struct wprof_stack_frame frm = {
+				struct wstack_frame frm = {
 					.func_offset = inst_idx,
 					.flags = WSF_PYTHON,
 					.func_name_stroff = strset__add_str(strs, func_name ?: ""),
@@ -170,7 +170,7 @@ static void pystacks_resolve_native_ids(struct worker_state *workers, int worker
  * Write a range of native frame IDs from a stack frame index into stacks_dump.
  */
 static int write_native_frame_ids(struct symb_state *state, int start_idx, int from, int to,
-				  FILE *stacks_dump, struct wprof_stacks_hdr *hdr, u32 *mapped_cnt)
+				  FILE *stacks_dump, struct wstack_hdr *hdr, u32 *mapped_cnt)
 {
 	for (int j = from; j < to; j++) {
 		const struct stack_frame_index *f = &state->sframe_idx[start_idx + j];
@@ -190,7 +190,7 @@ static int write_native_frame_ids(struct symb_state *state, int start_idx, int f
  * Write a range of Python frame IDs into stacks_dump.
  */
 static int write_py_frame_ids(u32 start_iid, u32 cnt, FILE *stacks_dump,
-			      struct wprof_stacks_hdr *hdr, u32 *mapped_cnt)
+			      struct wstack_hdr *hdr, u32 *mapped_cnt)
 {
 	for (u32 fi = 0; fi < cnt; fi++) {
 		u32 fiid = start_iid + fi;
@@ -208,7 +208,7 @@ static int write_py_frame_ids(u32 start_iid, u32 cnt, FILE *stacks_dump,
  */
 static int pystacks_write_frame_mappings(struct symb_state *state,
 					 struct native_stack_info *native_stacks, u32 trace_iid,
-					 FILE *stacks_dump, struct wprof_stacks_hdr *hdr,
+					 FILE *stacks_dump, struct wstack_hdr *hdr,
 					 struct py_stack *py_stacks, size_t py_stack_cnt)
 {
 	int err;
@@ -520,7 +520,7 @@ int process_stack_traces(struct worker_state *workers, int worker_cnt, FILE *sta
 		}
 	}
 
-	struct wprof_stacks_hdr hdr;
+	struct wstack_hdr hdr;
 	memset(&hdr, 0, sizeof(hdr));
 	if (fwrite(&hdr, sizeof(hdr), 1, stacks_dump) != 1) {
 		err = -errno;
@@ -537,7 +537,7 @@ int process_stack_traces(struct worker_state *workers, int worker_cnt, FILE *sta
 	 * all the time
 	 */
 	{
-		struct wprof_stack_frame dummy_frm;
+		struct wstack_frame dummy_frm;
 		memset(&dummy_frm, 0, sizeof(dummy_frm));
 		if (fwrite(&dummy_frm, sizeof(dummy_frm), 1, stacks_dump) != 1) {
 			err = -errno;
@@ -690,7 +690,7 @@ int process_stack_traces(struct worker_state *workers, int worker_cnt, FILE *sta
 				for (int k = 0, n = 1 + sym->inlined_cnt; k < n; k++) {
 					const char *func_name = k == 0 ? sym->name : sym->inlined[k - 1].name;
 					const char *src_path = k == 0 ? sym->code_info.file : sym->inlined[k -1].code_info.file;
-					struct wprof_stack_frame frm = {
+					struct wstack_frame frm = {
 						.func_offset = k == 0 ? sym->offset : 0,
 						.flags = (k == 0 ? 0 : WSF_INLINED) | (is_kernel ? WSF_KERNEL : 0),
 						.func_name_stroff = strset__add_str(strs, func_name ?: ""),
@@ -715,7 +715,7 @@ int process_stack_traces(struct worker_state *workers, int worker_cnt, FILE *sta
 				state->sframe_idx[start + i].sym = &syms->syms[j];
 				j++;
 			} else {
-				struct wprof_stack_frame frm = {
+				struct wstack_frame frm = {
 					.func_offset = state->sframe_idx[start + i].addr,
 					.flags = WSF_UNSYMBOLIZED | (is_kernel ? WSF_KERNEL : 0),
 				};
@@ -947,7 +947,7 @@ int process_stack_traces(struct worker_state *workers, int worker_cnt, FILE *sta
 	 * all the time)
 	 */
 	{
-		struct wprof_stack_trace dummy_stack;
+		struct wstack_trace dummy_stack;
 		memset(&dummy_stack, 0, sizeof(dummy_stack));
 		if (fwrite(&dummy_stack, sizeof(dummy_stack), 1, stacks_dump) != 1) {
 			err = -errno;
@@ -962,7 +962,7 @@ int process_stack_traces(struct worker_state *workers, int worker_cnt, FILE *sta
 		if (i > 0 && stack_trace_eq(&state->strace_idx[i - 1], t, state))
 			continue;
 
-		struct wprof_stack_trace stack = {
+		struct wstack_trace stack = {
 			.frame_mapping_idx = t->mapped_frame_idx,
 			.frame_mapping_cnt = t->mapped_frame_cnt,
 		};
@@ -977,7 +977,7 @@ int process_stack_traces(struct worker_state *workers, int worker_cnt, FILE *sta
 	/* Write Python stack trace records */
 	for (size_t i = 0; i < py_stack_cnt; i++) {
 		struct py_stack *ps = &py_stacks[i];
-		struct wprof_stack_trace stack = {
+		struct wstack_trace stack = {
 			.frame_mapping_idx = ps->mapped_frame_idx,
 			.frame_mapping_cnt = ps->mapped_frame_cnt,
 		};
@@ -1052,14 +1052,14 @@ int process_stack_traces(struct worker_state *workers, int worker_cnt, FILE *sta
 #if DEBUG_SYMBOLIZATION
 void debug_dump_stack_traces(struct worker_state *w)
 {
-	struct wprof_stack_frame_record *frec;
-	wprof_for_each_stack_frame(frec, w->dump_hdr, 0) {
+	struct wstack_frame_record *frec;
+	wstack_for_each_frame(frec, w->dump_hdr, 0) {
 		const char *indent = "";
-		const struct wprof_stack_frame *f = frec->f;
+		const struct wstack_frame *f = frec->f;
 		u32 fr_idx = frec->idx;
 
-		const char *fname = f->func_name_stroff ? wprof_stacks_str(w->dump_hdr, f->func_name_stroff) : "???";
-		const char *src = f->src_path_stroff ? wprof_stacks_str(w->dump_hdr, f->src_path_stroff) : "???";
+		const char *fname = f->func_name_stroff ? wstack_str(w->dump_hdr, f->func_name_stroff) : "???";
+		const char *src = f->src_path_stroff ? wstack_str(w->dump_hdr, f->src_path_stroff) : "???";
 		eprintf("%sFRAME #%d: [%c] '%s'+%llx (%s%s), %s:%d (ADDR %llx)\n",
 				indent, fr_idx,
 				f->flags & WSF_KERNEL ? 'K' : 'U',
@@ -1068,8 +1068,8 @@ void debug_dump_stack_traces(struct worker_state *w)
 				f->flags & WSF_UNSYMBOLIZED ? "UNKNOWN" : "",
 				src, f->line_num, f->addr);
 	}
-	struct wprof_stack_trace_record *trec;
-	wprof_for_each_stack_trace(trec, w->dump_hdr, 0) {
+	struct wstack_trace_record *trec;
+	wstack_for_each_trace(trec, w->dump_hdr, 0) {
 		const char *indent = "    ";
 
 		eprintf("STACK #%d (%u -> %u) HAS %u FRAMES:\n",
@@ -1079,10 +1079,10 @@ void debug_dump_stack_traces(struct worker_state *w)
 
 		for (int i = 0; i < trec->t->frame_mapping_cnt; i++) {
 			u32 fr_idx = trec->frame_ids[i];
-			const struct wprof_stack_frame *f = wprof_stacks_frame(w->dump_hdr, fr_idx);
+			const struct wstack_frame *f = wstack_frame(w->dump_hdr, fr_idx);
 
-			const char *fname = f->func_name_stroff ? wprof_stacks_str(w->dump_hdr, f->func_name_stroff) : "???";
-			const char *src = f->src_path_stroff ? wprof_stacks_str(w->dump_hdr, f->src_path_stroff) : "???";
+			const char *fname = f->func_name_stroff ? wstack_str(w->dump_hdr, f->func_name_stroff) : "???";
+			const char *src = f->src_path_stroff ? wstack_str(w->dump_hdr, f->src_path_stroff) : "???";
 			eprintf("%sFRAME #%d: [%c] '%s'+%llx (%s%s), %s:%d (ADDR %llx)\n",
 					indent, fr_idx,
 					f->flags & WSF_KERNEL ? 'K' : 'U',
@@ -1113,15 +1113,15 @@ static __always_inline bool bit_is_set(u64 *bitmask, int id)
 	return bitmask[id / 64] & (1ULL << (id % 64));
 }
 
-const char *format_stack_frame(struct wprof_data_hdr *hdr, const struct wprof_stack_frame *f,
+const char *format_stack_frame(struct wprof_data_hdr *hdr, const struct wstack_frame *f,
 			       char *buf, size_t buf_sz, enum callstack_fmt fmt)
 {
-	const char *sym_name = f->func_name_stroff ? wprof_stacks_str(hdr, f->func_name_stroff) : NULL;
+	const char *sym_name = f->func_name_stroff ? wstack_str(hdr, f->func_name_stroff) : NULL;
 	if (!sym_name)
 		return (f->flags & WSF_KERNEL) ? "[K] <unknown>" : "[U] <unknown>";
 
 	const char *prefix = (f->flags & WSF_PYTHON) ? "Py" : (f->flags & WSF_KERNEL) ? "K" : "U";
-	const char *src = f->src_path_stroff ? wprof_stacks_str(hdr, f->src_path_stroff) : NULL;
+	const char *src = f->src_path_stroff ? wstack_str(hdr, f->src_path_stroff) : NULL;
 
 	if ((f->flags & WSF_PYTHON) && (fmt & CS_FMT_PY_SRC) && src && src[0] && f->line_num > 0) {
 		/* strip container overlay prefix: /dev/shm/.../...-ns-NNNNN/path → path */
@@ -1166,13 +1166,13 @@ int generate_stack_traces(struct worker_state *w)
 	pb_iid user_unkn_iid = str_iid_for(&fname_iids, "[U] <unknown>", NULL, NULL);
 	append_str_iid(&strace_iids.func_names, user_unkn_iid, "[U] <unknown>");
 
-	struct wprof_stack_trace_record *trec;
-	wprof_for_each_stack_trace(trec, w->dump_hdr, 0) {
+	struct wstack_trace_record *trec;
+	wstack_for_each_trace(trec, w->dump_hdr, 0) {
 		if (!bit_is_set(w->stacks_used, trec->idx))
 			continue;
 
 		for (int i = 0; i < trec->frame_cnt; i++) {
-			struct wprof_stack_frame *f = wprof_stacks_frame(w->dump_hdr, trec->frame_ids[i]);
+			struct wstack_frame *f = wstack_frame(w->dump_hdr, trec->frame_ids[i]);
 			if (env.emit_pystacks_only && !(f->flags & WSF_PYTHON))
 				continue;
 			append_callstack_frame_iid(&strace_iids.callstacks, trec->idx, trec->frame_ids[i]);
@@ -1180,12 +1180,12 @@ int generate_stack_traces(struct worker_state *w)
 	}
 
 	char sym_buf[1024];
-	struct wprof_stack_frame_record *frec;
-	wprof_for_each_stack_frame(frec, w->dump_hdr, 0) {
+	struct wstack_frame_record *frec;
+	wstack_for_each_frame(frec, w->dump_hdr, 0) {
 		if (!bit_is_set(w->frames_used, frec->idx))
 			continue;
 
-		struct wprof_stack_frame *f = frec->f;
+		struct wstack_frame *f = frec->f;
 		pb_iid fname_iid = f->flags & WSF_KERNEL ? kern_unkn_iid : user_unkn_iid;
 		bool new_iid = false;
 		const char *sym_name = format_stack_frame(w->dump_hdr, f, sym_buf, sizeof(sym_buf), CS_FMT_PY_SRC);
@@ -1215,8 +1215,8 @@ int generate_stack_traces(struct worker_state *w)
 
 void mark_stack_trace_used(struct worker_state *w, int stack_id)
 {
-	struct wprof_stack_trace_iter tr_it = wprof_stack_trace_iter_new(w->dump_hdr, stack_id);
-	struct wprof_stack_trace_record *trec = wprof_stack_trace_iter_next(&tr_it);
+	struct wstack_trace_iter tr_it = wstack_trace_iter_new(w->dump_hdr, stack_id);
+	struct wstack_trace_record *trec = wstack_trace_iter_next(&tr_it);
 
 	if (!trec)
 		return;
@@ -1226,7 +1226,7 @@ void mark_stack_trace_used(struct worker_state *w, int stack_id)
 
 	bool has_frames = false;
 	for (int i = 0; i < trec->frame_cnt; i++) {
-		struct wprof_stack_frame *f = wprof_stacks_frame(w->dump_hdr, trec->frame_ids[i]);
+		struct wstack_frame *f = wstack_frame(w->dump_hdr, trec->frame_ids[i]);
 		if (env.emit_pystacks_only && !(f->flags & WSF_PYTHON))
 			continue;
 		bit_set(w->frames_used, trec->frame_ids[i]);

@@ -102,7 +102,7 @@ enum callstack_fmt {
 	CS_FMT_PY_SRC		= 1 << 1, /* embed Python source path:line into name */
 };
 
-const char *format_stack_frame(struct wprof_data_hdr *hdr, const struct wprof_stack_frame *f,
+const char *format_stack_frame(struct wprof_data_hdr *hdr, const struct wstack_frame *f,
 			       char *buf, size_t buf_sz, enum callstack_fmt fmt);
 
 void mark_stack_trace_used(struct worker_state *w, int stack_id);
