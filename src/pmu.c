@@ -52,12 +52,12 @@ struct hw_cache_event {
 
 static const struct hw_cache_event hw_cache_events[] = {
 	/* L1 Instruction cache */
-	{ "L1-icache-loads", PERF_COUNT_HW_CACHE_L1I, PERF_COUNT_HW_CACHE_OP_READ, PERF_COUNT_HW_CACHE_RESULT_ACCESS },
-	{ "L1-icache-load-misses", PERF_COUNT_HW_CACHE_L1I, PERF_COUNT_HW_CACHE_OP_READ, PERF_COUNT_HW_CACHE_RESULT_MISS },
+	{ "l1-icache-loads", PERF_COUNT_HW_CACHE_L1I, PERF_COUNT_HW_CACHE_OP_READ, PERF_COUNT_HW_CACHE_RESULT_ACCESS },
+	{ "l1-icache-load-misses", PERF_COUNT_HW_CACHE_L1I, PERF_COUNT_HW_CACHE_OP_READ, PERF_COUNT_HW_CACHE_RESULT_MISS },
 
 	/* ITLB */
-	{ "iTLB-loads", PERF_COUNT_HW_CACHE_ITLB, PERF_COUNT_HW_CACHE_OP_READ, PERF_COUNT_HW_CACHE_RESULT_ACCESS },
-	{ "iTLB-load-misses", PERF_COUNT_HW_CACHE_ITLB, PERF_COUNT_HW_CACHE_OP_READ, PERF_COUNT_HW_CACHE_RESULT_MISS },
+	{ "itlb-loads", PERF_COUNT_HW_CACHE_ITLB, PERF_COUNT_HW_CACHE_OP_READ, PERF_COUNT_HW_CACHE_RESULT_ACCESS },
+	{ "itlb-load-misses", PERF_COUNT_HW_CACHE_ITLB, PERF_COUNT_HW_CACHE_OP_READ, PERF_COUNT_HW_CACHE_RESULT_MISS },
 
 	/* Branch prediction */
 	{ "branch-loads", PERF_COUNT_HW_CACHE_BPU, PERF_COUNT_HW_CACHE_OP_READ, PERF_COUNT_HW_CACHE_RESULT_ACCESS },
@@ -96,12 +96,12 @@ static int parse_software_event(const char *spec, struct pmu_event *ev)
 
 	/* Search software events */
 	for (int i = 0; sw_events[i].name; i++) {
-		if (strcmp(sw_name, sw_events[i].name) != 0)
+		if (strcasecmp(sw_name, sw_events[i].name) != 0)
 			continue;
 
 		ev->perf_type = PERF_TYPE_SOFTWARE;
 		ev->config = sw_events[i].config;
-		snprintf(ev->name, sizeof(ev->name), "sw_%s", sw_name);
+		snprintf(ev->name, sizeof(ev->name), "sw_%s", sw_events[i].name);
 
 		return 0;
 	}
@@ -243,7 +243,7 @@ int pmu_resolve_symbolic_event(const char *pmu, const char *event_name,
 static int lookup_hw_cache_event(const char *name, struct pmu_event *ev)
 {
 	for (int i = 0; hw_cache_events[i].name; i++) {
-		if (strcmp(name, hw_cache_events[i].name) != 0)
+		if (strcasecmp(name, hw_cache_events[i].name) != 0)
 			continue;
 
 		ev->perf_type = PERF_TYPE_HW_CACHE;
@@ -252,7 +252,7 @@ static int lookup_hw_cache_event(const char *name, struct pmu_event *ev)
 			     (hw_cache_events[i].result_id << 16);
 		ev->config1 = 0;
 		ev->config2 = 0;
-		snprintf(ev->name, sizeof(ev->name), "%s", name);
+		snprintf(ev->name, sizeof(ev->name), "%s", hw_cache_events[i].name);
 		return 0;
 	}
 	return -ENOENT;
@@ -265,7 +265,7 @@ static int lookup_hw_cache_event(const char *name, struct pmu_event *ev)
  * Examples:
  *   cpu/event=0x3c/					- raw event code
  *   cpu/event=0x3c,umask=0x01,name=my_event/		- with name
- *   cpu/L1-icache-load-misses/				- symbolic event
+ *   cpu/l1-icache-load-misses/				- symbolic event
  */
 static int parse_pmu_style_event(const char *spec, struct pmu_event *ev)
 {
@@ -286,22 +286,18 @@ static int parse_pmu_style_event(const char *spec, struct pmu_event *ev)
 	err = pmu_resolve_symbolic_event(pmu_dev, attrs, &ev->config, &ev->config1, &ev->config2);
 	if (err == 0) {
 		snprintf(ev->name, sizeof(ev->name), "%s_%s", pmu_dev, attrs);
-		return err;
+		return 0;
 	}
 
 	err = lookup_hw_cache_event(attrs, ev);
-	if (err == 0) {
-		snprintf(ev->name, sizeof(ev->name), "%s", attrs);
-		return err;
-	}
+	if (err == 0)
+		return 0;
 
 	err = perf_event_parsing(attrs, &ev->config, &ev->config1, &ev->config2, ev->name, sizeof(ev->name));
 	if (err == 0) {
-		if (ev->name[0] == '\0') {
-			snprintf(ev->name, sizeof(ev->name), "%s_0x%llx",
-					pmu_dev, (__u64)ev->config);
-		}
-		return err;
+		if (ev->name[0] == '\0')
+			snprintf(ev->name, sizeof(ev->name), "%s_0x%llx", pmu_dev, (__u64)ev->config);
+		return 0;
 	}
 
 	return -ENOENT;
@@ -388,7 +384,7 @@ void deserialized_pmu_event(const struct pmu_event_stored *stored, struct pmu_ev
 static int find_real_counter_by_name(const struct pmu_event *reals, int real_cnt, const char *name)
 {
 	for (int i = 0; i < real_cnt; i++) {
-		if (strcmp(reals[i].name, name) == 0)
+		if (strcasecmp(reals[i].name, name) == 0)
 			return i;
 	}
 	return -1;
