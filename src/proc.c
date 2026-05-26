@@ -373,10 +373,31 @@ int *gpu_pid_iter_next(struct gpu_pid_iter *it)
 
 	char pidbuf[32];
 	while (fgets(pidbuf, sizeof(pidbuf), it->f)) {
-		if (sscanf(pidbuf, "%d", &it->cur_pid) != 1) {
+		int pid;
+		if (sscanf(pidbuf, "%d", &pid) != 1) {
 			eprintf("nvidia-smi returned invalid PID '%s', skipping...\n", pidbuf);
 			continue;
 		}
+
+		/*
+		 * nvidia-smi emits one row per (GPU, PID), so a process bound to
+		 * N GPUs appears N times. Skip PIDs we already returned.
+		 */
+		bool dup = false;
+		for (int i = 0; i < it->seen_cnt; i++) {
+			if (it->seen[i] == pid) {
+				dup = true;
+				break;
+			}
+		}
+		if (dup)
+			continue;
+
+		it->seen = realloc(it->seen, (it->seen_cnt + 1) * sizeof(*it->seen));
+		it->seen[it->seen_cnt] = pid;
+		it->seen_cnt += 1;
+
+		it->cur_pid = pid;
 		return &it->cur_pid;
 	}
 	return NULL;
@@ -384,8 +405,16 @@ int *gpu_pid_iter_next(struct gpu_pid_iter *it)
 
 void gpu_pid_iter_destroy(struct gpu_pid_iter *it)
 {
-	if (!it || !it->f)
+	if (!it)
 		return;
+
+	free(it->seen);
+	it->seen = NULL;
+	it->seen_cnt = 0;
+
+	if (!it->f)
+		return;
+
 	int status = pclose(it->f);
 	it->f = NULL;
 

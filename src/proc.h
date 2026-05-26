@@ -76,6 +76,8 @@ void vma_iter_destroy(struct vma_iter *it);
 struct gpu_pid_iter {
 	FILE *f;
 	int cur_pid;
+	int *seen;	/* for dedup — nvidia-smi emits one row per (GPU, PID) */
+	int seen_cnt;
 };
 
 int gpu_pid_iter_new(struct gpu_pid_iter *it);
