@@ -138,6 +138,19 @@ static int try_inject_to_python_process(int pid, int workdir_fd)
 	char log_path[128];
 	int err = 0, log_fd = -1;
 
+	/*
+	 * Discovery sources can emit the same PID more than once (e.g.,
+	 * nvidia-smi reports one row per GPU the process uses), and the
+	 * explicit -fpy-{stacks,trace,torch}=<PID> list can overlap with
+	 * discovery results. Re-injecting into the same tracee adds another
+	 * RecordFunction callback in the tracee, which then fires twice per
+	 * op and duplicates every pytorch_entry/exit event.
+	 */
+	for (int i = 0; i < env.pytrace_cnt; i++) {
+		if (env.pytraces[i].pid == pid)
+			return 0;
+	}
+
 	err = py_find_binary(pid, &bi);
 	if (err) {
 		dlogf(PYTRACE, 1, "PID %d (%s) is not Python, skipping\n", pid, proc_name(pid));
@@ -248,23 +261,9 @@ int pytrace_trace_setup(int workdir_fd)
 		return -EOPNOTSUPP;
 	}
 
-	/* Also try explicitly specified PIDs */
-	for (int i = 0; i < env.pytrace_pid_cnt; i++) {
-		int pid = env.pytrace_pids[i];
-
-		/* TODO(patlu): refactor -fpy-trace=<PID> to valid no duplication, then we can drop this */
-		bool found = false;
-		for (int j = 0; j < env.pytrace_cnt; j++) {
-			if (env.pytraces[j].pid == pid) {
-				found = true;
-				break;
-			}
-		}
-		if (found)
-			continue;
-
-		try_inject_to_python_process(pid, workdir_fd);
-	}
+	/* Also try explicitly specified PIDs; try_inject_to_python_process() dedups. */
+	for (int i = 0; i < env.pytrace_pid_cnt; i++)
+		try_inject_to_python_process(env.pytrace_pids[i], workdir_fd);
 
 	return 0;
 }
