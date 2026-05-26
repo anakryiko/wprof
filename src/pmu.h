@@ -70,7 +70,7 @@ struct pmu_event_stored {
  *   - Software: "sw:page-faults", "sw:context-switches"
  *   - Raw: "r003c" (hex config after 'r')
  *   - PMU: "cpu/event=0x3c,umask=0x00/" or "cpu/cpu-cycles/" (sysfs resolution)
- *   - Hardware cache: "L1-icache-loads", "iTLB-load-misses"
+ *   - Hardware cache: "l1-icache-loads", "itlb-load-misses"
  *   - Derived: "derived:name=numerator/denominator" (requires resolution after parsing)
  */
 int parse_perf_counter(const char *spec, struct pmu_event *out);
@@ -88,7 +88,7 @@ int pmu_resolve_type(const char *pmu_name, __u32 *type);
 /**
  * pmu_resolve_symbolic_event - Resolve symbolic event name to config value
  * @pmu: PMU name (e.g., "cpu")
- * @event_name: Symbolic event name (e.g., "L1-icache-load-misses")
+ * @event_name: Symbolic event name (e.g., "l1-icache-load-misses")
  * @config: Output config value
  * @config1: Output config1 value
  * @config2: Output config2 value

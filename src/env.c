@@ -168,7 +168,7 @@ static const struct argp_option opts[] = {
 	{ "pmu", OPT_PMU_COUNTER, "EVENT", 0,
 	  "Capture pmu counter. Formats: "
 	  "raw (r003c), PMU (cpu/event=0x3c/ or cpu/cpu-cycles/), "
-	  "software (sw:page-faults), cache (L1-icache-loads), "
+	  "software (sw:page-faults), cache (l1-icache-loads), "
 	  "derived (derived:ipc=cpu_instructions/cpu_cpu-cycles)" },
 	{ "no-pmu", OPT_NO_PMU, NULL, 0, "Don't capture or emit PMUs" },
 
