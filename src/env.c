@@ -204,7 +204,7 @@ static enum stack_trace_kind parse_stack_kinds(const char *arg)
 	if (strcasecmp(arg, "all") == 0)
 		return ST_ALL;
 
-	eprintf("unrecognized stack trace kind: '%s'\n", arg);
+	eprintf("Unrecognized stack trace kind: '%s'\n", arg);
 	return ST_ERR;
 }
 
