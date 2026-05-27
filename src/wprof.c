@@ -1528,7 +1528,8 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 	if (env.pmu_unresolved_cnt > 0) {
-		eprintf("Unresolved PMU counters are only valid in replay mode (check -RI for a list)!\n");
+		for (int i = 0; i < env.pmu_unresolved_cnt; i++)
+			eprintf("Failed to resolve PMU counter '%s'!\n", env.pmu_unresolveds[i].name);
 		err = -EINVAL;
 		goto cleanup;
 	}
