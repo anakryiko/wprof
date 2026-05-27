@@ -265,7 +265,7 @@ static int lookup_hw_cache_event(const char *name, struct pmu_event *ev)
  * Examples:
  *   cpu/event=0x3c/					- raw event code
  *   cpu/event=0x3c,umask=0x01,name=my_event/		- with name
- *   cpu/l1-icache-load-misses/				- symbolic event
+ *   cpu/instructions/					- symbolic event (sysfs-resolved)
  */
 static int parse_pmu_style_event(const char *spec, struct pmu_event *ev)
 {
@@ -288,10 +288,6 @@ static int parse_pmu_style_event(const char *spec, struct pmu_event *ev)
 		snprintf(ev->name, sizeof(ev->name), "%s_%s", pmu_dev, attrs);
 		return 0;
 	}
-
-	err = lookup_hw_cache_event(attrs, ev);
-	if (err == 0)
-		return 0;
 
 	err = perf_event_parsing(attrs, &ev->config, &ev->config1, &ev->config2, ev->name, sizeof(ev->name));
 	if (err == 0) {
