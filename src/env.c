@@ -701,6 +701,8 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			}
 		}
 
+		ev.spec = strdup(arg);
+
 		if (ev.perf_type == PERF_TYPE_UNRESOLVED) {
 			env.pmu_unresolveds = realloc(env.pmu_unresolveds, (env.pmu_unresolved_cnt + 1) * sizeof(*env.pmu_unresolveds));
 			env.pmu_unresolveds[env.pmu_unresolved_cnt++] = ev;

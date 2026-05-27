@@ -191,6 +191,15 @@ static void collect_extras(struct persist_state *ps, struct wprof_extra_param **
 		sbuf_free(&sb);
 	}
 
+	for (int i = 0; i < env.pmu_real_cnt; i++) {
+		if (env.pmu_reals[i].spec)
+			add_extra(extras, cnt, WEXTRA_PMU, persist_stroff(ps, env.pmu_reals[i].spec));
+	}
+	for (int i = 0; i < env.pmu_deriv_cnt; i++) {
+		if (env.pmu_derivs[i].spec)
+			add_extra(extras, cnt, WEXTRA_PMU, persist_stroff(ps, env.pmu_derivs[i].spec));
+	}
+
 	{
 		char hostname[256];
 		struct utsname uts;
