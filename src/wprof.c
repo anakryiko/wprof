@@ -275,6 +275,14 @@ skip_rusage:
 		}
 	}
 
+	u64 pystacks_attempted = wstat(s, WSTAT_PYSTACKS_ATTEMPTED, 0);
+	u64 pystacks_found = wstat(s, WSTAT_PYSTACKS_FOUND, 0);
+	if ((env.verbose || env.emit_stats) && pystacks_attempted > 0) {
+		wprintf("PyStacks: %llu attempted, %llu found (%.2lf%%)\n",
+			pystacks_attempted, pystacks_found,
+			pystacks_found * 100.0 / pystacks_attempted);
+	}
+
 	u64 rb_misses = wstat(s, WSTAT_RB_MISSES, 0);
 	if (rb_misses)
 		eprintf("!!! Ringbuf fetch misses: %llu\n", rb_misses);
@@ -315,17 +323,12 @@ skip_rusage:
 
 	u64 task_drops = wstat(s, WSTAT_TASK_STATE_DROPS, 0);
 	u64 req_drops = wstat(s, WSTAT_REQ_STATE_DROPS, 0);
-	u64 pystacks_attempted = wstat(s, WSTAT_PYSTACKS_ATTEMPTED, 0);
-	u64 pystacks_found = wstat(s, WSTAT_PYSTACKS_FOUND, 0);
 
 	if (task_drops)
 		eprintf("!!! Task state drops: %llu\n", task_drops);
 	if (req_drops)
 		eprintf("!!! Request state drops: %llu\n", req_drops);
-	if (pystacks_attempted)
-		wprintf("Pystacks: %llu attempted, %llu found (%.1lf%%)\n",
-			pystacks_attempted, pystacks_found,
-			pystacks_found * 100.0 / pystacks_attempted);
+
 	for (int i = 0; i < s->prog_cnt; i++) {
 		u64 rec_misses = wstat(s, WSTAT_PROG_RECURSION_MISSES, 1 + i);
 		if (rec_misses) {
