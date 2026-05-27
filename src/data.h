@@ -54,6 +54,7 @@ enum wprof_extra_param_kind {
 	WEXTRA_UTRACE_DEF,
 	WEXTRA_METADATA,
 	WEXTRA_STATS,
+	WEXTRA_PMU,
 };
 
 static inline const char *extra_param_kind_name(enum wprof_extra_param_kind kind)
@@ -74,6 +75,7 @@ static inline const char *extra_param_kind_name(enum wprof_extra_param_kind kind
 	case WEXTRA_UTRACE_DEF:		return "--utrace";
 	case WEXTRA_METADATA:		return "--metadata";
 	case WEXTRA_STATS:		return "--stats";
+	case WEXTRA_PMU:		return "--pmu";
 	default:			return "???";
 	}
 }
