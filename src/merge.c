@@ -213,7 +213,7 @@ static void collect_extras(struct persist_state *ps, struct wprof_extra_param **
 }
 
 static int stat_elem_cnt(enum wprof_stat_id id, int rb_cnt, int cpu_cnt,
-			 int prog_cnt, int cuda_cnt, int pytrace_cnt)
+			 int prog_cnt, int cuda_cnt, int pytrace_cnt, int pmu_cnt)
 {
 	switch (id) {
 	case WSTAT_INVALID:
@@ -268,6 +268,9 @@ static int stat_elem_cnt(enum wprof_stat_id id, int rb_cnt, int cpu_cnt,
 	case WSTAT_PYTRACE_EVENT_CNT:
 	case WSTAT_PYTRACE_CODE_CACHE_CNT:
 		return 1 + pytrace_cnt;
+	/* per-PMU (real counters only); index 0 is global/unused */
+	case WSTAT_PMU_ACTIVE_FRAC:
+		return 1 + pmu_cnt;
 	default:
 		eprintf("BUG: unknown stat id %d\n", id);
 		exit(1);
@@ -281,6 +284,7 @@ static struct wprof_stats *prepare_stats(struct persist_state *ps, struct worker
 	int cpu_cnt = env.num_cpus;
 	int cuda_cnt = env.cuda_cnt;
 	int pytrace_cnt = env.pytrace_cnt;
+	int pmu_cnt = env.pmu_real_cnt;
 	int prog_cnt = 0;
 
 	struct bpf_program *p;
@@ -296,7 +300,7 @@ static struct wprof_stats *prepare_stats(struct persist_state *ps, struct worker
 	int offs[__WSTAT_CNT + 1];
 	offs[0] = 0;
 	for (int i = 1; i <= __WSTAT_CNT; i++)
-		offs[i] = offs[i - 1] + stat_elem_cnt(i - 1, rb_cnt, cpu_cnt, prog_cnt, cuda_cnt, pytrace_cnt);
+		offs[i] = offs[i - 1] + stat_elem_cnt(i - 1, rb_cnt, cpu_cnt, prog_cnt, cuda_cnt, pytrace_cnt, pmu_cnt);
 
 	u32 sz = sizeof(struct wprof_stats) + offs[__WSTAT_CNT] * sizeof(u64);
 	struct wprof_stats *s = calloc(1, sz);
@@ -307,6 +311,7 @@ static struct wprof_stats *prepare_stats(struct persist_state *ps, struct worker
 	s->prog_cnt = prog_cnt;
 	s->cuda_cnt = cuda_cnt;
 	s->pytrace_cnt = pytrace_cnt;
+	s->pmu_cnt = pmu_cnt;
 	s->ringbuf_sz = env.ringbuf_sz;
 	s->task_state_sz = env.task_state_sz;
 
@@ -483,6 +488,10 @@ skip_bpf_stats:
 		pytrace_event_cnt[0] += py->ctx->pytrace_event_cnt;
 		pytrace_code_cache_cnt[0] += py->ctx->pytrace_code_cache_cnt;
 	}
+
+	double *pmu_active_frac = (double *)wstats(s, WSTAT_PMU_ACTIVE_FRAC, NULL);
+	for (int i = 0; i < pmu_cnt; i++)
+		pmu_active_frac[1 + i] = env.pmu_reals[i].active_frac;
 
 	return s;
 }

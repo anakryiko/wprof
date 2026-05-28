@@ -337,6 +337,20 @@ skip_rusage:
 		}
 	}
 
+	double *pmu_active_frac = (double *)wstats(s, WSTAT_PMU_ACTIVE_FRAC, NULL);
+	for (int i = 0; pmu_active_frac && i < s->pmu_cnt; i++) {
+		double active_frac = pmu_active_frac[1 + i];
+
+		/* 0 = not captured, 1.0 = always running; anything else means multiplexed */
+		if (active_frac == 0.0 || active_frac == 1.0)
+			continue;
+
+		struct wevent_pmu_def *def = wevent_pmu_def(env.data_hdr, i);
+		const char *name = wevent_str(env.data_hdr, def->name_stroff);
+		eprintf("!!! PMU counter '%s' was multiplexed by kernel (active %.2f%%), values can be unreliable!\n",
+			name, 100.0 * active_frac);
+	}
+
 skip_error_diag:
 	return;
 }
@@ -430,6 +444,11 @@ static int setup_perf_counters(struct bpf_state *st, int num_cpus)
 			attr.config = ev->config;
 			attr.config1 = ev->config1;
 			attr.config2 = ev->config2;
+			/*
+			 * So we can detect multiplexing at session end by comparing
+			 * time_running against time_enabled per event.
+			 */
+			attr.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING;
 
 			int pefd = sys_perf_event_open(&attr, -1, cpu, -1, PERF_FLAG_FD_CLOEXEC);
 			if (pefd < 0) {
@@ -1040,11 +1059,37 @@ static void detach_bpf(struct bpf_state *st, int num_cpus)
 		free(st->perf_timer_fds);
 	}
 	if (st->perf_counter_fds) {
-		for (int i = 0; i < st->perf_counter_fd_cnt; i++) {
-			if (st->perf_counter_fds[i] >= 0) {
-				(void)ioctl(st->perf_counter_fds[i], PERF_EVENT_IOC_DISABLE, 0);
-				close(st->perf_counter_fds[i]);
+		/*
+		 * Disable, read, and close each PMU fd. time_enabled/time_running
+		 * are accumulated per real PMU to compute active_frac, which is
+		 * later persisted via WSTAT_PMU_ACTIVE_FRAC.
+		 */
+		for (int i = 0; i < env.pmu_real_cnt; i++) {
+			u64 tot_enabled = 0, tot_running = 0;
+
+			for (int cpu = 0; cpu < num_cpus; cpu++) {
+				int pe_idx = cpu * env.pmu_real_cnt + i;
+				int fd = st->perf_counter_fds[pe_idx];
+				if (fd < 0)
+					continue;
+
+				(void)ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
+
+				u64 buf[3] = {}; /* value, time_enabled, time_running */
+				if (read(fd, buf, sizeof(buf)) == sizeof(buf)) {
+					tot_enabled += buf[1];
+					tot_running += buf[2];
+				}
+
+				close(fd);
 			}
+
+			if (tot_enabled == tot_running)
+				env.pmu_reals[i].active_frac = 1.0;
+			else if (tot_enabled == 0)
+				env.pmu_reals[i].active_frac = 0.0;
+			else
+				env.pmu_reals[i].active_frac = tot_running / (double)tot_enabled;
 		}
 		free(st->perf_counter_fds);
 	}
