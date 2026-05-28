@@ -142,6 +142,14 @@ enum wprof_stat_id {
 	WSTAT_PYTRACE_EVENT_CNT,
 	WSTAT_PYTRACE_CODE_CACHE_CNT,
 
+	/*
+	 * Per-real-PMU "active" fraction (time_running / time_enabled), stored as a double
+	 * bit-cast into u64. 1.0 means the counter was always counting; lower values indicate
+	 * kernel multiplexing. Index 0 unused; index 1+i is the i-th real PMU (parallel to
+	 * pmu_defs[0..pmu_def_real_cnt-1]).
+	 */
+	WSTAT_PMU_ACTIVE_FRAC,
+
 	__WSTAT_CNT,
 };
 
@@ -172,7 +180,8 @@ struct wprof_stats {
 	u32 pytrace_cnt;
 	u32 ringbuf_sz;
 	u32 task_state_sz;
-	u32 reserved[53];
+	u32 pmu_cnt;
+	u32 reserved[52];
 	u64 stats[];
 } __attribute__((aligned(8)));
 

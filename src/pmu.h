@@ -51,6 +51,13 @@ struct pmu_event {
 	/* Temporary storage for derived metric parsing (cleared after resolution) */
 	char *num_name;   /* numerator counter name */
 	char *denom_name; /* denominator counter name */
+
+	/*
+	 * time_running / time_enabled captured at session end (real PMUs only).
+	 * 1.0 means the counter was always running; lower values signal kernel
+	 * multiplexing. 0.0 means "not captured" — treat as 1.0.
+	 */
+	double active_frac;
 };
 
 /* Stored format for data persistence (fixed size) */
