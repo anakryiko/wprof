@@ -1507,6 +1507,7 @@ int main(int argc, char **argv)
 				break;
 			case WEXTRA_METADATA:
 			case WEXTRA_STATS:
+			case WEXTRA_PMU:
 				break;
 			default:
 				eprintf("Unrecognized extra param kind %d in data file!\n", ep->kind);

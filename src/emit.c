@@ -4069,7 +4069,7 @@ static void emit_header_json(struct worker_state *w)
 		for (u64 i = 0; i < hdr->extra_cnt; i++) {
 			if (wevent_extra_param(hdr, i)->kind == WEXTRA_METADATA)
 				metadata_cnt++;
-			else
+			else if (wevent_extra_param(hdr, i)->kind != WEXTRA_STATS)
 				extras_cnt++;
 		}
 		if (metadata_cnt) {
@@ -4088,7 +4088,7 @@ static void emit_header_json(struct worker_state *w)
 			json_subarr_start(j, "extras");
 			for (u64 i = 0; i < hdr->extra_cnt; i++) {
 				struct wprof_extra_param *e = wevent_extra_param(hdr, i);
-				if (e->kind == WEXTRA_METADATA)
+				if (e->kind == WEXTRA_METADATA || e->kind == WEXTRA_STATS)
 					continue;
 				const char *val = e->stroff ? wevent_str(hdr, e->stroff) : NULL;
 				if (val)
