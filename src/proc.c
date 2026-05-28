@@ -71,27 +71,26 @@ int ns_tid_by_host_tid(int host_pid, int host_tid)
 	while (fgets(line, sizeof(line), fp)) {
 		if (strncmp(line, "NSpid:", 6) != 0)
 			continue;
+
+		fclose(fp);
+
 		/*
 		 * NSpid line format: "NSpid:\t<host_tid>\t<ns1_tid>\t...\t<ns2_tid>"
 		 * The last entry is the TID in the innermost namespace.
 		 */
 		char *s = strrchr(line, '\t');
-		if (!s) {
-			fclose(fp);
+		if (!s)
 			return -EPROTO;
-		}
 		s++; /* skip '\t' */
 
 		int v, n;
-		if (sscanf(s, "%d%n", &v, &n) != 1 || s[n] != '\n') {
-			fclose(fp);
+		if (sscanf(s, "%d%n", &v, &n) != 1 || s[n] != '\n')
 			return -EPROTO;
-		}
 
-		fclose(fp);
 		return v;
 	}
 
+	fclose(fp);
 	return -ESRCH;
 }
 
