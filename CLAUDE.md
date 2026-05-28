@@ -1,6 +1,6 @@
-# CLAUDE.md
+# Repository Agent Instructions
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to coding agents when working with code in this repository.
 
 ## Project Overview
 
@@ -120,3 +120,12 @@ The build process automatically handles:
 - **No obvious comments**: Don't add self-evident comments like "Process stack traces from a wevent" above a function called `process_stack_trace`. If the code is clear, no comment is needed.
 - **Preserve existing non-obvious comments**: Don't remove comments that explain non-obvious behavior (e.g., why a -1 adjustment is needed for stack trace IP entries). If a comment exists, it's probably there for a reason. This applies even when refactoring surrounding code — if the comment is still relevant to the new code structure, keep it. When replacing a block of code, audit every comment in the old block and preserve any that explain *why* something is done (not just *what*).
 - **Line length**: 120 characters is fine. Prefer single-line statements over wrapping if it only exceeds by a few characters.
+
+### Commit Style
+
+- Subject: `subsystem: lowercase imperative summary`, ≤72 chars, no trailing
+  period. The `subsystem` prefix names the area touched, e.g. `stats:`, `pmu:`,
+  `proc:`, `json:`, `emit:`. Don't use Conventional Commits (`feat:`/`fix:`).
+- Example: `stats: detect and warn on PMU counter multiplexing`
+- Use a body only when the "why" isn't obvious from the subject. Wrap at 72.
+- Never add Claude, Codex, or other AI attribution footers.
