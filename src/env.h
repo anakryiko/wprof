@@ -12,7 +12,7 @@
 #include "requests.h"
 #include "utrace_cfg.h"
 
-#define WPROF_VERSION "0.3"
+#define WPROF_VERSION "0.4"
 
 #define DEFAULT_RINGBUF_SZ (16 * 1024 * 1024)
 #define DEFAULT_TASK_STATE_SZ (32 * 1024)
