@@ -258,15 +258,17 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	case OPT_SYMBOLIZE_FRUGALLY:
 		env.symbolize_frugally = true;
 		break;
-	case 'd':
+	case 'd': {
+		char *end = NULL;
 		errno = 0;
-		env.duration_ns = strtol(arg, NULL, 0); /* parse as ms */
-		if (errno || env.duration_ns <= 0) {
+		env.duration_ns = strtol(arg, &end, 0); /* parse as ms */
+		if (errno || !end || *end != '\0' || end == arg || env.duration_ns <= 0) {
 			fprintf(stderr, "Invalid running duration: %s\n", arg);
 			argp_usage(state);
 		}
 		env.duration_ns *= 1000000;
 		break;
+	}
 	case 'D':
 		if (env.output_sealed) {
 			fprintf(stderr, "Output file options are disabled by --seal-output\n");
