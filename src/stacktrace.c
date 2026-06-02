@@ -539,6 +539,7 @@ static struct addr_set entry_set_raw_tp = {
 };
 static struct addr_set entry_set_bpf = {
 	.names = (const char * const []){
+		"bpf_get_task_stack",
 		"__bpf_get_task_stack",
 		NULL,
 	},
