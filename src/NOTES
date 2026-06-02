@@ -10,9 +10,9 @@ $ python3 ~/nanopb/generator/nanopb_generator.py --output-dir=$(realpath ~/perfe
 $ cp protos/perfetto/trace/perfetto_trace.{pb.c,pb.h,proto} ~/wprof/src
 ```
 
-Copy over nanopb encoder:
+Copy over nanopb encoder (also pb.h / pb_common.h if the runtime changed):
 ```
-$ cp ~/nanopb/pb_{common,encode}.[ch] .
+$ cp ~/nanopb/pb_{common,encode}.[ch] ~/nanopb/pb.h .
 ```
 
 ## Meta specific details due to devserver limitations

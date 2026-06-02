@@ -10,16 +10,52 @@
 #endif
 
 /* Enum definitions */
+typedef enum _perfetto_protos_VmCursorEnum {
+    perfetto_protos_VmCursorEnum_VM_CURSOR_UNSPECIFIED = 0,
+    perfetto_protos_VmCursorEnum_VM_CURSOR_SRC = 1,
+    perfetto_protos_VmCursorEnum_VM_CURSOR_DST = 2,
+    perfetto_protos_VmCursorEnum_VM_CURSOR_BOTH = 3
+} perfetto_protos_VmCursorEnum;
+
+/* Builtin clock domains used in Perfetto traces.
+
+ The default trace time clock is BUILTIN_CLOCK_TRACE_FILE: a synthetic clock
+ representing the trace file's own timeline. Each trace file gets its own
+ instance (scoped by trace file index).
+
+ For backwards compatibility, Perfetto proto traces register BOOTTIME as a
+ fallback: if the first timestamp conversion uses a clock other than the
+ trace file clock and no explicit clock snapshot data exists, the trace time
+ is switched to BOOTTIME. This fallback does not fire for modern traces that
+ include ClockSnapshots or that only use the trace file clock directly.
+
+ The `primary_trace_clock` field in ClockSnapshot can definitively override
+ the trace time clock regardless of the above. */
 typedef enum _perfetto_protos_BuiltinClock {
     perfetto_protos_BuiltinClock_BUILTIN_CLOCK_UNKNOWN = 0,
+    /* Corresponds to CLOCK_REALTIME. See clock_gettime(2). */
     perfetto_protos_BuiltinClock_BUILTIN_CLOCK_REALTIME = 1,
+    /* Corresponds to CLOCK_REALTIME_COARSE. See clock_gettime(2). */
     perfetto_protos_BuiltinClock_BUILTIN_CLOCK_REALTIME_COARSE = 2,
+    /* Corresponds to CLOCK_MONOTONIC. See clock_gettime(2). */
     perfetto_protos_BuiltinClock_BUILTIN_CLOCK_MONOTONIC = 3,
+    /* Corresponds to CLOCK_MONOTONIC_COARSE. See clock_gettime(2). */
     perfetto_protos_BuiltinClock_BUILTIN_CLOCK_MONOTONIC_COARSE = 4,
+    /* Corresponds to CLOCK_MONOTONIC_RAW. See clock_gettime(2). */
     perfetto_protos_BuiltinClock_BUILTIN_CLOCK_MONOTONIC_RAW = 5,
+    /* Corresponds to CLOCK_BOOTTIME. See clock_gettime(2).
+ For proto traces, this is used as a backwards-compatible fallback trace
+ time clock when no explicit clock snapshots are present. */
     perfetto_protos_BuiltinClock_BUILTIN_CLOCK_BOOTTIME = 6,
+    /* TSC (Time Stamp Counter). Architecture-specific high-resolution counter. */
     perfetto_protos_BuiltinClock_BUILTIN_CLOCK_TSC = 9,
+    /* Corresponds to the perf event clock (PERF_CLOCK). */
     perfetto_protos_BuiltinClock_BUILTIN_CLOCK_PERF = 10,
+    /* A synthetic clock representing the trace file's own timeline. Each trace
+ file gets its own instance (scoped by trace file index). This is the
+ default trace time clock before any clock snapshot or format-specific
+ override takes effect. */
+    perfetto_protos_BuiltinClock_BUILTIN_CLOCK_TRACE_FILE = 11,
     perfetto_protos_BuiltinClock_BUILTIN_CLOCK_MAX_ID = 63
 } perfetto_protos_BuiltinClock;
 
@@ -1632,6 +1668,43 @@ typedef enum _perfetto_protos_GpuCounterDescriptor_MeasureUnit {
     perfetto_protos_GpuCounterDescriptor_MeasureUnit_INSTRUCTION = 40
 } perfetto_protos_GpuCounterDescriptor_MeasureUnit;
 
+/* Direction of the time interval that each emitted sample applies to.
+ A GPU counter is sampled at discrete timestamps, but its value really
+ represents a measurement over some interval around that timestamp
+ (e.g. average GPU utilization over the sampling window). This field
+ tells trace processor on which side of the timestamp that interval
+ lies, which controls where the value is drawn in the UI.
+
+ Example: samples at t=10, 20, 30 with values 5, 7, 0.
+   BACKWARDS_LOOKING: 5 covers (-inf, 10], 7 covers (10, 20], 0 covers
+     (20, 30]; the UI draws 7 between t=10 and t=20.
+   FORWARDS_LOOKING:  5 covers [10, 20), 7 covers [20, 30), 0 covers
+     [30, +inf); the UI draws 5 between t=10 and t=20. */
+typedef enum _perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_ValueDirection {
+    /* Treated as BACKWARDS_LOOKING (the historical default). */
+    perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_ValueDirection_VALUE_DIRECTION_UNSPECIFIED = 0,
+    /* The value applies to the interval ending at this event's timestamp.
+ This is the convention used by AGI and most existing GPU producers,
+ where a sample reports what happened during the window leading up
+ to the timestamp. */
+    perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_ValueDirection_VALUE_DIRECTION_BACKWARDS_LOOKING = 1,
+    /* The value applies to the interval starting at this event's
+ timestamp, matching standard Perfetto counters. Producers that emit
+ explicit zero samples to denote "no activity from here on" should
+ use this so the zero is not back-propagated over earlier non-zero
+ samples (https://github.com/google/perfetto/issues/5683). */
+    perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_ValueDirection_VALUE_DIRECTION_FORWARDS_LOOKING = 2
+} perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_ValueDirection;
+
+typedef enum _perfetto_protos_VmInstruction_AbortLevel {
+    /* Skip current instruction but execute following ones */
+    perfetto_protos_VmInstruction_AbortLevel_SKIP_CURRENT_INSTRUCTION = 1,
+    /* Skip current instruction as well as following ones (default) */
+    perfetto_protos_VmInstruction_AbortLevel_SKIP_CURRENT_INSTRUCTION_AND_BREAK_OUTER = 2,
+    /* Abort whole program */
+    perfetto_protos_VmInstruction_AbortLevel_ABORT = 3
+} perfetto_protos_VmInstruction_AbortLevel;
+
 /* Trace modes are tracing presets that are included in the system. */
 typedef enum _perfetto_protos_AndroidInputEventConfig_TraceMode {
     /* Preset mode for maximal tracing.
@@ -1691,7 +1764,9 @@ typedef enum _perfetto_protos_SurfaceFlingerLayersConfig_Mode {
     /* Default mode (applied by SurfaceFlinger if no mode is specified).
  Same as MODE_GENERATED, but triggers the layers snapshots generation only
  when a bugreport is taken. */
-    perfetto_protos_SurfaceFlingerLayersConfig_Mode_MODE_GENERATED_BUGREPORT_ONLY = 4
+    perfetto_protos_SurfaceFlingerLayersConfig_Mode_MODE_GENERATED_BUGREPORT_ONLY = 4,
+    /* Layer snapshots are generated by ProtoVM from layer patches */
+    perfetto_protos_SurfaceFlingerLayersConfig_Mode_MODE_PROTOVM = 5
 } perfetto_protos_SurfaceFlingerLayersConfig_Mode;
 
 typedef enum _perfetto_protos_SurfaceFlingerLayersConfig_TraceFlag {
@@ -1739,6 +1814,16 @@ typedef enum _perfetto_protos_WindowManagerConfig_LogLevel {
     perfetto_protos_WindowManagerConfig_LogLevel_LOG_LEVEL_CRITICAL = 3
 } perfetto_protos_WindowManagerConfig_LogLevel;
 
+typedef enum _perfetto_protos_WindowManagerConfig_LogMode {
+    perfetto_protos_WindowManagerConfig_LogMode_LOG_MODE_UNSPECIFIED = 0,
+    /* Always logs a full state dump of the window hierarchy. */
+    perfetto_protos_WindowManagerConfig_LogMode_LOG_MODE_FULL_STATE = 1,
+    /* Logs a full state dump of the window hierarchy only when tracing starts.
+ The following trace packets are lightweight patches containing only the
+ last changes. */
+    perfetto_protos_WindowManagerConfig_LogMode_LOG_MODE_INCREMENTAL = 2
+} perfetto_protos_WindowManagerConfig_LogMode;
+
 /* Priority of the tracing session client. A higher priority session may
  preempt a lower priority one in configurations where concurrent sessions
  aren't supported. */
@@ -1781,6 +1866,26 @@ typedef enum _perfetto_protos_FtraceConfig_TracefsOption_State {
     perfetto_protos_FtraceConfig_TracefsOption_State_STATE_ENABLED = 1,
     perfetto_protos_FtraceConfig_TracefsOption_State_STATE_DISABLED = 2
 } perfetto_protos_FtraceConfig_TracefsOption_State;
+
+typedef enum _perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityNameFilter_NameBase {
+    /* Match against the mangled (compiler-encoded) kernel name.
+ Example: for a kernel whose demangled name is
+ "matmul(float*,int,int)", the mangled name might be
+ "_Z6matmulPfii". The glob pattern is matched against this
+ mangled form. */
+    perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityNameFilter_NameBase_MANGLED_KERNEL_NAME = 0,
+    /* Match against the fully demangled kernel name, including
+ parameters, templates, and qualifiers.
+ Example: "matmul(float*,int,int)". The glob pattern is
+ matched against this full demangled form. */
+    perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityNameFilter_NameBase_DEMANGLED_KERNEL_NAME = 1,
+    /* Match against only the function name portion of the
+ demangled kernel name, without parameters, templates,
+ return types, or namespaces.
+ Example: "matmul". The glob pattern is matched against
+ just the bare function name. */
+    perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityNameFilter_NameBase_FUNCTION_NAME = 2
+} perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityNameFilter_NameBase;
 
 typedef enum _perfetto_protos_ConsoleConfig_Output {
     perfetto_protos_ConsoleConfig_Output_OUTPUT_UNSPECIFIED = 0,
@@ -1825,6 +1930,43 @@ typedef enum _perfetto_protos_ProcessStatsConfig_Quirks {
  stream. */
     perfetto_protos_ProcessStatsConfig_Quirks_DISABLE_ON_DEMAND = 2
 } perfetto_protos_ProcessStatsConfig_Quirks;
+
+typedef enum _perfetto_protos_SmapsConfig_VmaField {
+    perfetto_protos_SmapsConfig_VmaField_VMA_FIELD_UNKNOWN = 0,
+    perfetto_protos_SmapsConfig_VmaField_VMA_FIELD_SIZE = 1,
+    perfetto_protos_SmapsConfig_VmaField_VMA_FIELD_RSS = 2,
+    perfetto_protos_SmapsConfig_VmaField_VMA_FIELD_ANONYMOUS = 3,
+    perfetto_protos_SmapsConfig_VmaField_VMA_FIELD_SWAP = 4,
+    perfetto_protos_SmapsConfig_VmaField_VMA_FIELD_SHARED_CLEAN = 5,
+    perfetto_protos_SmapsConfig_VmaField_VMA_FIELD_SHARED_DIRTY = 6,
+    perfetto_protos_SmapsConfig_VmaField_VMA_FIELD_PRIVATE_CLEAN = 7,
+    perfetto_protos_SmapsConfig_VmaField_VMA_FIELD_PRIVATE_DIRTY = 8,
+    perfetto_protos_SmapsConfig_VmaField_VMA_FIELD_LOCKED = 9,
+    perfetto_protos_SmapsConfig_VmaField_VMA_FIELD_PSS = 10,
+    perfetto_protos_SmapsConfig_VmaField_VMA_FIELD_PSS_DIRTY = 11,
+    perfetto_protos_SmapsConfig_VmaField_VMA_FIELD_SWAP_PSS = 12
+} perfetto_protos_SmapsConfig_VmaField;
+
+/* How to match |pattern| against the name of the mapping.
+ Note for future extensions: unrecognised enums are treated as always
+ matching. */
+typedef enum _perfetto_protos_RedactionRule_MatchMode {
+    perfetto_protos_RedactionRule_MatchMode_MATCH_MODE_UNKNOWN = 0,
+    /* The pattern matches if it is a prefix of the mapping name. */
+    perfetto_protos_RedactionRule_MatchMode_MATCH_MODE_PREFIX = 1,
+    /* The pattern is matched against the mapping name as a pathname glob
+ (see "man 7 glob" and FNM_PATHNAME in "man 3 fnmatch").
+ The key distinction is that path separators in the name are *not* matched
+ against wildcards. So a pattern of the form "/usr/ * /llvm" would match
+ "/usr/lib/llvm" but not "/usr/lib/nested/llvm".
+ Note: any "(deleted)" suffix is excluded before matching. */
+    perfetto_protos_RedactionRule_MatchMode_MATCH_MODE_GLOB_PATH = 2,
+    /* The pattern is matched against the mapping name without special-casing
+ path separators. So a pattern of the form "/usr/ * /llvm" would match
+ both "/usr/lib/llvm" and "/usr/lib/nested/llvm".
+ Note: any "(deleted)" suffix is excluded before matching. */
+    perfetto_protos_RedactionRule_MatchMode_MATCH_MODE_GLOB_STRING = 3
+} perfetto_protos_RedactionRule_MatchMode;
 
 /* Builtin counter names from the uapi header. Commented with their perf tool
  aliases.
@@ -1897,8 +2039,7 @@ typedef enum _perfetto_protos_PerfEvents_EventModifier {
     perfetto_protos_PerfEvents_EventModifier_EVENT_MODIFIER_COUNT_HYPERVISOR = 3
 } perfetto_protos_PerfEvents_EventModifier;
 
-/* Userspace unwinding mode. A possible future addition is kernel-unwound
- callchains for frame pointer based systems. */
+/* Userspace unwinding mode. */
 typedef enum _perfetto_protos_PerfEventConfig_UnwindMode {
     perfetto_protos_PerfEventConfig_UnwindMode_UNWIND_UNKNOWN = 0,
     /* Do not unwind userspace: */
@@ -1906,7 +2047,15 @@ typedef enum _perfetto_protos_PerfEventConfig_UnwindMode {
     /* Use libunwindstack (default): */
     perfetto_protos_PerfEventConfig_UnwindMode_UNWIND_DWARF = 2,
     /* Use userspace frame pointer unwinder: */
-    perfetto_protos_PerfEventConfig_UnwindMode_UNWIND_FRAME_POINTER = 3
+    perfetto_protos_PerfEventConfig_UnwindMode_UNWIND_FRAME_POINTER = 3,
+    /* Ask the kernel to unwind the userspace stack via frame pointers, using
+ PERF_SAMPLE_CALLCHAIN. The user stack bytes are not copied into the
+ sample, which avoids the per-sample copy cost and the depth limit
+ imposed by PERF_SAMPLE_STACK_USER. Requires that the userspace code
+ (including system libraries) is built with frame pointers - the kernel
+ walks the chain and returns instruction addresses, which still need to
+ be symbolized offline using the recorded process mappings. */
+    perfetto_protos_PerfEventConfig_UnwindMode_UNWIND_KERNEL_FRAME_POINTER = 4
 } perfetto_protos_PerfEventConfig_UnwindMode;
 
 typedef enum _perfetto_protos_SysStatsConfig_StatCounters {
@@ -2110,6 +2259,41 @@ typedef enum _perfetto_protos_TraceStats_FinalFlushOutcome {
     perfetto_protos_TraceStats_FinalFlushOutcome_FINAL_FLUSH_FAILED = 2
 } perfetto_protos_TraceStats_FinalFlushOutcome;
 
+/* Whether a flag can be modified at runtime. */
+typedef enum _perfetto_protos_AndroidAflags_FlagPermission {
+    perfetto_protos_AndroidAflags_FlagPermission_FLAG_PERMISSION_UNSPECIFIED = 0,
+    perfetto_protos_AndroidAflags_FlagPermission_FLAG_PERMISSION_READ_ONLY = 1,
+    perfetto_protos_AndroidAflags_FlagPermission_FLAG_PERMISSION_READ_WRITE = 2
+} perfetto_protos_AndroidAflags_FlagPermission;
+
+/* The source of the current flag value. */
+typedef enum _perfetto_protos_AndroidAflags_ValuePickedFrom {
+    perfetto_protos_AndroidAflags_ValuePickedFrom_VALUE_PICKED_FROM_UNSPECIFIED = 0,
+    /* The value is the build-time default. */
+    perfetto_protos_AndroidAflags_ValuePickedFrom_VALUE_PICKED_FROM_DEFAULT = 1,
+    /* The value comes from a server-side override. */
+    perfetto_protos_AndroidAflags_ValuePickedFrom_VALUE_PICKED_FROM_SERVER = 2,
+    /* The value comes from a local override on the device. */
+    perfetto_protos_AndroidAflags_ValuePickedFrom_VALUE_PICKED_FROM_LOCAL = 3
+} perfetto_protos_AndroidAflags_ValuePickedFrom;
+
+/* The underlying storage mechanism for the flag. */
+typedef enum _perfetto_protos_AndroidAflags_FlagStorageBackend {
+    perfetto_protos_AndroidAflags_FlagStorageBackend_FLAG_STORAGE_BACKEND_UNSPECIFIED = 0,
+    perfetto_protos_AndroidAflags_FlagStorageBackend_FLAG_STORAGE_BACKEND_NONE = 1,
+    perfetto_protos_AndroidAflags_FlagStorageBackend_FLAG_STORAGE_BACKEND_ACONFIGD = 2,
+    perfetto_protos_AndroidAflags_FlagStorageBackend_FLAG_STORAGE_BACKEND_DEVICE_CONFIG = 3
+} perfetto_protos_AndroidAflags_FlagStorageBackend;
+
+/* The value type of the flag. */
+typedef enum _perfetto_protos_AndroidAflags_FlagType {
+    /* Flag type unspecified. This flag type means the flag is an old version
+ boolean flag or unknown newer type. */
+    perfetto_protos_AndroidAflags_FlagType_FLAG_TYPE_UNSPECIFIED = 0,
+    perfetto_protos_AndroidAflags_FlagType_FLAG_TYPE_BOOLEAN = 1,
+    perfetto_protos_AndroidAflags_FlagType_FLAG_TYPE_INTEGER = 2
+} perfetto_protos_AndroidAflags_FlagType;
+
 /* The error status, if any, reported to the camera framework. Any status
  other than STATUS_OK indicates a dropped frame.
  Next Enum: 6 */
@@ -2144,7 +2328,8 @@ typedef enum _perfetto_protos_FrameTimelineEvent_JankType {
     perfetto_protos_FrameTimelineEvent_JankType_JANK_NON_ANIMATING = 2048,
     perfetto_protos_FrameTimelineEvent_JankType_JANK_APP_RESYNCED_JITTER = 4096,
     perfetto_protos_FrameTimelineEvent_JankType_JANK_DISPLAY_NOT_ON = 8192,
-    perfetto_protos_FrameTimelineEvent_JankType_JANK_DISPLAY_MODE_CHANGE_IN_PROGRESS = 16384
+    perfetto_protos_FrameTimelineEvent_JankType_JANK_DISPLAY_MODE_CHANGE_IN_PROGRESS = 16384,
+    perfetto_protos_FrameTimelineEvent_JankType_JANK_DISPLAY_POWER_MODE_CHANGE_IN_PROGRESS = 32768
 } perfetto_protos_FrameTimelineEvent_JankType;
 
 /* Specifies the severity of a jank. */
@@ -2174,6 +2359,13 @@ typedef enum _perfetto_protos_FrameTimelineEvent_PredictionType {
     perfetto_protos_FrameTimelineEvent_PredictionType_PREDICTION_EXPIRED = 2,
     perfetto_protos_FrameTimelineEvent_PredictionType_PREDICTION_UNKNOWN = 3
 } perfetto_protos_FrameTimelineEvent_PredictionType;
+
+typedef enum _perfetto_protos_FrameTimelineEvent_ActualSurfaceFrameStart_LatchedFenceState {
+    perfetto_protos_FrameTimelineEvent_ActualSurfaceFrameStart_LatchedFenceState_LATCHED_UNKNOWN = 0,
+    perfetto_protos_FrameTimelineEvent_ActualSurfaceFrameStart_LatchedFenceState_LATCHED_SIGNALED = 1,
+    perfetto_protos_FrameTimelineEvent_ActualSurfaceFrameStart_LatchedFenceState_LATCHED_UNSIGNALED = 2,
+    perfetto_protos_FrameTimelineEvent_ActualSurfaceFrameStart_LatchedFenceState_LATCHED_DELAYED_LATCH_UNSIGNALED = 3
+} perfetto_protos_FrameTimelineEvent_ActualSurfaceFrameStart_LatchedFenceState;
 
 typedef enum _perfetto_protos_GraphicsFrameEvent_BufferEventType {
     perfetto_protos_GraphicsFrameEvent_BufferEventType_UNSPECIFIED = 0,
@@ -2626,7 +2818,9 @@ typedef enum _perfetto_protos_InternedGraphicsContext_Api {
     perfetto_protos_InternedGraphicsContext_Api_UNDEFINED = 0,
     perfetto_protos_InternedGraphicsContext_Api_OPEN_GL = 1,
     perfetto_protos_InternedGraphicsContext_Api_VULKAN = 2,
-    perfetto_protos_InternedGraphicsContext_Api_OPEN_CL = 3
+    perfetto_protos_InternedGraphicsContext_Api_OPEN_CL = 3,
+    perfetto_protos_InternedGraphicsContext_Api_CUDA = 4,
+    perfetto_protos_InternedGraphicsContext_Api_HIP = 5
 } perfetto_protos_InternedGraphicsContext_Api;
 
 typedef enum _perfetto_protos_InternedGpuRenderStageSpecification_RenderStageCategory {
@@ -3312,6 +3506,16 @@ typedef struct _perfetto_protos_GpuCounterDescriptor {
  command buffer. */
     bool has_supports_instrumented_sampling;
     bool supports_instrumented_sampling;
+    pb_callback_t counter_groups;
+    /* optional.  The producer supports selecting counters by name via
+ GpuCounterConfig.counter_names. Not all producers support this; Android
+ GPU producers typically do not. */
+    bool has_supports_counter_names;
+    bool supports_counter_names;
+    /* optional.  The producer supports glob patterns in
+ GpuCounterConfig.counter_names for matching multiple counters by name. */
+    bool has_supports_counter_name_globs;
+    bool supports_counter_name_globs;
 } perfetto_protos_GpuCounterDescriptor;
 
 typedef struct _perfetto_protos_GpuCounterDescriptor_GpuCounterSpec {
@@ -3329,6 +3533,8 @@ typedef struct _perfetto_protos_GpuCounterDescriptor_GpuCounterSpec {
     bool has_select_by_default;
     bool select_by_default;
     pb_callback_t groups;
+    bool has_value_direction;
+    perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_ValueDirection value_direction;
 } perfetto_protos_GpuCounterDescriptor_GpuCounterSpec;
 
 /* Allow producer to group counters into block to represent counter islands.
@@ -3349,6 +3555,24 @@ typedef struct _perfetto_protos_GpuCounterDescriptor_GpuCounterBlock {
     pb_callback_t counter_ids;
 } perfetto_protos_GpuCounterDescriptor_GpuCounterBlock;
 
+/* Allow producer to define custom counter groups. Unlike the fixed
+ GpuCounterGroup enum (which provides broad categories), these groups
+ let the producer define hardware-specific groupings that the UI uses
+ to organize counter tracks. Can also be used to provide display names
+ and descriptions for the fixed GpuCounterGroup enum values by setting
+ group_id to the enum value. */
+typedef struct _perfetto_protos_GpuCounterDescriptor_GpuCounterGroupSpec {
+    /* required. Unique ID for this group within the descriptor. */
+    bool has_group_id;
+    uint32_t group_id;
+    /* optional. Display name for the group. */
+    pb_callback_t name;
+    /* optional. Description of the group. */
+    pb_callback_t description;
+    /* Counters that belong directly to this group (by counter_id). */
+    pb_callback_t counter_ids;
+} perfetto_protos_GpuCounterDescriptor_GpuCounterGroupSpec;
+
 typedef struct _perfetto_protos_TrackEventCategory {
     pb_callback_t name;
     pb_callback_t description;
@@ -3358,6 +3582,126 @@ typedef struct _perfetto_protos_TrackEventCategory {
 typedef struct _perfetto_protos_TrackEventDescriptor {
     pb_callback_t available_categories;
 } perfetto_protos_TrackEventDescriptor;
+
+typedef struct _perfetto_protos_VmProgram {
+    bool has_version;
+    uint32_t version;
+    pb_callback_t instructions;
+} perfetto_protos_VmProgram;
+
+typedef struct _perfetto_protos_VmOpSelect {
+    /* Enum SRC|DST|BOTH. Default=SRC. */
+    bool has_cursor;
+    perfetto_protos_VmCursorEnum cursor;
+    pb_callback_t relative_path;
+    /* Creates the submessage if doesn't exist in the DST cursor
+ (think of mkdir -p). Only valid when cursor=DST|BOTH. */
+    bool has_create_if_not_exist;
+    bool create_if_not_exist;
+} perfetto_protos_VmOpSelect;
+
+/* A path component is either: (1) a field id to descend into (common case);
+ (2) an array index (for repeated fields); (3) a map lookup operation (for
+ repeated fields, where we snoop a sub-field as a map key) */
+typedef struct _perfetto_protos_VmOpSelect_PathComponent {
+    pb_size_t which_field;
+    union _perfetto_protos_VmOpSelect_PathComponent_field {
+        uint32_t field_id;
+        uint32_t array_index;
+        /* The ID of the field in the repeated submessage that we
+     use as a key (e.g. LayerState.layer_id). When setting this
+     register_to_match must also be set, to tell what's the
+     expected value of the key we are looking up. */
+        uint32_t map_key_field_id;
+    } field;
+    /* Only valid when using field_id. This makes select have foreach
+ semantics. This means that the body of nested_instructions is
+ executed several times, once per each repeated submessage. */
+    bool has_is_repeated;
+    bool is_repeated;
+    /* Only valid when using map_key_field_id. This defines which
+ register (R1..R32) should be used to match the key of the dict
+ in a map lookup operation.
+ In other words:
+ foreach msg in repeated message {
+   if msg[map_key_field_id] == R[register_to_match] {
+      break;  // Lookup succeeded, PathComponent resolves here.
+   }
+ } */
+    bool has_register_to_match;
+    uint32_t register_to_match;
+    /* Only valid when using field_id and is_repeated=true. When iterating
+ over repeated fields, stores the current iteration index into the
+ the register R1..R32 defined below. This can be used to do complex
+ operations like "find the entry in the array that has width==100,
+ remember its offset in the SRC array and overwrite the matching
+ i-th element in the DST array. We will probably never implement
+ this but it's here for completeness. */
+    bool has_store_foreach_index_into_register;
+    uint32_t store_foreach_index_into_register;
+} perfetto_protos_VmOpSelect_PathComponent;
+
+typedef struct _perfetto_protos_VmOpRegLoad {
+    /* SRC(default) | DST. */
+    bool has_cursor;
+    perfetto_protos_VmCursorEnum cursor;
+    /* 1=R1, 2=R2... 32=R32 */
+    bool has_dst_register;
+    uint32_t dst_register;
+} perfetto_protos_VmOpRegLoad;
+
+/* Merges SRC into DST. Both need to point to a message (not a field). */
+typedef struct _perfetto_protos_VmOpMerge {
+    /* When true, the merge operation will skip any field that is already
+ resolved as a message node in the destination tree.
+
+ This is used to support merging of nested messages. Because ProtoVM
+ does not know the schema, a standard MERGE cannot distinguish
+ between a string and a message on the wire and it would overwrite
+ the entire blob, destroying granular updates.
+
+ By setting this to true, a program can be implemented to do a
+ bottom-up, multi-step merge by traversing into and merging
+ the deepest submessages first, then moving up to the parent
+ message and merging it with skip_submessages = true. */
+    bool has_skip_submessages;
+    bool skip_submessages;
+    /* When true, the merge operation will remove the dst field if the src field
+ is empty.
+
+ This can be used to replicate the removal of a subobject within the
+ producer's state. E.g.
+ This event on the producer side: mProducerState.mSubobject = nullptr
+ can be represented by this patch: { producer_state { subobject {} }} */
+    bool has_del_if_src_empty;
+    bool del_if_src_empty;
+} perfetto_protos_VmOpMerge;
+
+/* Copies SRC into DST. If a message, replaces the DST node, discarding any
+ pre-existing field. */
+typedef struct _perfetto_protos_VmOpSet {
+    char dummy_field;
+} perfetto_protos_VmOpSet;
+
+/* Delete the field or message pointed by DST. */
+typedef struct _perfetto_protos_VmOpDel {
+    char dummy_field;
+} perfetto_protos_VmOpDel;
+
+typedef struct _perfetto_protos_VmInstruction {
+    pb_size_t which_operation;
+    union _perfetto_protos_VmInstruction_operation {
+        perfetto_protos_VmOpSelect select;
+        perfetto_protos_VmOpRegLoad reg_load;
+        perfetto_protos_VmOpMerge merge;
+        perfetto_protos_VmOpSet set;
+        perfetto_protos_VmOpDel del;
+    } operation;
+    bool has_abort_level;
+    perfetto_protos_VmInstruction_AbortLevel abort_level;
+    /* Sub-instructions executed if the current instruction succeeds */
+    pb_callback_t nested_instructions;
+} perfetto_protos_VmInstruction;
 
 /* This message is sent from Producer(s) to the tracing Service when registering
  to advertise their capabilities. It describes the structure of tracing
@@ -3403,6 +3747,13 @@ typedef struct _perfetto_protos_DataSourceDescriptor {
  Introduced in v39 / Android V. */
     bool has_no_flush;
     bool no_flush;
+    /* If present, the tracing service executes this program within a ProtoVM to
+ process overwritten packets (patches). The service computes a hash of the
+ program to detect and disambiguate between different versions; if multiple
+ versions (from different producers) are specified for the same data source,
+ the service instantiates a dedicated ProtoVM for each. */
+    bool has_protovm_program;
+    perfetto_protos_VmProgram protovm_program;
 } perfetto_protos_DataSourceDescriptor;
 
 /* Reports the state of the tracing service. Used to gather details about the
@@ -3459,6 +3810,18 @@ typedef struct _perfetto_protos_TracingServiceState_Producer {
  Introduced in Perfetto V49 / Android 24Q4. */
     bool has_frozen;
     bool frozen;
+    /* Identifies the machine this producer is connected from in multi-machine
+ tracing setups (e.g. when going through traced_relay). Unset (or zero)
+ means the producer is connected from the local/host machine where the
+ tracing service is running.
+ Introduced in Perfetto V56 / Android 26Q3. */
+    bool has_machine_id;
+    uint32_t machine_id;
+    /* Human-readable name of the machine, as advertised by the relay (usually
+ the value of PERFETTO_MACHINE_NAME on the remote, falling back to the
+ remote's `uname -s`). Only set when machine_id is non-zero.
+ Introduced in Perfetto V56 / Android 26Q3. */
+    pb_callback_t machine_name;
 } perfetto_protos_TracingServiceState_Producer;
 
 /* Describes a data source registered by a producer. Data sources are listed
@@ -3509,6 +3872,22 @@ typedef struct _perfetto_protos_TracingServiceState_TracingSession {
     bool is_started;
 } perfetto_protos_TracingServiceState_TracingSession;
 
+/* Options for the android.aflags data source.
+ This data source captures snapshots of Android aconfig flags.
+ See https://source.android.com/docs/setup/build/feature-flagging/declare-flag
+ for more information on aconfig flags. */
+typedef struct _perfetto_protos_AndroidAflagsConfig {
+    /* Frequency of polling. If absent or 0, the state will be recorded once,
+ at the start of the trace.
+
+ It is recommended to either leave this absent or set it to a large
+ value as each invocation of the `aflags` tool can be time consuming
+ (approx. 350ms) and also triggers an expensive flush. This is required to
+ be > 1000ms if set, to avoid excessive CPU usage. */
+    bool has_poll_ms;
+    uint32_t poll_ms;
+} perfetto_protos_AndroidAflagsConfig;
+
 /* Data source that lists game modes and game interventions of games
  on an Android device. */
 typedef struct _perfetto_protos_AndroidGameInterventionListConfig {
@@ -3521,7 +3900,7 @@ typedef struct _perfetto_protos_AndroidGameInterventionListConfig {
 
  NOTE: Input traces can only be taken on debuggable (userdebug/eng) builds!
 
- Next ID: 5 */
+ Next ID: 6 */
 typedef struct _perfetto_protos_AndroidInputEventConfig {
     /* The tracing mode to use. If unspecified, it will default to
  TRACE_MODE_USE_RULES. */
@@ -3549,6 +3928,10 @@ typedef struct _perfetto_protos_AndroidInputEventConfig {
  to. All trace rules will apply. */
     bool has_trace_dispatcher_window_dispatch;
     bool trace_dispatcher_window_dispatch;
+    /* Trace evdev events received from the kernel, including device additions and
+ removals. */
+    bool has_trace_evdev_events;
+    bool trace_evdev_events;
 } perfetto_protos_AndroidInputEventConfig;
 
 /* A rule that specifies the TraceLevel for an event based on matching
@@ -3609,6 +3992,13 @@ typedef struct _perfetto_protos_AndroidLogConfig {
     /* If non-empty ignores all log messages whose tag doesn't match one of the
  specified values. */
     pb_callback_t filter_tags;
+    /* If true, includes the contents of the logcat buffers that were already
+ present before the data source started. By default (false), only new
+ log entries produced after the data source starts are recorded.
+ Can be useful for boot traces or situations where logs from before
+ traced started are important. */
+    bool has_preserve_log_buffer;
+    bool preserve_log_buffer;
 } perfetto_protos_AndroidLogConfig;
 
 /* Data source that polls for display state. This should only be used for
@@ -3785,14 +4175,22 @@ typedef struct _perfetto_protos_NetworkPacketTraceConfig {
  Android device. */
 typedef struct _perfetto_protos_PackagesListConfig {
     /* If not empty, emit info about only the following list of package names
- (exact match, no regex). Otherwise, emit info about all packages. */
+ (exact match, no regex). Can be combined with
+ |package_name_regex_filter|: a package is included if it matches either
+ filter. If both filters are empty, emit info about all packages. */
     pb_callback_t package_name_filter;
     /* If present and non-zero, the data source will periodically poll for CPU
  use by packages and only emit results for those that it sees. If absent,
  the data source will emit results for all packages at startup. The package
- name filter applies either way. */
+ name filters apply either way. */
     bool has_only_write_on_cpu_use_every_ms;
     uint32_t only_write_on_cpu_use_every_ms;
+    /* If not empty, emit info about only the packages whose names match any of
+ the following regexes (full match, not partial). Can be combined with
+ |package_name_filter|: a package is included if it matches either filter.
+ If both filters are empty, emit info about all packages.
+ This field was introduced in Android 26Q2 (Perfetto v55). */
+    pb_callback_t package_name_regex_filter;
 } perfetto_protos_PackagesListConfig;
 
 /* Data source that records events from the modem. */
@@ -3889,6 +4287,8 @@ typedef struct _perfetto_protos_WindowManagerConfig {
     perfetto_protos_WindowManagerConfig_LogFrequency log_frequency;
     bool has_log_level;
     perfetto_protos_WindowManagerConfig_LogLevel log_level;
+    bool has_log_mode;
+    perfetto_protos_WindowManagerConfig_LogMode log_mode;
 } perfetto_protos_WindowManagerConfig;
 
 typedef struct _perfetto_protos_ChromeConfig {
@@ -3969,6 +4369,13 @@ typedef struct _perfetto_protos_EtwConfig {
     pb_callback_t memory_provider_events;
     /* Provides events relating to file I/O. */
     pb_callback_t file_provider_events;
+    /* Events for which stacks should be collected. */
+    pb_callback_t stack_sampling_events;
+    /* Provides events relating to disk I/O. */
+    pb_callback_t disk_provider_events;
+    /* Provides events relating to multiple kinds of IO including disk, cache, and
+ network. */
+    pb_callback_t system_io_provider_events;
 } perfetto_protos_EtwConfig;
 
 typedef struct _perfetto_protos_FrozenFtraceConfig {
@@ -4281,20 +4688,89 @@ typedef struct _perfetto_protos_FtraceConfig_TracefsOption {
     perfetto_protos_FtraceConfig_TracefsOption_State state;
 } perfetto_protos_FtraceConfig_TracefsOption;
 
+/* Configuration for sampling counters by instrumenting command buffers.
+
+ When instrumented_sampling_config is used (instead of the
+ instrumented_sampling bool), the following steps determine whether
+ instrumented counters are enabled for a given GPU activity:
+
+ 1. Activity name filtering: If activity_name_filters is non-empty, the
+    activity must match at least one filter. If empty, all activities
+    pass this step.
+ 2. TX range filtering: If activity_tx_include_globs is non-empty, the
+    activity must fall within a matching TX range. Activities in TX
+    ranges matching activity_tx_exclude_globs are excluded (excludes
+    take precedence over includes). If both are empty, all activities
+    pass this step.
+ 3. Range-based sampling: If activity_ranges is non-empty, only
+    activities within the specified skip/count ranges are instrumented.
+    If empty, all activities that passed the previous steps are
+    instrumented. */
+typedef struct _perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig {
+    /* GPU activity name filters. An activity matches if it matches any filter. */
+    pb_callback_t activity_name_filters;
+    /* Ranges of GPU activities to instrument. Applied after activity name
+ and TX range filters. If empty, all activities that passed the
+ previous filters are instrumented. */
+    pb_callback_t activity_ranges;
+    /* Glob patterns to use for including GPU activities in TX ranges. TX
+ ranges are in-process annotations that mark different sections of GPU
+ work (e.g. NVTX ranges for CUDA). TX ranges can be nested, and an
+ activity is included if any range in its nesting hierarchy matches.
+ Only activities that fall within a matching TX range will be
+ instrumented. */
+    pb_callback_t activity_tx_include_globs;
+    /* Glob patterns to use for excluding GPU activities from TX ranges.
+ TX ranges can be nested, and an activity is excluded if any range
+ in its nesting hierarchy matches. Excludes take precedence over
+ includes. */
+    pb_callback_t activity_tx_exclude_globs;
+} perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig;
+
 typedef struct _perfetto_protos_GpuCounterConfig {
     /* Desired sampling interval for counters. */
     bool has_counter_period_ns;
     uint64_t counter_period_ns;
-    /* List of counters to be sampled. Counter IDs correspond to the ones
- described in GpuCounterSpec in the data source descriptor. */
+    /* List of counter IDs to be sampled. */
     pb_callback_t counter_ids;
-    /* Sample counters by instrumenting command buffers. */
-    bool has_instrumented_sampling;
-    bool instrumented_sampling;
+    pb_size_t which_instrumented_sampling_mode;
+    union _perfetto_protos_GpuCounterConfig_instrumented_sampling_mode {
+        bool instrumented_sampling;
+        perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig instrumented_sampling_config;
+    } instrumented_sampling_mode;
     /* Fix gpu clock rate during trace session. */
     bool has_fix_gpu_clock;
     bool fix_gpu_clock;
+    /* List of counter names to be sampled. Requires producer support; check
+ GpuCounterDescriptor.supports_counter_names in the data source descriptor.
+ Glob patterns may be used to match multiple counters by name; check
+ GpuCounterDescriptor.supports_counter_name_globs for support. */
+    pb_callback_t counter_names;
 } perfetto_protos_GpuCounterConfig;
+
+/* Filters GPU activities by name. Each filter specifies a glob pattern
+ and the basis for matching (mangled or demangled kernel name). */
+typedef struct _perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityNameFilter {
+    /* required. Glob pattern to use for GPU activity name filtering. */
+    pb_callback_t name_glob;
+    /* Basis for name filtering. Defaults to MANGLED_KERNEL_NAME if not
+ specified. */
+    bool has_name_base;
+    perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityNameFilter_NameBase name_base;
+} perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityNameFilter;
+
+/* Defines a range of GPU activities to instrument. */
+typedef struct _perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityRange {
+    /* Number of GPU activities to skip before starting to instrument
+ command buffers. Defaults to 0 if not specified. */
+    bool has_skip;
+    uint32_t skip;
+    /* Limit for the number of GPU activities to sample counters for by
+ instrumenting command buffers. Defaults to UINT32_MAX (all
+ remaining activities) if not specified. */
+    bool has_count;
+    uint32_t count;
+} perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityRange;
 
 typedef struct _perfetto_protos_GpuRenderStagesConfig {
     /* Enable to separate the color and depth/stencil load and store stages
@@ -4365,6 +4841,21 @@ typedef struct _perfetto_protos_InterceptorConfig {
     bool has_console_config;
     perfetto_protos_ConsoleConfig console_config;
 } perfetto_protos_InterceptorConfig;
+
+/* Configuration for the "linux.systemd_journald" data source.
+ Next field id: 4 */
+typedef struct _perfetto_protos_SystemdJournaldConfig {
+    /* Minimum syslog priority level to capture (inclusive).
+ 0=EMERG, 1=ALERT, 2=CRIT, 3=ERR, 4=WARNING, 5=NOTICE, 6=INFO, 7=DEBUG.
+ Default (0 / unset): capture all priorities (equivalent to 7). */
+    bool has_min_prio;
+    uint32_t min_prio;
+    /* If non-empty, only capture journal entries whose SYSLOG_IDENTIFIER
+ matches one of these strings. */
+    pb_callback_t filter_identifiers;
+    /* If non-empty, only capture journal entries from these systemd unit names. */
+    pb_callback_t filter_units;
+} perfetto_protos_SystemdJournaldConfig;
 
 typedef struct _perfetto_protos_AndroidPowerConfig {
     bool has_battery_poll_ms;
@@ -4628,6 +5119,51 @@ typedef struct _perfetto_protos_HeapprofdConfig {
     pb_callback_t exclude_heaps;
 } perfetto_protos_HeapprofdConfig;
 
+/* Config for collecting /proc/pid/smaps. */
+typedef struct _perfetto_protos_SmapsConfig {
+    /* Set of fields to collect.
+ If unset, defaults to: size, rss, anonymous, swap. */
+    pb_callback_t vma_fields;
+    /* If false, mappings are aggregated by their path name.
+ If true, each mapping is serialised separately. */
+    bool has_unaggregated;
+    bool unaggregated;
+    /* Optional ordered list of redaction rules for the name of the mapping.
+ Note that all mappings will still be emitted, these rules only affect the
+ emitted name.
+ If unset, all names are written as is.
+ If set, the first matching rule decides on the action.
+ If no rules match, the name is written as is. */
+    pb_callback_t name_redaction_rules;
+} perfetto_protos_SmapsConfig;
+
+typedef struct _perfetto_protos_RedactionRule {
+    /* The pattern to match against. */
+    pb_callback_t pattern;
+    bool has_match_mode;
+    perfetto_protos_RedactionRule_MatchMode match_mode;
+    /* If the pattern matches, keep the entire name. In other words, do not
+ redact. This option exists since the rules are evaluated in order, so a
+ more specific allow rule with keep_full can match before a more general
+ deny rule. This option is mutually exclusive with |keep_file_extension| and
+ |keep_path_elements|. */
+    bool has_keep_full;
+    bool keep_full;
+    /* If the pattern matches, replace the name with this string (defaulting to
+ <pf_redacted> if unset). The final emitted name might be further augmented
+ by the options below keeping parts of the original name. */
+    pb_callback_t replacement_name;
+    /* If the pattern matches, keep the file extension, if any.
+ Can be combined with |keep_path_elements|. */
+    bool has_keep_file_extension;
+    bool keep_file_extension;
+    /* If the pattern matches, keep the first N path elements (as separated by
+ '/'). If the name is not a path, this option does nothing. Can be combined
+ with |keep_file_extension|. */
+    bool has_keep_path_elements;
+    uint32_t keep_path_elements;
+} perfetto_protos_RedactionRule;
+
 /* If dump_interval_ms != 0, the following configuration is used. */
 typedef struct _perfetto_protos_JavaHprofConfig_ContinuousDumpConfig {
     /* ms to wait before first continuous dump.
@@ -4684,7 +5220,9 @@ typedef struct _perfetto_protos_JavaHprofConfig {
  * start with /system
  * start with /vendor
  * start with /data/app
- * contain "extracted in memory from Y", where Y matches any of the above */
+ * contain "extracted in memory from Y", where Y matches any of the above
+
+ Superseded by |smaps_config| in perfetto v58+. */
     bool has_dump_smaps;
     bool dump_smaps;
     /* Exclude objects of the following types from the profile. This can be
@@ -4697,6 +5235,11 @@ typedef struct _perfetto_protos_JavaHprofConfig {
  * @null: sideloaded
  Supported on Android 12+. */
     pb_callback_t target_installed_by;
+    /* If set, include /proc/self/smaps memory mappings.
+
+ Added in perfetto v58. */
+    bool has_smaps_config;
+    perfetto_protos_SmapsConfig smaps_config;
 } perfetto_protos_JavaHprofConfig;
 
 typedef struct _perfetto_protos_PerfEvents {
@@ -4720,6 +5263,7 @@ typedef struct _perfetto_protos_PerfEvents_Tracepoint {
  struct. Primarily for local use-cases, since the event availability and
  encoding is hardware-specific. */
 typedef struct _perfetto_protos_PerfEvents_RawEvent {
+    /* Either |type| or |pmu_name| can be set. */
     bool has_type;
     uint32_t type;
     bool has_config;
@@ -4728,6 +5272,12 @@ typedef struct _perfetto_protos_PerfEvents_RawEvent {
     uint64_t config1;
     bool has_config2;
     uint64_t config2;
+    /* The name of a dynamic PMU under /sys/bus/event_source/devices
+ (e.g. "armv8_pmuv3").
+ If set, leave |type| unset.
+ Android: the relevant sysfs paths are not allowlisted by default, so
+ this option will require a rooted device with selinux disabled. */
+    pb_callback_t pmu_name;
 } perfetto_protos_PerfEvents_RawEvent;
 
 /* The primary event to count. If recording multiple events, this
@@ -4893,7 +5443,7 @@ typedef struct _perfetto_protos_PerfEventConfig_CallstackSampling {
      }
    }
 
- Next id: 21 */
+ Next id: 23 */
 typedef struct _perfetto_protos_PerfEventConfig {
     /* Note: legacy configs had to set |all_cpus| to true to pass parsing.
  We rely on this to detect such configs. */
@@ -4977,7 +5527,48 @@ typedef struct _perfetto_protos_PerfEventConfig {
 
  Available since: perfetto v50. */
     pb_callback_t target_cpu;
+    /* Allow failure of perf_event_open */
+    bool has_ignore_open_failure;
+    bool ignore_open_failure;
+    /* If not empty, consider only CPUs whose CPUID matches one of these values. */
+    pb_callback_t cpuid;
 } perfetto_protos_PerfEventConfig;
+
+typedef struct _perfetto_protos_ProtoVmConfig {
+    bool has_memory_limit_kb;
+    uint32_t memory_limit_kb;
+} perfetto_protos_ProtoVmConfig;
+
+/* QnxConfig is used with trace_qnx_probes build from
+ https://github.com/qnx-ports/perfetto */
+typedef struct _perfetto_protos_QnxConfig {
+    /* The number of buffers that tracelog will init for the QNX trace. */
+    bool has_qnx_kernel_buffers;
+    uint32_t qnx_kernel_buffers;
+    /* The number of kernel buffers that tracelog will init for the QNX trace. */
+    bool has_qnx_kernel_kbuffers;
+    uint32_t qnx_kernel_kbuffers;
+    /* Flag indicating whether the QNX kernel tracing should produce wide
+ events which contain additional data or fast events which are most
+ concise. In fast mode we lose the priority information */
+    bool has_qnx_kernel_wide_events;
+    bool qnx_kernel_wide_events;
+    /* The number of pages initialized by default the parser's page cache. */
+    bool has_qnx_cache_pages;
+    uint32_t qnx_cache_pages;
+    /* The max pages the page cache should allocate (must be at least as big)
+ as the qnx_cache_pages value. Using -1 will allow the cache to grow
+ unbounded. The cache will prefer to re-use existing pages so growth will
+ only happen when needed (when parser is not keeping up). */
+    bool has_qnx_cache_max_pages;
+    int32_t qnx_cache_max_pages;
+    /* The initial size of the the buffer used to hold the trace header values
+ this dynamic buffer will grow as needed but reallocs can be avoided by
+ selecting an initial size large enough to hold all the initial header
+ data. */
+    bool has_qnx_trace_buffer_init_bytes;
+    uint32_t qnx_trace_buffer_init_bytes;
+} perfetto_protos_QnxConfig;
 
 /* This file is named 'statsd_tracing_config.proto' rather than
  'statsd_config.proto' (which would be more consistent with the other
@@ -5065,6 +5656,10 @@ typedef struct _perfetto_protos_SysStatsConfig {
  This is required to be > 10ms to avoid excessive CPU usage. */
     bool has_gpufreq_period_ms;
     uint32_t gpufreq_period_ms;
+    /* Polls /proc/slabinfo every X ms, if non-zero.
+ This is required to be > 10ms to avoid excessive CPU usage. */
+    bool has_slab_period_ms;
+    uint32_t slab_period_ms;
 } perfetto_protos_SysStatsConfig;
 
 /* This data-source does a one-off recording of system information when
@@ -5074,7 +5669,10 @@ typedef struct _perfetto_protos_SysStatsConfig {
  /sys/devices/system/cpu/cpu* /cpufreq/scaling_available_frequencies This
  datasource has no configuration options at present. */
 typedef struct _perfetto_protos_SystemInfoConfig {
-    char dummy_field;
+    /* If true, records hardware interrupt ID-to-name mappings from
+ /proc/interrupts. */
+    bool has_irq_names;
+    bool irq_names;
 } perfetto_protos_SystemInfoConfig;
 
 typedef struct _perfetto_protos_TestConfig_DummyFields {
@@ -5217,7 +5815,7 @@ typedef struct _perfetto_protos_TrackEventConfig { /* The following fields defin
 } perfetto_protos_TrackEventConfig;
 
 /* The configuration that is passed to each data source when starting tracing.
- Next id: 140 */
+ Next id: 142 */
 typedef struct _perfetto_protos_DataSourceConfig {
     /* Data source unique name, e.g., "linux.ftrace". This must match
  the name passed by the data source when it registers (see
@@ -5280,6 +5878,15 @@ typedef struct _perfetto_protos_DataSourceConfig {
  Using both fields allows configs to work with both old and new versions
  of the tracing service. Introduced in v54. */
     pb_callback_t target_buffer_name;
+    /* TODO(primiano): today when we enable a protovm_config, we actually accept
+ that if N producers advertise M different versions of the same program we
+ will create M instances of that program.
+ To overcome this, we could move the program to the TraceConfig. But doing
+ so would bloat the trace config size too big and create problems to statsd.
+ Once the config store (b/482305876) exists we should move protovm programs
+ onto that. */
+    bool has_protovm_config;
+    perfetto_protos_ProtoVmConfig protovm_config;
     /* Data source name: linux.ftrace */
     bool has_ftrace_config;
     perfetto_protos_FtraceConfig ftrace_config;
@@ -5415,6 +6022,15 @@ typedef struct _perfetto_protos_DataSourceConfig {
     /* Data source name: android.inputmethod */
     bool has_inputmethod_config;
     perfetto_protos_InputMethodConfig inputmethod_config;
+    /* Data source name: android.aflags */
+    bool has_android_aflags_config;
+    perfetto_protos_AndroidAflagsConfig android_aflags_config;
+    /* Data source name: linux.systemd_journald */
+    bool has_journald_config;
+    perfetto_protos_SystemdJournaldConfig journald_config;
+    /* Data source name: qnx.kernel */
+    bool has_qnx_config;
+    perfetto_protos_QnxConfig qnx_config;
     /* This is a fallback mechanism to send a free-form text config to the
  producer. In theory this should never be needed. All the code that
  is part of the platform (i.e. traced service) is supposed to *not* truncate
@@ -5533,6 +6149,9 @@ typedef struct _perfetto_protos_TraceConfig_BuiltinDataSource {
     /* Disables the reporting of per-trace-writer histograms in TraceStats. */
     bool has_disable_chunk_usage_histograms;
     bool disable_chunk_usage_histograms;
+    /* Disable emitting extension descriptors into the trace. */
+    bool has_disable_extension_descriptors;
+    bool disable_extension_descriptors;
 } perfetto_protos_TraceConfig_BuiltinDataSource;
 
 typedef struct _perfetto_protos_TraceConfig_ProducerConfig {
@@ -5794,7 +6413,8 @@ typedef struct _perfetto_protos_TraceConfig_TraceFilter { /* ===================
   - any field in both the overlay and bytecode_v2 takes the value in the
     overlay, the bytecode_v2 value is ignored.
 
- Introduced in: Perfetto v54. */
+ Note: despite the name, this was broken in v54 (the overlay was not
+ passed through to the bytecode parser). Only works in v55+. */
     pb_callback_t bytecode_overlay_v54;
     /* String filter chain for Perfetto v54+. Rules in this chain either
  overwrite rules in string_filter_chain (if the name matches) or are
@@ -5870,7 +6490,7 @@ typedef struct _perfetto_protos_TraceConfig_CmdTraceStartDelay {
  It contains the general config for the logging buffer(s) and the configs for
  all the data source being enabled.
 
- Next id: 45. */
+ Next id: 47. */
 typedef struct _perfetto_protos_TraceConfig {
     pb_callback_t buffers;
     pb_callback_t data_sources;
@@ -6075,6 +6695,7 @@ typedef struct _perfetto_protos_TraceConfig {
  Supported on: Android 26Q1+. */
     bool has_fflush_post_write;
     perfetto_protos_TraceConfig_FFlushMode fflush_post_write;
+    pb_callback_t notes;
 } perfetto_protos_TraceConfig;
 
 /* When non-empty, ensures that for a each semaphore named `name at most
@@ -6120,6 +6741,14 @@ typedef struct _perfetto_protos_TraceConfig_SessionSemaphore {
     bool has_max_other_session_count;
     uint64_t max_other_session_count;
 } perfetto_protos_TraceConfig_SessionSemaphore;
+
+/* Allow key, value pairs to save arbitrary data about trace. */
+typedef struct _perfetto_protos_TraceConfig_Note {
+    /* Required. */
+    pb_callback_t key;
+    /* Required. */
+    pb_callback_t value;
+} perfetto_protos_TraceConfig_Note;
 
 typedef struct _perfetto_protos_Utsname {
     pb_callback_t sysname;
@@ -6188,6 +6817,20 @@ typedef struct _perfetto_protos_SystemInfo {
     uint64_t system_ram_bytes;
 } perfetto_protos_SystemInfo;
 
+typedef struct _perfetto_protos_TraceAttributes {
+    pb_callback_t attribute;
+} perfetto_protos_TraceAttributes;
+
+typedef struct _perfetto_protos_TraceAttributes_Attribute {
+    /* The key */
+    pb_callback_t key;
+    pb_size_t which_value;
+    union _perfetto_protos_TraceAttributes_Attribute_value {
+        int64_t long_value;
+        pb_callback_t string_value;
+    } value;
+} perfetto_protos_TraceAttributes_Attribute;
+
 /* Statistics for TRACE_BUFFER_V2_SHADOW_MODE comparison.
  Only populated when the buffer is configured with shadow mode. */
 typedef struct _perfetto_protos_TraceStats_BufferStats_ShadowBufferStats {
@@ -6213,6 +6856,10 @@ typedef struct _perfetto_protos_TraceStats_BufferStats_ShadowBufferStats {
     /* Num. patches that succeeded on V2 buffer. */
     bool has_v2_patches_succeeded;
     uint64_t v2_patches_succeeded;
+    /* This is to distinguish the updated calculations after fixing the
+ hashes. This field is either empty or "2" */
+    bool has_stats_version;
+    uint32_t stats_version;
 } perfetto_protos_TraceStats_BufferStats_ShadowBufferStats;
 
 /* From TraceBuffer::Stats.
@@ -6421,6 +7068,43 @@ typedef struct _perfetto_protos_TraceStats {
     pb_callback_t writer_stats;
 } perfetto_protos_TraceStats;
 
+/* Android aconfig flags (aflags).
+ This message captures a snapshot of the state of aconfig flags on the device.
+ Keep in sync with:
+ http://ac/packages/modules/ConfigInfrastructure/aflags/proto/aflags.proto */
+typedef struct _perfetto_protos_AndroidAflags {
+    /* A collection of flags. */
+    pb_callback_t flags;
+    /* A human-readable error logged if aflags processing fails.
+ This is a perfetto specific field used to help debugging. */
+    pb_callback_t error;
+} perfetto_protos_AndroidAflags;
+
+/* Representation of an aconfig flag and its metadata. */
+typedef struct _perfetto_protos_AndroidAflags_Flag {
+    pb_callback_t flag_namespace;
+    pb_callback_t name;
+    /* The aconfig package (e.g. "com.android.foo"). These are system-level
+ identifiers and not privacy-impacting. */
+    pb_callback_t pkg;
+    /* The container where the flag lives (e.g. "system", "vendor", or mainline
+ module name). */
+    pb_callback_t container;
+    /* The flag value as a string to support different future data types. */
+    pb_callback_t value;
+    /* The value that will be applied after the next reboot, if different from
+ the current value. */
+    pb_callback_t staged_value;
+    bool has_permission;
+    perfetto_protos_AndroidAflags_FlagPermission permission;
+    bool has_value_picked_from;
+    perfetto_protos_AndroidAflags_ValuePickedFrom value_picked_from;
+    bool has_storage_backend;
+    perfetto_protos_AndroidAflags_FlagStorageBackend storage_backend;
+    bool has_type;
+    perfetto_protos_AndroidAflags_FlagType type;
+} perfetto_protos_AndroidAflags_Flag;
+
 typedef struct _perfetto_protos_AndroidGameInterventionList {
     pb_callback_t game_packages;
     /* True when at least one error occurred when parsing
@@ -6521,45 +7205,6 @@ typedef struct _perfetto_protos_AndroidSystemProperty_PropertyValue {
     pb_callback_t name;
     pb_callback_t value;
 } perfetto_protos_AndroidSystemProperty_PropertyValue;
-
-/* AppWakelockInfo describes the time-independent properties of a wakelock, such
- as the owning package or wakelock tag. This is interned to reduce trace size.
- Event bundles refer to interned wakelock info by the iid. */
-typedef struct _perfetto_protos_AppWakelockInfo {
-    /* The interned id of this wakelock. */
-    bool has_iid;
-    int32_t iid;
-    /* The app-provided tag of the wakelock. */
-    pb_callback_t tag;
-    /* The wakelock flags (such as partial vs full). */
-    bool has_flags;
-    int32_t flags;
-    /* The pid that created the wakelock. */
-    bool has_owner_pid;
-    int32_t owner_pid;
-    /* The uid that created the wakelock. */
-    bool has_owner_uid;
-    int32_t owner_uid;
-    /* The uid of the work source root (if present). */
-    bool has_work_uid;
-    int32_t work_uid;
-} perfetto_protos_AppWakelockInfo;
-
-/* AppWakelockBundle describes one or more wakelock events. Events are written
- in two paired array, such that the details for event i are in intern_id[i]
- and encoded_ts[i]. */
-typedef struct _perfetto_protos_AppWakelockBundle {
-    /* The interned id for the WakelockInfo of the event. */
-    pb_callback_t intern_id;
-    /* The timestamp and event type, encoded as:
-   (event_time - packet_time) << 1 | (acquired ? 1 : 0) */
-    pb_callback_t encoded_ts;
-    /* For writing single packets (mainly by tokenization). */
-    bool has_info;
-    perfetto_protos_AppWakelockInfo info;
-    bool has_acquired;
-    bool acquired;
-} perfetto_protos_AppWakelockBundle;
 
 /* Trace event for bluetooth */
 typedef struct _perfetto_protos_BluetoothTraceEvent {
@@ -6840,6 +7485,11 @@ typedef struct _perfetto_protos_FrameTimelineEvent_ActualSurfaceFrameStart {
     /* jank metadata information (for debug). */
     bool has_jank_debug_metadata;
     float jank_debug_metadata;
+    bool has_latched_fence_state;
+    perfetto_protos_FrameTimelineEvent_ActualSurfaceFrameStart_LatchedFenceState latched_fence_state;
+    /* animation time (ms) used when drawing this frame. */
+    bool has_animation_time_millis;
+    float animation_time_millis;
 } perfetto_protos_FrameTimelineEvent_ActualSurfaceFrameStart;
 
 /* Indicates the start of expected timeline slice for DisplayFrames. */
@@ -6906,6 +7556,10 @@ typedef struct _perfetto_protos_FrameTimelineEvent_ActualDisplayFrameStart {
     /* jank metadata information (for debug). */
     bool has_jank_debug_metadata;
     float jank_debug_metadata;
+    bool has_latched_unsignaled_count;
+    int64_t latched_unsignaled_count;
+    bool has_addressable_unsignaled_latch_count;
+    int64_t addressable_unsignaled_latch_count;
 } perfetto_protos_FrameTimelineEvent_ActualDisplayFrameStart;
 
 /* FrameEnd just sends the cookie to indicate that the corresponding
@@ -6935,16 +7589,6 @@ typedef struct _perfetto_protos_FrameTimelineEvent {
         perfetto_protos_FrameTimelineEvent_FrameEnd frame_end;
     } event;
 } perfetto_protos_FrameTimelineEvent;
-
-/* Generated by Android's GpuService. */
-typedef struct _perfetto_protos_GpuMemTotalEvent {
-    bool has_gpu_id;
-    uint32_t gpu_id;
-    bool has_pid;
-    uint32_t pid;
-    bool has_size;
-    uint64_t size;
-} perfetto_protos_GpuMemTotalEvent;
 
 typedef struct _perfetto_protos_GraphicsFrameEvent_BufferEvent {
     bool has_frame_number;
@@ -7159,6 +7803,17 @@ typedef struct _perfetto_protos_ProtoLogViewerConfig_Group {
     pb_callback_t tag;
 } perfetto_protos_ProtoLogViewerConfig_Group;
 
+typedef struct _perfetto_protos_RectProto {
+    bool has_left;
+    int32_t left;
+    bool has_top;
+    int32_t top;
+    bool has_right;
+    int32_t right;
+    bool has_bottom;
+    int32_t bottom;
+} perfetto_protos_RectProto;
+
 /* ShellTransition messages record information about the shell transitions in
  the system. This is used to track the animations that are created and execute
  through the shell transition system. */
@@ -7222,8 +7877,8 @@ typedef struct _perfetto_protos_ShellTransition {
     /* The transition type of this transition (e.g. TO_FRONT, OPEN, CLOSE). */
     bool has_type;
     int32_t type;
-    /* The list of targets that are part of this transition. */
-    pb_callback_t targets;
+    /* The list of changes that are part of this transition. */
+    pb_callback_t changes;
     /* The id of the transition we have requested to merge or have merged this
  transition into. */
     bool has_merge_target;
@@ -7240,21 +7895,39 @@ typedef struct _perfetto_protos_ShellTransition {
     int64_t starting_window_remove_time_ns;
 } perfetto_protos_ShellTransition;
 
-/* Contains the information about the windows targeted in a transition. */
-typedef struct _perfetto_protos_ShellTransition_Target {
-    /* The transition mode of this target (e.g. TO_FRONT, CLOSE...) */
+/* Contains the information about the windows changed in a transition. */
+typedef struct _perfetto_protos_ShellTransition_Change {
+    /* The transition mode of this change (e.g. TO_FRONT, CLOSE...) */
     bool has_mode;
     int32_t mode;
-    /* The layer id of this target. */
+    /* The layer id of this change. */
     bool has_layer_id;
     int32_t layer_id;
-    /* The window id of this target. */
+    /* The window id of this change. */
     bool has_window_id;
     int32_t window_id;
-    /* The flags set on this target. */
+    /* The flags set on this change. */
     bool has_flags;
     int32_t flags;
-} perfetto_protos_ShellTransition_Target;
+    /* The display id the change is transitioning on before the transition. */
+    bool has_start_display_id;
+    int32_t start_display_id;
+    /* The display id the change is transitioning on after the transition. */
+    bool has_end_display_id;
+    int32_t end_display_id;
+    /* The rotation of the change before the transition. */
+    bool has_start_rotation;
+    int32_t start_rotation;
+    /* The rotation of the change after the transition. */
+    bool has_end_rotation;
+    int32_t end_rotation;
+    /* The absolute screen bounds of the change before the transition. */
+    bool has_start_absolute_bounds;
+    perfetto_protos_RectProto start_absolute_bounds;
+    /* The absolute screen bounds of the change after the transition. */
+    bool has_end_absolute_bounds;
+    perfetto_protos_RectProto end_absolute_bounds;
+} perfetto_protos_ShellTransition_Change;
 
 /* Contains mappings from handler ids to string representation of the handlers. */
 typedef struct _perfetto_protos_ShellHandlerMappings {
@@ -7269,16 +7942,16 @@ typedef struct _perfetto_protos_ShellHandlerMapping {
     pb_callback_t name;
 } perfetto_protos_ShellHandlerMapping;
 
-typedef struct _perfetto_protos_RectProto {
-    bool has_left;
-    int32_t left;
-    bool has_top;
-    int32_t top;
-    bool has_right;
-    int32_t right;
-    bool has_bottom;
-    int32_t bottom;
-} perfetto_protos_RectProto;
+typedef struct _perfetto_protos_CornerRadiiProto {
+    bool has_tl;
+    float tl;
+    bool has_tr;
+    float tr;
+    bool has_bl;
+    float bl;
+    bool has_br;
+    float br;
+} perfetto_protos_CornerRadiiProto;
 
 typedef struct _perfetto_protos_RegionProto {
     pb_callback_t rect;
@@ -7436,6 +8109,37 @@ typedef struct _perfetto_protos_LayersTraceFileProto {
     uint64_t real_to_elapsed_time_offset_nanos;
 } perfetto_protos_LayersTraceFileProto;
 
+/* ProtoVM Patch Proto
+ Merged by ProtoVM into LayersSnapshotProto */
+typedef struct _perfetto_protos_LayersPatchProto {
+    /* Layers that have been modified or added in this patch. */
+    pb_callback_t layers;
+    /* Displays that have been modified or added in this patch. */
+    pb_callback_t displays;
+    /* IDs of layers that have been deleted. */
+    pb_callback_t deleted_layer_ids;
+    /* IDs of displays that have been deleted. */
+    pb_callback_t deleted_display_ids;
+    /* elapsed realtime in nanos since boot of when this entry was logged */
+    bool has_elapsed_realtime_nanos;
+    int64_t elapsed_realtime_nanos;
+    /* SurfaceFlinger's stage where the snapshot was triggered.
+ Currently either "visibleRegionsDirty" or "bufferLatched". */
+    pb_callback_t where;
+    /* Blob for the current HWC information for all layers, reported by dumpsys. */
+    pb_callback_t hwc_blob;
+    /* Excludes state sent during composition like visible region and composition
+ type. */
+    bool has_excludes_composition_state;
+    bool excludes_composition_state;
+    /* Number of missed entries since the last entry was recorded. */
+    bool has_missed_entries;
+    uint32_t missed_entries;
+    /* VSync ID associated with this patch. */
+    bool has_vsync_id;
+    int64_t vsync_id;
+} perfetto_protos_LayersPatchProto;
+
 /* Contains a list of all layers. */
 typedef struct _perfetto_protos_LayersProto {
     pb_callback_t layers;
@@ -7510,17 +8214,6 @@ typedef struct _perfetto_protos_FloatRectProto {
     bool has_bottom;
     float bottom;
 } perfetto_protos_FloatRectProto;
-
-typedef struct _perfetto_protos_CornerRadiiProto {
-    bool has_tl;
-    float tl;
-    bool has_tr;
-    float tr;
-    bool has_bl;
-    float bl;
-    bool has_br;
-    float br;
-} perfetto_protos_CornerRadiiProto;
 
 typedef struct _perfetto_protos_ActiveBufferProto {
     bool has_width;
@@ -7720,6 +8413,12 @@ typedef struct _perfetto_protos_LayerProto {
     /* "True" corner radii of the layer computed by SurfaceFlinger. */
     bool has_effective_radii;
     perfetto_protos_CornerRadiiProto effective_radii;
+    /* Reported corner radii of the layer. */
+    bool has_reported_radii;
+    perfetto_protos_CornerRadiiProto reported_radii;
+    /* Flag indicating if client-drawn radii are disabled. */
+    bool has_disable_client_drawn_radii;
+    bool disable_client_drawn_radii;
 } perfetto_protos_LayerProto;
 
 typedef struct _perfetto_protos_BarrierLayerProto {
@@ -8167,6 +8866,17 @@ typedef struct _perfetto_protos_ChromeMetadataPacket {
     pb_callback_t enabled_categories;
     /* List of Finch study/groups that apply to this trace. */
     pb_callback_t field_trial_hashes;
+    /* The package name of the app which is being traced. This field is only set
+ on Android. */
+    pb_callback_t app_package_name;
+    /* A version number string for Chrome. This matches
+ SystemProfileProto::app_version. */
+    pb_callback_t app_version;
+    /* This matches SystemProfileProto::channel. */
+    bool has_channel;
+    uint32_t channel;
+    /* The user's operating system. This matches SystemProfileProto::OS::name. */
+    pb_callback_t os_name;
 } perfetto_protos_ChromeMetadataPacket;
 
 typedef struct _perfetto_protos_ChromeTracedValue {
@@ -8439,6 +9149,21 @@ typedef struct _perfetto_protos_V8JsCode {
         pb_callback_t machine_code;
         pb_callback_t bytecode;
     } instructions;
+    pb_size_t which_source_map;
+    union _perfetto_protos_V8JsCode_source_map {
+        /* For Ignition / bytecode:
+      - Maps bytecode-ranges to byte offsets (for the same script as the
+        related js function) */
+        pb_callback_t source_positions;
+        /* For Sparkplug code:
+      - Maps machine-code ranges to bytecode ranges in the corresponding
+        ignition code object for the same js-function. */
+        pb_callback_t bytecode_positions;
+        /* For optimized code:
+     - Maps machine-code-ranges to bytecode ranges in various
+       ignition code objects (inlining might happen from multiple functions) */
+        pb_callback_t inlined_bytecode_positions;
+    } source_map;
 } perfetto_protos_V8JsCode;
 
 typedef struct _perfetto_protos_V8InternalCode {
@@ -8519,10 +9244,13 @@ typedef struct _perfetto_protos_V8CodeDefaults {
 /* A snapshot of clock readings to allow for trace alignment. */
 typedef struct _perfetto_protos_ClockSnapshot {
     pb_callback_t clocks;
-    /* The authoritative clock domain for the trace. Defaults to BOOTTIME, but can
- be overridden in TraceConfig's builtin_data_sources. Trace processor will
- attempt to translate packet/event timestamps from various data sources (and
- their chosen clock domains) to this domain during import. */
+    /* The authoritative clock domain for the trace. When set, this definitively
+ overrides the trace time clock. If not set, the trace time clock remains
+ at its default (BUILTIN_CLOCK_TRACE_FILE), unless a format-specific
+ fallback applies (e.g. BOOTTIME for legacy proto traces without clock
+ snapshots). Trace processor will attempt to translate packet/event
+ timestamps from various data sources (and their chosen clock domains) to
+ this domain during import. */
     bool has_primary_trace_clock;
     perfetto_protos_BuiltinClock primary_trace_clock;
 } perfetto_protos_ClockSnapshot;
@@ -8769,6 +9497,56 @@ typedef struct _perfetto_protos_FileIoOpEndEtwEvent {
     uint32_t nt_status;
 } perfetto_protos_FileIoOpEndEtwEvent;
 
+/* Proto definition based on the `FileIo_PathOperation` class definition. */
+typedef struct _perfetto_protos_FileIoPathOperationEtwEvent {
+    bool has_irp_ptr;
+    uint64_t irp_ptr;
+    bool has_file_object;
+    uint64_t file_object;
+    bool has_file_key;
+    uint64_t file_key;
+    bool has_extra_info;
+    uint64_t extra_info;
+    bool has_ttid;
+    uint32_t ttid;
+    bool has_info_class;
+    uint32_t info_class;
+    pb_callback_t file_name;
+    bool has_opcode;
+    uint32_t opcode;
+} perfetto_protos_FileIoPathOperationEtwEvent;
+
+/* Proto definition based on the `StackWalk_Event` class definition. See
+ `Callstack` in `perfetto/protos/perfetto/trace/track_event/track_event.proto`
+ for context on what is contained in it. */
+typedef struct _perfetto_protos_StackWalkEtwEvent {
+    pb_callback_t trigger;
+    bool has_callstack_iid;
+    uint64_t callstack_iid;
+} perfetto_protos_StackWalkEtwEvent;
+
+/* Proto definition based on the `DiskIo_TypeGroup1/2/3` class definitions. */
+typedef struct _perfetto_protos_DiskIoEtwEvent {
+    bool has_disk_number;
+    uint32_t disk_number;
+    bool has_irp_flags;
+    uint32_t irp_flags;
+    bool has_transfer_size;
+    uint32_t transfer_size;
+    bool has_byte_offset;
+    int64_t byte_offset;
+    bool has_file_object;
+    uint64_t file_object;
+    bool has_irp_ptr;
+    uint64_t irp_ptr;
+    bool has_response_time;
+    int64_t response_time;
+    bool has_issuing_thread_id;
+    uint32_t issuing_thread_id;
+    bool has_opcode;
+    uint32_t opcode;
+} perfetto_protos_DiskIoEtwEvent;
+
 typedef struct _perfetto_protos_EtwTraceEvent {
     bool has_timestamp;
     uint64_t timestamp;
@@ -8783,6 +9561,9 @@ typedef struct _perfetto_protos_EtwTraceEvent {
         perfetto_protos_FileIoReadWriteEtwEvent file_io_read_write;
         perfetto_protos_FileIoSimpleOpEtwEvent file_io_simple_op;
         perfetto_protos_FileIoOpEndEtwEvent file_io_op_end;
+        perfetto_protos_StackWalkEtwEvent stack_walk;
+        perfetto_protos_FileIoPathOperationEtwEvent file_io_path_operation;
+        perfetto_protos_DiskIoEtwEvent disk_io;
     } event;
     bool has_cpu;
     uint32_t cpu;
@@ -8823,10 +9604,88 @@ typedef struct _perfetto_protos_EvdevEvent_InputEvent {
     int32_t value;
 } perfetto_protos_EvdevEvent_InputEvent;
 
+/* Describes an evdev device being removed from the system.
+
+ Next ID: 1 */
+typedef struct _perfetto_protos_EvdevEvent_DeviceRemoval { /* Empty — we don't need to record any data other than the device ID for
+ this event type. */
+    char dummy_field;
+} perfetto_protos_EvdevEvent_DeviceRemoval;
+
+/* Proto version of Linux's struct input_id. Although uint32s are used for the
+ fields, the kernel uses 16-bit ints so values will be less than 2^16.
+
+ Next ID: 5 */
+typedef struct _perfetto_protos_EvdevDevice_Identifier {
+    /* The bus that the device is connected to. Values will be one of Linux's
+ BUS_* constants. */
+    bool has_bustype;
+    uint32_t bustype;
+    /* A number identifying the vendor of the device. Often a USB or Bluetooth
+ vendor ID, but not always. */
+    bool has_vendor;
+    uint32_t vendor;
+    bool has_product;
+    uint32_t product;
+    bool has_version;
+    uint32_t version;
+} perfetto_protos_EvdevDevice_Identifier;
+
+/* The properties of an input device that don't change during the time that it's
+ connected, as well as the current values for all of its axes.
+
+ Next ID: 13 */
+typedef struct _perfetto_protos_EvdevDevice {
+    /* The device's unique ID number. This need not be the number of its
+ /dev/input/event node. */
+    bool has_device_id;
+    uint32_t device_id;
+    /* The number of the evdev device (i.e. from its /dev/input/eventX node path). */
+    bool has_device_num;
+    uint32_t device_num;
+    /* The device's name. */
+    pb_callback_t name;
+    /* The physical path to the device in the system hierarchy. */
+    pb_callback_t phys;
+    /* The unique identification code for the device (if it has one). */
+    pb_callback_t uniq;
+    /* The device's ID numbers. */
+    bool has_id;
+    perfetto_protos_EvdevDevice_Identifier id;
+    /* A map of information for each of the device's absolute axes. Keys are the
+ Linux ABS_* constants. */
+    pb_callback_t absolute_axis_infos;
+    /* Bitmask specifying which types of events the device declares. */
+    pb_callback_t ev_bitmask;
+    /* A map of bitmasks specifying which axes of each type the device declares.
+ Keys are the Linux EV_* constants. */
+    pb_callback_t event_type_bitmasks;
+    /* Bitmask of properties declared by the device. */
+    pb_callback_t prop_bitmask;
+    /* Current states of device axes.
+
+ The keys are the Linux event type constants (e.g. EV_KEY, EV_ABS, etc.). We
+ don't need to keep track of states for all axis types, only KEY, SW, LED,
+ and ABS, so only those will have entries in this map. States for ABS_MT_*
+ axes (which have multiple slots) will be kept in abs_mt_states instead. */
+    pb_callback_t axis_states;
+    /* Current states of ABS_MT_* axes other than ABS_MT_SLOT. The keys are the
+ ABS axis codes. */
+    pb_callback_t abs_mt_states;
+} perfetto_protos_EvdevDevice;
+
+/* Describes an evdev device being added to the system.
+
+ Next ID: 2 */
+typedef struct _perfetto_protos_EvdevEvent_DeviceAddition {
+    bool has_device;
+    perfetto_protos_EvdevDevice device;
+} perfetto_protos_EvdevEvent_DeviceAddition;
+
 /* Records an event in the evdev protocol, as used by Linux and some other *nix
  kernels to report events from human interface devices.
 
- Next ID: 3 */
+ Next ID: 5 */
 typedef struct _perfetto_protos_EvdevEvent {
     /* The device's unique ID number. This need not be the number of its
  /dev/input/event node. */
@@ -8835,8 +9694,93 @@ typedef struct _perfetto_protos_EvdevEvent {
     pb_size_t which_event;
     union _perfetto_protos_EvdevEvent_event {
         perfetto_protos_EvdevEvent_InputEvent input_event;
+        perfetto_protos_EvdevEvent_DeviceAddition add_event;
+        perfetto_protos_EvdevEvent_DeviceRemoval remove_event;
     } event;
 } perfetto_protos_EvdevEvent;
+
+/* Proto version of Linux's struct input_absinfo, excluding the value field
+ (which is tracked elsewhere).
+
+ Next ID: 6 */
+typedef struct _perfetto_protos_EvdevDevice_AbsInfo {
+    bool has_minimum;
+    int32_t minimum;
+    bool has_maximum;
+    int32_t maximum;
+    bool has_fuzz;
+    int32_t fuzz;
+    bool has_flat;
+    int32_t flat;
+    bool has_resolution;
+    int32_t resolution;
+} perfetto_protos_EvdevDevice_AbsInfo;
+
+typedef struct _perfetto_protos_EvdevDevice_AbsoluteAxisInfosEntry {
+    bool has_key;
+    uint32_t key;
+    bool has_value;
+    perfetto_protos_EvdevDevice_AbsInfo value;
+} perfetto_protos_EvdevDevice_AbsoluteAxisInfosEntry;
+
+typedef struct _perfetto_protos_EvdevDevice_EventTypeBitmasksEntry {
+    bool has_key;
+    uint32_t key;
+    pb_callback_t value;
+} perfetto_protos_EvdevDevice_EventTypeBitmasksEntry;
+
+/* Contains the current values of all axes of a particular type (e.g. EV_ABS,
+ EV_KEY, etc.).
+
+ Next ID: 2 */
+typedef struct _perfetto_protos_EvdevDevice_AxisMap {
+    /* Current values of all axes, other than ABS_MT_* axes (which have multiple
+ slots), which are kept in abs_mt_states instead.
+
+ The keys are the Linux axis codes, e.g. ABS_* for absolute axes. If there
+ is no entry for a particular axis, assume that its value is 0. */
+    pb_callback_t axis_states;
+} perfetto_protos_EvdevDevice_AxisMap;
+
+typedef struct _perfetto_protos_EvdevDevice_AxisMap_AxisStatesEntry {
+    bool has_key;
+    uint32_t key;
+    bool has_value;
+    int32_t value;
+} perfetto_protos_EvdevDevice_AxisMap_AxisStatesEntry;
+
+typedef struct _perfetto_protos_EvdevDevice_AxisStatesEntry {
+    bool has_key;
+    uint32_t key;
+    bool has_value;
+    perfetto_protos_EvdevDevice_AxisMap value;
+} perfetto_protos_EvdevDevice_AxisStatesEntry;
+
+/* Contains the current values of a single ABS_MT_* axis across all of its
+ slots.
+
+ Next ID: 2 */
+typedef struct _perfetto_protos_EvdevDevice_SlotValuesMap {
+    /* Current values for all slots.
+
+ The keys are the slot numbers. If there is no entry for a particular
+ slot, assume that its value is 0. */
+    pb_callback_t slot_values;
+} perfetto_protos_EvdevDevice_SlotValuesMap;
+
+typedef struct _perfetto_protos_EvdevDevice_SlotValuesMap_SlotValuesEntry {
+    bool has_key;
+    uint32_t key;
+    bool has_value;
+    int32_t value;
+} perfetto_protos_EvdevDevice_SlotValuesMap_SlotValuesEntry;
+
+typedef struct _perfetto_protos_EvdevDevice_AbsMtStatesEntry {
+    bool has_key;
+    uint32_t key;
+    bool has_value;
+    perfetto_protos_EvdevDevice_SlotValuesMap value;
+} perfetto_protos_EvdevDevice_AbsMtStatesEntry;
 
 /* The protocol compiler can output a FileDescriptorSet containing the .proto
  files it parses. */
@@ -8997,10 +9941,19 @@ typedef struct _perfetto_protos_OneofDescriptorProto {
 /* This message contains descriptors used to parse extension fields of
  TrackEvent.
 
- See docs/design-docs/extensions.md for more details. */
+ See docs/instrumentation/extensions.md for more details. */
 typedef struct _perfetto_protos_ExtensionDescriptor {
-    bool has_extension_set;
-    perfetto_protos_FileDescriptorSet extension_set;
+    pb_size_t which_descriptor;
+    union _perfetto_protos_ExtensionDescriptor_descriptor {
+        perfetto_protos_FileDescriptorSet extension_set;
+        /* Same as extension_set, but gzip-compressed. This is used by the tracing
+     service on Android to emit pre-compressed descriptor files from
+     /etc/tracing_descriptors.gz without decompressing them first. */
+        pb_callback_t extension_set_gzip;
+    } descriptor;
+    /* Optional, for debugging only. The file name or path of the descriptor
+ source. Can be omitted without affecting functionality. */
+    pb_callback_t file_name;
 } perfetto_protos_ExtensionDescriptor;
 
 /* Represents the mapping between inode numbers in a block device and their path
@@ -9950,6 +10903,61 @@ typedef struct _perfetto_protos_DpuDispVblankIrqEnableFtraceEvent {
     bool has_enable;
     int32_t enable;
 } perfetto_protos_DpuDispVblankIrqEnableFtraceEvent;
+
+typedef struct _perfetto_protos_DpuDispFrameDoneTimeoutFtraceEvent {
+    bool has_display_id;
+    int32_t display_id;
+    bool has_output_id;
+    uint32_t output_id;
+    bool has_frames_pending;
+    int32_t frames_pending;
+    bool has_te_count;
+    int32_t te_count;
+    bool has_during_disable;
+    uint32_t during_disable;
+} perfetto_protos_DpuDispFrameDoneTimeoutFtraceEvent;
+
+typedef struct _perfetto_protos_DpuDispFrameStartTimeoutFtraceEvent {
+    bool has_display_id;
+    int32_t display_id;
+    bool has_output_id;
+    uint32_t output_id;
+    bool has_frames_pending;
+    int32_t frames_pending;
+    bool has_te_count;
+    int32_t te_count;
+} perfetto_protos_DpuDispFrameStartTimeoutFtraceEvent;
+
+typedef struct _perfetto_protos_DpuDispFrameDoneMissingFtraceEvent {
+    bool has_display_id;
+    int32_t display_id;
+    bool has_output_id;
+    uint32_t output_id;
+    bool has_frames_pending;
+    int32_t frames_pending;
+    bool has_te_count;
+    int32_t te_count;
+} perfetto_protos_DpuDispFrameDoneMissingFtraceEvent;
+
+typedef struct _perfetto_protos_DpuDispFrameStartMissingFtraceEvent {
+    bool has_display_id;
+    int32_t display_id;
+    bool has_output_id;
+    uint32_t output_id;
+    bool has_frames_pending;
+    int32_t frames_pending;
+    bool has_te_count;
+    int32_t te_count;
+} perfetto_protos_DpuDispFrameStartMissingFtraceEvent;
+
+typedef struct _perfetto_protos_DpuDispDpuLineUnderrunFtraceEvent {
+    bool has_id;
+    int32_t id;
+    bool has_frames_pending;
+    int32_t frames_pending;
+    bool has_vsync_count;
+    int32_t vsync_count;
+} perfetto_protos_DpuDispDpuLineUnderrunFtraceEvent;
 
 typedef struct _perfetto_protos_DrmVblankEventFtraceEvent {
     bool has_crtc;
@@ -12094,6 +13102,34 @@ typedef struct _perfetto_protos_F2fsGcEndFtraceEvent {
     bool has_prefree_seg;
     uint32_t prefree_seg;
 } perfetto_protos_F2fsGcEndFtraceEvent;
+
+typedef struct _perfetto_protos_F2fsLockElapsedTimeFtraceEvent {
+    bool has_dev;
+    uint64_t dev;
+    pb_callback_t comm;
+    bool has_pid;
+    int32_t pid;
+    bool has_prio;
+    int32_t prio;
+    bool has_ioprio_class;
+    int32_t ioprio_class;
+    bool has_ioprio_data;
+    int32_t ioprio_data;
+    bool has_lock_name;
+    uint32_t lock_name;
+    bool has_is_write;
+    uint32_t is_write;
+    bool has_total_time;
+    uint64_t total_time;
+    bool has_running_time;
+    uint64_t running_time;
+    bool has_runnable_time;
+    uint64_t runnable_time;
+    bool has_io_sleep_time;
+    uint64_t io_sleep_time;
+    bool has_other_time;
+    uint64_t other_time;
+} perfetto_protos_F2fsLockElapsedTimeFtraceEvent;
 
 typedef struct _perfetto_protos_FastrpcDmaStatFtraceEvent {
     bool has_cid;
@@ -14264,6 +15300,49 @@ typedef struct _perfetto_protos_PanelWriteGenericFtraceEvent {
     int32_t value;
 } perfetto_protos_PanelWriteGenericFtraceEvent;
 
+typedef struct _perfetto_protos_GramCollisionFtraceEvent {
+    bool has_panel_index;
+    int32_t panel_index;
+    bool has_collision_cnt;
+    uint32_t collision_cnt;
+} perfetto_protos_GramCollisionFtraceEvent;
+
+typedef struct _perfetto_protos_PanelSettingsFullFtraceEvent {
+    bool has_panel_index;
+    int32_t panel_index;
+    bool has_hbm;
+    uint32_t hbm;
+    bool has_irc;
+    uint32_t irc;
+    bool has_h_pwm;
+    uint32_t h_pwm;
+    bool has_fi_auto;
+    uint32_t fi_auto;
+    bool has_fi_manual;
+    uint32_t fi_manual;
+    bool has_early_exit;
+    uint32_t early_exit;
+    bool has_min_rr;
+    uint32_t min_rr;
+    bool has_max_rr;
+    uint32_t max_rr;
+    bool has_te_freq;
+    uint32_t te_freq;
+} perfetto_protos_PanelSettingsFullFtraceEvent;
+
+typedef struct _perfetto_protos_PanelSettingsLiteFtraceEvent {
+    bool has_panel_index;
+    int32_t panel_index;
+    bool has_vrr;
+    uint32_t vrr;
+    bool has_min_rr;
+    uint32_t min_rr;
+    bool has_max_rr;
+    uint32_t max_rr;
+    bool has_te_freq;
+    uint32_t te_freq;
+} perfetto_protos_PanelSettingsLiteFtraceEvent;
+
 typedef struct _perfetto_protos_SchedSwitchWithCtrsFtraceEvent {
     bool has_old_pid;
     int32_t old_pid;
@@ -14695,6 +15774,15 @@ typedef struct _perfetto_protos_SchedWakeupTaskAttrFtraceEvent {
     bool has_vruntime;
     uint64_t vruntime;
 } perfetto_protos_SchedWakeupTaskAttrFtraceEvent;
+
+typedef struct _perfetto_protos_SchedGroupTrackerFtraceEvent {
+    pb_callback_t comm;
+    bool has_pid;
+    int32_t pid;
+    pb_callback_t group;
+    bool has_group_num;
+    int32_t group_num;
+} perfetto_protos_SchedGroupTrackerFtraceEvent;
 
 typedef struct _perfetto_protos_ScmCallStartFtraceEvent {
     bool has_arginfo;
@@ -15681,6 +16769,20 @@ typedef struct _perfetto_protos_MmShrinkSlabEndFtraceEvent {
     int32_t nid;
 } perfetto_protos_MmShrinkSlabEndFtraceEvent;
 
+typedef struct _perfetto_protos_MmVmscanMemcgReclaimBeginFtraceEvent {
+    bool has_order;
+    int32_t order;
+    bool has_may_writepage;
+    int32_t may_writepage;
+    bool has_gfp_flags;
+    uint64_t gfp_flags;
+} perfetto_protos_MmVmscanMemcgReclaimBeginFtraceEvent;
+
+typedef struct _perfetto_protos_MmVmscanMemcgReclaimEndFtraceEvent {
+    bool has_nr_reclaimed;
+    uint64_t nr_reclaimed;
+} perfetto_protos_MmVmscanMemcgReclaimEndFtraceEvent;
+
 typedef struct _perfetto_protos_WorkqueueActivateWorkFtraceEvent {
     bool has_work;
     uint64_t work;
@@ -16322,6 +17424,18 @@ typedef struct _perfetto_protos_FtraceEvent {
         perfetto_protos_ScsiEhWakeupFtraceEvent scsi_eh_wakeup;
         perfetto_protos_FwtpPerfettoSliceFtraceEvent fwtp_perfetto_slice;
         perfetto_protos_GpuPowerStateFtraceEvent gpu_power_state;
+        perfetto_protos_GramCollisionFtraceEvent gram_collision;
+        perfetto_protos_F2fsLockElapsedTimeFtraceEvent f2fs_lock_elapsed_time;
+        perfetto_protos_SchedGroupTrackerFtraceEvent sched_group_tracker;
+        perfetto_protos_DpuDispFrameDoneTimeoutFtraceEvent dpu_disp_frame_done_timeout;
+        perfetto_protos_DpuDispFrameStartTimeoutFtraceEvent dpu_disp_frame_start_timeout;
+        perfetto_protos_MmVmscanMemcgReclaimBeginFtraceEvent mm_vmscan_memcg_reclaim_begin;
+        perfetto_protos_MmVmscanMemcgReclaimEndFtraceEvent mm_vmscan_memcg_reclaim_end;
+        perfetto_protos_DpuDispFrameDoneMissingFtraceEvent dpu_disp_frame_done_missing;
+        perfetto_protos_DpuDispFrameStartMissingFtraceEvent dpu_disp_frame_start_missing;
+        perfetto_protos_PanelSettingsFullFtraceEvent panel_settings_full;
+        perfetto_protos_PanelSettingsLiteFtraceEvent panel_settings_lite;
+        perfetto_protos_DpuDispDpuLineUnderrunFtraceEvent dpu_disp_dpu_line_underrun;
     } event;
     /* Not populated in actual traces. Wire format might change.
  Placeholder declaration so that the ftrace parsing code accepts the
@@ -16580,6 +17694,17 @@ typedef struct _perfetto_protos_FtraceEventBundle_GenericEventDescriptor {
     pb_callback_t group_name;
 } perfetto_protos_FtraceEventBundle_GenericEventDescriptor;
 
+/* GenericGpuFrequencyEvent is the standard proto to capture GPU
+ frequency change events in a generic kernel implementation. */
+typedef struct _perfetto_protos_GenericGpuFrequencyEvent {
+    /* GPU on which the frequency change occurred. */
+    bool has_gpu_id;
+    uint32_t gpu_id;
+    /* Frequency (kHz) of the GPU. */
+    bool has_frequency_khz;
+    uint32_t frequency_khz;
+} perfetto_protos_GenericGpuFrequencyEvent;
+
 /* GenericKernelCpuFrequencyEvent is the standard proto to capture CPU
  frequency change events in a generic kernel implementation. */
 typedef struct _perfetto_protos_GenericKernelCpuFrequencyEvent {
@@ -16659,6 +17784,9 @@ typedef struct _perfetto_protos_GenericKernelProcessTree_Thread {
     /* True if thread is the main thread. */
     bool has_is_main_thread;
     bool is_main_thread;
+    /* True if thread is an idle thread. */
+    bool has_is_idle;
+    bool is_idle;
 } perfetto_protos_GenericKernelProcessTree_Thread;
 
 /* Representation of a process. */
@@ -16677,12 +17805,31 @@ typedef struct _perfetto_protos_GenericKernelProcessTree_Process {
     pb_callback_t cmdline;
 } perfetto_protos_GenericKernelProcessTree_Process;
 
+/* Events for emitting information about GPU counters.
+
+ There are two "modes" to use these protos:
+   1) Using GpuCounterDescriptor. This is the simplest way to use this proto
+      but has the limitation that counter ids are*global* so must only be
+      emitted by a single producer or requires coordination between different
+      producers. This is the mechanism which *must* be used by Android OEMS
+      to be complaint with CDD/CTS tests.
+   2) Using InternedGpuCounterDescriptor. This is generally recommended for
+      more complex use-cases involving multiple producers, multiple GPUs etc. */
 typedef struct _perfetto_protos_GpuCounterEvent {
-    /* The first trace packet of each session should include counter_spec. */
-    bool has_counter_descriptor;
-    perfetto_protos_GpuCounterDescriptor counter_descriptor;
+    pb_size_t which_desc;
+    union _perfetto_protos_GpuCounterEvent_desc {
+        /* Must be specified on first trace packet of each session if using mode 1.
+     (e.g. if you're an Android GPU vendor). */
+        perfetto_protos_GpuCounterDescriptor counter_descriptor;
+        /* ID to a InternedGpuCounterDescriptor in InternedData. Must be specified
+     on first trace packet of the trusted sequence if using mode 2. */
+        uint64_t counter_descriptor_iid;
+    } desc;
     pb_callback_t counters;
-    /* optional. Identifier for GPU in a multi-gpu device. */
+    /* Identifier for GPU in a multi-gpu device.
+
+ If `counter_descriptor_iid` is specified, the `gpu_id` in
+ `InternedGpuCounterDescriptor` takes precedence over this field. */
     bool has_gpu_id;
     int32_t gpu_id;
 } perfetto_protos_GpuCounterEvent;
@@ -16698,6 +17845,17 @@ typedef struct _perfetto_protos_GpuCounterEvent_GpuCounter {
     } value;
 } perfetto_protos_GpuCounterEvent_GpuCounter;
 
+/* Interned GPU counter descriptor for sequence-scoped counter specs. */
+typedef struct _perfetto_protos_InternedGpuCounterDescriptor {
+    bool has_iid;
+    uint64_t iid;
+    bool has_counter_descriptor;
+    perfetto_protos_GpuCounterDescriptor counter_descriptor;
+    /* optional. Identifier for GPU in a multi-gpu device. */
+    bool has_gpu_id;
+    int32_t gpu_id;
+} perfetto_protos_InternedGpuCounterDescriptor;
+
 /* Message for logging events GPU data producer. */
 typedef struct _perfetto_protos_GpuLog {
     bool has_severity;
@@ -16706,12 +17864,66 @@ typedef struct _perfetto_protos_GpuLog {
     pb_callback_t log_message;
 } perfetto_protos_GpuLog;
 
+/* Generated by Android's GpuService. */
+typedef struct _perfetto_protos_GpuMemTotalEvent {
+    bool has_gpu_id;
+    uint32_t gpu_id;
+    bool has_pid;
+    uint32_t pid;
+    bool has_size;
+    uint64_t size;
+} perfetto_protos_GpuMemTotalEvent;
+
 /* optional. Additional data for the user. This may include attributes for
  the event like resource ids, shaders, etc. */
 typedef struct _perfetto_protos_GpuRenderStageEvent_ExtraData {
     pb_callback_t name;
     pb_callback_t value;
 } perfetto_protos_GpuRenderStageEvent_ExtraData;
+
+/* 3D unsigned integer vector for grid and workgroup dimensions. */
+typedef struct _perfetto_protos_GpuRenderStageEvent_Dim3 {
+    bool has_x;
+    uint32_t x;
+    bool has_y;
+    uint32_t y;
+    bool has_z;
+    uint32_t z;
+} perfetto_protos_GpuRenderStageEvent_Dim3;
+
+/* Typed key/value argument for extending compute kernel descriptions
+ and launch parameters with custom data. */
+typedef struct _perfetto_protos_GpuRenderStageEvent_ExtraComputeArg {
+    pb_size_t which_name_field;
+    union _perfetto_protos_GpuRenderStageEvent_ExtraComputeArg_name_field {
+        /* Interned InternedComputeArgName. */
+        uint64_t name_iid;
+        /* Non-interned variant. */
+        pb_callback_t name;
+    } name_field;
+    pb_size_t which_value;
+    union _perfetto_protos_GpuRenderStageEvent_ExtraComputeArg_value {
+        int64_t int_value;
+        uint64_t uint_value;
+        double double_value;
+        pb_callback_t string_value;
+        /* Interned InternedString via debug_annotation_string_values. */
+        uint64_t string_value_iid;
+    } value;
+} perfetto_protos_GpuRenderStageEvent_ExtraComputeArg;
+
+/* Compute kernel launch parameters for a single dispatch. */
+typedef struct _perfetto_protos_GpuRenderStageEvent_ComputeKernelLaunch {
+    /* Grid dimensions (number of workgroups in each dimension). */
+    bool has_grid_size;
+    perfetto_protos_GpuRenderStageEvent_Dim3 grid_size;
+    /* Workgroup dimensions (number of threads per workgroup in each dimension). */
+    bool has_workgroup_size;
+    perfetto_protos_GpuRenderStageEvent_Dim3 workgroup_size;
+    /* Additional typed launch parameters (e.g. registers_per_thread,
+ shared_mem_dynamic, shared_mem_static). */
+    pb_callback_t args;
+} perfetto_protos_GpuRenderStageEvent_ComputeKernelLaunch;
 
 typedef struct _perfetto_protos_GpuRenderStageEvent_Specifications_ContextSpec {
     bool has_context;
@@ -16734,7 +17946,7 @@ typedef struct _perfetto_protos_GpuRenderStageEvent_Specifications {
     pb_callback_t stage;
 } perfetto_protos_GpuRenderStageEvent_Specifications;
 
-/* next id: 15 */
+/* next id: 22 */
 typedef struct _perfetto_protos_GpuRenderStageEvent {
     /* required. Unique ID for the event. */
     bool has_event_id;
@@ -16798,6 +18010,22 @@ typedef struct _perfetto_protos_GpuRenderStageEvent {
  pass instance. */
     bool has_render_pass_instance_id;
     uint64_t render_pass_instance_id;
+    pb_size_t which_name_field;
+    union _perfetto_protos_GpuRenderStageEvent_name_field {
+        pb_callback_t name;
+        /* Interned event name. Refers to EventName in InternedData. */
+        uint64_t name_iid;
+    } name_field;
+    /* Event IDs of other GpuRenderStageEvents that this event
+ had to wait on before it could run. */
+    pb_callback_t event_wait_ids;
+    /* optional. ID to a compute kernel description in the interned data.
+ InternedComputeKernel */
+    bool has_kernel_iid;
+    uint64_t kernel_iid;
+    /* optional. Compute kernel launch parameters for this event. */
+    bool has_launch;
+    perfetto_protos_GpuRenderStageEvent_ComputeKernelLaunch launch;
     pb_extension_t *extensions;
 } perfetto_protos_GpuRenderStageEvent;
 
@@ -16825,6 +18053,22 @@ typedef struct _perfetto_protos_InternedGpuRenderStageSpecification {
     bool has_category;
     perfetto_protos_InternedGpuRenderStageSpecification_RenderStageCategory category;
 } perfetto_protos_InternedGpuRenderStageSpecification;
+
+typedef struct _perfetto_protos_InternedComputeKernel {
+    bool has_iid;
+    uint64_t iid;
+    pb_callback_t name;
+    pb_callback_t demangled_name;
+    pb_callback_t arch;
+    /* Additional typed kernel attributes (e.g. static resource limits). */
+    pb_callback_t args;
+} perfetto_protos_InternedComputeKernel;
+
+typedef struct _perfetto_protos_InternedComputeArgName {
+    bool has_iid;
+    uint64_t iid;
+    pb_callback_t name;
+} perfetto_protos_InternedComputeArgName;
 
 /* For recording vkSetDebugUtilsObjectNameEXT and
  vkDebugMarkerSetObjectNameEXT */
@@ -17703,7 +18947,12 @@ typedef struct _perfetto_protos_ChromeWindowHandleEventInfo {
 } perfetto_protos_ChromeWindowHandleEventInfo;
 
 typedef struct _perfetto_protos_Screenshot {
+    /* The JPEG (Joint Photographic Experts Group) file format. */
     pb_callback_t jpg_image;
+    /* The PAM (Portable Arbitrary Map) file format. */
+    pb_callback_t pam_image;
+    /* The PPM (Portable Pixmap) file format. */
+    pb_callback_t ppm_image;
 } perfetto_protos_Screenshot;
 
 /* TrackEvent arguments describing the execution of a task. */
@@ -18089,7 +19338,7 @@ typedef struct _perfetto_protos_EventName {
  emitted proactively in advance of referring to them in later packets.
 
  Next reserved id: 8 (up to 15).
- Next id: 45. */
+ Next id: 48. */
 typedef struct _perfetto_protos_InternedData { /* TODO(eseckler): Replace iid fields inside interned messages with
  map<iid, message> type fields in InternedData. */
     /* Each field's message type needs to specify an |iid| field, which is the ID
@@ -18160,8 +19409,7 @@ typedef struct _perfetto_protos_InternedData { /* TODO(eseckler): Replace iid fi
     pb_callback_t viewcapture_window_name;
     pb_callback_t viewcapture_view_id;
     pb_callback_t viewcapture_class_name;
-    /* Interned context for android.app_wakelocks. */
-    pb_callback_t app_wakelock_info;
+    pb_extension_t *extensions;
     /* Interned correlation ids in track_event. */
     pb_callback_t correlation_id_str;
     /* Interned job names for Android Job Names. These are separate from
@@ -18169,6 +19417,8 @@ typedef struct _perfetto_protos_InternedData { /* TODO(eseckler): Replace iid fi
     pb_callback_t android_job_name;
     pb_callback_t viewcapture_content_description;
     pb_callback_t viewcapture_text;
+    /* Description of GPU counters available in a data source. */
+    pb_callback_t gpu_counter_descriptors;
 } perfetto_protos_InternedData;
 
 typedef struct _perfetto_protos_AndroidJobName {
@@ -18176,6 +19426,49 @@ typedef struct _perfetto_protos_AndroidJobName {
     uint64_t iid;
     pb_callback_t name;
 } perfetto_protos_AndroidJobName;
+
+/* A journald log event packet, collected from the Linux systemd journal.
+ Emitted by the "linux.systemd_journald" data source in traced_probes.
+ Next field id: 13, statistics starting at 20 */
+typedef struct _perfetto_protos_SystemdJournaldEvent {
+    /* _PID: PID of the process that wrote the log entry (trusted). */
+    bool has_pid;
+    uint32_t pid;
+    /* _TID: thread ID of the logging thread (trusted, set by journald for
+ native journal protocol entries). Absent for syslog, stdout-piped, and
+ kernel entries. */
+    bool has_tid;
+    uint32_t tid;
+    /* _UID: user ID of the process (trusted). */
+    bool has_uid;
+    uint32_t uid;
+    /* _GID: group ID of the process (trusted). */
+    bool has_gid;
+    uint32_t gid;
+    /* PRIORITY: syslog priority level 0 (EMERG) .. 7 (DEBUG). */
+    bool has_prio;
+    uint32_t prio;
+    /* SYSLOG_IDENTIFIER: program name / tag, set by the logging application. */
+    pb_callback_t tag;
+    /* MESSAGE: the human-readable log message text. */
+    pb_callback_t message;
+    /* _COMM: short process name as known to the kernel (trusted). */
+    pb_callback_t comm;
+    /* _EXE: full executable path (trusted). */
+    pb_callback_t exe;
+    /* _SYSTEMD_UNIT: the systemd unit that owns this process (trusted). */
+    pb_callback_t systemd_unit;
+    /* _HOSTNAME: hostname of the machine (trusted). */
+    pb_callback_t hostname;
+    /* _TRANSPORT: how the entry was received by journald (trusted).
+ Values: "audit", "driver", "syslog", "journal", "stdout", "kernel". */
+    pb_callback_t transport;
+    /* These statistics emitted once on Flush() */
+    bool has_num_total;
+    uint64_t num_total;
+    bool has_num_failed;
+    uint64_t num_failed;
+} perfetto_protos_SystemdJournaldEvent;
 
 typedef struct _perfetto_protos_MemoryTrackerSnapshot {
     /* Unique ID that represents the global memory dump. */
@@ -18313,6 +19606,24 @@ typedef struct _perfetto_protos_PerfettoMetatrace_InternedString {
     uint64_t iid;
     pb_callback_t value;
 } perfetto_protos_PerfettoMetatrace_InternedString;
+
+typedef struct _perfetto_protos_TraceProvenance {
+    pb_callback_t buffers;
+} perfetto_protos_TraceProvenance;
+
+typedef struct _perfetto_protos_TraceProvenance_Sequence {
+    /* The trusted_packet_sequence_id reported in each TracePacket. */
+    bool has_id;
+    uint32_t id;
+    /* ID of the producer, as per Producer.id. */
+    bool has_producer_id;
+    int32_t producer_id;
+} perfetto_protos_TraceProvenance_Sequence;
+
+/* Describes a trace buffer and all the sequences writing to it. */
+typedef struct _perfetto_protos_TraceProvenance_Buffer {
+    pb_callback_t sequences;
+} perfetto_protos_TraceProvenance_Buffer;
 
 typedef struct _perfetto_protos_TracingServiceEvent_DataSources {
     pb_callback_t data_source;
@@ -18536,6 +19847,43 @@ typedef struct _perfetto_protos_PowerRails_EnergyData {
     uint64_t energy;
 } perfetto_protos_PowerRails_EnergyData;
 
+typedef struct _perfetto_protos_JavaFrame {
+    pb_callback_t method_name;
+    pb_callback_t source_file;
+    bool has_line_number;
+    int32_t line_number;
+} perfetto_protos_JavaFrame;
+
+typedef struct _perfetto_protos_JavaStack {
+    pb_callback_t frames;
+} perfetto_protos_JavaStack;
+
+typedef struct _perfetto_protos_ArtProcessMetadata {
+    bool has_pid;
+    int32_t pid;
+    bool has_uid;
+    int32_t uid;
+    /* /proc/self/cmdline argv0 */
+    pb_callback_t process_name;
+    /* Set by VMRuntime.setProcessPackageName */
+    pb_callback_t package_name;
+    /* OutOfMemoryError details (if heap dump was triggered by an OOM)
+ The size of the allocation that ended up failing with OOME */
+    bool has_oom_allocation_size;
+    uint64_t oom_allocation_size;
+    /* Amount of free memory until the runtime would need to grow the heap */
+    bool has_oom_total_bytes_free;
+    uint64_t oom_total_bytes_free;
+    /* Amount of memory remaining until the max heap size supported */
+    bool has_oom_free_bytes_until_oom;
+    uint64_t oom_free_bytes_until_oom;
+    /* Stacktrace for the thread doing the failing allocation */
+    bool has_oom_thread_java_stack;
+    perfetto_protos_JavaStack oom_thread_java_stack;
+    /* Full OOME exception message */
+    pb_callback_t oom_error_msg;
+} perfetto_protos_ArtProcessMetadata;
+
 typedef struct _perfetto_protos_ObfuscatedMember {
     /* This is the obfuscated field name relative to the class containing the
  ObfuscatedMember. */
@@ -18638,10 +19986,9 @@ typedef struct _perfetto_protos_HeapGraphObject {
  reference_object_id. The field should be named reference_object_id_base. */
     bool has_reference_field_id_base;
     uint64_t reference_field_id_base;
-    /* If this object is an instance of `libcore.util.NativeAllocationRegistry`,
- the value of the `size` field.
-
- N.B. This is not the native size of this object. */
+    /* `libcore.util.NativeAllocationRegistry.size`: Maps to the size (bytes) of
+ the corresponding objects registered with the native allocation registry.
+ N.B. this can be an approximation. */
     bool has_native_allocation_registry_size_field;
     int64_t native_allocation_registry_size_field;
     /* To reduce the space required we only emit the heap type if it has changed
@@ -18651,8 +19998,27 @@ typedef struct _perfetto_protos_HeapGraphObject {
     /* Ids of the Objects referred by this object, not via fields, but via
  internal runtime structures. */
     pb_callback_t runtime_internal_object_id;
+    /* Bitmap-specific field captures, only applicable to objects of this type.
+ `android.graphics.Bitmap.mId`: Used for storage type and deduplication. */
+    bool has_bitmap_id_field;
+    int64_t bitmap_id_field;
+    /* `android.graphics.Bitmap.mSourceId`: Used to identify the source process. */
+    bool has_bitmap_source_id_field;
+    int64_t bitmap_source_id_field;
+    /* `android.graphics.Bitmap.mWidth`: Width in pixels */
+    bool has_bitmap_width_field;
+    uint32_t bitmap_width_field;
+    /* `android.graphics.Bitmap.mHeight`: Height in pixels */
+    bool has_bitmap_height_field;
+    uint32_t bitmap_height_field;
+    /* ApplicationInfo field captures
+ `android.content.pm.ApplicationInfo.longVersionCode`: Used to identify
+ the dumped process version code (without the full package list) */
+    bool has_application_info_long_version_code_field;
+    int64_t application_info_long_version_code_field;
 } perfetto_protos_HeapGraphObject;
 
+/* Next id: 11 */
 typedef struct _perfetto_protos_HeapGraph {
     bool has_pid;
     int32_t pid;
@@ -18677,6 +20043,8 @@ typedef struct _perfetto_protos_HeapGraph {
     pb_callback_t location_names;
     /* Types used in HeapGraphObjects. */
     pb_callback_t types;
+    bool has_heap_bytes_allocated;
+    int64_t heap_bytes_allocated;
 } perfetto_protos_HeapGraph;
 
 /* The packet emitted by heapprofd for each heap snapshot. A snapshot can
@@ -19000,10 +20368,42 @@ typedef struct _perfetto_protos_SmapsEntry {
     uint64_t proportional_resident_kb;
 } perfetto_protos_SmapsEntry;
 
+/* Structure-of-arrays style smaps packet of a single process. All packed
+ repeated fields, if set, must have the same length. */
+typedef struct _perfetto_protos_PackedSmaps {
+    /* Table of path names. Notes:
+ * first element is the empty string, serialised explicitly.
+ * the table might contain duplicates. */
+    pb_callback_t string_table;
+    /* Interned file paths as an index into |string_table|.
+ Note: the "(deleted)" suffix is kept as part of the string_table entry, and
+ is to be handled during trace import stage.
+ Written only if config.unaggregated == true. Otherwise the string_table is
+ exactly the ordered names of the aggregated mappings. */
+    pb_callback_t name_id;
+    /* How many mappings were merged by name, summing the values below.
+ Written only if config.unaggregated == false. */
+    pb_callback_t aggregate_count;
+    pb_callback_t size_kb;
+    pb_callback_t rss_kb;
+    pb_callback_t anonymous_kb;
+    pb_callback_t swap_kb;
+    pb_callback_t shared_clean_kb;
+    pb_callback_t shared_dirty_kb;
+    pb_callback_t private_clean_kb;
+    pb_callback_t private_dirty_kb;
+    pb_callback_t locked_kb;
+    pb_callback_t pss_kb;
+    pb_callback_t pss_dirty_kb;
+    pb_callback_t swap_pss_kb;
+} perfetto_protos_PackedSmaps;
+
 typedef struct _perfetto_protos_SmapsPacket {
     bool has_pid;
     uint32_t pid;
     pb_callback_t entries;
+    bool has_packed_entries;
+    perfetto_protos_PackedSmaps packed_entries;
 } perfetto_protos_SmapsPacket;
 
 /* Per-process periodically sampled stats. These samples are wrapped in a
@@ -19256,6 +20656,7 @@ typedef struct _perfetto_protos_SysStats {
     pb_callback_t cpuidle_state;
     /* Read GPU frequency info on Intel/AMD devices. */
     pb_callback_t gpufreq_mhz;
+    pb_callback_t slab_info;
 } perfetto_protos_SysStats;
 
 /* Counters from /proc/meminfo. Values are in KB. */
@@ -19378,6 +20779,15 @@ typedef struct _perfetto_protos_SysStats_CpuIdleState {
     pb_callback_t cpuidle_state_entry;
 } perfetto_protos_SysStats_CpuIdleState;
 
+/* Reading from /proc/slabinfo. */
+typedef struct _perfetto_protos_SysStats_SlabInfo {
+    pb_callback_t name;
+    bool has_pages_per_slab;
+    uint32_t pages_per_slab;
+    bool has_num_slabs;
+    uint32_t num_slabs;
+} perfetto_protos_SysStats_SlabInfo;
+
 /* Information about CPUs from procfs and sysfs. */
 typedef struct _perfetto_protos_CpuInfo {
     /* Describes available CPUs, one entry per CPU. */
@@ -19426,6 +20836,58 @@ typedef struct _perfetto_protos_CpuInfo_Cpu {
     uint64_t features;
 } perfetto_protos_CpuInfo_Cpu;
 
+/* Information about GPUs on the device. */
+typedef struct _perfetto_protos_GpuInfo {
+    /* Describes available GPUs, one entry per GPU. The index in the list
+ corresponds to the gpu_id used elsewhere in the trace. */
+    pb_callback_t gpus;
+} perfetto_protos_GpuInfo;
+
+/* Information about a single GPU. */
+typedef struct _perfetto_protos_GpuInfo_Gpu {
+    /* GPU name (e.g., "NVIDIA A100", "Adreno 740").
+ Used by the Perfetto UI as the display label for GPU tracks (e.g.,
+ "NVIDIA A100 Frequency" instead of "GPU 0 Frequency"). If multiple GPUs
+ share the same name, consider appending an index to distinguish them
+ (e.g., "NVIDIA A100 #0", "NVIDIA A100 #1"). */
+    pb_callback_t name;
+    /* GPU vendor string (e.g., "NVIDIA", "AMD", "Qualcomm"). */
+    pb_callback_t vendor;
+    /* GPU model/product identifier. */
+    pb_callback_t model;
+    /* GPU architecture (e.g., "Ampere", "RDNA 3", "Adreno"). */
+    pb_callback_t architecture;
+    /* 16-byte device UUID when available. */
+    pb_callback_t uuid;
+    pb_callback_t extra_info;
+    /* PCI bus location (domain:bus:device.function, e.g., "0000:01:00.0"). */
+    pb_callback_t pci_bdf;
+} perfetto_protos_GpuInfo_Gpu;
+
+/* Arbitrary key-value pairs for vendor-specific info
+ (driver version, memory size, compute capability, clock speeds, etc.). */
+typedef struct _perfetto_protos_GpuInfo_Gpu_KeyValue {
+    pb_callback_t key;
+    pb_callback_t value;
+} perfetto_protos_GpuInfo_Gpu_KeyValue;
+
+/* Hardware interrupt (IRQ) ID-to-name mappings collected from
+ /proc/interrupts at the start of a trace.
+ Emitted by the linux.system_info data source when irq_names: true is set
+ in SystemInfoConfig. */
+typedef struct _perfetto_protos_InterruptInfo {
+    /* One entry per hardware IRQ found in /proc/interrupts. */
+    pb_callback_t irq_mapping;
+} perfetto_protos_InterruptInfo;
+
+typedef struct _perfetto_protos_InterruptInfo_InterruptMapping {
+    /* Numeric IRQ identifier. */
+    bool has_irq_id;
+    uint32_t irq_id;
+    /* Human-readable name for the IRQ (e.g. "arch_timer", "arm-pmu"). */
+    pb_callback_t name;
+} perfetto_protos_InterruptInfo_InterruptMapping;
+
 typedef struct _perfetto_protos_TestEvent_TestPayload {
     pb_callback_t str;
     pb_callback_t nested;
@@ -19438,6 +20900,38 @@ typedef struct _perfetto_protos_TestEvent_TestPayload {
     pb_callback_t repeated_ints;
     pb_callback_t debug_annotations;
 } perfetto_protos_TestEvent_TestPayload;
+
+typedef struct _perfetto_protos_TestEvent_ProtoVmMessage_ProtoVmSubmessage {
+    bool has_single_int;
+    uint32_t single_int;
+} perfetto_protos_TestEvent_ProtoVmMessage_ProtoVmSubmessage;
+
+/* Simple ProtoVm patch and incremental state formats used for testing */
+typedef struct _perfetto_protos_TestEvent_ProtoVmMessage {
+    bool has_id;
+    uint32_t id;
+    bool has_submessage;
+    perfetto_protos_TestEvent_ProtoVmMessage_ProtoVmSubmessage submessage;
+} perfetto_protos_TestEvent_ProtoVmMessage;
+
+typedef struct _perfetto_protos_TestEvent_ProtoVmPatch {
+    pb_callback_t string_to_merge;
+    bool has_int_to_merge;
+    int32_t int_to_merge;
+    bool has_single_message;
+    perfetto_protos_TestEvent_ProtoVmMessage single_message;
+    pb_callback_t messages;
+    pb_callback_t delete_message_ids;
+} perfetto_protos_TestEvent_ProtoVmPatch;
+
+typedef struct _perfetto_protos_TestEvent_ProtoVmIncrementalState {
+    pb_callback_t string_merged;
+    bool has_int_merged;
+    int32_t int_merged;
+    bool has_single_message;
+    perfetto_protos_TestEvent_ProtoVmMessage single_message;
+    pb_callback_t messages;
+} perfetto_protos_TestEvent_ProtoVmIncrementalState;
 
 /* Event used by testing code. */
 typedef struct _perfetto_protos_TestEvent {
@@ -19454,6 +20948,10 @@ typedef struct _perfetto_protos_TestEvent {
     bool is_last;
     bool has_payload;
     perfetto_protos_TestEvent_TestPayload payload;
+    bool has_protovm_patch;
+    perfetto_protos_TestEvent_ProtoVmPatch protovm_patch;
+    bool has_protovm_incremental_state;
+    perfetto_protos_TestEvent_ProtoVmIncrementalState protovm_incremental_state;
 } perfetto_protos_TestEvent;
 
 /* Default values for TracePacket fields that hold for a particular TraceWriter
@@ -19535,7 +21033,7 @@ typedef struct _perfetto_protos_ThreadDescriptor {
     bool has_pid;
     int32_t pid;
     bool has_tid;
-    int32_t tid;
+    int64_t tid;
     /* To support old UI. New UI should determine default sorting by thread_type. */
     bool has_legacy_sort_index;
     int32_t legacy_sort_index;
@@ -19925,6 +21423,15 @@ typedef struct _perfetto_protos_UiState {
     perfetto_protos_UiState_HighlightProcess highlight_process;
 } perfetto_protos_UiState;
 
+/* Encapsulates the state and configuration of the ProtoVM instances running
+ when the trace was snapshotted. This allows TP to re-instantiate the VMs
+ and use them to inflate patches into full-state packets.
+ Note: this message can't be defined in a dedicated file because it has a
+ recursive dependency with TracePacket (see 'state' field below). */
+typedef struct _perfetto_protos_TracePacket_ProtoVms {
+    pb_callback_t instance;
+} perfetto_protos_TracePacket_ProtoVms;
+
 /* TracePacket is the root object of a Perfetto trace.
  A Perfetto trace is a linear sequence of TracePacket(s).
 
@@ -19945,18 +21452,24 @@ typedef struct _perfetto_protos_UiState {
  See the [Buffers and Dataflow](/docs/concepts/buffers.md) doc for details.
 
  Next reserved id: 14 (up to 15).
- Next id: 124. */
+ Next id: 133. */
 typedef struct _perfetto_protos_TracePacket {
     pb_size_t which_data;
     union _perfetto_protos_TracePacket_data {
         /* Events from the Linux kernel ftrace infrastructure. */
         perfetto_protos_FtraceEventBundle ftrace_events;
+        /* IDs up to 15 are reserved. They take only one byte to encode their
+     preamble so should be used for frequent events. */
         perfetto_protos_ProcessTree process_tree;
         perfetto_protos_InodeFileMap inode_file_map;
         perfetto_protos_ChromeEventBundle chrome_events;
         perfetto_protos_ClockSnapshot clock_snapshot;
         perfetto_protos_SysStats sys_stats;
         perfetto_protos_ProcessStats process_stats;
+        /* == STABLE PUBLIC API: TrackEvent ==
+    
+     TrackEvent is the stable, extensible API for recording trace events.
+     See docs/instrumentation/track-events.md for details. */
         perfetto_protos_TrackEvent track_event;
         perfetto_protos_TraceConfig trace_config;
         perfetto_protos_FtraceStats ftrace_stats;
@@ -19989,7 +21502,6 @@ typedef struct _perfetto_protos_TracePacket {
         perfetto_protos_StreamingProfilePacket streaming_profile_packet;
         perfetto_protos_HeapGraph heap_graph;
         perfetto_protos_GraphicsFrameEvent graphics_frame_event;
-        /* Only used by TrackEvent. */
         perfetto_protos_TrackDescriptor track_descriptor;
         /* Only used in profile packets. */
         perfetto_protos_ModuleSymbols module_symbols;
@@ -20004,7 +21516,7 @@ typedef struct _perfetto_protos_TracePacket {
         perfetto_protos_InitialDisplayState initial_display_state;
         perfetto_protos_GpuMemTotalEvent gpu_mem_total_event;
         /* Data sources can extend the trace proto with custom extension protos (see
-     docs/design-docs/extensions.md). When they do that, the descriptor of
+     docs/instrumentation/extensions.md). When they do that, the descriptor of
      their extension proto descriptor is serialized in this packet. This
      allows trace_processor to deserialize extended messages using reflection
      even if the extension proto is not checked in the Perfetto repo. */
@@ -20024,8 +21536,6 @@ typedef struct _perfetto_protos_TracePacket {
         /* Represents a single packet sent or received by the network. */
         perfetto_protos_NetworkPacketEvent network_packet;
         perfetto_protos_TraceUuid trace_uuid;
-        /* The "range of interest" for track events. See the message definition
-     comments for more details. */
         perfetto_protos_TrackEventRangeOfInterest track_event_range_of_interest;
         perfetto_protos_EntityStateResidency entity_state_residency;
         /* Represents one or more packets sent or received by the network. */
@@ -20053,8 +21563,10 @@ typedef struct _perfetto_protos_TracePacket {
         perfetto_protos_Trigger clone_snapshot_trigger;
         perfetto_protos_BluetoothTraceEvent bluetooth_trace_event;
         perfetto_protos_KernelWakelockData kernel_wakelock_data;
-        perfetto_protos_AppWakelockBundle app_wakelock_bundle;
-        /* Generic events for a standard kernel implementation */
+        /* == STABLE PUBLIC API: GENERIC KERNEL EVENTS ==
+    
+     Stable API for OS-level and hardware events from non-ftrace data
+     sources. */
         perfetto_protos_GenericKernelTaskStateEvent generic_kernel_task_state_event;
         perfetto_protos_GenericKernelCpuFrequencyEvent generic_kernel_cpu_freq_event;
         perfetto_protos_CpuPerUidData cpu_per_uid_data;
@@ -20062,6 +21574,15 @@ typedef struct _perfetto_protos_TracePacket {
         perfetto_protos_EvdevEvent evdev_event;
         perfetto_protos_GenericKernelProcessTree generic_kernel_process_tree;
         perfetto_protos_AndroidUserList user_list;
+        perfetto_protos_TraceProvenance trace_provenance;
+        perfetto_protos_TracePacket_ProtoVms protovms;
+        perfetto_protos_TraceAttributes trace_attributes;
+        perfetto_protos_AndroidAflags android_aflags;
+        perfetto_protos_GpuInfo gpu_info;
+        perfetto_protos_GenericGpuFrequencyEvent generic_gpu_frequency_event;
+        perfetto_protos_InterruptInfo interrupt_info;
+        perfetto_protos_ArtProcessMetadata art_process_metadata;
+        perfetto_protos_SystemdJournaldEvent journald_event;
         /* This field is only used for testing.
      In previous versions of this proto this field had the id 268435455
      This caused many problems:
@@ -20152,7 +21673,18 @@ typedef struct _perfetto_protos_TracePacket {
  remote host (e.g. a VM guest). For more context: go/crosetto-vm-tracing. */
     bool has_machine_id;
     uint32_t machine_id;
+    pb_extension_t *extensions;
 } perfetto_protos_TracePacket;
+
+typedef struct _perfetto_protos_TracePacket_ProtoVms_Instance {
+    bool has_program;
+    perfetto_protos_VmProgram program;
+    bool has_state;
+    perfetto_protos_TracePacket state;
+    bool has_memory_limit_kb;
+    uint32_t memory_limit_kb;
+    pb_callback_t producer_id;
+} perfetto_protos_TracePacket_ProtoVms_Instance;
 
 typedef struct _perfetto_protos_Trace {
     pb_callback_t packet;
@@ -20164,6 +21696,10 @@ extern "C" {
 #endif
 
 /* Helper constants for enums */
+#define _perfetto_protos_VmCursorEnum_MIN perfetto_protos_VmCursorEnum_VM_CURSOR_UNSPECIFIED
+#define _perfetto_protos_VmCursorEnum_MAX perfetto_protos_VmCursorEnum_VM_CURSOR_BOTH
+#define _perfetto_protos_VmCursorEnum_ARRAYSIZE ((perfetto_protos_VmCursorEnum)(perfetto_protos_VmCursorEnum_VM_CURSOR_BOTH+1))
+
 #define _perfetto_protos_BuiltinClock_MIN perfetto_protos_BuiltinClock_BUILTIN_CLOCK_UNKNOWN
 #define _perfetto_protos_BuiltinClock_MAX perfetto_protos_BuiltinClock_BUILTIN_CLOCK_MAX_ID
 #define _perfetto_protos_BuiltinClock_ARRAYSIZE ((perfetto_protos_BuiltinClock)(perfetto_protos_BuiltinClock_BUILTIN_CLOCK_MAX_ID+1))
@@ -20236,6 +21772,14 @@ extern "C" {
 #define _perfetto_protos_GpuCounterDescriptor_MeasureUnit_MAX perfetto_protos_GpuCounterDescriptor_MeasureUnit_INSTRUCTION
 #define _perfetto_protos_GpuCounterDescriptor_MeasureUnit_ARRAYSIZE ((perfetto_protos_GpuCounterDescriptor_MeasureUnit)(perfetto_protos_GpuCounterDescriptor_MeasureUnit_INSTRUCTION+1))
 
+#define _perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_ValueDirection_MIN perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_ValueDirection_VALUE_DIRECTION_UNSPECIFIED
+#define _perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_ValueDirection_MAX perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_ValueDirection_VALUE_DIRECTION_FORWARDS_LOOKING
+#define _perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_ValueDirection_ARRAYSIZE ((perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_ValueDirection)(perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_ValueDirection_VALUE_DIRECTION_FORWARDS_LOOKING+1))
+
+#define _perfetto_protos_VmInstruction_AbortLevel_MIN perfetto_protos_VmInstruction_AbortLevel_SKIP_CURRENT_INSTRUCTION
+#define _perfetto_protos_VmInstruction_AbortLevel_MAX perfetto_protos_VmInstruction_AbortLevel_ABORT
+#define _perfetto_protos_VmInstruction_AbortLevel_ARRAYSIZE ((perfetto_protos_VmInstruction_AbortLevel)(perfetto_protos_VmInstruction_AbortLevel_ABORT+1))
+
 #define _perfetto_protos_AndroidInputEventConfig_TraceMode_MIN perfetto_protos_AndroidInputEventConfig_TraceMode_TRACE_MODE_TRACE_ALL
 #define _perfetto_protos_AndroidInputEventConfig_TraceMode_MAX perfetto_protos_AndroidInputEventConfig_TraceMode_TRACE_MODE_USE_RULES
 #define _perfetto_protos_AndroidInputEventConfig_TraceMode_ARRAYSIZE ((perfetto_protos_AndroidInputEventConfig_TraceMode)(perfetto_protos_AndroidInputEventConfig_TraceMode_TRACE_MODE_USE_RULES+1))
@@ -20253,8 +21797,8 @@ extern "C" {
 #define _perfetto_protos_ProtoLogConfig_TracingMode_ARRAYSIZE ((perfetto_protos_ProtoLogConfig_TracingMode)(perfetto_protos_ProtoLogConfig_TracingMode_ENABLE_ALL+1))
 
 #define _perfetto_protos_SurfaceFlingerLayersConfig_Mode_MIN perfetto_protos_SurfaceFlingerLayersConfig_Mode_MODE_UNSPECIFIED
-#define _perfetto_protos_SurfaceFlingerLayersConfig_Mode_MAX perfetto_protos_SurfaceFlingerLayersConfig_Mode_MODE_GENERATED_BUGREPORT_ONLY
-#define _perfetto_protos_SurfaceFlingerLayersConfig_Mode_ARRAYSIZE ((perfetto_protos_SurfaceFlingerLayersConfig_Mode)(perfetto_protos_SurfaceFlingerLayersConfig_Mode_MODE_GENERATED_BUGREPORT_ONLY+1))
+#define _perfetto_protos_SurfaceFlingerLayersConfig_Mode_MAX perfetto_protos_SurfaceFlingerLayersConfig_Mode_MODE_PROTOVM
+#define _perfetto_protos_SurfaceFlingerLayersConfig_Mode_ARRAYSIZE ((perfetto_protos_SurfaceFlingerLayersConfig_Mode)(perfetto_protos_SurfaceFlingerLayersConfig_Mode_MODE_PROTOVM+1))
 
 #define _perfetto_protos_SurfaceFlingerLayersConfig_TraceFlag_MIN perfetto_protos_SurfaceFlingerLayersConfig_TraceFlag_TRACE_FLAG_UNSPECIFIED
 #define _perfetto_protos_SurfaceFlingerLayersConfig_TraceFlag_MAX perfetto_protos_SurfaceFlingerLayersConfig_TraceFlag_TRACE_FLAG_VIRTUAL_DISPLAYS
@@ -20271,6 +21815,10 @@ extern "C" {
 #define _perfetto_protos_WindowManagerConfig_LogLevel_MIN perfetto_protos_WindowManagerConfig_LogLevel_LOG_LEVEL_UNSPECIFIED
 #define _perfetto_protos_WindowManagerConfig_LogLevel_MAX perfetto_protos_WindowManagerConfig_LogLevel_LOG_LEVEL_CRITICAL
 #define _perfetto_protos_WindowManagerConfig_LogLevel_ARRAYSIZE ((perfetto_protos_WindowManagerConfig_LogLevel)(perfetto_protos_WindowManagerConfig_LogLevel_LOG_LEVEL_CRITICAL+1))
+
+#define _perfetto_protos_WindowManagerConfig_LogMode_MIN perfetto_protos_WindowManagerConfig_LogMode_LOG_MODE_UNSPECIFIED
+#define _perfetto_protos_WindowManagerConfig_LogMode_MAX perfetto_protos_WindowManagerConfig_LogMode_LOG_MODE_INCREMENTAL
+#define _perfetto_protos_WindowManagerConfig_LogMode_ARRAYSIZE ((perfetto_protos_WindowManagerConfig_LogMode)(perfetto_protos_WindowManagerConfig_LogMode_LOG_MODE_INCREMENTAL+1))
 
 #define _perfetto_protos_ChromeConfig_ClientPriority_MIN perfetto_protos_ChromeConfig_ClientPriority_UNKNOWN
 #define _perfetto_protos_ChromeConfig_ClientPriority_MAX perfetto_protos_ChromeConfig_ClientPriority_USER_INITIATED
@@ -20292,6 +21840,10 @@ extern "C" {
 #define _perfetto_protos_FtraceConfig_TracefsOption_State_MAX perfetto_protos_FtraceConfig_TracefsOption_State_STATE_DISABLED
 #define _perfetto_protos_FtraceConfig_TracefsOption_State_ARRAYSIZE ((perfetto_protos_FtraceConfig_TracefsOption_State)(perfetto_protos_FtraceConfig_TracefsOption_State_STATE_DISABLED+1))
 
+#define _perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityNameFilter_NameBase_MIN perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityNameFilter_NameBase_MANGLED_KERNEL_NAME
+#define _perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityNameFilter_NameBase_MAX perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityNameFilter_NameBase_FUNCTION_NAME
+#define _perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityNameFilter_NameBase_ARRAYSIZE ((perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityNameFilter_NameBase)(perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityNameFilter_NameBase_FUNCTION_NAME+1))
+
 #define _perfetto_protos_ConsoleConfig_Output_MIN perfetto_protos_ConsoleConfig_Output_OUTPUT_UNSPECIFIED
 #define _perfetto_protos_ConsoleConfig_Output_MAX perfetto_protos_ConsoleConfig_Output_OUTPUT_STDERR
 #define _perfetto_protos_ConsoleConfig_Output_ARRAYSIZE ((perfetto_protos_ConsoleConfig_Output)(perfetto_protos_ConsoleConfig_Output_OUTPUT_STDERR+1))
@@ -20308,6 +21860,14 @@ extern "C" {
 #define _perfetto_protos_ProcessStatsConfig_Quirks_MAX perfetto_protos_ProcessStatsConfig_Quirks_DISABLE_ON_DEMAND
 #define _perfetto_protos_ProcessStatsConfig_Quirks_ARRAYSIZE ((perfetto_protos_ProcessStatsConfig_Quirks)(perfetto_protos_ProcessStatsConfig_Quirks_DISABLE_ON_DEMAND+1))
 
+#define _perfetto_protos_SmapsConfig_VmaField_MIN perfetto_protos_SmapsConfig_VmaField_VMA_FIELD_UNKNOWN
+#define _perfetto_protos_SmapsConfig_VmaField_MAX perfetto_protos_SmapsConfig_VmaField_VMA_FIELD_SWAP_PSS
+#define _perfetto_protos_SmapsConfig_VmaField_ARRAYSIZE ((perfetto_protos_SmapsConfig_VmaField)(perfetto_protos_SmapsConfig_VmaField_VMA_FIELD_SWAP_PSS+1))
+
+#define _perfetto_protos_RedactionRule_MatchMode_MIN perfetto_protos_RedactionRule_MatchMode_MATCH_MODE_UNKNOWN
+#define _perfetto_protos_RedactionRule_MatchMode_MAX perfetto_protos_RedactionRule_MatchMode_MATCH_MODE_GLOB_STRING
+#define _perfetto_protos_RedactionRule_MatchMode_ARRAYSIZE ((perfetto_protos_RedactionRule_MatchMode)(perfetto_protos_RedactionRule_MatchMode_MATCH_MODE_GLOB_STRING+1))
+
 #define _perfetto_protos_PerfEvents_Counter_MIN perfetto_protos_PerfEvents_Counter_UNKNOWN_COUNTER
 #define _perfetto_protos_PerfEvents_Counter_MAX perfetto_protos_PerfEvents_Counter_SW_DUMMY
 #define _perfetto_protos_PerfEvents_Counter_ARRAYSIZE ((perfetto_protos_PerfEvents_Counter)(perfetto_protos_PerfEvents_Counter_SW_DUMMY+1))
@@ -20321,8 +21881,8 @@ extern "C" {
 #define _perfetto_protos_PerfEvents_EventModifier_ARRAYSIZE ((perfetto_protos_PerfEvents_EventModifier)(perfetto_protos_PerfEvents_EventModifier_EVENT_MODIFIER_COUNT_HYPERVISOR+1))
 
 #define _perfetto_protos_PerfEventConfig_UnwindMode_MIN perfetto_protos_PerfEventConfig_UnwindMode_UNWIND_UNKNOWN
-#define _perfetto_protos_PerfEventConfig_UnwindMode_MAX perfetto_protos_PerfEventConfig_UnwindMode_UNWIND_FRAME_POINTER
-#define _perfetto_protos_PerfEventConfig_UnwindMode_ARRAYSIZE ((perfetto_protos_PerfEventConfig_UnwindMode)(perfetto_protos_PerfEventConfig_UnwindMode_UNWIND_FRAME_POINTER+1))
+#define _perfetto_protos_PerfEventConfig_UnwindMode_MAX perfetto_protos_PerfEventConfig_UnwindMode_UNWIND_KERNEL_FRAME_POINTER
+#define _perfetto_protos_PerfEventConfig_UnwindMode_ARRAYSIZE ((perfetto_protos_PerfEventConfig_UnwindMode)(perfetto_protos_PerfEventConfig_UnwindMode_UNWIND_KERNEL_FRAME_POINTER+1))
 
 #define _perfetto_protos_SysStatsConfig_StatCounters_MIN perfetto_protos_SysStatsConfig_StatCounters_STAT_UNSPECIFIED
 #define _perfetto_protos_SysStatsConfig_StatCounters_MAX perfetto_protos_SysStatsConfig_StatCounters_STAT_FORK_COUNT
@@ -20376,13 +21936,29 @@ extern "C" {
 #define _perfetto_protos_TraceStats_FinalFlushOutcome_MAX perfetto_protos_TraceStats_FinalFlushOutcome_FINAL_FLUSH_FAILED
 #define _perfetto_protos_TraceStats_FinalFlushOutcome_ARRAYSIZE ((perfetto_protos_TraceStats_FinalFlushOutcome)(perfetto_protos_TraceStats_FinalFlushOutcome_FINAL_FLUSH_FAILED+1))
 
+#define _perfetto_protos_AndroidAflags_FlagPermission_MIN perfetto_protos_AndroidAflags_FlagPermission_FLAG_PERMISSION_UNSPECIFIED
+#define _perfetto_protos_AndroidAflags_FlagPermission_MAX perfetto_protos_AndroidAflags_FlagPermission_FLAG_PERMISSION_READ_WRITE
+#define _perfetto_protos_AndroidAflags_FlagPermission_ARRAYSIZE ((perfetto_protos_AndroidAflags_FlagPermission)(perfetto_protos_AndroidAflags_FlagPermission_FLAG_PERMISSION_READ_WRITE+1))
+
+#define _perfetto_protos_AndroidAflags_ValuePickedFrom_MIN perfetto_protos_AndroidAflags_ValuePickedFrom_VALUE_PICKED_FROM_UNSPECIFIED
+#define _perfetto_protos_AndroidAflags_ValuePickedFrom_MAX perfetto_protos_AndroidAflags_ValuePickedFrom_VALUE_PICKED_FROM_LOCAL
+#define _perfetto_protos_AndroidAflags_ValuePickedFrom_ARRAYSIZE ((perfetto_protos_AndroidAflags_ValuePickedFrom)(perfetto_protos_AndroidAflags_ValuePickedFrom_VALUE_PICKED_FROM_LOCAL+1))
+
+#define _perfetto_protos_AndroidAflags_FlagStorageBackend_MIN perfetto_protos_AndroidAflags_FlagStorageBackend_FLAG_STORAGE_BACKEND_UNSPECIFIED
+#define _perfetto_protos_AndroidAflags_FlagStorageBackend_MAX perfetto_protos_AndroidAflags_FlagStorageBackend_FLAG_STORAGE_BACKEND_DEVICE_CONFIG
+#define _perfetto_protos_AndroidAflags_FlagStorageBackend_ARRAYSIZE ((perfetto_protos_AndroidAflags_FlagStorageBackend)(perfetto_protos_AndroidAflags_FlagStorageBackend_FLAG_STORAGE_BACKEND_DEVICE_CONFIG+1))
+
+#define _perfetto_protos_AndroidAflags_FlagType_MIN perfetto_protos_AndroidAflags_FlagType_FLAG_TYPE_UNSPECIFIED
+#define _perfetto_protos_AndroidAflags_FlagType_MAX perfetto_protos_AndroidAflags_FlagType_FLAG_TYPE_INTEGER
+#define _perfetto_protos_AndroidAflags_FlagType_ARRAYSIZE ((perfetto_protos_AndroidAflags_FlagType)(perfetto_protos_AndroidAflags_FlagType_FLAG_TYPE_INTEGER+1))
+
 #define _perfetto_protos_AndroidCameraFrameEvent_CaptureResultStatus_MIN perfetto_protos_AndroidCameraFrameEvent_CaptureResultStatus_STATUS_UNSPECIFIED
 #define _perfetto_protos_AndroidCameraFrameEvent_CaptureResultStatus_MAX perfetto_protos_AndroidCameraFrameEvent_CaptureResultStatus_STATUS_FLUSH_ERROR
 #define _perfetto_protos_AndroidCameraFrameEvent_CaptureResultStatus_ARRAYSIZE ((perfetto_protos_AndroidCameraFrameEvent_CaptureResultStatus)(perfetto_protos_AndroidCameraFrameEvent_CaptureResultStatus_STATUS_FLUSH_ERROR+1))
 
 #define _perfetto_protos_FrameTimelineEvent_JankType_MIN perfetto_protos_FrameTimelineEvent_JankType_JANK_UNSPECIFIED
-#define _perfetto_protos_FrameTimelineEvent_JankType_MAX perfetto_protos_FrameTimelineEvent_JankType_JANK_DISPLAY_MODE_CHANGE_IN_PROGRESS
-#define _perfetto_protos_FrameTimelineEvent_JankType_ARRAYSIZE ((perfetto_protos_FrameTimelineEvent_JankType)(perfetto_protos_FrameTimelineEvent_JankType_JANK_DISPLAY_MODE_CHANGE_IN_PROGRESS+1))
+#define _perfetto_protos_FrameTimelineEvent_JankType_MAX perfetto_protos_FrameTimelineEvent_JankType_JANK_DISPLAY_POWER_MODE_CHANGE_IN_PROGRESS
+#define _perfetto_protos_FrameTimelineEvent_JankType_ARRAYSIZE ((perfetto_protos_FrameTimelineEvent_JankType)(perfetto_protos_FrameTimelineEvent_JankType_JANK_DISPLAY_POWER_MODE_CHANGE_IN_PROGRESS+1))
 
 #define _perfetto_protos_FrameTimelineEvent_JankSeverityType_MIN perfetto_protos_FrameTimelineEvent_JankSeverityType_SEVERITY_UNKNOWN
 #define _perfetto_protos_FrameTimelineEvent_JankSeverityType_MAX perfetto_protos_FrameTimelineEvent_JankSeverityType_SEVERITY_FULL
@@ -20395,6 +21971,10 @@ extern "C" {
 #define _perfetto_protos_FrameTimelineEvent_PredictionType_MIN perfetto_protos_FrameTimelineEvent_PredictionType_PREDICTION_UNSPECIFIED
 #define _perfetto_protos_FrameTimelineEvent_PredictionType_MAX perfetto_protos_FrameTimelineEvent_PredictionType_PREDICTION_UNKNOWN
 #define _perfetto_protos_FrameTimelineEvent_PredictionType_ARRAYSIZE ((perfetto_protos_FrameTimelineEvent_PredictionType)(perfetto_protos_FrameTimelineEvent_PredictionType_PREDICTION_UNKNOWN+1))
+
+#define _perfetto_protos_FrameTimelineEvent_ActualSurfaceFrameStart_LatchedFenceState_MIN perfetto_protos_FrameTimelineEvent_ActualSurfaceFrameStart_LatchedFenceState_LATCHED_UNKNOWN
+#define _perfetto_protos_FrameTimelineEvent_ActualSurfaceFrameStart_LatchedFenceState_MAX perfetto_protos_FrameTimelineEvent_ActualSurfaceFrameStart_LatchedFenceState_LATCHED_DELAYED_LATCH_UNSIGNALED
+#define _perfetto_protos_FrameTimelineEvent_ActualSurfaceFrameStart_LatchedFenceState_ARRAYSIZE ((perfetto_protos_FrameTimelineEvent_ActualSurfaceFrameStart_LatchedFenceState)(perfetto_protos_FrameTimelineEvent_ActualSurfaceFrameStart_LatchedFenceState_LATCHED_DELAYED_LATCH_UNSIGNALED+1))
 
 #define _perfetto_protos_GraphicsFrameEvent_BufferEventType_MIN perfetto_protos_GraphicsFrameEvent_BufferEventType_UNSPECIFIED
 #define _perfetto_protos_GraphicsFrameEvent_BufferEventType_MAX perfetto_protos_GraphicsFrameEvent_BufferEventType_CANCEL
@@ -20529,8 +22109,8 @@ extern "C" {
 #define _perfetto_protos_GpuLog_Severity_ARRAYSIZE ((perfetto_protos_GpuLog_Severity)(perfetto_protos_GpuLog_Severity_LOG_SEVERITY_ERROR+1))
 
 #define _perfetto_protos_InternedGraphicsContext_Api_MIN perfetto_protos_InternedGraphicsContext_Api_UNDEFINED
-#define _perfetto_protos_InternedGraphicsContext_Api_MAX perfetto_protos_InternedGraphicsContext_Api_OPEN_CL
-#define _perfetto_protos_InternedGraphicsContext_Api_ARRAYSIZE ((perfetto_protos_InternedGraphicsContext_Api)(perfetto_protos_InternedGraphicsContext_Api_OPEN_CL+1))
+#define _perfetto_protos_InternedGraphicsContext_Api_MAX perfetto_protos_InternedGraphicsContext_Api_HIP
+#define _perfetto_protos_InternedGraphicsContext_Api_ARRAYSIZE ((perfetto_protos_InternedGraphicsContext_Api)(perfetto_protos_InternedGraphicsContext_Api_HIP+1))
 
 #define _perfetto_protos_InternedGpuRenderStageSpecification_RenderStageCategory_MIN perfetto_protos_InternedGpuRenderStageSpecification_RenderStageCategory_OTHER
 #define _perfetto_protos_InternedGpuRenderStageSpecification_RenderStageCategory_MAX perfetto_protos_InternedGpuRenderStageSpecification_RenderStageCategory_COMPUTE
@@ -20718,6 +22298,20 @@ extern "C" {
 #define perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_numerator_units_ENUMTYPE perfetto_protos_GpuCounterDescriptor_MeasureUnit
 #define perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_denominator_units_ENUMTYPE perfetto_protos_GpuCounterDescriptor_MeasureUnit
 #define perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_groups_ENUMTYPE perfetto_protos_GpuCounterDescriptor_GpuCounterGroup
+#define perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_value_direction_ENUMTYPE perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_ValueDirection
+
+
+
+
+
+
+#define perfetto_protos_VmInstruction_abort_level_ENUMTYPE perfetto_protos_VmInstruction_AbortLevel
+
+#define perfetto_protos_VmOpSelect_cursor_ENUMTYPE perfetto_protos_VmCursorEnum
+
+
+#define perfetto_protos_VmOpRegLoad_cursor_ENUMTYPE perfetto_protos_VmCursorEnum
+
 
 
 
@@ -20759,6 +22353,7 @@ extern "C" {
 
 #define perfetto_protos_WindowManagerConfig_log_frequency_ENUMTYPE perfetto_protos_WindowManagerConfig_LogFrequency
 #define perfetto_protos_WindowManagerConfig_log_level_ENUMTYPE perfetto_protos_WindowManagerConfig_LogLevel
+#define perfetto_protos_WindowManagerConfig_log_mode_ENUMTYPE perfetto_protos_WindowManagerConfig_LogMode
 
 #define perfetto_protos_ChromeConfig_client_priority_ENUMTYPE perfetto_protos_ChromeConfig_ClientPriority
 
@@ -20781,10 +22376,15 @@ extern "C" {
 
 
 
+#define perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityNameFilter_name_base_ENUMTYPE perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityNameFilter_NameBase
+
+
+
 
 
 
 #define perfetto_protos_ConsoleConfig_output_ENUMTYPE perfetto_protos_ConsoleConfig_Output
+
 
 
 #define perfetto_protos_AndroidPowerConfig_battery_counters_ENUMTYPE perfetto_protos_AndroidPowerConfig_BatteryCounters
@@ -20794,6 +22394,10 @@ extern "C" {
 #define perfetto_protos_ProcessStatsConfig_quirks_ENUMTYPE perfetto_protos_ProcessStatsConfig_Quirks
 
 
+
+#define perfetto_protos_SmapsConfig_vma_fields_ENUMTYPE perfetto_protos_SmapsConfig_VmaField
+
+#define perfetto_protos_RedactionRule_match_mode_ENUMTYPE perfetto_protos_RedactionRule_MatchMode
 
 
 
@@ -20809,6 +22413,8 @@ extern "C" {
 
 
 #define perfetto_protos_PerfEventConfig_CallstackSampling_user_frames_ENUMTYPE perfetto_protos_PerfEventConfig_UnwindMode
+
+
 
 
 #define perfetto_protos_StatsdTracingConfig_push_atom_id_ENUMTYPE perfetto_protos_AtomId
@@ -20856,6 +22462,9 @@ extern "C" {
 
 
 
+
+
+
 #define perfetto_protos_TraceStats_final_flush_outcome_ENUMTYPE perfetto_protos_TraceStats_FinalFlushOutcome
 
 
@@ -20863,13 +22472,17 @@ extern "C" {
 
 
 
+#define perfetto_protos_AndroidAflags_Flag_permission_ENUMTYPE perfetto_protos_AndroidAflags_FlagPermission
+#define perfetto_protos_AndroidAflags_Flag_value_picked_from_ENUMTYPE perfetto_protos_AndroidAflags_ValuePickedFrom
+#define perfetto_protos_AndroidAflags_Flag_storage_backend_ENUMTYPE perfetto_protos_AndroidAflags_FlagStorageBackend
+#define perfetto_protos_AndroidAflags_Flag_type_ENUMTYPE perfetto_protos_AndroidAflags_FlagType
+
+
 
 
 
 #define perfetto_protos_AndroidLogPacket_LogEvent_log_id_ENUMTYPE perfetto_protos_AndroidLogId
 #define perfetto_protos_AndroidLogPacket_LogEvent_prio_ENUMTYPE perfetto_protos_AndroidLogPriority
-
-
 
 
 
@@ -20891,13 +22504,13 @@ extern "C" {
 #define perfetto_protos_FrameTimelineEvent_ActualSurfaceFrameStart_prediction_type_ENUMTYPE perfetto_protos_FrameTimelineEvent_PredictionType
 #define perfetto_protos_FrameTimelineEvent_ActualSurfaceFrameStart_jank_severity_type_ENUMTYPE perfetto_protos_FrameTimelineEvent_JankSeverityType
 #define perfetto_protos_FrameTimelineEvent_ActualSurfaceFrameStart_present_type_experimental_ENUMTYPE perfetto_protos_FrameTimelineEvent_PresentType
+#define perfetto_protos_FrameTimelineEvent_ActualSurfaceFrameStart_latched_fence_state_ENUMTYPE perfetto_protos_FrameTimelineEvent_ActualSurfaceFrameStart_LatchedFenceState
 
 
 #define perfetto_protos_FrameTimelineEvent_ActualDisplayFrameStart_present_type_ENUMTYPE perfetto_protos_FrameTimelineEvent_PresentType
 #define perfetto_protos_FrameTimelineEvent_ActualDisplayFrameStart_prediction_type_ENUMTYPE perfetto_protos_FrameTimelineEvent_PredictionType
 #define perfetto_protos_FrameTimelineEvent_ActualDisplayFrameStart_jank_severity_type_ENUMTYPE perfetto_protos_FrameTimelineEvent_JankSeverityType
 #define perfetto_protos_FrameTimelineEvent_ActualDisplayFrameStart_present_type_experimental_ENUMTYPE perfetto_protos_FrameTimelineEvent_PresentType
-
 
 
 
@@ -20939,9 +22552,10 @@ extern "C" {
 
 
 
+
+
 #define perfetto_protos_LayerProto_hwc_composition_type_ENUMTYPE perfetto_protos_HwcCompositionType
 #define perfetto_protos_LayerProto_trusted_overlay_ENUMTYPE perfetto_protos_TrustedOverlay
-
 
 
 
@@ -21033,6 +22647,22 @@ extern "C" {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 #define perfetto_protos_FieldDescriptorProto_label_ENUMTYPE perfetto_protos_FieldDescriptorProto_Label
 #define perfetto_protos_FieldDescriptorProto_type_ENUMTYPE perfetto_protos_FieldDescriptorProto_Type
 
@@ -21043,6 +22673,12 @@ extern "C" {
 
 
 #define perfetto_protos_InodeFileMap_Entry_type_ENUMTYPE perfetto_protos_InodeFileMap_Entry_Type
+
+
+
+
+
+
 
 
 
@@ -21629,6 +23265,12 @@ extern "C" {
 
 
 
+
+
+
+
+
+
 #define perfetto_protos_FtraceStats_phase_ENUMTYPE perfetto_protos_FtraceStats_Phase
 #define perfetto_protos_FtraceStats_ftrace_parse_errors_ENUMTYPE perfetto_protos_FtraceParseStatus
 
@@ -21639,7 +23281,9 @@ extern "C" {
 
 
 
+
 #define perfetto_protos_GenericKernelTaskStateEvent_state_ENUMTYPE perfetto_protos_GenericKernelTaskStateEvent_TaskStateEnum
+
 
 
 
@@ -21654,9 +23298,15 @@ extern "C" {
 
 
 
+
+
+
+
 #define perfetto_protos_InternedGraphicsContext_api_ENUMTYPE perfetto_protos_InternedGraphicsContext_Api
 
 #define perfetto_protos_InternedGpuRenderStageSpecification_category_ENUMTYPE perfetto_protos_InternedGpuRenderStageSpecification_RenderStageCategory
+
+
 
 
 
@@ -21743,11 +23393,18 @@ extern "C" {
 
 
 
+
 #define perfetto_protos_MemoryTrackerSnapshot_level_of_detail_ENUMTYPE perfetto_protos_MemoryTrackerSnapshot_LevelOfDetail
 
 
 
 #define perfetto_protos_MemoryTrackerSnapshot_ProcessSnapshot_MemoryNode_MemoryNodeEntry_units_ENUMTYPE perfetto_protos_MemoryTrackerSnapshot_ProcessSnapshot_MemoryNode_MemoryNodeEntry_Units
+
+
+
+
+
+
 
 
 
@@ -21809,6 +23466,7 @@ extern "C" {
 
 
 
+
 #define perfetto_protos_SysStats_MeminfoValue_key_ENUMTYPE perfetto_protos_MeminfoCounters
 
 #define perfetto_protos_SysStats_VmstatValue_key_ENUMTYPE perfetto_protos_VmstatCounters
@@ -21819,6 +23477,16 @@ extern "C" {
 
 
 #define perfetto_protos_SysStats_PsiSample_resource_ENUMTYPE perfetto_protos_SysStats_PsiSample_PsiResource
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -21863,23 +23531,35 @@ extern "C" {
 
 
 
+
+
 /* Initializer values for message structs */
 #define perfetto_protos_FtraceDescriptor_init_default {{{NULL}, NULL}}
 #define perfetto_protos_FtraceDescriptor_AtraceCategory_init_default {{{NULL}, NULL}, {{NULL}, NULL}}
-#define perfetto_protos_GpuCounterDescriptor_init_default {{{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, false, 0}
-#define perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_init_default {false, 0, {{NULL}, NULL}, {{NULL}, NULL}, 0, {0}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, {{NULL}, NULL}}
+#define perfetto_protos_GpuCounterDescriptor_init_default {{{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, 0, false, 0}
+#define perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_init_default {false, 0, {{NULL}, NULL}, {{NULL}, NULL}, 0, {0}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, false, _perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_ValueDirection_MIN}
 #define perfetto_protos_GpuCounterDescriptor_GpuCounterBlock_init_default {false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_GpuCounterDescriptor_GpuCounterGroupSpec_init_default {false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_TrackEventCategory_init_default {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_TrackEventDescriptor_init_default {{{NULL}, NULL}}
-#define perfetto_protos_DataSourceDescriptor_init_default {{{NULL}, NULL}, false, 0, false, 0, false, 0, false, perfetto_protos_GpuCounterDescriptor_init_default, false, perfetto_protos_TrackEventDescriptor_init_default, false, 0, false, perfetto_protos_FtraceDescriptor_init_default, false, 0}
+#define perfetto_protos_VmProgram_init_default   {false, 0, {{NULL}, NULL}}
+#define perfetto_protos_VmInstruction_init_default {0, {perfetto_protos_VmOpSelect_init_default}, false, _perfetto_protos_VmInstruction_AbortLevel_MIN, {{NULL}, NULL}}
+#define perfetto_protos_VmOpSelect_init_default  {false, _perfetto_protos_VmCursorEnum_MIN, {{NULL}, NULL}, false, 0}
+#define perfetto_protos_VmOpSelect_PathComponent_init_default {0, {0}, false, 0, false, 0, false, 0}
+#define perfetto_protos_VmOpRegLoad_init_default {false, _perfetto_protos_VmCursorEnum_MIN, false, 0}
+#define perfetto_protos_VmOpMerge_init_default   {false, 0, false, 0}
+#define perfetto_protos_VmOpSet_init_default     {0}
+#define perfetto_protos_VmOpDel_init_default     {0}
+#define perfetto_protos_DataSourceDescriptor_init_default {{{NULL}, NULL}, false, 0, false, 0, false, 0, false, perfetto_protos_GpuCounterDescriptor_init_default, false, perfetto_protos_TrackEventDescriptor_init_default, false, 0, false, perfetto_protos_FtraceDescriptor_init_default, false, 0, false, perfetto_protos_VmProgram_init_default}
 #define perfetto_protos_TracingServiceState_init_default {{{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, 0}
-#define perfetto_protos_TracingServiceState_Producer_init_default {false, 0, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, false, 0, false, 0}
+#define perfetto_protos_TracingServiceState_Producer_init_default {false, 0, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, false, 0, false, 0, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_TracingServiceState_DataSource_init_default {false, perfetto_protos_DataSourceDescriptor_init_default, false, 0}
 #define perfetto_protos_TracingServiceState_TracingSession_init_default {false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, 0}
+#define perfetto_protos_AndroidAflagsConfig_init_default {false, 0}
 #define perfetto_protos_AndroidGameInterventionListConfig_init_default {{{NULL}, NULL}}
-#define perfetto_protos_AndroidInputEventConfig_init_default {false, _perfetto_protos_AndroidInputEventConfig_TraceMode_MIN, {{NULL}, NULL}, false, 0, false, 0}
+#define perfetto_protos_AndroidInputEventConfig_init_default {false, _perfetto_protos_AndroidInputEventConfig_TraceMode_MIN, {{NULL}, NULL}, false, 0, false, 0, false, 0}
 #define perfetto_protos_AndroidInputEventConfig_TraceRule_init_default {false, _perfetto_protos_AndroidInputEventConfig_TraceLevel_MIN, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0}
-#define perfetto_protos_AndroidLogConfig_init_default {{{NULL}, NULL}, false, _perfetto_protos_AndroidLogPriority_MIN, {{NULL}, NULL}}
+#define perfetto_protos_AndroidLogConfig_init_default {{{NULL}, NULL}, false, _perfetto_protos_AndroidLogPriority_MIN, {{NULL}, NULL}, false, 0}
 #define perfetto_protos_AndroidPolledStateConfig_init_default {false, 0}
 #define perfetto_protos_AndroidSdkSyspropGuardConfig_init_default {false, 0, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_AndroidSystemPropertyConfig_init_default {false, 0, {{NULL}, NULL}}
@@ -21888,20 +23568,20 @@ extern "C" {
 #define perfetto_protos_InputMethodConfig_init_default {false, 0, false, 0, false, 0}
 #define perfetto_protos_KernelWakelocksConfig_init_default {false, 0}
 #define perfetto_protos_NetworkPacketTraceConfig_init_default {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
-#define perfetto_protos_PackagesListConfig_init_default {{{NULL}, NULL}, false, 0}
+#define perfetto_protos_PackagesListConfig_init_default {{{NULL}, NULL}, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_PixelModemConfig_init_default {false, _perfetto_protos_PixelModemConfig_EventGroup_MIN, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_ProtoLogConfig_init_default {{{NULL}, NULL}, false, _perfetto_protos_ProtoLogConfig_TracingMode_MIN, false, _perfetto_protos_ProtoLogLevel_MIN}
 #define perfetto_protos_ProtoLogGroup_init_default {{{NULL}, NULL}, false, _perfetto_protos_ProtoLogLevel_MIN, false, 0}
 #define perfetto_protos_SurfaceFlingerLayersConfig_init_default {false, _perfetto_protos_SurfaceFlingerLayersConfig_Mode_MIN, {{NULL}, NULL}}
 #define perfetto_protos_SurfaceFlingerTransactionsConfig_init_default {false, _perfetto_protos_SurfaceFlingerTransactionsConfig_Mode_MIN}
 #define perfetto_protos_AndroidUserListConfig_init_default {{{NULL}, NULL}}
-#define perfetto_protos_WindowManagerConfig_init_default {false, _perfetto_protos_WindowManagerConfig_LogFrequency_MIN, false, _perfetto_protos_WindowManagerConfig_LogLevel_MIN}
+#define perfetto_protos_WindowManagerConfig_init_default {false, _perfetto_protos_WindowManagerConfig_LogFrequency_MIN, false, _perfetto_protos_WindowManagerConfig_LogLevel_MIN, false, _perfetto_protos_WindowManagerConfig_LogMode_MIN}
 #define perfetto_protos_ChromeConfig_init_default {{{NULL}, NULL}, false, 0, false, 0, false, _perfetto_protos_ChromeConfig_ClientPriority_MIN, {{NULL}, NULL}, false, 0}
 #define perfetto_protos_ChromiumHistogramSamplesConfig_init_default {{{NULL}, NULL}, false, 0}
 #define perfetto_protos_ChromiumHistogramSamplesConfig_HistogramSample_init_default {{{NULL}, NULL}, false, 0, false, 0}
 #define perfetto_protos_ChromiumSystemMetricsConfig_init_default {false, 0}
 #define perfetto_protos_V8Config_init_default    {false, 0, false, 0}
-#define perfetto_protos_EtwConfig_init_default   {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_EtwConfig_init_default   {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_FrozenFtraceConfig_init_default {{{NULL}, NULL}}
 #define perfetto_protos_FtraceConfig_init_default {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, false, perfetto_protos_FtraceConfig_CompactSchedConfig_init_default, false, 0, false, 0, false, 0, false, 0, false, _perfetto_protos_FtraceConfig_KsymsMemPolicy_MIN, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, perfetto_protos_FtraceConfig_PrintFilter_init_default, false, 0, false, 0, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_FtraceConfig_CompactSchedConfig_init_default {false, 0}
@@ -21910,40 +23590,48 @@ extern "C" {
 #define perfetto_protos_FtraceConfig_PrintFilter_Rule_AtraceMessage_init_default {{{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_FtraceConfig_KprobeEvent_init_default {{{NULL}, NULL}, false, _perfetto_protos_FtraceConfig_KprobeEvent_KprobeType_MIN}
 #define perfetto_protos_FtraceConfig_TracefsOption_init_default {{{NULL}, NULL}, false, _perfetto_protos_FtraceConfig_TracefsOption_State_MIN}
-#define perfetto_protos_GpuCounterConfig_init_default {false, 0, {{NULL}, NULL}, false, 0, false, 0}
+#define perfetto_protos_GpuCounterConfig_init_default {false, 0, {{NULL}, NULL}, 0, {0}, false, 0, {{NULL}, NULL}}
+#define perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_init_default {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityNameFilter_init_default {{{NULL}, NULL}, false, _perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityNameFilter_NameBase_MIN}
+#define perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityRange_init_default {false, 0, false, 0}
 #define perfetto_protos_GpuRenderStagesConfig_init_default {false, 0, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_VulkanMemoryConfig_init_default {false, 0, false, 0}
 #define perfetto_protos_InodeFileConfig_init_default {false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_InodeFileConfig_MountPointMappingEntry_init_default {{{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_ConsoleConfig_init_default {false, _perfetto_protos_ConsoleConfig_Output_MIN, false, 0}
 #define perfetto_protos_InterceptorConfig_init_default {{{NULL}, NULL}, false, perfetto_protos_ConsoleConfig_init_default}
+#define perfetto_protos_SystemdJournaldConfig_init_default {false, 0, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_AndroidPowerConfig_init_default {false, 0, {{NULL}, NULL}, false, 0, false, 0, false, 0}
 #define perfetto_protos_PriorityBoostConfig_init_default {false, _perfetto_protos_PriorityBoostConfig_BoostPolicy_MIN, false, 0}
 #define perfetto_protos_ProcessStatsConfig_init_default {{{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_HeapprofdConfig_init_default {false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, perfetto_protos_HeapprofdConfig_ContinuousDumpConfig_init_default, {{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, false, 0, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_HeapprofdConfig_ContinuousDumpConfig_init_default {false, 0, false, 0}
-#define perfetto_protos_JavaHprofConfig_init_default {{{NULL}, NULL}, {{NULL}, NULL}, false, perfetto_protos_JavaHprofConfig_ContinuousDumpConfig_init_default, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_SmapsConfig_init_default {{{NULL}, NULL}, false, 0, {{NULL}, NULL}}
+#define perfetto_protos_RedactionRule_init_default {{{NULL}, NULL}, false, _perfetto_protos_RedactionRule_MatchMode_MIN, false, 0, {{NULL}, NULL}, false, 0, false, 0}
+#define perfetto_protos_JavaHprofConfig_init_default {{{NULL}, NULL}, {{NULL}, NULL}, false, perfetto_protos_JavaHprofConfig_ContinuousDumpConfig_init_default, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, perfetto_protos_SmapsConfig_init_default}
 #define perfetto_protos_JavaHprofConfig_ContinuousDumpConfig_init_default {false, 0, false, 0, false, 0}
 #define perfetto_protos_PerfEvents_init_default  {0}
 #define perfetto_protos_PerfEvents_Timebase_init_default {0, {0}, 0, {perfetto_protos_PerfEvents_Tracepoint_init_default}, {{NULL}, NULL}, false, _perfetto_protos_PerfEvents_PerfClock_MIN, {{NULL}, NULL}}
 #define perfetto_protos_PerfEvents_Tracepoint_init_default {{{NULL}, NULL}, {{NULL}, NULL}}
-#define perfetto_protos_PerfEvents_RawEvent_init_default {false, 0, false, 0, false, 0, false, 0}
+#define perfetto_protos_PerfEvents_RawEvent_init_default {false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_FollowerEvent_init_default {0, {_perfetto_protos_PerfEvents_Counter_MIN}, {{NULL}, NULL}, {{NULL}, NULL}}
-#define perfetto_protos_PerfEventConfig_init_default {false, 0, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, perfetto_protos_PerfEvents_Timebase_init_default, false, perfetto_protos_PerfEventConfig_CallstackSampling_init_default, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_PerfEventConfig_init_default {false, 0, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, perfetto_protos_PerfEvents_Timebase_init_default, false, perfetto_protos_PerfEventConfig_CallstackSampling_init_default, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_PerfEventConfig_CallstackSampling_init_default {false, perfetto_protos_PerfEventConfig_Scope_init_default, false, 0, false, _perfetto_protos_PerfEventConfig_UnwindMode_MIN}
 #define perfetto_protos_PerfEventConfig_Scope_init_default {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0}
+#define perfetto_protos_ProtoVmConfig_init_default {false, 0}
+#define perfetto_protos_QnxConfig_init_default   {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_StatsdTracingConfig_init_default {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_StatsdPullAtomConfig_init_default {{{NULL}, NULL}, {{NULL}, NULL}, false, 0, {{NULL}, NULL}}
-#define perfetto_protos_SysStatsConfig_init_default {false, 0, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
-#define perfetto_protos_SystemInfoConfig_init_default {0}
+#define perfetto_protos_SysStatsConfig_init_default {false, 0, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
+#define perfetto_protos_SystemInfoConfig_init_default {false, 0}
 #define perfetto_protos_TestConfig_init_default  {false, 0, false, 0, false, 0, false, 0, false, 0, false, perfetto_protos_TestConfig_DummyFields_init_default}
 #define perfetto_protos_TestConfig_DummyFields_init_default {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_TrackEventConfig_init_default {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
-#define perfetto_protos_DataSourceConfig_init_default {{{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, false, 0, false, _perfetto_protos_DataSourceConfig_SessionInitiator_MIN, false, _perfetto_protos_DataSourceConfig_BufferExhaustedPolicy_MIN, false, perfetto_protos_PriorityBoostConfig_init_default, {{NULL}, NULL}, false, perfetto_protos_FtraceConfig_init_default, false, perfetto_protos_ChromeConfig_init_default, false, perfetto_protos_InodeFileConfig_init_default, false, perfetto_protos_ProcessStatsConfig_init_default, false, perfetto_protos_SysStatsConfig_init_default, false, perfetto_protos_HeapprofdConfig_init_default, false, perfetto_protos_AndroidPowerConfig_init_default, false, perfetto_protos_AndroidLogConfig_init_default, false, perfetto_protos_GpuCounterConfig_init_default, false, perfetto_protos_PackagesListConfig_init_default, false, perfetto_protos_JavaHprofConfig_init_default, false, perfetto_protos_PerfEventConfig_init_default, false, perfetto_protos_VulkanMemoryConfig_init_default, false, perfetto_protos_TrackEventConfig_init_default, false, perfetto_protos_AndroidPolledStateConfig_init_default, false, perfetto_protos_InterceptorConfig_init_default, false, perfetto_protos_AndroidGameInterventionListConfig_init_default, false, perfetto_protos_StatsdTracingConfig_init_default, false, perfetto_protos_AndroidSystemPropertyConfig_init_default, false, perfetto_protos_SystemInfoConfig_init_default, false, perfetto_protos_NetworkPacketTraceConfig_init_default, false, perfetto_protos_SurfaceFlingerLayersConfig_init_default, false, 0, false, perfetto_protos_SurfaceFlingerTransactionsConfig_init_default, false, perfetto_protos_AndroidSdkSyspropGuardConfig_init_default, false, perfetto_protos_EtwConfig_init_default, false, perfetto_protos_ProtoLogConfig_init_default, false, perfetto_protos_V8Config_init_default, false, perfetto_protos_AndroidInputEventConfig_init_default, false, perfetto_protos_PixelModemConfig_init_default, false, perfetto_protos_WindowManagerConfig_init_default, false, perfetto_protos_ChromiumSystemMetricsConfig_init_default, false, perfetto_protos_KernelWakelocksConfig_init_default, false, perfetto_protos_GpuRenderStagesConfig_init_default, false, perfetto_protos_ChromiumHistogramSamplesConfig_init_default, false, perfetto_protos_AppWakelocksConfig_init_default, false, perfetto_protos_FrozenFtraceConfig_init_default, false, perfetto_protos_CpuPerUidConfig_init_default, false, perfetto_protos_AndroidUserListConfig_init_default, false, perfetto_protos_InputMethodConfig_init_default, {{NULL}, NULL}, false, perfetto_protos_TestConfig_init_default}
-#define perfetto_protos_TraceConfig_init_default {{{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, false, _perfetto_protos_TraceConfig_LockdownModeOperation_MIN, {{NULL}, NULL}, false, perfetto_protos_TraceConfig_StatsdMetadata_init_default, false, 0, false, 0, false, 0, false, perfetto_protos_TraceConfig_GuardrailOverrides_init_default, false, 0, false, 0, false, 0, false, 0, false, perfetto_protos_TraceConfig_TriggerConfig_init_default, {{NULL}, NULL}, false, 0, false, perfetto_protos_TraceConfig_BuiltinDataSource_init_default, false, perfetto_protos_TraceConfig_IncrementalStateConfig_init_default, {{NULL}, NULL}, false, 0, false, _perfetto_protos_TraceConfig_CompressionType_MIN, false, perfetto_protos_TraceConfig_IncidentReportConfig_init_default, false, 0, false, 0, {{NULL}, NULL}, false, 0, false, _perfetto_protos_TraceConfig_StatsdLogging_MIN, false, perfetto_protos_TraceConfig_TraceFilter_init_default, false, perfetto_protos_TraceConfig_AndroidReportConfig_init_default, false, perfetto_protos_TraceConfig_CmdTraceStartDelay_init_default, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, perfetto_protos_PriorityBoostConfig_init_default, false, 0, false, 0, false, _perfetto_protos_TraceConfig_WriteFlushMode_MIN, false, _perfetto_protos_TraceConfig_FFlushMode_MIN}
+#define perfetto_protos_DataSourceConfig_init_default {{{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, false, 0, false, _perfetto_protos_DataSourceConfig_SessionInitiator_MIN, false, _perfetto_protos_DataSourceConfig_BufferExhaustedPolicy_MIN, false, perfetto_protos_PriorityBoostConfig_init_default, {{NULL}, NULL}, false, perfetto_protos_ProtoVmConfig_init_default, false, perfetto_protos_FtraceConfig_init_default, false, perfetto_protos_ChromeConfig_init_default, false, perfetto_protos_InodeFileConfig_init_default, false, perfetto_protos_ProcessStatsConfig_init_default, false, perfetto_protos_SysStatsConfig_init_default, false, perfetto_protos_HeapprofdConfig_init_default, false, perfetto_protos_AndroidPowerConfig_init_default, false, perfetto_protos_AndroidLogConfig_init_default, false, perfetto_protos_GpuCounterConfig_init_default, false, perfetto_protos_PackagesListConfig_init_default, false, perfetto_protos_JavaHprofConfig_init_default, false, perfetto_protos_PerfEventConfig_init_default, false, perfetto_protos_VulkanMemoryConfig_init_default, false, perfetto_protos_TrackEventConfig_init_default, false, perfetto_protos_AndroidPolledStateConfig_init_default, false, perfetto_protos_InterceptorConfig_init_default, false, perfetto_protos_AndroidGameInterventionListConfig_init_default, false, perfetto_protos_StatsdTracingConfig_init_default, false, perfetto_protos_AndroidSystemPropertyConfig_init_default, false, perfetto_protos_SystemInfoConfig_init_default, false, perfetto_protos_NetworkPacketTraceConfig_init_default, false, perfetto_protos_SurfaceFlingerLayersConfig_init_default, false, 0, false, perfetto_protos_SurfaceFlingerTransactionsConfig_init_default, false, perfetto_protos_AndroidSdkSyspropGuardConfig_init_default, false, perfetto_protos_EtwConfig_init_default, false, perfetto_protos_ProtoLogConfig_init_default, false, perfetto_protos_V8Config_init_default, false, perfetto_protos_AndroidInputEventConfig_init_default, false, perfetto_protos_PixelModemConfig_init_default, false, perfetto_protos_WindowManagerConfig_init_default, false, perfetto_protos_ChromiumSystemMetricsConfig_init_default, false, perfetto_protos_KernelWakelocksConfig_init_default, false, perfetto_protos_GpuRenderStagesConfig_init_default, false, perfetto_protos_ChromiumHistogramSamplesConfig_init_default, false, perfetto_protos_AppWakelocksConfig_init_default, false, perfetto_protos_FrozenFtraceConfig_init_default, false, perfetto_protos_CpuPerUidConfig_init_default, false, perfetto_protos_AndroidUserListConfig_init_default, false, perfetto_protos_InputMethodConfig_init_default, false, perfetto_protos_AndroidAflagsConfig_init_default, false, perfetto_protos_SystemdJournaldConfig_init_default, false, perfetto_protos_QnxConfig_init_default, {{NULL}, NULL}, false, perfetto_protos_TestConfig_init_default}
+#define perfetto_protos_TraceConfig_init_default {{{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, false, _perfetto_protos_TraceConfig_LockdownModeOperation_MIN, {{NULL}, NULL}, false, perfetto_protos_TraceConfig_StatsdMetadata_init_default, false, 0, false, 0, false, 0, false, perfetto_protos_TraceConfig_GuardrailOverrides_init_default, false, 0, false, 0, false, 0, false, 0, false, perfetto_protos_TraceConfig_TriggerConfig_init_default, {{NULL}, NULL}, false, 0, false, perfetto_protos_TraceConfig_BuiltinDataSource_init_default, false, perfetto_protos_TraceConfig_IncrementalStateConfig_init_default, {{NULL}, NULL}, false, 0, false, _perfetto_protos_TraceConfig_CompressionType_MIN, false, perfetto_protos_TraceConfig_IncidentReportConfig_init_default, false, 0, false, 0, {{NULL}, NULL}, false, 0, false, _perfetto_protos_TraceConfig_StatsdLogging_MIN, false, perfetto_protos_TraceConfig_TraceFilter_init_default, false, perfetto_protos_TraceConfig_AndroidReportConfig_init_default, false, perfetto_protos_TraceConfig_CmdTraceStartDelay_init_default, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, perfetto_protos_PriorityBoostConfig_init_default, false, 0, false, 0, false, _perfetto_protos_TraceConfig_WriteFlushMode_MIN, false, _perfetto_protos_TraceConfig_FFlushMode_MIN, {{NULL}, NULL}}
 #define perfetto_protos_TraceConfig_BufferConfig_init_default {false, 0, false, _perfetto_protos_TraceConfig_BufferConfig_FillPolicy_MIN, false, 0, false, 0, {{NULL}, NULL}, false, _perfetto_protos_TraceConfig_BufferConfig_ExperimentalMode_MIN}
 #define perfetto_protos_TraceConfig_DataSource_init_default {false, perfetto_protos_DataSourceConfig_init_default, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
-#define perfetto_protos_TraceConfig_BuiltinDataSource_init_default {false, 0, false, 0, false, 0, false, 0, false, _perfetto_protos_BuiltinClock_MIN, false, 0, false, 0, false, 0}
+#define perfetto_protos_TraceConfig_BuiltinDataSource_init_default {false, 0, false, 0, false, 0, false, 0, false, _perfetto_protos_BuiltinClock_MIN, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_TraceConfig_ProducerConfig_init_default {{{NULL}, NULL}, false, 0, false, 0}
 #define perfetto_protos_TraceConfig_StatsdMetadata_init_default {false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_TraceConfig_GuardrailOverrides_init_default {false, 0, false, 0}
@@ -21957,13 +23645,18 @@ extern "C" {
 #define perfetto_protos_TraceConfig_AndroidReportConfig_init_default {{{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0}
 #define perfetto_protos_TraceConfig_CmdTraceStartDelay_init_default {false, 0, false, 0}
 #define perfetto_protos_TraceConfig_SessionSemaphore_init_default {{{NULL}, NULL}, false, 0}
+#define perfetto_protos_TraceConfig_Note_init_default {{{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_Utsname_init_default     {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_SystemInfo_init_default  {false, perfetto_protos_Utsname_init_default, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0}
+#define perfetto_protos_TraceAttributes_init_default {{{NULL}, NULL}}
+#define perfetto_protos_TraceAttributes_Attribute_init_default {{{NULL}, NULL}, 0, {0}}
 #define perfetto_protos_TraceStats_init_default  {{{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, perfetto_protos_TraceStats_FilterStats_init_default, false, 0, false, 0, false, 0, false, _perfetto_protos_TraceStats_FinalFlushOutcome_MIN, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_TraceStats_BufferStats_init_default {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, perfetto_protos_TraceStats_BufferStats_ShadowBufferStats_init_default}
-#define perfetto_protos_TraceStats_BufferStats_ShadowBufferStats_init_default {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
+#define perfetto_protos_TraceStats_BufferStats_ShadowBufferStats_init_default {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_TraceStats_WriterStats_init_default {false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, 0}
 #define perfetto_protos_TraceStats_FilterStats_init_default {false, 0, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}}
+#define perfetto_protos_AndroidAflags_init_default {{{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_AndroidAflags_Flag_init_default {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, _perfetto_protos_AndroidAflags_FlagPermission_MIN, false, _perfetto_protos_AndroidAflags_ValuePickedFrom_MIN, false, _perfetto_protos_AndroidAflags_FlagStorageBackend_MIN, false, _perfetto_protos_AndroidAflags_FlagType_MIN}
 #define perfetto_protos_AndroidGameInterventionList_init_default {{{NULL}, NULL}, false, 0, false, 0}
 #define perfetto_protos_AndroidGameInterventionList_GameModeInfo_init_default {false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_AndroidGameInterventionList_GamePackageInfo_init_default {{{NULL}, NULL}, false, 0, false, 0, {{NULL}, NULL}}
@@ -21973,8 +23666,6 @@ extern "C" {
 #define perfetto_protos_AndroidLogPacket_Stats_init_default {false, 0, false, 0, false, 0}
 #define perfetto_protos_AndroidSystemProperty_init_default {{{NULL}, NULL}}
 #define perfetto_protos_AndroidSystemProperty_PropertyValue_init_default {{{NULL}, NULL}, {{NULL}, NULL}}
-#define perfetto_protos_AppWakelockInfo_init_default {false, 0, {{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0}
-#define perfetto_protos_AppWakelockBundle_init_default {{{NULL}, NULL}, {{NULL}, NULL}, false, perfetto_protos_AppWakelockInfo_init_default, false, 0}
 #define perfetto_protos_BluetoothTraceEvent_init_default {false, _perfetto_protos_BluetoothTracePacketType_MIN, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_AndroidCameraFrameEvent_init_default {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, _perfetto_protos_AndroidCameraFrameEvent_CaptureResultStatus_MIN, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_AndroidCameraFrameEvent_CameraNodeProcessingDetails_init_default {false, 0, false, 0, false, 0, false, 0}
@@ -21985,11 +23676,10 @@ extern "C" {
 #define perfetto_protos_CpuPerUidData_init_default {false, 0, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_FrameTimelineEvent_init_default {0, {perfetto_protos_FrameTimelineEvent_ExpectedDisplayFrameStart_init_default}}
 #define perfetto_protos_FrameTimelineEvent_ExpectedSurfaceFrameStart_init_default {false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}}
-#define perfetto_protos_FrameTimelineEvent_ActualSurfaceFrameStart_init_default {false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, _perfetto_protos_FrameTimelineEvent_PresentType_MIN, false, 0, false, 0, false, 0, false, _perfetto_protos_FrameTimelineEvent_PredictionType_MIN, false, 0, false, _perfetto_protos_FrameTimelineEvent_JankSeverityType_MIN, false, 0, false, 0, false, 0, false, 0, false, _perfetto_protos_FrameTimelineEvent_PresentType_MIN, false, 0}
+#define perfetto_protos_FrameTimelineEvent_ActualSurfaceFrameStart_init_default {false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, _perfetto_protos_FrameTimelineEvent_PresentType_MIN, false, 0, false, 0, false, 0, false, _perfetto_protos_FrameTimelineEvent_PredictionType_MIN, false, 0, false, _perfetto_protos_FrameTimelineEvent_JankSeverityType_MIN, false, 0, false, 0, false, 0, false, 0, false, _perfetto_protos_FrameTimelineEvent_PresentType_MIN, false, 0, false, _perfetto_protos_FrameTimelineEvent_ActualSurfaceFrameStart_LatchedFenceState_MIN, false, 0}
 #define perfetto_protos_FrameTimelineEvent_ExpectedDisplayFrameStart_init_default {false, 0, false, 0, false, 0}
-#define perfetto_protos_FrameTimelineEvent_ActualDisplayFrameStart_init_default {false, 0, false, 0, false, 0, false, _perfetto_protos_FrameTimelineEvent_PresentType_MIN, false, 0, false, 0, false, 0, false, _perfetto_protos_FrameTimelineEvent_PredictionType_MIN, false, _perfetto_protos_FrameTimelineEvent_JankSeverityType_MIN, false, 0, false, 0, false, 0, false, _perfetto_protos_FrameTimelineEvent_PresentType_MIN, false, 0}
+#define perfetto_protos_FrameTimelineEvent_ActualDisplayFrameStart_init_default {false, 0, false, 0, false, 0, false, _perfetto_protos_FrameTimelineEvent_PresentType_MIN, false, 0, false, 0, false, 0, false, _perfetto_protos_FrameTimelineEvent_PredictionType_MIN, false, _perfetto_protos_FrameTimelineEvent_JankSeverityType_MIN, false, 0, false, 0, false, 0, false, _perfetto_protos_FrameTimelineEvent_PresentType_MIN, false, 0, false, 0, false, 0}
 #define perfetto_protos_FrameTimelineEvent_FrameEnd_init_default {false, 0}
-#define perfetto_protos_GpuMemTotalEvent_init_default {false, 0, false, 0, false, 0}
 #define perfetto_protos_GraphicsFrameEvent_init_default {false, perfetto_protos_GraphicsFrameEvent_BufferEvent_init_default}
 #define perfetto_protos_GraphicsFrameEvent_BufferEvent_init_default {false, 0, false, _perfetto_protos_GraphicsFrameEvent_BufferEventType_MIN, {{NULL}, NULL}, false, 0, false, 0}
 #define perfetto_protos_InitialDisplayState_init_default {false, 0, false, 0}
@@ -22006,11 +23696,12 @@ extern "C" {
 #define perfetto_protos_ProtoLogViewerConfig_init_default {{{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_ProtoLogViewerConfig_MessageData_init_default {false, 0, {{NULL}, NULL}, false, _perfetto_protos_ProtoLogLevel_MIN, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_ProtoLogViewerConfig_Group_init_default {false, 0, {{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_RectProto_init_default   {false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_ShellTransition_init_default {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, 0, false, 0, false, 0}
-#define perfetto_protos_ShellTransition_Target_init_default {false, 0, false, 0, false, 0, false, 0}
+#define perfetto_protos_ShellTransition_Change_init_default {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, perfetto_protos_RectProto_init_default, false, perfetto_protos_RectProto_init_default}
 #define perfetto_protos_ShellHandlerMappings_init_default {{{NULL}, NULL}}
 #define perfetto_protos_ShellHandlerMapping_init_default {false, 0, {{NULL}, NULL}}
-#define perfetto_protos_RectProto_init_default   {false, 0, false, 0, false, 0, false, 0}
+#define perfetto_protos_CornerRadiiProto_init_default {false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_RegionProto_init_default {{{NULL}, NULL}}
 #define perfetto_protos_SizeProto_init_default   {false, 0, false, 0}
 #define perfetto_protos_TransformProto_init_default {false, 0, false, 0, false, 0, false, 0, false, 0}
@@ -22023,13 +23714,13 @@ extern "C" {
 #define perfetto_protos_BorderSettings_init_default {false, 0, false, 0}
 #define perfetto_protos_LayersTraceFileProto_init_default {false, 0, {{NULL}, NULL}, false, 0}
 #define perfetto_protos_LayersSnapshotProto_init_default {false, 0, {{NULL}, NULL}, false, perfetto_protos_LayersProto_init_default, {{NULL}, NULL}, false, 0, false, 0, {{NULL}, NULL}, false, 0}
+#define perfetto_protos_LayersPatchProto_init_default {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, false, 0}
 #define perfetto_protos_LayersProto_init_default {{{NULL}, NULL}}
 #define perfetto_protos_DisplayProto_init_default {false, 0, {{NULL}, NULL}, false, 0, false, perfetto_protos_SizeProto_init_default, false, perfetto_protos_RectProto_init_default, false, perfetto_protos_TransformProto_init_default, false, 0, false, 0, false, 0}
-#define perfetto_protos_LayerProto_init_default  {false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, perfetto_protos_RegionProto_init_default, false, perfetto_protos_RegionProto_init_default, false, perfetto_protos_RegionProto_init_default, false, 0, false, 0, false, perfetto_protos_PositionProto_init_default, false, perfetto_protos_PositionProto_init_default, false, perfetto_protos_SizeProto_init_default, false, perfetto_protos_RectProto_init_default, false, perfetto_protos_RectProto_init_default, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, perfetto_protos_ColorProto_init_default, false, perfetto_protos_ColorProto_init_default, false, 0, false, perfetto_protos_TransformProto_init_default, false, perfetto_protos_TransformProto_init_default, false, 0, false, 0, false, perfetto_protos_ActiveBufferProto_init_default, false, 0, false, 0, false, perfetto_protos_RectProto_init_default, false, perfetto_protos_FloatRectProto_init_default, false, 0, false, 0, false, 0, false, _perfetto_protos_HwcCompositionType_MIN, false, 0, false, 0, {{NULL}, NULL}, false, perfetto_protos_TransformProto_init_default, false, 0, false, 0, {{NULL}, NULL}, false, perfetto_protos_TransformProto_init_default, false, perfetto_protos_FloatRectProto_init_default, false, perfetto_protos_FloatRectProto_init_default, false, perfetto_protos_FloatRectProto_init_default, false, perfetto_protos_InputWindowInfoProto_init_default, false, perfetto_protos_FloatRectProto_init_default, false, 0, false, perfetto_protos_ColorTransformProto_init_default, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, 0, false, 0, false, perfetto_protos_RectProto_init_default, false, 0, false, _perfetto_protos_TrustedOverlay_MIN, false, 0, false, perfetto_protos_CornerRadiiProto_init_default, false, perfetto_protos_CornerRadiiProto_init_default, false, perfetto_protos_CornerRadiiProto_init_default, false, 0, false, perfetto_protos_BoxShadowSettings_init_default, false, perfetto_protos_BorderSettings_init_default, false, perfetto_protos_CornerRadiiProto_init_default}
+#define perfetto_protos_LayerProto_init_default  {false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, perfetto_protos_RegionProto_init_default, false, perfetto_protos_RegionProto_init_default, false, perfetto_protos_RegionProto_init_default, false, 0, false, 0, false, perfetto_protos_PositionProto_init_default, false, perfetto_protos_PositionProto_init_default, false, perfetto_protos_SizeProto_init_default, false, perfetto_protos_RectProto_init_default, false, perfetto_protos_RectProto_init_default, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, perfetto_protos_ColorProto_init_default, false, perfetto_protos_ColorProto_init_default, false, 0, false, perfetto_protos_TransformProto_init_default, false, perfetto_protos_TransformProto_init_default, false, 0, false, 0, false, perfetto_protos_ActiveBufferProto_init_default, false, 0, false, 0, false, perfetto_protos_RectProto_init_default, false, perfetto_protos_FloatRectProto_init_default, false, 0, false, 0, false, 0, false, _perfetto_protos_HwcCompositionType_MIN, false, 0, false, 0, {{NULL}, NULL}, false, perfetto_protos_TransformProto_init_default, false, 0, false, 0, {{NULL}, NULL}, false, perfetto_protos_TransformProto_init_default, false, perfetto_protos_FloatRectProto_init_default, false, perfetto_protos_FloatRectProto_init_default, false, perfetto_protos_FloatRectProto_init_default, false, perfetto_protos_InputWindowInfoProto_init_default, false, perfetto_protos_FloatRectProto_init_default, false, 0, false, perfetto_protos_ColorTransformProto_init_default, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, 0, false, 0, false, perfetto_protos_RectProto_init_default, false, 0, false, _perfetto_protos_TrustedOverlay_MIN, false, 0, false, perfetto_protos_CornerRadiiProto_init_default, false, perfetto_protos_CornerRadiiProto_init_default, false, perfetto_protos_CornerRadiiProto_init_default, false, 0, false, perfetto_protos_BoxShadowSettings_init_default, false, perfetto_protos_BorderSettings_init_default, false, perfetto_protos_CornerRadiiProto_init_default, false, perfetto_protos_CornerRadiiProto_init_default, false, 0}
 #define perfetto_protos_LayerProto_MetadataEntry_init_default {false, 0, {{NULL}, NULL}}
 #define perfetto_protos_PositionProto_init_default {false, 0, false, 0}
 #define perfetto_protos_FloatRectProto_init_default {false, 0, false, 0, false, 0, false, 0}
-#define perfetto_protos_CornerRadiiProto_init_default {false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_ActiveBufferProto_init_default {false, 0, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_BarrierLayerProto_init_default {false, 0, false, 0}
 #define perfetto_protos_TransactionTraceFile_init_default {false, 0, {{NULL}, NULL}, false, 0, false, 0}
@@ -22050,7 +23741,7 @@ extern "C" {
 #define perfetto_protos_AndroidUserList_UserInfo_init_default {{{NULL}, NULL}, false, 0}
 #define perfetto_protos_WinscopeExtensions_init_default {NULL}
 #define perfetto_protos_ChromeBenchmarkMetadata_init_default {false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0}
-#define perfetto_protos_ChromeMetadataPacket_init_default {false, perfetto_protos_BackgroundTracingMetadata_init_default, false, 0, {{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_ChromeMetadataPacket_init_default {false, perfetto_protos_BackgroundTracingMetadata_init_default, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_ChromeMetadataPacket_FinchHash_init_default {false, 0, false, 0}
 #define perfetto_protos_BackgroundTracingMetadata_init_default {false, perfetto_protos_BackgroundTracingMetadata_TriggerRule_init_default, {{NULL}, NULL}, false, 0}
 #define perfetto_protos_BackgroundTracingMetadata_TriggerRule_init_default {false, _perfetto_protos_BackgroundTracingMetadata_TriggerRule_TriggerType_MIN, false, perfetto_protos_BackgroundTracingMetadata_TriggerRule_HistogramRule_init_default, false, perfetto_protos_BackgroundTracingMetadata_TriggerRule_NamedRule_init_default, false, 0}
@@ -22071,7 +23762,7 @@ extern "C" {
 #define perfetto_protos_InternedV8JsFunction_init_default {false, 0, false, 0, false, 0, false, 0, false, _perfetto_protos_InternedV8JsFunction_Kind_MIN, false, 0, false, 0, false, 0}
 #define perfetto_protos_InternedV8Isolate_init_default {false, 0, false, 0, false, 0, false, perfetto_protos_InternedV8Isolate_CodeRange_init_default, false, 0, false, 0}
 #define perfetto_protos_InternedV8Isolate_CodeRange_init_default {false, 0, false, 0, false, 0, false, 0}
-#define perfetto_protos_V8JsCode_init_default    {false, 0, false, 0, false, 0, false, _perfetto_protos_V8JsCode_Tier_MIN, false, 0, false, 0, 0, {{{NULL}, NULL}}}
+#define perfetto_protos_V8JsCode_init_default    {false, 0, false, 0, false, 0, false, _perfetto_protos_V8JsCode_Tier_MIN, false, 0, false, 0, 0, {{{NULL}, NULL}}, 0, {{{NULL}, NULL}}}
 #define perfetto_protos_V8InternalCode_init_default {false, 0, false, 0, {{NULL}, NULL}, false, _perfetto_protos_V8InternalCode_Type_MIN, false, 0, false, 0, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_V8WasmCode_init_default  {false, 0, false, 0, false, 0, {{NULL}, NULL}, false, _perfetto_protos_V8WasmCode_Tier_MIN, false, 0, false, 0, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_V8RegExpCode_init_default {false, 0, false, 0, false, perfetto_protos_V8String_init_default, false, 0, false, 0, {{NULL}, NULL}}
@@ -22088,10 +23779,26 @@ extern "C" {
 #define perfetto_protos_FileIoReadWriteEtwEvent_init_default {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_FileIoSimpleOpEtwEvent_init_default {false, 0, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_FileIoOpEndEtwEvent_init_default {false, 0, false, 0, false, 0}
+#define perfetto_protos_FileIoPathOperationEtwEvent_init_default {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, 0}
+#define perfetto_protos_StackWalkEtwEvent_init_default {{{NULL}, NULL}, false, 0}
+#define perfetto_protos_DiskIoEtwEvent_init_default {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_EtwTraceEvent_init_default {false, 0, 0, {perfetto_protos_CSwitchEtwEvent_init_default}, false, 0, false, 0}
 #define perfetto_protos_EtwTraceEventBundle_init_default {false, 0, {{NULL}, NULL}}
 #define perfetto_protos_EvdevEvent_init_default  {false, 0, 0, {perfetto_protos_EvdevEvent_InputEvent_init_default}}
 #define perfetto_protos_EvdevEvent_InputEvent_init_default {false, 0, false, 0, false, 0, false, 0}
+#define perfetto_protos_EvdevEvent_DeviceAddition_init_default {false, perfetto_protos_EvdevDevice_init_default}
+#define perfetto_protos_EvdevEvent_DeviceRemoval_init_default {0}
+#define perfetto_protos_EvdevDevice_init_default {false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, perfetto_protos_EvdevDevice_Identifier_init_default, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_EvdevDevice_Identifier_init_default {false, 0, false, 0, false, 0, false, 0}
+#define perfetto_protos_EvdevDevice_AbsInfo_init_default {false, 0, false, 0, false, 0, false, 0, false, 0}
+#define perfetto_protos_EvdevDevice_AbsoluteAxisInfosEntry_init_default {false, 0, false, perfetto_protos_EvdevDevice_AbsInfo_init_default}
+#define perfetto_protos_EvdevDevice_EventTypeBitmasksEntry_init_default {false, 0, {{NULL}, NULL}}
+#define perfetto_protos_EvdevDevice_AxisMap_init_default {{{NULL}, NULL}}
+#define perfetto_protos_EvdevDevice_AxisMap_AxisStatesEntry_init_default {false, 0, false, 0}
+#define perfetto_protos_EvdevDevice_AxisStatesEntry_init_default {false, 0, false, perfetto_protos_EvdevDevice_AxisMap_init_default}
+#define perfetto_protos_EvdevDevice_SlotValuesMap_init_default {{{NULL}, NULL}}
+#define perfetto_protos_EvdevDevice_SlotValuesMap_SlotValuesEntry_init_default {false, 0, false, 0}
+#define perfetto_protos_EvdevDevice_AbsMtStatesEntry_init_default {false, 0, false, perfetto_protos_EvdevDevice_SlotValuesMap_init_default}
 #define perfetto_protos_FileDescriptorSet_init_default {{{NULL}, NULL}}
 #define perfetto_protos_FileDescriptorProto_init_default {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_DescriptorProto_init_default {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
@@ -22104,7 +23811,7 @@ extern "C" {
 #define perfetto_protos_EnumDescriptorProto_init_default {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_EnumValueDescriptorProto_init_default {{{NULL}, NULL}, false, 0}
 #define perfetto_protos_OneofOptions_init_default {NULL}
-#define perfetto_protos_ExtensionDescriptor_init_default {false, perfetto_protos_FileDescriptorSet_init_default}
+#define perfetto_protos_ExtensionDescriptor_init_default {0, {perfetto_protos_FileDescriptorSet_init_default}, {{NULL}, NULL}}
 #define perfetto_protos_InodeFileMap_init_default {false, 0, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_InodeFileMap_Entry_init_default {false, 0, {{NULL}, NULL}, false, _perfetto_protos_InodeFileMap_Entry_Type_MIN}
 #define perfetto_protos_AndroidFsDatareadEndFtraceEvent_init_default {false, 0, false, 0, false, 0}
@@ -22194,6 +23901,11 @@ extern "C" {
 #define perfetto_protos_DpuDsiTxFtraceEvent_init_default {false, 0, false, 0, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_DpuDispDpuUnderrunFtraceEvent_init_default {false, 0, false, 0, false, 0}
 #define perfetto_protos_DpuDispVblankIrqEnableFtraceEvent_init_default {false, 0, false, 0, false, 0}
+#define perfetto_protos_DpuDispFrameDoneTimeoutFtraceEvent_init_default {false, 0, false, 0, false, 0, false, 0, false, 0}
+#define perfetto_protos_DpuDispFrameStartTimeoutFtraceEvent_init_default {false, 0, false, 0, false, 0, false, 0}
+#define perfetto_protos_DpuDispFrameDoneMissingFtraceEvent_init_default {false, 0, false, 0, false, 0, false, 0}
+#define perfetto_protos_DpuDispFrameStartMissingFtraceEvent_init_default {false, 0, false, 0, false, 0, false, 0}
+#define perfetto_protos_DpuDispDpuLineUnderrunFtraceEvent_init_default {false, 0, false, 0, false, 0}
 #define perfetto_protos_DrmVblankEventFtraceEvent_init_default {false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_DrmVblankEventDeliveredFtraceEvent_init_default {false, 0, false, 0, false, 0}
 #define perfetto_protos_Dwc3AllocRequestFtraceEvent_init_default {{{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
@@ -22342,6 +24054,7 @@ extern "C" {
 #define perfetto_protos_F2fsBackgroundGcFtraceEvent_init_default {false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_F2fsGcBeginFtraceEvent_init_default {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_F2fsGcEndFtraceEvent_init_default {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
+#define perfetto_protos_F2fsLockElapsedTimeFtraceEvent_init_default {false, 0, {{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_FastrpcDmaStatFtraceEvent_init_default {false, 0, false, 0, false, 0}
 #define perfetto_protos_FastrpcDmaFreeFtraceEvent_init_default {false, 0, false, 0, false, 0}
 #define perfetto_protos_FastrpcDmaAllocFtraceEvent_init_default {false, 0, false, 0, false, 0, false, 0, false, 0}
@@ -22565,6 +24278,9 @@ extern "C" {
 #define perfetto_protos_DsiRxFtraceEvent_init_default {false, 0, {{NULL}, NULL}}
 #define perfetto_protos_DsiTxFtraceEvent_init_default {false, 0, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_PanelWriteGenericFtraceEvent_init_default {false, 0, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, false, 0, false, 0}
+#define perfetto_protos_GramCollisionFtraceEvent_init_default {false, 0, false, 0}
+#define perfetto_protos_PanelSettingsFullFtraceEvent_init_default {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
+#define perfetto_protos_PanelSettingsLiteFtraceEvent_init_default {false, 0, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_SchedSwitchWithCtrsFtraceEvent_init_default {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_PixelMmKswapdWakeFtraceEvent_init_default {false, 0}
 #define perfetto_protos_PixelMmKswapdDoneFtraceEvent_init_default {false, 0, false, 0, false, 0, false, 0}
@@ -22610,6 +24326,7 @@ extern "C" {
 #define perfetto_protos_SchedCpuUtilCfsFtraceEvent_init_default {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_SchedMigrateTaskFtraceEvent_init_default {{{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_SchedWakeupTaskAttrFtraceEvent_init_default {false, 0, false, 0, false, 0, false, 0, false, 0}
+#define perfetto_protos_SchedGroupTrackerFtraceEvent_init_default {{{NULL}, NULL}, false, 0, {{NULL}, NULL}, false, 0}
 #define perfetto_protos_ScmCallStartFtraceEvent_init_default {false, 0, false, 0, false, 0}
 #define perfetto_protos_ScmCallEndFtraceEvent_init_default {0}
 #define perfetto_protos_ScsiDispatchCmdErrorFtraceEvent_init_default {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}}
@@ -22684,6 +24401,8 @@ extern "C" {
 #define perfetto_protos_MmVmscanKswapdSleepFtraceEvent_init_default {false, 0}
 #define perfetto_protos_MmShrinkSlabStartFtraceEvent_init_default {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_MmShrinkSlabEndFtraceEvent_init_default {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
+#define perfetto_protos_MmVmscanMemcgReclaimBeginFtraceEvent_init_default {false, 0, false, 0, false, 0}
+#define perfetto_protos_MmVmscanMemcgReclaimEndFtraceEvent_init_default {false, 0}
 #define perfetto_protos_WorkqueueActivateWorkFtraceEvent_init_default {false, 0, false, 0}
 #define perfetto_protos_WorkqueueExecuteEndFtraceEvent_init_default {false, 0, false, 0}
 #define perfetto_protos_WorkqueueExecuteStartFtraceEvent_init_default {false, 0, false, 0}
@@ -22696,22 +24415,30 @@ extern "C" {
 #define perfetto_protos_FtraceEventBundle_CompactSched_init_default {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_FtraceEventBundle_FtraceError_init_default {false, 0, false, _perfetto_protos_FtraceParseStatus_MIN}
 #define perfetto_protos_FtraceEventBundle_GenericEventDescriptor_init_default {false, 0, {{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_GenericGpuFrequencyEvent_init_default {false, 0, false, 0}
 #define perfetto_protos_GenericKernelCpuFrequencyEvent_init_default {false, 0, false, 0}
 #define perfetto_protos_GenericKernelTaskStateEvent_init_default {false, 0, {{NULL}, NULL}, false, 0, false, _perfetto_protos_GenericKernelTaskStateEvent_TaskStateEnum_MIN, false, 0}
 #define perfetto_protos_GenericKernelTaskRenameEvent_init_default {false, 0, {{NULL}, NULL}}
 #define perfetto_protos_GenericKernelProcessTree_init_default {{{NULL}, NULL}, {{NULL}, NULL}}
-#define perfetto_protos_GenericKernelProcessTree_Thread_init_default {false, 0, false, 0, {{NULL}, NULL}, false, 0}
+#define perfetto_protos_GenericKernelProcessTree_Thread_init_default {false, 0, false, 0, {{NULL}, NULL}, false, 0, false, 0}
 #define perfetto_protos_GenericKernelProcessTree_Process_init_default {false, 0, false, 0, {{NULL}, NULL}}
-#define perfetto_protos_GpuCounterEvent_init_default {false, perfetto_protos_GpuCounterDescriptor_init_default, {{NULL}, NULL}, false, 0}
+#define perfetto_protos_GpuCounterEvent_init_default {0, {perfetto_protos_GpuCounterDescriptor_init_default}, {{NULL}, NULL}, false, 0}
 #define perfetto_protos_GpuCounterEvent_GpuCounter_init_default {false, 0, 0, {0}}
+#define perfetto_protos_InternedGpuCounterDescriptor_init_default {false, 0, false, perfetto_protos_GpuCounterDescriptor_init_default, false, 0}
 #define perfetto_protos_GpuLog_init_default      {false, _perfetto_protos_GpuLog_Severity_MIN, {{NULL}, NULL}, {{NULL}, NULL}}
-#define perfetto_protos_GpuRenderStageEvent_init_default {false, 0, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, perfetto_protos_GpuRenderStageEvent_Specifications_init_default, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, 0, NULL}
+#define perfetto_protos_GpuMemTotalEvent_init_default {false, 0, false, 0, false, 0}
+#define perfetto_protos_GpuRenderStageEvent_init_default {false, 0, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, perfetto_protos_GpuRenderStageEvent_Specifications_init_default, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, 0, 0, {{{NULL}, NULL}}, {{NULL}, NULL}, false, 0, false, perfetto_protos_GpuRenderStageEvent_ComputeKernelLaunch_init_default, NULL}
 #define perfetto_protos_GpuRenderStageEvent_ExtraData_init_default {{{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_GpuRenderStageEvent_Dim3_init_default {false, 0, false, 0, false, 0}
+#define perfetto_protos_GpuRenderStageEvent_ExtraComputeArg_init_default {0, {0}, 0, {0}}
+#define perfetto_protos_GpuRenderStageEvent_ComputeKernelLaunch_init_default {false, perfetto_protos_GpuRenderStageEvent_Dim3_init_default, false, perfetto_protos_GpuRenderStageEvent_Dim3_init_default, {{NULL}, NULL}}
 #define perfetto_protos_GpuRenderStageEvent_Specifications_init_default {false, perfetto_protos_GpuRenderStageEvent_Specifications_ContextSpec_init_default, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_GpuRenderStageEvent_Specifications_ContextSpec_init_default {false, 0, false, 0}
 #define perfetto_protos_GpuRenderStageEvent_Specifications_Description_init_default {{{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_InternedGraphicsContext_init_default {false, 0, false, 0, false, _perfetto_protos_InternedGraphicsContext_Api_MIN}
 #define perfetto_protos_InternedGpuRenderStageSpecification_init_default {false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, _perfetto_protos_InternedGpuRenderStageSpecification_RenderStageCategory_MIN}
+#define perfetto_protos_InternedComputeKernel_init_default {false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_InternedComputeArgName_init_default {false, 0, {{NULL}, NULL}}
 #define perfetto_protos_VulkanApiEvent_init_default {0, {perfetto_protos_VulkanApiEvent_VkDebugUtilsObjectName_init_default}}
 #define perfetto_protos_VulkanApiEvent_VkDebugUtilsObjectName_init_default {false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_VulkanApiEvent_VkQueueSubmit_init_default {false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, 0}
@@ -22757,7 +24484,7 @@ extern "C" {
 #define perfetto_protos_ChromeRendererSchedulerState_init_default {false, _perfetto_protos_ChromeRAILMode_MIN, false, 0, false, 0}
 #define perfetto_protos_ChromeUserEvent_init_default {{{NULL}, NULL}, false, 0}
 #define perfetto_protos_ChromeWindowHandleEventInfo_init_default {false, 0, false, 0, false, 0}
-#define perfetto_protos_Screenshot_init_default  {{{NULL}, NULL}}
+#define perfetto_protos_Screenshot_init_default  {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_TaskExecution_init_default {false, 0}
 #define perfetto_protos_TrackEvent_init_default  {0, {0}, 0, {0}, {{NULL}, NULL}, {{NULL}, NULL}, false, perfetto_protos_TaskExecution_init_default, false, perfetto_protos_TrackEvent_LegacyEvent_init_default, 0, {0}, false, _perfetto_protos_TrackEvent_Type_MIN, 0, {0}, false, 0, {{NULL}, NULL}, false, perfetto_protos_LogMessage_init_default, {{NULL}, NULL}, false, perfetto_protos_ChromeCompositorSchedulerState_init_default, false, perfetto_protos_ChromeUserEvent_init_default, false, perfetto_protos_ChromeKeyedService_init_default, false, perfetto_protos_ChromeLegacyIpc_init_default, false, perfetto_protos_ChromeHistogramSample_init_default, false, perfetto_protos_ChromeLatencyInfo_init_default, 0, {0}, {{NULL}, NULL}, false, perfetto_protos_ChromeFrameReporter_init_default, 0, {perfetto_protos_SourceLocation_init_default}, false, perfetto_protos_ChromeMessagePump_init_default, {{NULL}, NULL}, false, perfetto_protos_ChromeMojoEventInfo_init_default, false, perfetto_protos_ChromeApplicationStateInfo_init_default, false, perfetto_protos_ChromeRendererSchedulerState_init_default, false, perfetto_protos_ChromeWindowHandleEventInfo_init_default, {{NULL}, NULL}, false, perfetto_protos_ChromeContentSettingsEventInfo_init_default, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, perfetto_protos_ChromeActiveProcesses_init_default, false, perfetto_protos_Screenshot_init_default, 0, {0}, 0, {perfetto_protos_TrackEvent_Callstack_init_default}, NULL}
 #define perfetto_protos_TrackEvent_Callstack_init_default {{{NULL}, NULL}}
@@ -22766,8 +24493,9 @@ extern "C" {
 #define perfetto_protos_TrackEventDefaults_init_default {false, 0, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_EventCategory_init_default {false, 0, {{NULL}, NULL}}
 #define perfetto_protos_EventName_init_default   {false, 0, {{NULL}, NULL}}
-#define perfetto_protos_InternedData_init_default {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_InternedData_init_default {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, NULL, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_AndroidJobName_init_default {false, 0, {{NULL}, NULL}}
+#define perfetto_protos_SystemdJournaldEvent_init_default {false, 0, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0}
 #define perfetto_protos_MemoryTrackerSnapshot_init_default {false, 0, false, _perfetto_protos_MemoryTrackerSnapshot_LevelOfDetail_MIN, {{NULL}, NULL}}
 #define perfetto_protos_MemoryTrackerSnapshot_ProcessSnapshot_init_default {false, 0, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_MemoryTrackerSnapshot_ProcessSnapshot_MemoryNode_init_default {false, 0, {{NULL}, NULL}, false, 0, false, 0, {{NULL}, NULL}}
@@ -22776,6 +24504,9 @@ extern "C" {
 #define perfetto_protos_PerfettoMetatrace_init_default {0, {0}, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_PerfettoMetatrace_Arg_init_default {0, {{{NULL}, NULL}}, 0, {{{NULL}, NULL}}}
 #define perfetto_protos_PerfettoMetatrace_InternedString_init_default {false, 0, {{NULL}, NULL}}
+#define perfetto_protos_TraceProvenance_init_default {{{NULL}, NULL}}
+#define perfetto_protos_TraceProvenance_Sequence_init_default {false, 0, false, 0}
+#define perfetto_protos_TraceProvenance_Buffer_init_default {{{NULL}, NULL}}
 #define perfetto_protos_TracingServiceEvent_init_default {0, {0}}
 #define perfetto_protos_TracingServiceEvent_DataSources_init_default {{{NULL}, NULL}}
 #define perfetto_protos_TracingServiceEvent_DataSources_DataSource_init_default {{{NULL}, NULL}, {{NULL}, NULL}}
@@ -22790,13 +24521,16 @@ extern "C" {
 #define perfetto_protos_PowerRails_init_default  {{{NULL}, NULL}, {{NULL}, NULL}, false, 0}
 #define perfetto_protos_PowerRails_RailDescriptor_init_default {false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, 0}
 #define perfetto_protos_PowerRails_EnergyData_init_default {false, 0, false, 0, false, 0}
+#define perfetto_protos_JavaFrame_init_default   {{{NULL}, NULL}, {{NULL}, NULL}, false, 0}
+#define perfetto_protos_JavaStack_init_default   {{{NULL}, NULL}}
+#define perfetto_protos_ArtProcessMetadata_init_default {false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, false, 0, false, perfetto_protos_JavaStack_init_default, {{NULL}, NULL}}
 #define perfetto_protos_ObfuscatedMember_init_default {{{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_ObfuscatedClass_init_default {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_DeobfuscationMapping_init_default {{{NULL}, NULL}, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_HeapGraphRoot_init_default {{{NULL}, NULL}, false, _perfetto_protos_HeapGraphRoot_Type_MIN}
 #define perfetto_protos_HeapGraphType_init_default {false, 0, false, 0, {{NULL}, NULL}, false, 0, false, 0, {{NULL}, NULL}, false, _perfetto_protos_HeapGraphType_Kind_MIN, false, 0}
-#define perfetto_protos_HeapGraphObject_init_default {0, {0}, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, false, _perfetto_protos_HeapGraphObject_HeapType_MIN, {{NULL}, NULL}}
-#define perfetto_protos_HeapGraph_init_default   {false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_HeapGraphObject_init_default {0, {0}, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, false, _perfetto_protos_HeapGraphObject_HeapType_MIN, {{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, false, 0}
+#define perfetto_protos_HeapGraph_init_default   {false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0}
 #define perfetto_protos_ProfilePacket_init_default {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0}
 #define perfetto_protos_ProfilePacket_HeapSample_init_default {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_ProfilePacket_Histogram_init_default {{{NULL}, NULL}}
@@ -22811,7 +24545,8 @@ extern "C" {
 #define perfetto_protos_PerfSample_ProducerEvent_init_default {0, {_perfetto_protos_PerfSample_ProducerEvent_DataSourceStopReason_MIN}}
 #define perfetto_protos_PerfSampleDefaults_init_default {false, perfetto_protos_PerfEvents_Timebase_init_default, false, 0, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_SmapsEntry_init_default  {{{NULL}, NULL}, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
-#define perfetto_protos_SmapsPacket_init_default {false, 0, {{NULL}, NULL}}
+#define perfetto_protos_PackedSmaps_init_default {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_SmapsPacket_init_default {false, 0, {{NULL}, NULL}, false, perfetto_protos_PackedSmaps_init_default}
 #define perfetto_protos_ProcessStats_init_default {{{NULL}, NULL}, false, 0}
 #define perfetto_protos_ProcessStats_Thread_init_default {false, 0}
 #define perfetto_protos_ProcessStats_FDInfo_init_default {false, 0, {{NULL}, NULL}}
@@ -22823,7 +24558,7 @@ extern "C" {
 #define perfetto_protos_RemoteClockSync_SyncedClocks_init_default {false, perfetto_protos_ClockSnapshot_init_default, false, perfetto_protos_ClockSnapshot_init_default}
 #define perfetto_protos_Atom_init_default        {0}
 #define perfetto_protos_StatsdAtom_init_default  {{{NULL}, NULL}, {{NULL}, NULL}}
-#define perfetto_protos_SysStats_init_default    {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_SysStats_init_default    {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_SysStats_MeminfoValue_init_default {false, _perfetto_protos_MeminfoCounters_MIN, false, 0}
 #define perfetto_protos_SysStats_VmstatValue_init_default {false, _perfetto_protos_VmstatCounters_MIN, false, 0}
 #define perfetto_protos_SysStats_CpuTimes_init_default {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
@@ -22835,11 +24570,21 @@ extern "C" {
 #define perfetto_protos_SysStats_ThermalZone_init_default {{{NULL}, NULL}, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_SysStats_CpuIdleStateEntry_init_default {{{NULL}, NULL}, false, 0}
 #define perfetto_protos_SysStats_CpuIdleState_init_default {false, 0, {{NULL}, NULL}}
+#define perfetto_protos_SysStats_SlabInfo_init_default {{{NULL}, NULL}, false, 0, false, 0}
 #define perfetto_protos_CpuInfo_init_default     {{{NULL}, NULL}}
 #define perfetto_protos_CpuInfo_ArmCpuIdentifier_init_default {false, 0, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_CpuInfo_Cpu_init_default {{{NULL}, NULL}, {{NULL}, NULL}, false, 0, 0, {perfetto_protos_CpuInfo_ArmCpuIdentifier_init_default}, false, 0}
-#define perfetto_protos_TestEvent_init_default   {{{NULL}, NULL}, false, 0, false, 0, false, 0, false, perfetto_protos_TestEvent_TestPayload_init_default}
+#define perfetto_protos_GpuInfo_init_default     {{{NULL}, NULL}}
+#define perfetto_protos_GpuInfo_Gpu_init_default {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_GpuInfo_Gpu_KeyValue_init_default {{{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_InterruptInfo_init_default {{{NULL}, NULL}}
+#define perfetto_protos_InterruptInfo_InterruptMapping_init_default {false, 0, {{NULL}, NULL}}
+#define perfetto_protos_TestEvent_init_default   {{{NULL}, NULL}, false, 0, false, 0, false, 0, false, perfetto_protos_TestEvent_TestPayload_init_default, false, perfetto_protos_TestEvent_ProtoVmPatch_init_default, false, perfetto_protos_TestEvent_ProtoVmIncrementalState_init_default}
 #define perfetto_protos_TestEvent_TestPayload_init_default {{{NULL}, NULL}, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_TestEvent_ProtoVmMessage_init_default {false, 0, false, perfetto_protos_TestEvent_ProtoVmMessage_ProtoVmSubmessage_init_default}
+#define perfetto_protos_TestEvent_ProtoVmMessage_ProtoVmSubmessage_init_default {false, 0}
+#define perfetto_protos_TestEvent_ProtoVmPatch_init_default {{{NULL}, NULL}, false, 0, false, perfetto_protos_TestEvent_ProtoVmMessage_init_default, {{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_TestEvent_ProtoVmIncrementalState_init_default {{{NULL}, NULL}, false, 0, false, perfetto_protos_TestEvent_ProtoVmMessage_init_default, {{NULL}, NULL}}
 #define perfetto_protos_TracePacketDefaults_init_default {false, perfetto_protos_TrackEventDefaults_init_default, false, perfetto_protos_PerfSampleDefaults_init_default, false, 0, false, perfetto_protos_V8CodeDefaults_init_default}
 #define perfetto_protos_TraceUuid_init_default   {false, 0, false, 0}
 #define perfetto_protos_ProcessDescriptor_init_default {false, 0, {{NULL}, NULL}, false, 0, false, _perfetto_protos_ProcessDescriptor_ChromeProcessType_MIN, false, 0, {{NULL}, NULL}, false, 0, {{NULL}, NULL}}
@@ -22866,24 +24611,36 @@ extern "C" {
 #define perfetto_protos_Trigger_init_default     {{{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0}
 #define perfetto_protos_UiState_init_default     {false, 0, false, 0, false, perfetto_protos_UiState_HighlightProcess_init_default}
 #define perfetto_protos_UiState_HighlightProcess_init_default {0, {0}}
-#define perfetto_protos_TracePacket_init_default {0, {perfetto_protos_FtraceEventBundle_init_default}, 0, {0}, false, 0, 0, {0}, false, perfetto_protos_InternedData_init_default, false, 0, false, 0, false, 0, false, 0, false, perfetto_protos_TracePacketDefaults_init_default, false, 0, false, 0, false, 0}
+#define perfetto_protos_TracePacket_init_default {0, {perfetto_protos_FtraceEventBundle_init_default}, 0, {0}, false, 0, 0, {0}, false, perfetto_protos_InternedData_init_default, false, 0, false, 0, false, 0, false, 0, false, perfetto_protos_TracePacketDefaults_init_default, false, 0, false, 0, false, 0, NULL}
+#define perfetto_protos_TracePacket_ProtoVms_init_default {{{NULL}, NULL}}
+#define perfetto_protos_TracePacket_ProtoVms_Instance_init_default {false, perfetto_protos_VmProgram_init_default, false, perfetto_protos_TracePacket_init_default, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_Trace_init_default       {{{NULL}, NULL}}
 #define perfetto_protos_FtraceDescriptor_init_zero {{{NULL}, NULL}}
 #define perfetto_protos_FtraceDescriptor_AtraceCategory_init_zero {{{NULL}, NULL}, {{NULL}, NULL}}
-#define perfetto_protos_GpuCounterDescriptor_init_zero {{{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, false, 0}
-#define perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_init_zero {false, 0, {{NULL}, NULL}, {{NULL}, NULL}, 0, {0}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, {{NULL}, NULL}}
+#define perfetto_protos_GpuCounterDescriptor_init_zero {{{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, 0, false, 0}
+#define perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_init_zero {false, 0, {{NULL}, NULL}, {{NULL}, NULL}, 0, {0}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, false, _perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_ValueDirection_MIN}
 #define perfetto_protos_GpuCounterDescriptor_GpuCounterBlock_init_zero {false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_GpuCounterDescriptor_GpuCounterGroupSpec_init_zero {false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_TrackEventCategory_init_zero {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_TrackEventDescriptor_init_zero {{{NULL}, NULL}}
-#define perfetto_protos_DataSourceDescriptor_init_zero {{{NULL}, NULL}, false, 0, false, 0, false, 0, false, perfetto_protos_GpuCounterDescriptor_init_zero, false, perfetto_protos_TrackEventDescriptor_init_zero, false, 0, false, perfetto_protos_FtraceDescriptor_init_zero, false, 0}
+#define perfetto_protos_VmProgram_init_zero      {false, 0, {{NULL}, NULL}}
+#define perfetto_protos_VmInstruction_init_zero  {0, {perfetto_protos_VmOpSelect_init_zero}, false, _perfetto_protos_VmInstruction_AbortLevel_MIN, {{NULL}, NULL}}
+#define perfetto_protos_VmOpSelect_init_zero     {false, _perfetto_protos_VmCursorEnum_MIN, {{NULL}, NULL}, false, 0}
+#define perfetto_protos_VmOpSelect_PathComponent_init_zero {0, {0}, false, 0, false, 0, false, 0}
+#define perfetto_protos_VmOpRegLoad_init_zero    {false, _perfetto_protos_VmCursorEnum_MIN, false, 0}
+#define perfetto_protos_VmOpMerge_init_zero      {false, 0, false, 0}
+#define perfetto_protos_VmOpSet_init_zero        {0}
+#define perfetto_protos_VmOpDel_init_zero        {0}
+#define perfetto_protos_DataSourceDescriptor_init_zero {{{NULL}, NULL}, false, 0, false, 0, false, 0, false, perfetto_protos_GpuCounterDescriptor_init_zero, false, perfetto_protos_TrackEventDescriptor_init_zero, false, 0, false, perfetto_protos_FtraceDescriptor_init_zero, false, 0, false, perfetto_protos_VmProgram_init_zero}
 #define perfetto_protos_TracingServiceState_init_zero {{{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, 0}
-#define perfetto_protos_TracingServiceState_Producer_init_zero {false, 0, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, false, 0, false, 0}
+#define perfetto_protos_TracingServiceState_Producer_init_zero {false, 0, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, false, 0, false, 0, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_TracingServiceState_DataSource_init_zero {false, perfetto_protos_DataSourceDescriptor_init_zero, false, 0}
 #define perfetto_protos_TracingServiceState_TracingSession_init_zero {false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, 0}
+#define perfetto_protos_AndroidAflagsConfig_init_zero {false, 0}
 #define perfetto_protos_AndroidGameInterventionListConfig_init_zero {{{NULL}, NULL}}
-#define perfetto_protos_AndroidInputEventConfig_init_zero {false, _perfetto_protos_AndroidInputEventConfig_TraceMode_MIN, {{NULL}, NULL}, false, 0, false, 0}
+#define perfetto_protos_AndroidInputEventConfig_init_zero {false, _perfetto_protos_AndroidInputEventConfig_TraceMode_MIN, {{NULL}, NULL}, false, 0, false, 0, false, 0}
 #define perfetto_protos_AndroidInputEventConfig_TraceRule_init_zero {false, _perfetto_protos_AndroidInputEventConfig_TraceLevel_MIN, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0}
-#define perfetto_protos_AndroidLogConfig_init_zero {{{NULL}, NULL}, false, _perfetto_protos_AndroidLogPriority_MIN, {{NULL}, NULL}}
+#define perfetto_protos_AndroidLogConfig_init_zero {{{NULL}, NULL}, false, _perfetto_protos_AndroidLogPriority_MIN, {{NULL}, NULL}, false, 0}
 #define perfetto_protos_AndroidPolledStateConfig_init_zero {false, 0}
 #define perfetto_protos_AndroidSdkSyspropGuardConfig_init_zero {false, 0, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_AndroidSystemPropertyConfig_init_zero {false, 0, {{NULL}, NULL}}
@@ -22892,20 +24649,20 @@ extern "C" {
 #define perfetto_protos_InputMethodConfig_init_zero {false, 0, false, 0, false, 0}
 #define perfetto_protos_KernelWakelocksConfig_init_zero {false, 0}
 #define perfetto_protos_NetworkPacketTraceConfig_init_zero {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
-#define perfetto_protos_PackagesListConfig_init_zero {{{NULL}, NULL}, false, 0}
+#define perfetto_protos_PackagesListConfig_init_zero {{{NULL}, NULL}, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_PixelModemConfig_init_zero {false, _perfetto_protos_PixelModemConfig_EventGroup_MIN, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_ProtoLogConfig_init_zero {{{NULL}, NULL}, false, _perfetto_protos_ProtoLogConfig_TracingMode_MIN, false, _perfetto_protos_ProtoLogLevel_MIN}
 #define perfetto_protos_ProtoLogGroup_init_zero  {{{NULL}, NULL}, false, _perfetto_protos_ProtoLogLevel_MIN, false, 0}
 #define perfetto_protos_SurfaceFlingerLayersConfig_init_zero {false, _perfetto_protos_SurfaceFlingerLayersConfig_Mode_MIN, {{NULL}, NULL}}
 #define perfetto_protos_SurfaceFlingerTransactionsConfig_init_zero {false, _perfetto_protos_SurfaceFlingerTransactionsConfig_Mode_MIN}
 #define perfetto_protos_AndroidUserListConfig_init_zero {{{NULL}, NULL}}
-#define perfetto_protos_WindowManagerConfig_init_zero {false, _perfetto_protos_WindowManagerConfig_LogFrequency_MIN, false, _perfetto_protos_WindowManagerConfig_LogLevel_MIN}
+#define perfetto_protos_WindowManagerConfig_init_zero {false, _perfetto_protos_WindowManagerConfig_LogFrequency_MIN, false, _perfetto_protos_WindowManagerConfig_LogLevel_MIN, false, _perfetto_protos_WindowManagerConfig_LogMode_MIN}
 #define perfetto_protos_ChromeConfig_init_zero   {{{NULL}, NULL}, false, 0, false, 0, false, _perfetto_protos_ChromeConfig_ClientPriority_MIN, {{NULL}, NULL}, false, 0}
 #define perfetto_protos_ChromiumHistogramSamplesConfig_init_zero {{{NULL}, NULL}, false, 0}
 #define perfetto_protos_ChromiumHistogramSamplesConfig_HistogramSample_init_zero {{{NULL}, NULL}, false, 0, false, 0}
 #define perfetto_protos_ChromiumSystemMetricsConfig_init_zero {false, 0}
 #define perfetto_protos_V8Config_init_zero       {false, 0, false, 0}
-#define perfetto_protos_EtwConfig_init_zero      {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_EtwConfig_init_zero      {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_FrozenFtraceConfig_init_zero {{{NULL}, NULL}}
 #define perfetto_protos_FtraceConfig_init_zero   {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, false, perfetto_protos_FtraceConfig_CompactSchedConfig_init_zero, false, 0, false, 0, false, 0, false, 0, false, _perfetto_protos_FtraceConfig_KsymsMemPolicy_MIN, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, perfetto_protos_FtraceConfig_PrintFilter_init_zero, false, 0, false, 0, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_FtraceConfig_CompactSchedConfig_init_zero {false, 0}
@@ -22914,40 +24671,48 @@ extern "C" {
 #define perfetto_protos_FtraceConfig_PrintFilter_Rule_AtraceMessage_init_zero {{{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_FtraceConfig_KprobeEvent_init_zero {{{NULL}, NULL}, false, _perfetto_protos_FtraceConfig_KprobeEvent_KprobeType_MIN}
 #define perfetto_protos_FtraceConfig_TracefsOption_init_zero {{{NULL}, NULL}, false, _perfetto_protos_FtraceConfig_TracefsOption_State_MIN}
-#define perfetto_protos_GpuCounterConfig_init_zero {false, 0, {{NULL}, NULL}, false, 0, false, 0}
+#define perfetto_protos_GpuCounterConfig_init_zero {false, 0, {{NULL}, NULL}, 0, {0}, false, 0, {{NULL}, NULL}}
+#define perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_init_zero {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityNameFilter_init_zero {{{NULL}, NULL}, false, _perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityNameFilter_NameBase_MIN}
+#define perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityRange_init_zero {false, 0, false, 0}
 #define perfetto_protos_GpuRenderStagesConfig_init_zero {false, 0, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_VulkanMemoryConfig_init_zero {false, 0, false, 0}
 #define perfetto_protos_InodeFileConfig_init_zero {false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_InodeFileConfig_MountPointMappingEntry_init_zero {{{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_ConsoleConfig_init_zero  {false, _perfetto_protos_ConsoleConfig_Output_MIN, false, 0}
 #define perfetto_protos_InterceptorConfig_init_zero {{{NULL}, NULL}, false, perfetto_protos_ConsoleConfig_init_zero}
+#define perfetto_protos_SystemdJournaldConfig_init_zero {false, 0, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_AndroidPowerConfig_init_zero {false, 0, {{NULL}, NULL}, false, 0, false, 0, false, 0}
 #define perfetto_protos_PriorityBoostConfig_init_zero {false, _perfetto_protos_PriorityBoostConfig_BoostPolicy_MIN, false, 0}
 #define perfetto_protos_ProcessStatsConfig_init_zero {{{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_HeapprofdConfig_init_zero {false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, perfetto_protos_HeapprofdConfig_ContinuousDumpConfig_init_zero, {{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, false, 0, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_HeapprofdConfig_ContinuousDumpConfig_init_zero {false, 0, false, 0}
-#define perfetto_protos_JavaHprofConfig_init_zero {{{NULL}, NULL}, {{NULL}, NULL}, false, perfetto_protos_JavaHprofConfig_ContinuousDumpConfig_init_zero, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_SmapsConfig_init_zero    {{{NULL}, NULL}, false, 0, {{NULL}, NULL}}
+#define perfetto_protos_RedactionRule_init_zero  {{{NULL}, NULL}, false, _perfetto_protos_RedactionRule_MatchMode_MIN, false, 0, {{NULL}, NULL}, false, 0, false, 0}
+#define perfetto_protos_JavaHprofConfig_init_zero {{{NULL}, NULL}, {{NULL}, NULL}, false, perfetto_protos_JavaHprofConfig_ContinuousDumpConfig_init_zero, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, perfetto_protos_SmapsConfig_init_zero}
 #define perfetto_protos_JavaHprofConfig_ContinuousDumpConfig_init_zero {false, 0, false, 0, false, 0}
 #define perfetto_protos_PerfEvents_init_zero     {0}
 #define perfetto_protos_PerfEvents_Timebase_init_zero {0, {0}, 0, {perfetto_protos_PerfEvents_Tracepoint_init_zero}, {{NULL}, NULL}, false, _perfetto_protos_PerfEvents_PerfClock_MIN, {{NULL}, NULL}}
 #define perfetto_protos_PerfEvents_Tracepoint_init_zero {{{NULL}, NULL}, {{NULL}, NULL}}
-#define perfetto_protos_PerfEvents_RawEvent_init_zero {false, 0, false, 0, false, 0, false, 0}
+#define perfetto_protos_PerfEvents_RawEvent_init_zero {false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_FollowerEvent_init_zero  {0, {_perfetto_protos_PerfEvents_Counter_MIN}, {{NULL}, NULL}, {{NULL}, NULL}}
-#define perfetto_protos_PerfEventConfig_init_zero {false, 0, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, perfetto_protos_PerfEvents_Timebase_init_zero, false, perfetto_protos_PerfEventConfig_CallstackSampling_init_zero, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_PerfEventConfig_init_zero {false, 0, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, perfetto_protos_PerfEvents_Timebase_init_zero, false, perfetto_protos_PerfEventConfig_CallstackSampling_init_zero, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_PerfEventConfig_CallstackSampling_init_zero {false, perfetto_protos_PerfEventConfig_Scope_init_zero, false, 0, false, _perfetto_protos_PerfEventConfig_UnwindMode_MIN}
 #define perfetto_protos_PerfEventConfig_Scope_init_zero {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0}
+#define perfetto_protos_ProtoVmConfig_init_zero  {false, 0}
+#define perfetto_protos_QnxConfig_init_zero      {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_StatsdTracingConfig_init_zero {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_StatsdPullAtomConfig_init_zero {{{NULL}, NULL}, {{NULL}, NULL}, false, 0, {{NULL}, NULL}}
-#define perfetto_protos_SysStatsConfig_init_zero {false, 0, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
-#define perfetto_protos_SystemInfoConfig_init_zero {0}
+#define perfetto_protos_SysStatsConfig_init_zero {false, 0, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
+#define perfetto_protos_SystemInfoConfig_init_zero {false, 0}
 #define perfetto_protos_TestConfig_init_zero     {false, 0, false, 0, false, 0, false, 0, false, 0, false, perfetto_protos_TestConfig_DummyFields_init_zero}
 #define perfetto_protos_TestConfig_DummyFields_init_zero {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_TrackEventConfig_init_zero {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
-#define perfetto_protos_DataSourceConfig_init_zero {{{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, false, 0, false, _perfetto_protos_DataSourceConfig_SessionInitiator_MIN, false, _perfetto_protos_DataSourceConfig_BufferExhaustedPolicy_MIN, false, perfetto_protos_PriorityBoostConfig_init_zero, {{NULL}, NULL}, false, perfetto_protos_FtraceConfig_init_zero, false, perfetto_protos_ChromeConfig_init_zero, false, perfetto_protos_InodeFileConfig_init_zero, false, perfetto_protos_ProcessStatsConfig_init_zero, false, perfetto_protos_SysStatsConfig_init_zero, false, perfetto_protos_HeapprofdConfig_init_zero, false, perfetto_protos_AndroidPowerConfig_init_zero, false, perfetto_protos_AndroidLogConfig_init_zero, false, perfetto_protos_GpuCounterConfig_init_zero, false, perfetto_protos_PackagesListConfig_init_zero, false, perfetto_protos_JavaHprofConfig_init_zero, false, perfetto_protos_PerfEventConfig_init_zero, false, perfetto_protos_VulkanMemoryConfig_init_zero, false, perfetto_protos_TrackEventConfig_init_zero, false, perfetto_protos_AndroidPolledStateConfig_init_zero, false, perfetto_protos_InterceptorConfig_init_zero, false, perfetto_protos_AndroidGameInterventionListConfig_init_zero, false, perfetto_protos_StatsdTracingConfig_init_zero, false, perfetto_protos_AndroidSystemPropertyConfig_init_zero, false, perfetto_protos_SystemInfoConfig_init_zero, false, perfetto_protos_NetworkPacketTraceConfig_init_zero, false, perfetto_protos_SurfaceFlingerLayersConfig_init_zero, false, 0, false, perfetto_protos_SurfaceFlingerTransactionsConfig_init_zero, false, perfetto_protos_AndroidSdkSyspropGuardConfig_init_zero, false, perfetto_protos_EtwConfig_init_zero, false, perfetto_protos_ProtoLogConfig_init_zero, false, perfetto_protos_V8Config_init_zero, false, perfetto_protos_AndroidInputEventConfig_init_zero, false, perfetto_protos_PixelModemConfig_init_zero, false, perfetto_protos_WindowManagerConfig_init_zero, false, perfetto_protos_ChromiumSystemMetricsConfig_init_zero, false, perfetto_protos_KernelWakelocksConfig_init_zero, false, perfetto_protos_GpuRenderStagesConfig_init_zero, false, perfetto_protos_ChromiumHistogramSamplesConfig_init_zero, false, perfetto_protos_AppWakelocksConfig_init_zero, false, perfetto_protos_FrozenFtraceConfig_init_zero, false, perfetto_protos_CpuPerUidConfig_init_zero, false, perfetto_protos_AndroidUserListConfig_init_zero, false, perfetto_protos_InputMethodConfig_init_zero, {{NULL}, NULL}, false, perfetto_protos_TestConfig_init_zero}
-#define perfetto_protos_TraceConfig_init_zero    {{{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, false, _perfetto_protos_TraceConfig_LockdownModeOperation_MIN, {{NULL}, NULL}, false, perfetto_protos_TraceConfig_StatsdMetadata_init_zero, false, 0, false, 0, false, 0, false, perfetto_protos_TraceConfig_GuardrailOverrides_init_zero, false, 0, false, 0, false, 0, false, 0, false, perfetto_protos_TraceConfig_TriggerConfig_init_zero, {{NULL}, NULL}, false, 0, false, perfetto_protos_TraceConfig_BuiltinDataSource_init_zero, false, perfetto_protos_TraceConfig_IncrementalStateConfig_init_zero, {{NULL}, NULL}, false, 0, false, _perfetto_protos_TraceConfig_CompressionType_MIN, false, perfetto_protos_TraceConfig_IncidentReportConfig_init_zero, false, 0, false, 0, {{NULL}, NULL}, false, 0, false, _perfetto_protos_TraceConfig_StatsdLogging_MIN, false, perfetto_protos_TraceConfig_TraceFilter_init_zero, false, perfetto_protos_TraceConfig_AndroidReportConfig_init_zero, false, perfetto_protos_TraceConfig_CmdTraceStartDelay_init_zero, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, perfetto_protos_PriorityBoostConfig_init_zero, false, 0, false, 0, false, _perfetto_protos_TraceConfig_WriteFlushMode_MIN, false, _perfetto_protos_TraceConfig_FFlushMode_MIN}
+#define perfetto_protos_DataSourceConfig_init_zero {{{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, false, 0, false, _perfetto_protos_DataSourceConfig_SessionInitiator_MIN, false, _perfetto_protos_DataSourceConfig_BufferExhaustedPolicy_MIN, false, perfetto_protos_PriorityBoostConfig_init_zero, {{NULL}, NULL}, false, perfetto_protos_ProtoVmConfig_init_zero, false, perfetto_protos_FtraceConfig_init_zero, false, perfetto_protos_ChromeConfig_init_zero, false, perfetto_protos_InodeFileConfig_init_zero, false, perfetto_protos_ProcessStatsConfig_init_zero, false, perfetto_protos_SysStatsConfig_init_zero, false, perfetto_protos_HeapprofdConfig_init_zero, false, perfetto_protos_AndroidPowerConfig_init_zero, false, perfetto_protos_AndroidLogConfig_init_zero, false, perfetto_protos_GpuCounterConfig_init_zero, false, perfetto_protos_PackagesListConfig_init_zero, false, perfetto_protos_JavaHprofConfig_init_zero, false, perfetto_protos_PerfEventConfig_init_zero, false, perfetto_protos_VulkanMemoryConfig_init_zero, false, perfetto_protos_TrackEventConfig_init_zero, false, perfetto_protos_AndroidPolledStateConfig_init_zero, false, perfetto_protos_InterceptorConfig_init_zero, false, perfetto_protos_AndroidGameInterventionListConfig_init_zero, false, perfetto_protos_StatsdTracingConfig_init_zero, false, perfetto_protos_AndroidSystemPropertyConfig_init_zero, false, perfetto_protos_SystemInfoConfig_init_zero, false, perfetto_protos_NetworkPacketTraceConfig_init_zero, false, perfetto_protos_SurfaceFlingerLayersConfig_init_zero, false, 0, false, perfetto_protos_SurfaceFlingerTransactionsConfig_init_zero, false, perfetto_protos_AndroidSdkSyspropGuardConfig_init_zero, false, perfetto_protos_EtwConfig_init_zero, false, perfetto_protos_ProtoLogConfig_init_zero, false, perfetto_protos_V8Config_init_zero, false, perfetto_protos_AndroidInputEventConfig_init_zero, false, perfetto_protos_PixelModemConfig_init_zero, false, perfetto_protos_WindowManagerConfig_init_zero, false, perfetto_protos_ChromiumSystemMetricsConfig_init_zero, false, perfetto_protos_KernelWakelocksConfig_init_zero, false, perfetto_protos_GpuRenderStagesConfig_init_zero, false, perfetto_protos_ChromiumHistogramSamplesConfig_init_zero, false, perfetto_protos_AppWakelocksConfig_init_zero, false, perfetto_protos_FrozenFtraceConfig_init_zero, false, perfetto_protos_CpuPerUidConfig_init_zero, false, perfetto_protos_AndroidUserListConfig_init_zero, false, perfetto_protos_InputMethodConfig_init_zero, false, perfetto_protos_AndroidAflagsConfig_init_zero, false, perfetto_protos_SystemdJournaldConfig_init_zero, false, perfetto_protos_QnxConfig_init_zero, {{NULL}, NULL}, false, perfetto_protos_TestConfig_init_zero}
+#define perfetto_protos_TraceConfig_init_zero    {{{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, false, _perfetto_protos_TraceConfig_LockdownModeOperation_MIN, {{NULL}, NULL}, false, perfetto_protos_TraceConfig_StatsdMetadata_init_zero, false, 0, false, 0, false, 0, false, perfetto_protos_TraceConfig_GuardrailOverrides_init_zero, false, 0, false, 0, false, 0, false, 0, false, perfetto_protos_TraceConfig_TriggerConfig_init_zero, {{NULL}, NULL}, false, 0, false, perfetto_protos_TraceConfig_BuiltinDataSource_init_zero, false, perfetto_protos_TraceConfig_IncrementalStateConfig_init_zero, {{NULL}, NULL}, false, 0, false, _perfetto_protos_TraceConfig_CompressionType_MIN, false, perfetto_protos_TraceConfig_IncidentReportConfig_init_zero, false, 0, false, 0, {{NULL}, NULL}, false, 0, false, _perfetto_protos_TraceConfig_StatsdLogging_MIN, false, perfetto_protos_TraceConfig_TraceFilter_init_zero, false, perfetto_protos_TraceConfig_AndroidReportConfig_init_zero, false, perfetto_protos_TraceConfig_CmdTraceStartDelay_init_zero, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, perfetto_protos_PriorityBoostConfig_init_zero, false, 0, false, 0, false, _perfetto_protos_TraceConfig_WriteFlushMode_MIN, false, _perfetto_protos_TraceConfig_FFlushMode_MIN, {{NULL}, NULL}}
 #define perfetto_protos_TraceConfig_BufferConfig_init_zero {false, 0, false, _perfetto_protos_TraceConfig_BufferConfig_FillPolicy_MIN, false, 0, false, 0, {{NULL}, NULL}, false, _perfetto_protos_TraceConfig_BufferConfig_ExperimentalMode_MIN}
 #define perfetto_protos_TraceConfig_DataSource_init_zero {false, perfetto_protos_DataSourceConfig_init_zero, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
-#define perfetto_protos_TraceConfig_BuiltinDataSource_init_zero {false, 0, false, 0, false, 0, false, 0, false, _perfetto_protos_BuiltinClock_MIN, false, 0, false, 0, false, 0}
+#define perfetto_protos_TraceConfig_BuiltinDataSource_init_zero {false, 0, false, 0, false, 0, false, 0, false, _perfetto_protos_BuiltinClock_MIN, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_TraceConfig_ProducerConfig_init_zero {{{NULL}, NULL}, false, 0, false, 0}
 #define perfetto_protos_TraceConfig_StatsdMetadata_init_zero {false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_TraceConfig_GuardrailOverrides_init_zero {false, 0, false, 0}
@@ -22961,13 +24726,18 @@ extern "C" {
 #define perfetto_protos_TraceConfig_AndroidReportConfig_init_zero {{{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0}
 #define perfetto_protos_TraceConfig_CmdTraceStartDelay_init_zero {false, 0, false, 0}
 #define perfetto_protos_TraceConfig_SessionSemaphore_init_zero {{{NULL}, NULL}, false, 0}
+#define perfetto_protos_TraceConfig_Note_init_zero {{{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_Utsname_init_zero        {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_SystemInfo_init_zero     {false, perfetto_protos_Utsname_init_zero, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0}
+#define perfetto_protos_TraceAttributes_init_zero {{{NULL}, NULL}}
+#define perfetto_protos_TraceAttributes_Attribute_init_zero {{{NULL}, NULL}, 0, {0}}
 #define perfetto_protos_TraceStats_init_zero     {{{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, perfetto_protos_TraceStats_FilterStats_init_zero, false, 0, false, 0, false, 0, false, _perfetto_protos_TraceStats_FinalFlushOutcome_MIN, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_TraceStats_BufferStats_init_zero {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, perfetto_protos_TraceStats_BufferStats_ShadowBufferStats_init_zero}
-#define perfetto_protos_TraceStats_BufferStats_ShadowBufferStats_init_zero {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
+#define perfetto_protos_TraceStats_BufferStats_ShadowBufferStats_init_zero {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_TraceStats_WriterStats_init_zero {false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, 0}
 #define perfetto_protos_TraceStats_FilterStats_init_zero {false, 0, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}}
+#define perfetto_protos_AndroidAflags_init_zero  {{{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_AndroidAflags_Flag_init_zero {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, _perfetto_protos_AndroidAflags_FlagPermission_MIN, false, _perfetto_protos_AndroidAflags_ValuePickedFrom_MIN, false, _perfetto_protos_AndroidAflags_FlagStorageBackend_MIN, false, _perfetto_protos_AndroidAflags_FlagType_MIN}
 #define perfetto_protos_AndroidGameInterventionList_init_zero {{{NULL}, NULL}, false, 0, false, 0}
 #define perfetto_protos_AndroidGameInterventionList_GameModeInfo_init_zero {false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_AndroidGameInterventionList_GamePackageInfo_init_zero {{{NULL}, NULL}, false, 0, false, 0, {{NULL}, NULL}}
@@ -22977,8 +24747,6 @@ extern "C" {
 #define perfetto_protos_AndroidLogPacket_Stats_init_zero {false, 0, false, 0, false, 0}
 #define perfetto_protos_AndroidSystemProperty_init_zero {{{NULL}, NULL}}
 #define perfetto_protos_AndroidSystemProperty_PropertyValue_init_zero {{{NULL}, NULL}, {{NULL}, NULL}}
-#define perfetto_protos_AppWakelockInfo_init_zero {false, 0, {{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0}
-#define perfetto_protos_AppWakelockBundle_init_zero {{{NULL}, NULL}, {{NULL}, NULL}, false, perfetto_protos_AppWakelockInfo_init_zero, false, 0}
 #define perfetto_protos_BluetoothTraceEvent_init_zero {false, _perfetto_protos_BluetoothTracePacketType_MIN, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_AndroidCameraFrameEvent_init_zero {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, _perfetto_protos_AndroidCameraFrameEvent_CaptureResultStatus_MIN, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_AndroidCameraFrameEvent_CameraNodeProcessingDetails_init_zero {false, 0, false, 0, false, 0, false, 0}
@@ -22989,11 +24757,10 @@ extern "C" {
 #define perfetto_protos_CpuPerUidData_init_zero  {false, 0, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_FrameTimelineEvent_init_zero {0, {perfetto_protos_FrameTimelineEvent_ExpectedDisplayFrameStart_init_zero}}
 #define perfetto_protos_FrameTimelineEvent_ExpectedSurfaceFrameStart_init_zero {false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}}
-#define perfetto_protos_FrameTimelineEvent_ActualSurfaceFrameStart_init_zero {false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, _perfetto_protos_FrameTimelineEvent_PresentType_MIN, false, 0, false, 0, false, 0, false, _perfetto_protos_FrameTimelineEvent_PredictionType_MIN, false, 0, false, _perfetto_protos_FrameTimelineEvent_JankSeverityType_MIN, false, 0, false, 0, false, 0, false, 0, false, _perfetto_protos_FrameTimelineEvent_PresentType_MIN, false, 0}
+#define perfetto_protos_FrameTimelineEvent_ActualSurfaceFrameStart_init_zero {false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, _perfetto_protos_FrameTimelineEvent_PresentType_MIN, false, 0, false, 0, false, 0, false, _perfetto_protos_FrameTimelineEvent_PredictionType_MIN, false, 0, false, _perfetto_protos_FrameTimelineEvent_JankSeverityType_MIN, false, 0, false, 0, false, 0, false, 0, false, _perfetto_protos_FrameTimelineEvent_PresentType_MIN, false, 0, false, _perfetto_protos_FrameTimelineEvent_ActualSurfaceFrameStart_LatchedFenceState_MIN, false, 0}
 #define perfetto_protos_FrameTimelineEvent_ExpectedDisplayFrameStart_init_zero {false, 0, false, 0, false, 0}
-#define perfetto_protos_FrameTimelineEvent_ActualDisplayFrameStart_init_zero {false, 0, false, 0, false, 0, false, _perfetto_protos_FrameTimelineEvent_PresentType_MIN, false, 0, false, 0, false, 0, false, _perfetto_protos_FrameTimelineEvent_PredictionType_MIN, false, _perfetto_protos_FrameTimelineEvent_JankSeverityType_MIN, false, 0, false, 0, false, 0, false, _perfetto_protos_FrameTimelineEvent_PresentType_MIN, false, 0}
+#define perfetto_protos_FrameTimelineEvent_ActualDisplayFrameStart_init_zero {false, 0, false, 0, false, 0, false, _perfetto_protos_FrameTimelineEvent_PresentType_MIN, false, 0, false, 0, false, 0, false, _perfetto_protos_FrameTimelineEvent_PredictionType_MIN, false, _perfetto_protos_FrameTimelineEvent_JankSeverityType_MIN, false, 0, false, 0, false, 0, false, _perfetto_protos_FrameTimelineEvent_PresentType_MIN, false, 0, false, 0, false, 0}
 #define perfetto_protos_FrameTimelineEvent_FrameEnd_init_zero {false, 0}
-#define perfetto_protos_GpuMemTotalEvent_init_zero {false, 0, false, 0, false, 0}
 #define perfetto_protos_GraphicsFrameEvent_init_zero {false, perfetto_protos_GraphicsFrameEvent_BufferEvent_init_zero}
 #define perfetto_protos_GraphicsFrameEvent_BufferEvent_init_zero {false, 0, false, _perfetto_protos_GraphicsFrameEvent_BufferEventType_MIN, {{NULL}, NULL}, false, 0, false, 0}
 #define perfetto_protos_InitialDisplayState_init_zero {false, 0, false, 0}
@@ -23010,11 +24777,12 @@ extern "C" {
 #define perfetto_protos_ProtoLogViewerConfig_init_zero {{{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_ProtoLogViewerConfig_MessageData_init_zero {false, 0, {{NULL}, NULL}, false, _perfetto_protos_ProtoLogLevel_MIN, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_ProtoLogViewerConfig_Group_init_zero {false, 0, {{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_RectProto_init_zero      {false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_ShellTransition_init_zero {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, 0, false, 0, false, 0}
-#define perfetto_protos_ShellTransition_Target_init_zero {false, 0, false, 0, false, 0, false, 0}
+#define perfetto_protos_ShellTransition_Change_init_zero {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, perfetto_protos_RectProto_init_zero, false, perfetto_protos_RectProto_init_zero}
 #define perfetto_protos_ShellHandlerMappings_init_zero {{{NULL}, NULL}}
 #define perfetto_protos_ShellHandlerMapping_init_zero {false, 0, {{NULL}, NULL}}
-#define perfetto_protos_RectProto_init_zero      {false, 0, false, 0, false, 0, false, 0}
+#define perfetto_protos_CornerRadiiProto_init_zero {false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_RegionProto_init_zero    {{{NULL}, NULL}}
 #define perfetto_protos_SizeProto_init_zero      {false, 0, false, 0}
 #define perfetto_protos_TransformProto_init_zero {false, 0, false, 0, false, 0, false, 0, false, 0}
@@ -23027,13 +24795,13 @@ extern "C" {
 #define perfetto_protos_BorderSettings_init_zero {false, 0, false, 0}
 #define perfetto_protos_LayersTraceFileProto_init_zero {false, 0, {{NULL}, NULL}, false, 0}
 #define perfetto_protos_LayersSnapshotProto_init_zero {false, 0, {{NULL}, NULL}, false, perfetto_protos_LayersProto_init_zero, {{NULL}, NULL}, false, 0, false, 0, {{NULL}, NULL}, false, 0}
+#define perfetto_protos_LayersPatchProto_init_zero {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, false, 0}
 #define perfetto_protos_LayersProto_init_zero    {{{NULL}, NULL}}
 #define perfetto_protos_DisplayProto_init_zero   {false, 0, {{NULL}, NULL}, false, 0, false, perfetto_protos_SizeProto_init_zero, false, perfetto_protos_RectProto_init_zero, false, perfetto_protos_TransformProto_init_zero, false, 0, false, 0, false, 0}
-#define perfetto_protos_LayerProto_init_zero     {false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, perfetto_protos_RegionProto_init_zero, false, perfetto_protos_RegionProto_init_zero, false, perfetto_protos_RegionProto_init_zero, false, 0, false, 0, false, perfetto_protos_PositionProto_init_zero, false, perfetto_protos_PositionProto_init_zero, false, perfetto_protos_SizeProto_init_zero, false, perfetto_protos_RectProto_init_zero, false, perfetto_protos_RectProto_init_zero, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, perfetto_protos_ColorProto_init_zero, false, perfetto_protos_ColorProto_init_zero, false, 0, false, perfetto_protos_TransformProto_init_zero, false, perfetto_protos_TransformProto_init_zero, false, 0, false, 0, false, perfetto_protos_ActiveBufferProto_init_zero, false, 0, false, 0, false, perfetto_protos_RectProto_init_zero, false, perfetto_protos_FloatRectProto_init_zero, false, 0, false, 0, false, 0, false, _perfetto_protos_HwcCompositionType_MIN, false, 0, false, 0, {{NULL}, NULL}, false, perfetto_protos_TransformProto_init_zero, false, 0, false, 0, {{NULL}, NULL}, false, perfetto_protos_TransformProto_init_zero, false, perfetto_protos_FloatRectProto_init_zero, false, perfetto_protos_FloatRectProto_init_zero, false, perfetto_protos_FloatRectProto_init_zero, false, perfetto_protos_InputWindowInfoProto_init_zero, false, perfetto_protos_FloatRectProto_init_zero, false, 0, false, perfetto_protos_ColorTransformProto_init_zero, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, 0, false, 0, false, perfetto_protos_RectProto_init_zero, false, 0, false, _perfetto_protos_TrustedOverlay_MIN, false, 0, false, perfetto_protos_CornerRadiiProto_init_zero, false, perfetto_protos_CornerRadiiProto_init_zero, false, perfetto_protos_CornerRadiiProto_init_zero, false, 0, false, perfetto_protos_BoxShadowSettings_init_zero, false, perfetto_protos_BorderSettings_init_zero, false, perfetto_protos_CornerRadiiProto_init_zero}
+#define perfetto_protos_LayerProto_init_zero     {false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, perfetto_protos_RegionProto_init_zero, false, perfetto_protos_RegionProto_init_zero, false, perfetto_protos_RegionProto_init_zero, false, 0, false, 0, false, perfetto_protos_PositionProto_init_zero, false, perfetto_protos_PositionProto_init_zero, false, perfetto_protos_SizeProto_init_zero, false, perfetto_protos_RectProto_init_zero, false, perfetto_protos_RectProto_init_zero, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, perfetto_protos_ColorProto_init_zero, false, perfetto_protos_ColorProto_init_zero, false, 0, false, perfetto_protos_TransformProto_init_zero, false, perfetto_protos_TransformProto_init_zero, false, 0, false, 0, false, perfetto_protos_ActiveBufferProto_init_zero, false, 0, false, 0, false, perfetto_protos_RectProto_init_zero, false, perfetto_protos_FloatRectProto_init_zero, false, 0, false, 0, false, 0, false, _perfetto_protos_HwcCompositionType_MIN, false, 0, false, 0, {{NULL}, NULL}, false, perfetto_protos_TransformProto_init_zero, false, 0, false, 0, {{NULL}, NULL}, false, perfetto_protos_TransformProto_init_zero, false, perfetto_protos_FloatRectProto_init_zero, false, perfetto_protos_FloatRectProto_init_zero, false, perfetto_protos_FloatRectProto_init_zero, false, perfetto_protos_InputWindowInfoProto_init_zero, false, perfetto_protos_FloatRectProto_init_zero, false, 0, false, perfetto_protos_ColorTransformProto_init_zero, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, 0, false, 0, false, perfetto_protos_RectProto_init_zero, false, 0, false, _perfetto_protos_TrustedOverlay_MIN, false, 0, false, perfetto_protos_CornerRadiiProto_init_zero, false, perfetto_protos_CornerRadiiProto_init_zero, false, perfetto_protos_CornerRadiiProto_init_zero, false, 0, false, perfetto_protos_BoxShadowSettings_init_zero, false, perfetto_protos_BorderSettings_init_zero, false, perfetto_protos_CornerRadiiProto_init_zero, false, perfetto_protos_CornerRadiiProto_init_zero, false, 0}
 #define perfetto_protos_LayerProto_MetadataEntry_init_zero {false, 0, {{NULL}, NULL}}
 #define perfetto_protos_PositionProto_init_zero  {false, 0, false, 0}
 #define perfetto_protos_FloatRectProto_init_zero {false, 0, false, 0, false, 0, false, 0}
-#define perfetto_protos_CornerRadiiProto_init_zero {false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_ActiveBufferProto_init_zero {false, 0, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_BarrierLayerProto_init_zero {false, 0, false, 0}
 #define perfetto_protos_TransactionTraceFile_init_zero {false, 0, {{NULL}, NULL}, false, 0, false, 0}
@@ -23054,7 +24822,7 @@ extern "C" {
 #define perfetto_protos_AndroidUserList_UserInfo_init_zero {{{NULL}, NULL}, false, 0}
 #define perfetto_protos_WinscopeExtensions_init_zero {NULL}
 #define perfetto_protos_ChromeBenchmarkMetadata_init_zero {false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0}
-#define perfetto_protos_ChromeMetadataPacket_init_zero {false, perfetto_protos_BackgroundTracingMetadata_init_zero, false, 0, {{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_ChromeMetadataPacket_init_zero {false, perfetto_protos_BackgroundTracingMetadata_init_zero, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_ChromeMetadataPacket_FinchHash_init_zero {false, 0, false, 0}
 #define perfetto_protos_BackgroundTracingMetadata_init_zero {false, perfetto_protos_BackgroundTracingMetadata_TriggerRule_init_zero, {{NULL}, NULL}, false, 0}
 #define perfetto_protos_BackgroundTracingMetadata_TriggerRule_init_zero {false, _perfetto_protos_BackgroundTracingMetadata_TriggerRule_TriggerType_MIN, false, perfetto_protos_BackgroundTracingMetadata_TriggerRule_HistogramRule_init_zero, false, perfetto_protos_BackgroundTracingMetadata_TriggerRule_NamedRule_init_zero, false, 0}
@@ -23075,7 +24843,7 @@ extern "C" {
 #define perfetto_protos_InternedV8JsFunction_init_zero {false, 0, false, 0, false, 0, false, 0, false, _perfetto_protos_InternedV8JsFunction_Kind_MIN, false, 0, false, 0, false, 0}
 #define perfetto_protos_InternedV8Isolate_init_zero {false, 0, false, 0, false, 0, false, perfetto_protos_InternedV8Isolate_CodeRange_init_zero, false, 0, false, 0}
 #define perfetto_protos_InternedV8Isolate_CodeRange_init_zero {false, 0, false, 0, false, 0, false, 0}
-#define perfetto_protos_V8JsCode_init_zero       {false, 0, false, 0, false, 0, false, _perfetto_protos_V8JsCode_Tier_MIN, false, 0, false, 0, 0, {{{NULL}, NULL}}}
+#define perfetto_protos_V8JsCode_init_zero       {false, 0, false, 0, false, 0, false, _perfetto_protos_V8JsCode_Tier_MIN, false, 0, false, 0, 0, {{{NULL}, NULL}}, 0, {{{NULL}, NULL}}}
 #define perfetto_protos_V8InternalCode_init_zero {false, 0, false, 0, {{NULL}, NULL}, false, _perfetto_protos_V8InternalCode_Type_MIN, false, 0, false, 0, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_V8WasmCode_init_zero     {false, 0, false, 0, false, 0, {{NULL}, NULL}, false, _perfetto_protos_V8WasmCode_Tier_MIN, false, 0, false, 0, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_V8RegExpCode_init_zero   {false, 0, false, 0, false, perfetto_protos_V8String_init_zero, false, 0, false, 0, {{NULL}, NULL}}
@@ -23092,10 +24860,26 @@ extern "C" {
 #define perfetto_protos_FileIoReadWriteEtwEvent_init_zero {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_FileIoSimpleOpEtwEvent_init_zero {false, 0, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_FileIoOpEndEtwEvent_init_zero {false, 0, false, 0, false, 0}
+#define perfetto_protos_FileIoPathOperationEtwEvent_init_zero {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, 0}
+#define perfetto_protos_StackWalkEtwEvent_init_zero {{{NULL}, NULL}, false, 0}
+#define perfetto_protos_DiskIoEtwEvent_init_zero {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_EtwTraceEvent_init_zero  {false, 0, 0, {perfetto_protos_CSwitchEtwEvent_init_zero}, false, 0, false, 0}
 #define perfetto_protos_EtwTraceEventBundle_init_zero {false, 0, {{NULL}, NULL}}
 #define perfetto_protos_EvdevEvent_init_zero     {false, 0, 0, {perfetto_protos_EvdevEvent_InputEvent_init_zero}}
 #define perfetto_protos_EvdevEvent_InputEvent_init_zero {false, 0, false, 0, false, 0, false, 0}
+#define perfetto_protos_EvdevEvent_DeviceAddition_init_zero {false, perfetto_protos_EvdevDevice_init_zero}
+#define perfetto_protos_EvdevEvent_DeviceRemoval_init_zero {0}
+#define perfetto_protos_EvdevDevice_init_zero    {false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, perfetto_protos_EvdevDevice_Identifier_init_zero, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_EvdevDevice_Identifier_init_zero {false, 0, false, 0, false, 0, false, 0}
+#define perfetto_protos_EvdevDevice_AbsInfo_init_zero {false, 0, false, 0, false, 0, false, 0, false, 0}
+#define perfetto_protos_EvdevDevice_AbsoluteAxisInfosEntry_init_zero {false, 0, false, perfetto_protos_EvdevDevice_AbsInfo_init_zero}
+#define perfetto_protos_EvdevDevice_EventTypeBitmasksEntry_init_zero {false, 0, {{NULL}, NULL}}
+#define perfetto_protos_EvdevDevice_AxisMap_init_zero {{{NULL}, NULL}}
+#define perfetto_protos_EvdevDevice_AxisMap_AxisStatesEntry_init_zero {false, 0, false, 0}
+#define perfetto_protos_EvdevDevice_AxisStatesEntry_init_zero {false, 0, false, perfetto_protos_EvdevDevice_AxisMap_init_zero}
+#define perfetto_protos_EvdevDevice_SlotValuesMap_init_zero {{{NULL}, NULL}}
+#define perfetto_protos_EvdevDevice_SlotValuesMap_SlotValuesEntry_init_zero {false, 0, false, 0}
+#define perfetto_protos_EvdevDevice_AbsMtStatesEntry_init_zero {false, 0, false, perfetto_protos_EvdevDevice_SlotValuesMap_init_zero}
 #define perfetto_protos_FileDescriptorSet_init_zero {{{NULL}, NULL}}
 #define perfetto_protos_FileDescriptorProto_init_zero {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_DescriptorProto_init_zero {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
@@ -23108,7 +24892,7 @@ extern "C" {
 #define perfetto_protos_EnumDescriptorProto_init_zero {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_EnumValueDescriptorProto_init_zero {{{NULL}, NULL}, false, 0}
 #define perfetto_protos_OneofOptions_init_zero   {NULL}
-#define perfetto_protos_ExtensionDescriptor_init_zero {false, perfetto_protos_FileDescriptorSet_init_zero}
+#define perfetto_protos_ExtensionDescriptor_init_zero {0, {perfetto_protos_FileDescriptorSet_init_zero}, {{NULL}, NULL}}
 #define perfetto_protos_InodeFileMap_init_zero   {false, 0, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_InodeFileMap_Entry_init_zero {false, 0, {{NULL}, NULL}, false, _perfetto_protos_InodeFileMap_Entry_Type_MIN}
 #define perfetto_protos_AndroidFsDatareadEndFtraceEvent_init_zero {false, 0, false, 0, false, 0}
@@ -23198,6 +24982,11 @@ extern "C" {
 #define perfetto_protos_DpuDsiTxFtraceEvent_init_zero {false, 0, false, 0, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_DpuDispDpuUnderrunFtraceEvent_init_zero {false, 0, false, 0, false, 0}
 #define perfetto_protos_DpuDispVblankIrqEnableFtraceEvent_init_zero {false, 0, false, 0, false, 0}
+#define perfetto_protos_DpuDispFrameDoneTimeoutFtraceEvent_init_zero {false, 0, false, 0, false, 0, false, 0, false, 0}
+#define perfetto_protos_DpuDispFrameStartTimeoutFtraceEvent_init_zero {false, 0, false, 0, false, 0, false, 0}
+#define perfetto_protos_DpuDispFrameDoneMissingFtraceEvent_init_zero {false, 0, false, 0, false, 0, false, 0}
+#define perfetto_protos_DpuDispFrameStartMissingFtraceEvent_init_zero {false, 0, false, 0, false, 0, false, 0}
+#define perfetto_protos_DpuDispDpuLineUnderrunFtraceEvent_init_zero {false, 0, false, 0, false, 0}
 #define perfetto_protos_DrmVblankEventFtraceEvent_init_zero {false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_DrmVblankEventDeliveredFtraceEvent_init_zero {false, 0, false, 0, false, 0}
 #define perfetto_protos_Dwc3AllocRequestFtraceEvent_init_zero {{{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
@@ -23346,6 +25135,7 @@ extern "C" {
 #define perfetto_protos_F2fsBackgroundGcFtraceEvent_init_zero {false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_F2fsGcBeginFtraceEvent_init_zero {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_F2fsGcEndFtraceEvent_init_zero {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
+#define perfetto_protos_F2fsLockElapsedTimeFtraceEvent_init_zero {false, 0, {{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_FastrpcDmaStatFtraceEvent_init_zero {false, 0, false, 0, false, 0}
 #define perfetto_protos_FastrpcDmaFreeFtraceEvent_init_zero {false, 0, false, 0, false, 0}
 #define perfetto_protos_FastrpcDmaAllocFtraceEvent_init_zero {false, 0, false, 0, false, 0, false, 0, false, 0}
@@ -23569,6 +25359,9 @@ extern "C" {
 #define perfetto_protos_DsiRxFtraceEvent_init_zero {false, 0, {{NULL}, NULL}}
 #define perfetto_protos_DsiTxFtraceEvent_init_zero {false, 0, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_PanelWriteGenericFtraceEvent_init_zero {false, 0, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, false, 0, false, 0}
+#define perfetto_protos_GramCollisionFtraceEvent_init_zero {false, 0, false, 0}
+#define perfetto_protos_PanelSettingsFullFtraceEvent_init_zero {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
+#define perfetto_protos_PanelSettingsLiteFtraceEvent_init_zero {false, 0, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_SchedSwitchWithCtrsFtraceEvent_init_zero {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_PixelMmKswapdWakeFtraceEvent_init_zero {false, 0}
 #define perfetto_protos_PixelMmKswapdDoneFtraceEvent_init_zero {false, 0, false, 0, false, 0, false, 0}
@@ -23614,6 +25407,7 @@ extern "C" {
 #define perfetto_protos_SchedCpuUtilCfsFtraceEvent_init_zero {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_SchedMigrateTaskFtraceEvent_init_zero {{{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_SchedWakeupTaskAttrFtraceEvent_init_zero {false, 0, false, 0, false, 0, false, 0, false, 0}
+#define perfetto_protos_SchedGroupTrackerFtraceEvent_init_zero {{{NULL}, NULL}, false, 0, {{NULL}, NULL}, false, 0}
 #define perfetto_protos_ScmCallStartFtraceEvent_init_zero {false, 0, false, 0, false, 0}
 #define perfetto_protos_ScmCallEndFtraceEvent_init_zero {0}
 #define perfetto_protos_ScsiDispatchCmdErrorFtraceEvent_init_zero {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}}
@@ -23688,6 +25482,8 @@ extern "C" {
 #define perfetto_protos_MmVmscanKswapdSleepFtraceEvent_init_zero {false, 0}
 #define perfetto_protos_MmShrinkSlabStartFtraceEvent_init_zero {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_MmShrinkSlabEndFtraceEvent_init_zero {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
+#define perfetto_protos_MmVmscanMemcgReclaimBeginFtraceEvent_init_zero {false, 0, false, 0, false, 0}
+#define perfetto_protos_MmVmscanMemcgReclaimEndFtraceEvent_init_zero {false, 0}
 #define perfetto_protos_WorkqueueActivateWorkFtraceEvent_init_zero {false, 0, false, 0}
 #define perfetto_protos_WorkqueueExecuteEndFtraceEvent_init_zero {false, 0, false, 0}
 #define perfetto_protos_WorkqueueExecuteStartFtraceEvent_init_zero {false, 0, false, 0}
@@ -23700,22 +25496,30 @@ extern "C" {
 #define perfetto_protos_FtraceEventBundle_CompactSched_init_zero {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_FtraceEventBundle_FtraceError_init_zero {false, 0, false, _perfetto_protos_FtraceParseStatus_MIN}
 #define perfetto_protos_FtraceEventBundle_GenericEventDescriptor_init_zero {false, 0, {{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_GenericGpuFrequencyEvent_init_zero {false, 0, false, 0}
 #define perfetto_protos_GenericKernelCpuFrequencyEvent_init_zero {false, 0, false, 0}
 #define perfetto_protos_GenericKernelTaskStateEvent_init_zero {false, 0, {{NULL}, NULL}, false, 0, false, _perfetto_protos_GenericKernelTaskStateEvent_TaskStateEnum_MIN, false, 0}
 #define perfetto_protos_GenericKernelTaskRenameEvent_init_zero {false, 0, {{NULL}, NULL}}
 #define perfetto_protos_GenericKernelProcessTree_init_zero {{{NULL}, NULL}, {{NULL}, NULL}}
-#define perfetto_protos_GenericKernelProcessTree_Thread_init_zero {false, 0, false, 0, {{NULL}, NULL}, false, 0}
+#define perfetto_protos_GenericKernelProcessTree_Thread_init_zero {false, 0, false, 0, {{NULL}, NULL}, false, 0, false, 0}
 #define perfetto_protos_GenericKernelProcessTree_Process_init_zero {false, 0, false, 0, {{NULL}, NULL}}
-#define perfetto_protos_GpuCounterEvent_init_zero {false, perfetto_protos_GpuCounterDescriptor_init_zero, {{NULL}, NULL}, false, 0}
+#define perfetto_protos_GpuCounterEvent_init_zero {0, {perfetto_protos_GpuCounterDescriptor_init_zero}, {{NULL}, NULL}, false, 0}
 #define perfetto_protos_GpuCounterEvent_GpuCounter_init_zero {false, 0, 0, {0}}
+#define perfetto_protos_InternedGpuCounterDescriptor_init_zero {false, 0, false, perfetto_protos_GpuCounterDescriptor_init_zero, false, 0}
 #define perfetto_protos_GpuLog_init_zero         {false, _perfetto_protos_GpuLog_Severity_MIN, {{NULL}, NULL}, {{NULL}, NULL}}
-#define perfetto_protos_GpuRenderStageEvent_init_zero {false, 0, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, perfetto_protos_GpuRenderStageEvent_Specifications_init_zero, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, 0, NULL}
+#define perfetto_protos_GpuMemTotalEvent_init_zero {false, 0, false, 0, false, 0}
+#define perfetto_protos_GpuRenderStageEvent_init_zero {false, 0, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, perfetto_protos_GpuRenderStageEvent_Specifications_init_zero, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, 0, 0, {{{NULL}, NULL}}, {{NULL}, NULL}, false, 0, false, perfetto_protos_GpuRenderStageEvent_ComputeKernelLaunch_init_zero, NULL}
 #define perfetto_protos_GpuRenderStageEvent_ExtraData_init_zero {{{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_GpuRenderStageEvent_Dim3_init_zero {false, 0, false, 0, false, 0}
+#define perfetto_protos_GpuRenderStageEvent_ExtraComputeArg_init_zero {0, {0}, 0, {0}}
+#define perfetto_protos_GpuRenderStageEvent_ComputeKernelLaunch_init_zero {false, perfetto_protos_GpuRenderStageEvent_Dim3_init_zero, false, perfetto_protos_GpuRenderStageEvent_Dim3_init_zero, {{NULL}, NULL}}
 #define perfetto_protos_GpuRenderStageEvent_Specifications_init_zero {false, perfetto_protos_GpuRenderStageEvent_Specifications_ContextSpec_init_zero, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_GpuRenderStageEvent_Specifications_ContextSpec_init_zero {false, 0, false, 0}
 #define perfetto_protos_GpuRenderStageEvent_Specifications_Description_init_zero {{{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_InternedGraphicsContext_init_zero {false, 0, false, 0, false, _perfetto_protos_InternedGraphicsContext_Api_MIN}
 #define perfetto_protos_InternedGpuRenderStageSpecification_init_zero {false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, _perfetto_protos_InternedGpuRenderStageSpecification_RenderStageCategory_MIN}
+#define perfetto_protos_InternedComputeKernel_init_zero {false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_InternedComputeArgName_init_zero {false, 0, {{NULL}, NULL}}
 #define perfetto_protos_VulkanApiEvent_init_zero {0, {perfetto_protos_VulkanApiEvent_VkDebugUtilsObjectName_init_zero}}
 #define perfetto_protos_VulkanApiEvent_VkDebugUtilsObjectName_init_zero {false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_VulkanApiEvent_VkQueueSubmit_init_zero {false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, 0}
@@ -23761,7 +25565,7 @@ extern "C" {
 #define perfetto_protos_ChromeRendererSchedulerState_init_zero {false, _perfetto_protos_ChromeRAILMode_MIN, false, 0, false, 0}
 #define perfetto_protos_ChromeUserEvent_init_zero {{{NULL}, NULL}, false, 0}
 #define perfetto_protos_ChromeWindowHandleEventInfo_init_zero {false, 0, false, 0, false, 0}
-#define perfetto_protos_Screenshot_init_zero     {{{NULL}, NULL}}
+#define perfetto_protos_Screenshot_init_zero     {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_TaskExecution_init_zero  {false, 0}
 #define perfetto_protos_TrackEvent_init_zero     {0, {0}, 0, {0}, {{NULL}, NULL}, {{NULL}, NULL}, false, perfetto_protos_TaskExecution_init_zero, false, perfetto_protos_TrackEvent_LegacyEvent_init_zero, 0, {0}, false, _perfetto_protos_TrackEvent_Type_MIN, 0, {0}, false, 0, {{NULL}, NULL}, false, perfetto_protos_LogMessage_init_zero, {{NULL}, NULL}, false, perfetto_protos_ChromeCompositorSchedulerState_init_zero, false, perfetto_protos_ChromeUserEvent_init_zero, false, perfetto_protos_ChromeKeyedService_init_zero, false, perfetto_protos_ChromeLegacyIpc_init_zero, false, perfetto_protos_ChromeHistogramSample_init_zero, false, perfetto_protos_ChromeLatencyInfo_init_zero, 0, {0}, {{NULL}, NULL}, false, perfetto_protos_ChromeFrameReporter_init_zero, 0, {perfetto_protos_SourceLocation_init_zero}, false, perfetto_protos_ChromeMessagePump_init_zero, {{NULL}, NULL}, false, perfetto_protos_ChromeMojoEventInfo_init_zero, false, perfetto_protos_ChromeApplicationStateInfo_init_zero, false, perfetto_protos_ChromeRendererSchedulerState_init_zero, false, perfetto_protos_ChromeWindowHandleEventInfo_init_zero, {{NULL}, NULL}, false, perfetto_protos_ChromeContentSettingsEventInfo_init_zero, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, perfetto_protos_ChromeActiveProcesses_init_zero, false, perfetto_protos_Screenshot_init_zero, 0, {0}, 0, {perfetto_protos_TrackEvent_Callstack_init_zero}, NULL}
 #define perfetto_protos_TrackEvent_Callstack_init_zero {{{NULL}, NULL}}
@@ -23770,8 +25574,9 @@ extern "C" {
 #define perfetto_protos_TrackEventDefaults_init_zero {false, 0, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_EventCategory_init_zero  {false, 0, {{NULL}, NULL}}
 #define perfetto_protos_EventName_init_zero      {false, 0, {{NULL}, NULL}}
-#define perfetto_protos_InternedData_init_zero   {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_InternedData_init_zero   {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, NULL, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_AndroidJobName_init_zero {false, 0, {{NULL}, NULL}}
+#define perfetto_protos_SystemdJournaldEvent_init_zero {false, 0, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0}
 #define perfetto_protos_MemoryTrackerSnapshot_init_zero {false, 0, false, _perfetto_protos_MemoryTrackerSnapshot_LevelOfDetail_MIN, {{NULL}, NULL}}
 #define perfetto_protos_MemoryTrackerSnapshot_ProcessSnapshot_init_zero {false, 0, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_MemoryTrackerSnapshot_ProcessSnapshot_MemoryNode_init_zero {false, 0, {{NULL}, NULL}, false, 0, false, 0, {{NULL}, NULL}}
@@ -23780,6 +25585,9 @@ extern "C" {
 #define perfetto_protos_PerfettoMetatrace_init_zero {0, {0}, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_PerfettoMetatrace_Arg_init_zero {0, {{{NULL}, NULL}}, 0, {{{NULL}, NULL}}}
 #define perfetto_protos_PerfettoMetatrace_InternedString_init_zero {false, 0, {{NULL}, NULL}}
+#define perfetto_protos_TraceProvenance_init_zero {{{NULL}, NULL}}
+#define perfetto_protos_TraceProvenance_Sequence_init_zero {false, 0, false, 0}
+#define perfetto_protos_TraceProvenance_Buffer_init_zero {{{NULL}, NULL}}
 #define perfetto_protos_TracingServiceEvent_init_zero {0, {0}}
 #define perfetto_protos_TracingServiceEvent_DataSources_init_zero {{{NULL}, NULL}}
 #define perfetto_protos_TracingServiceEvent_DataSources_DataSource_init_zero {{{NULL}, NULL}, {{NULL}, NULL}}
@@ -23794,13 +25602,16 @@ extern "C" {
 #define perfetto_protos_PowerRails_init_zero     {{{NULL}, NULL}, {{NULL}, NULL}, false, 0}
 #define perfetto_protos_PowerRails_RailDescriptor_init_zero {false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, 0}
 #define perfetto_protos_PowerRails_EnergyData_init_zero {false, 0, false, 0, false, 0}
+#define perfetto_protos_JavaFrame_init_zero      {{{NULL}, NULL}, {{NULL}, NULL}, false, 0}
+#define perfetto_protos_JavaStack_init_zero      {{{NULL}, NULL}}
+#define perfetto_protos_ArtProcessMetadata_init_zero {false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, false, 0, false, perfetto_protos_JavaStack_init_zero, {{NULL}, NULL}}
 #define perfetto_protos_ObfuscatedMember_init_zero {{{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_ObfuscatedClass_init_zero {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_DeobfuscationMapping_init_zero {{{NULL}, NULL}, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_HeapGraphRoot_init_zero  {{{NULL}, NULL}, false, _perfetto_protos_HeapGraphRoot_Type_MIN}
 #define perfetto_protos_HeapGraphType_init_zero  {false, 0, false, 0, {{NULL}, NULL}, false, 0, false, 0, {{NULL}, NULL}, false, _perfetto_protos_HeapGraphType_Kind_MIN, false, 0}
-#define perfetto_protos_HeapGraphObject_init_zero {0, {0}, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, false, _perfetto_protos_HeapGraphObject_HeapType_MIN, {{NULL}, NULL}}
-#define perfetto_protos_HeapGraph_init_zero      {false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_HeapGraphObject_init_zero {0, {0}, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, false, _perfetto_protos_HeapGraphObject_HeapType_MIN, {{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, false, 0}
+#define perfetto_protos_HeapGraph_init_zero      {false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0}
 #define perfetto_protos_ProfilePacket_init_zero  {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0}
 #define perfetto_protos_ProfilePacket_HeapSample_init_zero {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_ProfilePacket_Histogram_init_zero {{{NULL}, NULL}}
@@ -23815,7 +25626,8 @@ extern "C" {
 #define perfetto_protos_PerfSample_ProducerEvent_init_zero {0, {_perfetto_protos_PerfSample_ProducerEvent_DataSourceStopReason_MIN}}
 #define perfetto_protos_PerfSampleDefaults_init_zero {false, perfetto_protos_PerfEvents_Timebase_init_zero, false, 0, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_SmapsEntry_init_zero     {{{NULL}, NULL}, false, 0, false, 0, false, 0, {{NULL}, NULL}, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
-#define perfetto_protos_SmapsPacket_init_zero    {false, 0, {{NULL}, NULL}}
+#define perfetto_protos_PackedSmaps_init_zero    {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_SmapsPacket_init_zero    {false, 0, {{NULL}, NULL}, false, perfetto_protos_PackedSmaps_init_zero}
 #define perfetto_protos_ProcessStats_init_zero   {{{NULL}, NULL}, false, 0}
 #define perfetto_protos_ProcessStats_Thread_init_zero {false, 0}
 #define perfetto_protos_ProcessStats_FDInfo_init_zero {false, 0, {{NULL}, NULL}}
@@ -23827,7 +25639,7 @@ extern "C" {
 #define perfetto_protos_RemoteClockSync_SyncedClocks_init_zero {false, perfetto_protos_ClockSnapshot_init_zero, false, perfetto_protos_ClockSnapshot_init_zero}
 #define perfetto_protos_Atom_init_zero           {0}
 #define perfetto_protos_StatsdAtom_init_zero     {{{NULL}, NULL}, {{NULL}, NULL}}
-#define perfetto_protos_SysStats_init_zero       {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_SysStats_init_zero       {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define perfetto_protos_SysStats_MeminfoValue_init_zero {false, _perfetto_protos_MeminfoCounters_MIN, false, 0}
 #define perfetto_protos_SysStats_VmstatValue_init_zero {false, _perfetto_protos_VmstatCounters_MIN, false, 0}
 #define perfetto_protos_SysStats_CpuTimes_init_zero {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
@@ -23839,11 +25651,21 @@ extern "C" {
 #define perfetto_protos_SysStats_ThermalZone_init_zero {{{NULL}, NULL}, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_SysStats_CpuIdleStateEntry_init_zero {{{NULL}, NULL}, false, 0}
 #define perfetto_protos_SysStats_CpuIdleState_init_zero {false, 0, {{NULL}, NULL}}
+#define perfetto_protos_SysStats_SlabInfo_init_zero {{{NULL}, NULL}, false, 0, false, 0}
 #define perfetto_protos_CpuInfo_init_zero        {{{NULL}, NULL}}
 #define perfetto_protos_CpuInfo_ArmCpuIdentifier_init_zero {false, 0, false, 0, false, 0, false, 0, false, 0}
 #define perfetto_protos_CpuInfo_Cpu_init_zero    {{{NULL}, NULL}, {{NULL}, NULL}, false, 0, 0, {perfetto_protos_CpuInfo_ArmCpuIdentifier_init_zero}, false, 0}
-#define perfetto_protos_TestEvent_init_zero      {{{NULL}, NULL}, false, 0, false, 0, false, 0, false, perfetto_protos_TestEvent_TestPayload_init_zero}
+#define perfetto_protos_GpuInfo_init_zero        {{{NULL}, NULL}}
+#define perfetto_protos_GpuInfo_Gpu_init_zero    {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_GpuInfo_Gpu_KeyValue_init_zero {{{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_InterruptInfo_init_zero  {{{NULL}, NULL}}
+#define perfetto_protos_InterruptInfo_InterruptMapping_init_zero {false, 0, {{NULL}, NULL}}
+#define perfetto_protos_TestEvent_init_zero      {{{NULL}, NULL}, false, 0, false, 0, false, 0, false, perfetto_protos_TestEvent_TestPayload_init_zero, false, perfetto_protos_TestEvent_ProtoVmPatch_init_zero, false, perfetto_protos_TestEvent_ProtoVmIncrementalState_init_zero}
 #define perfetto_protos_TestEvent_TestPayload_init_zero {{{NULL}, NULL}, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, false, 0, {{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_TestEvent_ProtoVmMessage_init_zero {false, 0, false, perfetto_protos_TestEvent_ProtoVmMessage_ProtoVmSubmessage_init_zero}
+#define perfetto_protos_TestEvent_ProtoVmMessage_ProtoVmSubmessage_init_zero {false, 0}
+#define perfetto_protos_TestEvent_ProtoVmPatch_init_zero {{{NULL}, NULL}, false, 0, false, perfetto_protos_TestEvent_ProtoVmMessage_init_zero, {{NULL}, NULL}, {{NULL}, NULL}}
+#define perfetto_protos_TestEvent_ProtoVmIncrementalState_init_zero {{{NULL}, NULL}, false, 0, false, perfetto_protos_TestEvent_ProtoVmMessage_init_zero, {{NULL}, NULL}}
 #define perfetto_protos_TracePacketDefaults_init_zero {false, perfetto_protos_TrackEventDefaults_init_zero, false, perfetto_protos_PerfSampleDefaults_init_zero, false, 0, false, perfetto_protos_V8CodeDefaults_init_zero}
 #define perfetto_protos_TraceUuid_init_zero      {false, 0, false, 0}
 #define perfetto_protos_ProcessDescriptor_init_zero {false, 0, {{NULL}, NULL}, false, 0, false, _perfetto_protos_ProcessDescriptor_ChromeProcessType_MIN, false, 0, {{NULL}, NULL}, false, 0, {{NULL}, NULL}}
@@ -23870,7 +25692,9 @@ extern "C" {
 #define perfetto_protos_Trigger_init_zero        {{{NULL}, NULL}, {{NULL}, NULL}, false, 0, false, 0}
 #define perfetto_protos_UiState_init_zero        {false, 0, false, 0, false, perfetto_protos_UiState_HighlightProcess_init_zero}
 #define perfetto_protos_UiState_HighlightProcess_init_zero {0, {0}}
-#define perfetto_protos_TracePacket_init_zero    {0, {perfetto_protos_FtraceEventBundle_init_zero}, 0, {0}, false, 0, 0, {0}, false, perfetto_protos_InternedData_init_zero, false, 0, false, 0, false, 0, false, 0, false, perfetto_protos_TracePacketDefaults_init_zero, false, 0, false, 0, false, 0}
+#define perfetto_protos_TracePacket_init_zero    {0, {perfetto_protos_FtraceEventBundle_init_zero}, 0, {0}, false, 0, 0, {0}, false, perfetto_protos_InternedData_init_zero, false, 0, false, 0, false, 0, false, 0, false, perfetto_protos_TracePacketDefaults_init_zero, false, 0, false, 0, false, 0, NULL}
+#define perfetto_protos_TracePacket_ProtoVms_init_zero {{{NULL}, NULL}}
+#define perfetto_protos_TracePacket_ProtoVms_Instance_init_zero {false, perfetto_protos_VmProgram_init_zero, false, perfetto_protos_TracePacket_init_zero, false, 0, {{NULL}, NULL}}
 #define perfetto_protos_Trace_init_zero          {{{NULL}, NULL}}
 
 /* Field tags (for use in manual encoding/decoding) */
@@ -23882,6 +25706,9 @@ extern "C" {
 #define perfetto_protos_GpuCounterDescriptor_min_sampling_period_ns_tag 3
 #define perfetto_protos_GpuCounterDescriptor_max_sampling_period_ns_tag 4
 #define perfetto_protos_GpuCounterDescriptor_supports_instrumented_sampling_tag 5
+#define perfetto_protos_GpuCounterDescriptor_counter_groups_tag 6
+#define perfetto_protos_GpuCounterDescriptor_supports_counter_names_tag 7
+#define perfetto_protos_GpuCounterDescriptor_supports_counter_name_globs_tag 8
 #define perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_counter_id_tag 1
 #define perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_name_tag 2
 #define perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_description_tag 3
@@ -23891,15 +25718,42 @@ extern "C" {
 #define perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_denominator_units_tag 8
 #define perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_select_by_default_tag 9
 #define perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_groups_tag 10
+#define perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_value_direction_tag 11
 #define perfetto_protos_GpuCounterDescriptor_GpuCounterBlock_block_id_tag 1
 #define perfetto_protos_GpuCounterDescriptor_GpuCounterBlock_block_capacity_tag 2
 #define perfetto_protos_GpuCounterDescriptor_GpuCounterBlock_name_tag 3
 #define perfetto_protos_GpuCounterDescriptor_GpuCounterBlock_description_tag 4
 #define perfetto_protos_GpuCounterDescriptor_GpuCounterBlock_counter_ids_tag 5
+#define perfetto_protos_GpuCounterDescriptor_GpuCounterGroupSpec_group_id_tag 1
+#define perfetto_protos_GpuCounterDescriptor_GpuCounterGroupSpec_name_tag 2
+#define perfetto_protos_GpuCounterDescriptor_GpuCounterGroupSpec_description_tag 3
+#define perfetto_protos_GpuCounterDescriptor_GpuCounterGroupSpec_counter_ids_tag 4
 #define perfetto_protos_TrackEventCategory_name_tag 1
 #define perfetto_protos_TrackEventCategory_description_tag 2
 #define perfetto_protos_TrackEventCategory_tags_tag 3
 #define perfetto_protos_TrackEventDescriptor_available_categories_tag 1
+#define perfetto_protos_VmProgram_version_tag    1
+#define perfetto_protos_VmProgram_instructions_tag 2
+#define perfetto_protos_VmOpSelect_cursor_tag    1
+#define perfetto_protos_VmOpSelect_relative_path_tag 2
+#define perfetto_protos_VmOpSelect_create_if_not_exist_tag 3
+#define perfetto_protos_VmOpSelect_PathComponent_field_id_tag 1
+#define perfetto_protos_VmOpSelect_PathComponent_array_index_tag 2
+#define perfetto_protos_VmOpSelect_PathComponent_map_key_field_id_tag 3
+#define perfetto_protos_VmOpSelect_PathComponent_is_repeated_tag 5
+#define perfetto_protos_VmOpSelect_PathComponent_register_to_match_tag 6
+#define perfetto_protos_VmOpSelect_PathComponent_store_foreach_index_into_register_tag 7
+#define perfetto_protos_VmOpRegLoad_cursor_tag   1
+#define perfetto_protos_VmOpRegLoad_dst_register_tag 2
+#define perfetto_protos_VmOpMerge_skip_submessages_tag 1
+#define perfetto_protos_VmOpMerge_del_if_src_empty_tag 2
+#define perfetto_protos_VmInstruction_select_tag 1
+#define perfetto_protos_VmInstruction_reg_load_tag 2
+#define perfetto_protos_VmInstruction_merge_tag  3
+#define perfetto_protos_VmInstruction_set_tag    4
+#define perfetto_protos_VmInstruction_del_tag    5
+#define perfetto_protos_VmInstruction_abort_level_tag 6
+#define perfetto_protos_VmInstruction_nested_instructions_tag 7
 #define perfetto_protos_DataSourceDescriptor_name_tag 1
 #define perfetto_protos_DataSourceDescriptor_will_notify_on_stop_tag 2
 #define perfetto_protos_DataSourceDescriptor_will_notify_on_start_tag 3
@@ -23909,6 +25763,7 @@ extern "C" {
 #define perfetto_protos_DataSourceDescriptor_id_tag 7
 #define perfetto_protos_DataSourceDescriptor_ftrace_descriptor_tag 8
 #define perfetto_protos_DataSourceDescriptor_no_flush_tag 9
+#define perfetto_protos_DataSourceDescriptor_protovm_program_tag 10
 #define perfetto_protos_TracingServiceState_producers_tag 1
 #define perfetto_protos_TracingServiceState_data_sources_tag 2
 #define perfetto_protos_TracingServiceState_num_sessions_tag 3
@@ -23922,6 +25777,8 @@ extern "C" {
 #define perfetto_protos_TracingServiceState_Producer_sdk_version_tag 4
 #define perfetto_protos_TracingServiceState_Producer_pid_tag 5
 #define perfetto_protos_TracingServiceState_Producer_frozen_tag 6
+#define perfetto_protos_TracingServiceState_Producer_machine_id_tag 7
+#define perfetto_protos_TracingServiceState_Producer_machine_name_tag 8
 #define perfetto_protos_TracingServiceState_DataSource_ds_descriptor_tag 1
 #define perfetto_protos_TracingServiceState_DataSource_producer_id_tag 2
 #define perfetto_protos_TracingServiceState_TracingSession_id_tag 1
@@ -23935,11 +25792,13 @@ extern "C" {
 #define perfetto_protos_TracingServiceState_TracingSession_bugreport_score_tag 9
 #define perfetto_protos_TracingServiceState_TracingSession_bugreport_filename_tag 10
 #define perfetto_protos_TracingServiceState_TracingSession_is_started_tag 11
+#define perfetto_protos_AndroidAflagsConfig_poll_ms_tag 1
 #define perfetto_protos_AndroidGameInterventionListConfig_package_name_filter_tag 1
 #define perfetto_protos_AndroidInputEventConfig_mode_tag 1
 #define perfetto_protos_AndroidInputEventConfig_rules_tag 2
 #define perfetto_protos_AndroidInputEventConfig_trace_dispatcher_input_events_tag 3
 #define perfetto_protos_AndroidInputEventConfig_trace_dispatcher_window_dispatch_tag 4
+#define perfetto_protos_AndroidInputEventConfig_trace_evdev_events_tag 5
 #define perfetto_protos_AndroidInputEventConfig_TraceRule_trace_level_tag 1
 #define perfetto_protos_AndroidInputEventConfig_TraceRule_match_all_packages_tag 2
 #define perfetto_protos_AndroidInputEventConfig_TraceRule_match_any_packages_tag 3
@@ -23948,6 +25807,7 @@ extern "C" {
 #define perfetto_protos_AndroidLogConfig_log_ids_tag 1
 #define perfetto_protos_AndroidLogConfig_min_prio_tag 3
 #define perfetto_protos_AndroidLogConfig_filter_tags_tag 4
+#define perfetto_protos_AndroidLogConfig_preserve_log_buffer_tag 5
 #define perfetto_protos_AndroidPolledStateConfig_poll_ms_tag 1
 #define perfetto_protos_AndroidSdkSyspropGuardConfig_surfaceflinger_skia_track_events_tag 1
 #define perfetto_protos_AndroidSdkSyspropGuardConfig_hwui_skia_track_events_tag 2
@@ -23970,6 +25830,7 @@ extern "C" {
 #define perfetto_protos_NetworkPacketTraceConfig_drop_tcp_flags_tag 6
 #define perfetto_protos_PackagesListConfig_package_name_filter_tag 1
 #define perfetto_protos_PackagesListConfig_only_write_on_cpu_use_every_ms_tag 2
+#define perfetto_protos_PackagesListConfig_package_name_regex_filter_tag 3
 #define perfetto_protos_PixelModemConfig_event_group_tag 1
 #define perfetto_protos_PixelModemConfig_pigweed_hash_allow_list_tag 2
 #define perfetto_protos_PixelModemConfig_pigweed_hash_deny_list_tag 3
@@ -23985,6 +25846,7 @@ extern "C" {
 #define perfetto_protos_AndroidUserListConfig_user_type_filter_tag 1
 #define perfetto_protos_WindowManagerConfig_log_frequency_tag 1
 #define perfetto_protos_WindowManagerConfig_log_level_tag 2
+#define perfetto_protos_WindowManagerConfig_log_mode_tag 3
 #define perfetto_protos_ChromeConfig_trace_config_tag 1
 #define perfetto_protos_ChromeConfig_privacy_filtering_enabled_tag 2
 #define perfetto_protos_ChromeConfig_convert_to_legacy_json_tag 3
@@ -24003,6 +25865,9 @@ extern "C" {
 #define perfetto_protos_EtwConfig_scheduler_provider_events_tag 2
 #define perfetto_protos_EtwConfig_memory_provider_events_tag 3
 #define perfetto_protos_EtwConfig_file_provider_events_tag 4
+#define perfetto_protos_EtwConfig_stack_sampling_events_tag 5
+#define perfetto_protos_EtwConfig_disk_provider_events_tag 6
+#define perfetto_protos_EtwConfig_system_io_provider_events_tag 7
 #define perfetto_protos_FrozenFtraceConfig_instance_name_tag 1
 #define perfetto_protos_FtraceConfig_CompactSchedConfig_enabled_tag 1
 #define perfetto_protos_FtraceConfig_PrintFilter_rules_tag 1
@@ -24045,10 +25910,20 @@ extern "C" {
 #define perfetto_protos_FtraceConfig_KprobeEvent_type_tag 2
 #define perfetto_protos_FtraceConfig_TracefsOption_name_tag 1
 #define perfetto_protos_FtraceConfig_TracefsOption_state_tag 2
+#define perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_activity_name_filters_tag 3
+#define perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_activity_ranges_tag 5
+#define perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_activity_tx_include_globs_tag 6
+#define perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_activity_tx_exclude_globs_tag 7
 #define perfetto_protos_GpuCounterConfig_counter_period_ns_tag 1
 #define perfetto_protos_GpuCounterConfig_counter_ids_tag 2
 #define perfetto_protos_GpuCounterConfig_instrumented_sampling_tag 3
+#define perfetto_protos_GpuCounterConfig_instrumented_sampling_config_tag 5
 #define perfetto_protos_GpuCounterConfig_fix_gpu_clock_tag 4
+#define perfetto_protos_GpuCounterConfig_counter_names_tag 6
+#define perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityNameFilter_name_glob_tag 1
+#define perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityNameFilter_name_base_tag 2
+#define perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityRange_skip_tag 1
+#define perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityRange_count_tag 2
 #define perfetto_protos_GpuRenderStagesConfig_full_loadstore_tag 1
 #define perfetto_protos_GpuRenderStagesConfig_low_overhead_tag 2
 #define perfetto_protos_GpuRenderStagesConfig_trace_metrics_tag 3
@@ -24066,6 +25941,9 @@ extern "C" {
 #define perfetto_protos_ConsoleConfig_enable_colors_tag 2
 #define perfetto_protos_InterceptorConfig_name_tag 1
 #define perfetto_protos_InterceptorConfig_console_config_tag 100
+#define perfetto_protos_SystemdJournaldConfig_min_prio_tag 1
+#define perfetto_protos_SystemdJournaldConfig_filter_identifiers_tag 2
+#define perfetto_protos_SystemdJournaldConfig_filter_units_tag 3
 #define perfetto_protos_AndroidPowerConfig_battery_poll_ms_tag 1
 #define perfetto_protos_AndroidPowerConfig_battery_counters_tag 2
 #define perfetto_protos_AndroidPowerConfig_collect_power_rails_tag 3
@@ -24110,6 +25988,15 @@ extern "C" {
 #define perfetto_protos_HeapprofdConfig_adaptive_sampling_max_sampling_interval_bytes_tag 25
 #define perfetto_protos_HeapprofdConfig_target_installed_by_tag 26
 #define perfetto_protos_HeapprofdConfig_exclude_heaps_tag 27
+#define perfetto_protos_SmapsConfig_vma_fields_tag 1
+#define perfetto_protos_SmapsConfig_unaggregated_tag 2
+#define perfetto_protos_SmapsConfig_name_redaction_rules_tag 3
+#define perfetto_protos_RedactionRule_pattern_tag 1
+#define perfetto_protos_RedactionRule_match_mode_tag 2
+#define perfetto_protos_RedactionRule_keep_full_tag 3
+#define perfetto_protos_RedactionRule_replacement_name_tag 4
+#define perfetto_protos_RedactionRule_keep_file_extension_tag 5
+#define perfetto_protos_RedactionRule_keep_path_elements_tag 6
 #define perfetto_protos_JavaHprofConfig_ContinuousDumpConfig_dump_phase_ms_tag 1
 #define perfetto_protos_JavaHprofConfig_ContinuousDumpConfig_dump_interval_ms_tag 2
 #define perfetto_protos_JavaHprofConfig_ContinuousDumpConfig_scan_pids_only_on_start_tag 3
@@ -24120,12 +26007,14 @@ extern "C" {
 #define perfetto_protos_JavaHprofConfig_dump_smaps_tag 5
 #define perfetto_protos_JavaHprofConfig_ignored_types_tag 6
 #define perfetto_protos_JavaHprofConfig_target_installed_by_tag 7
+#define perfetto_protos_JavaHprofConfig_smaps_config_tag 8
 #define perfetto_protos_PerfEvents_Tracepoint_name_tag 1
 #define perfetto_protos_PerfEvents_Tracepoint_filter_tag 2
 #define perfetto_protos_PerfEvents_RawEvent_type_tag 1
 #define perfetto_protos_PerfEvents_RawEvent_config_tag 2
 #define perfetto_protos_PerfEvents_RawEvent_config1_tag 3
 #define perfetto_protos_PerfEvents_RawEvent_config2_tag 4
+#define perfetto_protos_PerfEvents_RawEvent_pmu_name_tag 5
 #define perfetto_protos_PerfEvents_Timebase_period_tag 1
 #define perfetto_protos_PerfEvents_Timebase_frequency_tag 2
 #define perfetto_protos_PerfEvents_Timebase_poll_period_ms_tag 6
@@ -24168,6 +26057,15 @@ extern "C" {
 #define perfetto_protos_PerfEventConfig_target_installed_by_tag 18
 #define perfetto_protos_PerfEventConfig_followers_tag 19
 #define perfetto_protos_PerfEventConfig_target_cpu_tag 20
+#define perfetto_protos_PerfEventConfig_ignore_open_failure_tag 21
+#define perfetto_protos_PerfEventConfig_cpuid_tag 22
+#define perfetto_protos_ProtoVmConfig_memory_limit_kb_tag 1
+#define perfetto_protos_QnxConfig_qnx_kernel_buffers_tag 1
+#define perfetto_protos_QnxConfig_qnx_kernel_kbuffers_tag 2
+#define perfetto_protos_QnxConfig_qnx_kernel_wide_events_tag 3
+#define perfetto_protos_QnxConfig_qnx_cache_pages_tag 4
+#define perfetto_protos_QnxConfig_qnx_cache_max_pages_tag 5
+#define perfetto_protos_QnxConfig_qnx_trace_buffer_init_bytes_tag 6
 #define perfetto_protos_StatsdTracingConfig_push_atom_id_tag 1
 #define perfetto_protos_StatsdTracingConfig_raw_push_atom_id_tag 2
 #define perfetto_protos_StatsdTracingConfig_pull_config_tag 3
@@ -24189,6 +26087,8 @@ extern "C" {
 #define perfetto_protos_SysStatsConfig_thermal_period_ms_tag 12
 #define perfetto_protos_SysStatsConfig_cpuidle_period_ms_tag 13
 #define perfetto_protos_SysStatsConfig_gpufreq_period_ms_tag 14
+#define perfetto_protos_SysStatsConfig_slab_period_ms_tag 15
+#define perfetto_protos_SystemInfoConfig_irq_names_tag 1
 #define perfetto_protos_TestConfig_DummyFields_field_uint32_tag 1
 #define perfetto_protos_TestConfig_DummyFields_field_int32_tag 2
 #define perfetto_protos_TestConfig_DummyFields_field_uint64_tag 3
@@ -24229,6 +26129,7 @@ extern "C" {
 #define perfetto_protos_DataSourceConfig_buffer_exhausted_policy_tag 9
 #define perfetto_protos_DataSourceConfig_priority_boost_tag 10
 #define perfetto_protos_DataSourceConfig_target_buffer_name_tag 11
+#define perfetto_protos_DataSourceConfig_protovm_config_tag 12
 #define perfetto_protos_DataSourceConfig_ftrace_config_tag 100
 #define perfetto_protos_DataSourceConfig_chrome_config_tag 101
 #define perfetto_protos_DataSourceConfig_inode_file_config_tag 102
@@ -24269,6 +26170,9 @@ extern "C" {
 #define perfetto_protos_DataSourceConfig_cpu_per_uid_config_tag 137
 #define perfetto_protos_DataSourceConfig_user_list_config_tag 138
 #define perfetto_protos_DataSourceConfig_inputmethod_config_tag 139
+#define perfetto_protos_DataSourceConfig_android_aflags_config_tag 140
+#define perfetto_protos_DataSourceConfig_journald_config_tag 141
+#define perfetto_protos_DataSourceConfig_qnx_config_tag 150
 #define perfetto_protos_DataSourceConfig_legacy_config_tag 1000
 #define perfetto_protos_DataSourceConfig_for_testing_tag 1001
 #define perfetto_protos_TraceConfig_BufferConfig_size_kb_tag 1
@@ -24289,6 +26193,7 @@ extern "C" {
 #define perfetto_protos_TraceConfig_BuiltinDataSource_snapshot_interval_ms_tag 6
 #define perfetto_protos_TraceConfig_BuiltinDataSource_prefer_suspend_clock_for_snapshot_tag 7
 #define perfetto_protos_TraceConfig_BuiltinDataSource_disable_chunk_usage_histograms_tag 8
+#define perfetto_protos_TraceConfig_BuiltinDataSource_disable_extension_descriptors_tag 9
 #define perfetto_protos_TraceConfig_ProducerConfig_producer_name_tag 1
 #define perfetto_protos_TraceConfig_ProducerConfig_shm_size_kb_tag 2
 #define perfetto_protos_TraceConfig_ProducerConfig_page_size_kb_tag 3
@@ -24370,8 +26275,11 @@ extern "C" {
 #define perfetto_protos_TraceConfig_trace_all_machines_tag 43
 #define perfetto_protos_TraceConfig_write_flush_mode_tag 44
 #define perfetto_protos_TraceConfig_fflush_post_write_tag 45
+#define perfetto_protos_TraceConfig_notes_tag    46
 #define perfetto_protos_TraceConfig_SessionSemaphore_name_tag 1
 #define perfetto_protos_TraceConfig_SessionSemaphore_max_other_session_count_tag 2
+#define perfetto_protos_TraceConfig_Note_key_tag 1
+#define perfetto_protos_TraceConfig_Note_value_tag 2
 #define perfetto_protos_Utsname_sysname_tag      1
 #define perfetto_protos_Utsname_version_tag      2
 #define perfetto_protos_Utsname_release_tag      3
@@ -24392,6 +26300,10 @@ extern "C" {
 #define perfetto_protos_SystemInfo_android_device_manufacturer_tag 14
 #define perfetto_protos_SystemInfo_android_serial_console_tag 15
 #define perfetto_protos_SystemInfo_system_ram_bytes_tag 16
+#define perfetto_protos_TraceAttributes_attribute_tag 1
+#define perfetto_protos_TraceAttributes_Attribute_key_tag 1
+#define perfetto_protos_TraceAttributes_Attribute_long_value_tag 2
+#define perfetto_protos_TraceAttributes_Attribute_string_value_tag 3
 #define perfetto_protos_TraceStats_BufferStats_ShadowBufferStats_packets_seen_tag 1
 #define perfetto_protos_TraceStats_BufferStats_ShadowBufferStats_packets_in_both_tag 2
 #define perfetto_protos_TraceStats_BufferStats_ShadowBufferStats_packets_only_v1_tag 3
@@ -24399,6 +26311,7 @@ extern "C" {
 #define perfetto_protos_TraceStats_BufferStats_ShadowBufferStats_patches_attempted_tag 5
 #define perfetto_protos_TraceStats_BufferStats_ShadowBufferStats_v1_patches_succeeded_tag 6
 #define perfetto_protos_TraceStats_BufferStats_ShadowBufferStats_v2_patches_succeeded_tag 7
+#define perfetto_protos_TraceStats_BufferStats_ShadowBufferStats_stats_version_tag 8
 #define perfetto_protos_TraceStats_BufferStats_bytes_written_tag 1
 #define perfetto_protos_TraceStats_BufferStats_chunks_written_tag 2
 #define perfetto_protos_TraceStats_BufferStats_chunks_overwritten_tag 3
@@ -24446,6 +26359,18 @@ extern "C" {
 #define perfetto_protos_TraceStats_final_flush_outcome_tag 15
 #define perfetto_protos_TraceStats_chunk_payload_histogram_def_tag 17
 #define perfetto_protos_TraceStats_writer_stats_tag 18
+#define perfetto_protos_AndroidAflags_flags_tag  1
+#define perfetto_protos_AndroidAflags_error_tag  2
+#define perfetto_protos_AndroidAflags_Flag_flag_namespace_tag 1
+#define perfetto_protos_AndroidAflags_Flag_name_tag 2
+#define perfetto_protos_AndroidAflags_Flag_pkg_tag 3
+#define perfetto_protos_AndroidAflags_Flag_container_tag 4
+#define perfetto_protos_AndroidAflags_Flag_value_tag 5
+#define perfetto_protos_AndroidAflags_Flag_staged_value_tag 6
+#define perfetto_protos_AndroidAflags_Flag_permission_tag 7
+#define perfetto_protos_AndroidAflags_Flag_value_picked_from_tag 8
+#define perfetto_protos_AndroidAflags_Flag_storage_backend_tag 9
+#define perfetto_protos_AndroidAflags_Flag_type_tag 10
 #define perfetto_protos_AndroidGameInterventionList_game_packages_tag 1
 #define perfetto_protos_AndroidGameInterventionList_parse_error_tag 2
 #define perfetto_protos_AndroidGameInterventionList_read_error_tag 3
@@ -24478,16 +26403,6 @@ extern "C" {
 #define perfetto_protos_AndroidSystemProperty_values_tag 1
 #define perfetto_protos_AndroidSystemProperty_PropertyValue_name_tag 1
 #define perfetto_protos_AndroidSystemProperty_PropertyValue_value_tag 2
-#define perfetto_protos_AppWakelockInfo_iid_tag  1
-#define perfetto_protos_AppWakelockInfo_tag_tag  2
-#define perfetto_protos_AppWakelockInfo_flags_tag 3
-#define perfetto_protos_AppWakelockInfo_owner_pid_tag 4
-#define perfetto_protos_AppWakelockInfo_owner_uid_tag 5
-#define perfetto_protos_AppWakelockInfo_work_uid_tag 6
-#define perfetto_protos_AppWakelockBundle_intern_id_tag 1
-#define perfetto_protos_AppWakelockBundle_encoded_ts_tag 2
-#define perfetto_protos_AppWakelockBundle_info_tag 3
-#define perfetto_protos_AppWakelockBundle_acquired_tag 4
 #define perfetto_protos_BluetoothTraceEvent_packet_type_tag 1
 #define perfetto_protos_BluetoothTraceEvent_count_tag 2
 #define perfetto_protos_BluetoothTraceEvent_length_tag 3
@@ -24557,6 +26472,8 @@ extern "C" {
 #define perfetto_protos_FrameTimelineEvent_ActualSurfaceFrameStart_jank_type_experimental_tag 16
 #define perfetto_protos_FrameTimelineEvent_ActualSurfaceFrameStart_present_type_experimental_tag 17
 #define perfetto_protos_FrameTimelineEvent_ActualSurfaceFrameStart_jank_debug_metadata_tag 18
+#define perfetto_protos_FrameTimelineEvent_ActualSurfaceFrameStart_latched_fence_state_tag 19
+#define perfetto_protos_FrameTimelineEvent_ActualSurfaceFrameStart_animation_time_millis_tag 20
 #define perfetto_protos_FrameTimelineEvent_ExpectedDisplayFrameStart_cookie_tag 1
 #define perfetto_protos_FrameTimelineEvent_ExpectedDisplayFrameStart_token_tag 2
 #define perfetto_protos_FrameTimelineEvent_ExpectedDisplayFrameStart_pid_tag 3
@@ -24574,15 +26491,14 @@ extern "C" {
 #define perfetto_protos_FrameTimelineEvent_ActualDisplayFrameStart_jank_type_experimental_tag 12
 #define perfetto_protos_FrameTimelineEvent_ActualDisplayFrameStart_present_type_experimental_tag 13
 #define perfetto_protos_FrameTimelineEvent_ActualDisplayFrameStart_jank_debug_metadata_tag 14
+#define perfetto_protos_FrameTimelineEvent_ActualDisplayFrameStart_latched_unsignaled_count_tag 15
+#define perfetto_protos_FrameTimelineEvent_ActualDisplayFrameStart_addressable_unsignaled_latch_count_tag 16
 #define perfetto_protos_FrameTimelineEvent_FrameEnd_cookie_tag 1
 #define perfetto_protos_FrameTimelineEvent_expected_display_frame_start_tag 1
 #define perfetto_protos_FrameTimelineEvent_actual_display_frame_start_tag 2
 #define perfetto_protos_FrameTimelineEvent_expected_surface_frame_start_tag 3
 #define perfetto_protos_FrameTimelineEvent_actual_surface_frame_start_tag 4
 #define perfetto_protos_FrameTimelineEvent_frame_end_tag 5
-#define perfetto_protos_GpuMemTotalEvent_gpu_id_tag 1
-#define perfetto_protos_GpuMemTotalEvent_pid_tag 2
-#define perfetto_protos_GpuMemTotalEvent_size_tag 3
 #define perfetto_protos_GraphicsFrameEvent_BufferEvent_frame_number_tag 1
 #define perfetto_protos_GraphicsFrameEvent_BufferEvent_type_tag 2
 #define perfetto_protos_GraphicsFrameEvent_BufferEvent_layer_name_tag 3
@@ -24645,6 +26561,10 @@ extern "C" {
 #define perfetto_protos_ProtoLogViewerConfig_Group_id_tag 1
 #define perfetto_protos_ProtoLogViewerConfig_Group_name_tag 2
 #define perfetto_protos_ProtoLogViewerConfig_Group_tag_tag 3
+#define perfetto_protos_RectProto_left_tag       1
+#define perfetto_protos_RectProto_top_tag        2
+#define perfetto_protos_RectProto_right_tag      3
+#define perfetto_protos_RectProto_bottom_tag     4
 #define perfetto_protos_ShellTransition_id_tag   1
 #define perfetto_protos_ShellTransition_create_time_ns_tag 2
 #define perfetto_protos_ShellTransition_send_time_ns_tag 3
@@ -24658,21 +26578,27 @@ extern "C" {
 #define perfetto_protos_ShellTransition_finish_transaction_id_tag 11
 #define perfetto_protos_ShellTransition_handler_tag 12
 #define perfetto_protos_ShellTransition_type_tag 13
-#define perfetto_protos_ShellTransition_targets_tag 14
+#define perfetto_protos_ShellTransition_changes_tag 14
 #define perfetto_protos_ShellTransition_merge_target_tag 15
 #define perfetto_protos_ShellTransition_flags_tag 16
 #define perfetto_protos_ShellTransition_starting_window_remove_time_ns_tag 17
-#define perfetto_protos_ShellTransition_Target_mode_tag 1
-#define perfetto_protos_ShellTransition_Target_layer_id_tag 2
-#define perfetto_protos_ShellTransition_Target_window_id_tag 3
-#define perfetto_protos_ShellTransition_Target_flags_tag 4
+#define perfetto_protos_ShellTransition_Change_mode_tag 1
+#define perfetto_protos_ShellTransition_Change_layer_id_tag 2
+#define perfetto_protos_ShellTransition_Change_window_id_tag 3
+#define perfetto_protos_ShellTransition_Change_flags_tag 4
+#define perfetto_protos_ShellTransition_Change_start_display_id_tag 5
+#define perfetto_protos_ShellTransition_Change_end_display_id_tag 6
+#define perfetto_protos_ShellTransition_Change_start_rotation_tag 7
+#define perfetto_protos_ShellTransition_Change_end_rotation_tag 8
+#define perfetto_protos_ShellTransition_Change_start_absolute_bounds_tag 9
+#define perfetto_protos_ShellTransition_Change_end_absolute_bounds_tag 10
 #define perfetto_protos_ShellHandlerMappings_mapping_tag 1
 #define perfetto_protos_ShellHandlerMapping_id_tag 1
 #define perfetto_protos_ShellHandlerMapping_name_tag 2
-#define perfetto_protos_RectProto_left_tag       1
-#define perfetto_protos_RectProto_top_tag        2
-#define perfetto_protos_RectProto_right_tag      3
-#define perfetto_protos_RectProto_bottom_tag     4
+#define perfetto_protos_CornerRadiiProto_tl_tag  1
+#define perfetto_protos_CornerRadiiProto_tr_tag  2
+#define perfetto_protos_CornerRadiiProto_bl_tag  3
+#define perfetto_protos_CornerRadiiProto_br_tag  4
 #define perfetto_protos_RegionProto_rect_tag     2
 #define perfetto_protos_SizeProto_w_tag          1
 #define perfetto_protos_SizeProto_h_tag          2
@@ -24732,6 +26658,16 @@ extern "C" {
 #define perfetto_protos_LayersTraceFileProto_magic_number_tag 1
 #define perfetto_protos_LayersTraceFileProto_entry_tag 2
 #define perfetto_protos_LayersTraceFileProto_real_to_elapsed_time_offset_nanos_tag 3
+#define perfetto_protos_LayersPatchProto_layers_tag 1
+#define perfetto_protos_LayersPatchProto_displays_tag 2
+#define perfetto_protos_LayersPatchProto_deleted_layer_ids_tag 3
+#define perfetto_protos_LayersPatchProto_deleted_display_ids_tag 4
+#define perfetto_protos_LayersPatchProto_elapsed_realtime_nanos_tag 5
+#define perfetto_protos_LayersPatchProto_where_tag 6
+#define perfetto_protos_LayersPatchProto_hwc_blob_tag 7
+#define perfetto_protos_LayersPatchProto_excludes_composition_state_tag 8
+#define perfetto_protos_LayersPatchProto_missed_entries_tag 9
+#define perfetto_protos_LayersPatchProto_vsync_id_tag 10
 #define perfetto_protos_LayersProto_layers_tag   1
 #define perfetto_protos_LayersSnapshotProto_elapsed_realtime_nanos_tag 1
 #define perfetto_protos_LayersSnapshotProto_where_tag 2
@@ -24758,10 +26694,6 @@ extern "C" {
 #define perfetto_protos_FloatRectProto_top_tag   2
 #define perfetto_protos_FloatRectProto_right_tag 3
 #define perfetto_protos_FloatRectProto_bottom_tag 4
-#define perfetto_protos_CornerRadiiProto_tl_tag  1
-#define perfetto_protos_CornerRadiiProto_tr_tag  2
-#define perfetto_protos_CornerRadiiProto_bl_tag  3
-#define perfetto_protos_CornerRadiiProto_br_tag  4
 #define perfetto_protos_ActiveBufferProto_width_tag 1
 #define perfetto_protos_ActiveBufferProto_height_tag 2
 #define perfetto_protos_ActiveBufferProto_stride_tag 3
@@ -24834,6 +26766,8 @@ extern "C" {
 #define perfetto_protos_LayerProto_box_shadow_settings_tag 65
 #define perfetto_protos_LayerProto_border_settings_tag 66
 #define perfetto_protos_LayerProto_effective_radii_tag 67
+#define perfetto_protos_LayerProto_reported_radii_tag 68
+#define perfetto_protos_LayerProto_disable_client_drawn_radii_tag 69
 #define perfetto_protos_BarrierLayerProto_id_tag 1
 #define perfetto_protos_BarrierLayerProto_frame_number_tag 2
 #define perfetto_protos_TransactionTraceFile_magic_number_tag 1
@@ -25008,6 +26942,10 @@ extern "C" {
 #define perfetto_protos_ChromeMetadataPacket_chrome_version_code_tag 2
 #define perfetto_protos_ChromeMetadataPacket_enabled_categories_tag 3
 #define perfetto_protos_ChromeMetadataPacket_field_trial_hashes_tag 4
+#define perfetto_protos_ChromeMetadataPacket_app_package_name_tag 5
+#define perfetto_protos_ChromeMetadataPacket_app_version_tag 6
+#define perfetto_protos_ChromeMetadataPacket_channel_tag 7
+#define perfetto_protos_ChromeMetadataPacket_os_name_tag 8
 #define perfetto_protos_ChromeTracedValue_nested_type_tag 1
 #define perfetto_protos_ChromeTracedValue_dict_keys_tag 2
 #define perfetto_protos_ChromeTracedValue_dict_values_tag 3
@@ -25101,6 +27039,9 @@ extern "C" {
 #define perfetto_protos_V8JsCode_instruction_size_bytes_tag 6
 #define perfetto_protos_V8JsCode_machine_code_tag 7
 #define perfetto_protos_V8JsCode_bytecode_tag    8
+#define perfetto_protos_V8JsCode_source_positions_tag 9
+#define perfetto_protos_V8JsCode_bytecode_positions_tag 10
+#define perfetto_protos_V8JsCode_inlined_bytecode_positions_tag 11
 #define perfetto_protos_V8InternalCode_v8_isolate_iid_tag 1
 #define perfetto_protos_V8InternalCode_tid_tag   2
 #define perfetto_protos_V8InternalCode_name_tag  3
@@ -25209,6 +27150,25 @@ extern "C" {
 #define perfetto_protos_FileIoOpEndEtwEvent_irp_ptr_tag 1
 #define perfetto_protos_FileIoOpEndEtwEvent_extra_info_tag 2
 #define perfetto_protos_FileIoOpEndEtwEvent_nt_status_tag 3
+#define perfetto_protos_FileIoPathOperationEtwEvent_irp_ptr_tag 1
+#define perfetto_protos_FileIoPathOperationEtwEvent_file_object_tag 2
+#define perfetto_protos_FileIoPathOperationEtwEvent_file_key_tag 3
+#define perfetto_protos_FileIoPathOperationEtwEvent_extra_info_tag 4
+#define perfetto_protos_FileIoPathOperationEtwEvent_ttid_tag 5
+#define perfetto_protos_FileIoPathOperationEtwEvent_info_class_tag 6
+#define perfetto_protos_FileIoPathOperationEtwEvent_file_name_tag 7
+#define perfetto_protos_FileIoPathOperationEtwEvent_opcode_tag 8
+#define perfetto_protos_StackWalkEtwEvent_trigger_tag 1
+#define perfetto_protos_StackWalkEtwEvent_callstack_iid_tag 2
+#define perfetto_protos_DiskIoEtwEvent_disk_number_tag 1
+#define perfetto_protos_DiskIoEtwEvent_irp_flags_tag 2
+#define perfetto_protos_DiskIoEtwEvent_transfer_size_tag 3
+#define perfetto_protos_DiskIoEtwEvent_byte_offset_tag 4
+#define perfetto_protos_DiskIoEtwEvent_file_object_tag 5
+#define perfetto_protos_DiskIoEtwEvent_irp_ptr_tag 6
+#define perfetto_protos_DiskIoEtwEvent_response_time_tag 7
+#define perfetto_protos_DiskIoEtwEvent_issuing_thread_id_tag 8
+#define perfetto_protos_DiskIoEtwEvent_opcode_tag 9
 #define perfetto_protos_EtwTraceEvent_timestamp_tag 1
 #define perfetto_protos_EtwTraceEvent_c_switch_tag 2
 #define perfetto_protos_EtwTraceEvent_ready_thread_tag 3
@@ -25219,6 +27179,9 @@ extern "C" {
 #define perfetto_protos_EtwTraceEvent_file_io_read_write_tag 10
 #define perfetto_protos_EtwTraceEvent_file_io_simple_op_tag 11
 #define perfetto_protos_EtwTraceEvent_file_io_op_end_tag 12
+#define perfetto_protos_EtwTraceEvent_stack_walk_tag 13
+#define perfetto_protos_EtwTraceEvent_file_io_path_operation_tag 14
+#define perfetto_protos_EtwTraceEvent_disk_io_tag 15
 #define perfetto_protos_EtwTraceEvent_cpu_tag    4
 #define perfetto_protos_EtwTraceEvent_thread_id_tag 5
 #define perfetto_protos_EtwTraceEventBundle_cpu_tag 1
@@ -25227,8 +27190,46 @@ extern "C" {
 #define perfetto_protos_EvdevEvent_InputEvent_type_tag 2
 #define perfetto_protos_EvdevEvent_InputEvent_code_tag 3
 #define perfetto_protos_EvdevEvent_InputEvent_value_tag 4
+#define perfetto_protos_EvdevDevice_Identifier_bustype_tag 1
+#define perfetto_protos_EvdevDevice_Identifier_vendor_tag 2
+#define perfetto_protos_EvdevDevice_Identifier_product_tag 3
+#define perfetto_protos_EvdevDevice_Identifier_version_tag 4
+#define perfetto_protos_EvdevDevice_device_id_tag 1
+#define perfetto_protos_EvdevDevice_device_num_tag 2
+#define perfetto_protos_EvdevDevice_name_tag     3
+#define perfetto_protos_EvdevDevice_phys_tag     4
+#define perfetto_protos_EvdevDevice_uniq_tag     5
+#define perfetto_protos_EvdevDevice_id_tag       6
+#define perfetto_protos_EvdevDevice_absolute_axis_infos_tag 7
+#define perfetto_protos_EvdevDevice_ev_bitmask_tag 8
+#define perfetto_protos_EvdevDevice_event_type_bitmasks_tag 9
+#define perfetto_protos_EvdevDevice_prop_bitmask_tag 10
+#define perfetto_protos_EvdevDevice_axis_states_tag 11
+#define perfetto_protos_EvdevDevice_abs_mt_states_tag 12
+#define perfetto_protos_EvdevEvent_DeviceAddition_device_tag 1
 #define perfetto_protos_EvdevEvent_device_id_tag 1
 #define perfetto_protos_EvdevEvent_input_event_tag 2
+#define perfetto_protos_EvdevEvent_add_event_tag 3
+#define perfetto_protos_EvdevEvent_remove_event_tag 4
+#define perfetto_protos_EvdevDevice_AbsInfo_minimum_tag 1
+#define perfetto_protos_EvdevDevice_AbsInfo_maximum_tag 2
+#define perfetto_protos_EvdevDevice_AbsInfo_fuzz_tag 3
+#define perfetto_protos_EvdevDevice_AbsInfo_flat_tag 4
+#define perfetto_protos_EvdevDevice_AbsInfo_resolution_tag 5
+#define perfetto_protos_EvdevDevice_AbsoluteAxisInfosEntry_key_tag 1
+#define perfetto_protos_EvdevDevice_AbsoluteAxisInfosEntry_value_tag 2
+#define perfetto_protos_EvdevDevice_EventTypeBitmasksEntry_key_tag 1
+#define perfetto_protos_EvdevDevice_EventTypeBitmasksEntry_value_tag 2
+#define perfetto_protos_EvdevDevice_AxisMap_axis_states_tag 1
+#define perfetto_protos_EvdevDevice_AxisMap_AxisStatesEntry_key_tag 1
+#define perfetto_protos_EvdevDevice_AxisMap_AxisStatesEntry_value_tag 2
+#define perfetto_protos_EvdevDevice_AxisStatesEntry_key_tag 1
+#define perfetto_protos_EvdevDevice_AxisStatesEntry_value_tag 2
+#define perfetto_protos_EvdevDevice_SlotValuesMap_slot_values_tag 1
+#define perfetto_protos_EvdevDevice_SlotValuesMap_SlotValuesEntry_key_tag 1
+#define perfetto_protos_EvdevDevice_SlotValuesMap_SlotValuesEntry_value_tag 2
+#define perfetto_protos_EvdevDevice_AbsMtStatesEntry_key_tag 1
+#define perfetto_protos_EvdevDevice_AbsMtStatesEntry_value_tag 2
 #define perfetto_protos_FileDescriptorSet_file_tag 1
 #define perfetto_protos_FileDescriptorProto_name_tag 1
 #define perfetto_protos_FileDescriptorProto_package_tag 2
@@ -25276,6 +27277,8 @@ extern "C" {
 #define perfetto_protos_OneofDescriptorProto_name_tag 1
 #define perfetto_protos_OneofDescriptorProto_options_tag 2
 #define perfetto_protos_ExtensionDescriptor_extension_set_tag 1
+#define perfetto_protos_ExtensionDescriptor_extension_set_gzip_tag 2
+#define perfetto_protos_ExtensionDescriptor_file_name_tag 3
 #define perfetto_protos_InodeFileMap_block_device_id_tag 1
 #define perfetto_protos_InodeFileMap_mount_points_tag 2
 #define perfetto_protos_InodeFileMap_entries_tag 3
@@ -25657,6 +27660,26 @@ extern "C" {
 #define perfetto_protos_DpuDispVblankIrqEnableFtraceEvent_id_tag 1
 #define perfetto_protos_DpuDispVblankIrqEnableFtraceEvent_output_id_tag 2
 #define perfetto_protos_DpuDispVblankIrqEnableFtraceEvent_enable_tag 3
+#define perfetto_protos_DpuDispFrameDoneTimeoutFtraceEvent_display_id_tag 1
+#define perfetto_protos_DpuDispFrameDoneTimeoutFtraceEvent_output_id_tag 2
+#define perfetto_protos_DpuDispFrameDoneTimeoutFtraceEvent_frames_pending_tag 3
+#define perfetto_protos_DpuDispFrameDoneTimeoutFtraceEvent_te_count_tag 4
+#define perfetto_protos_DpuDispFrameDoneTimeoutFtraceEvent_during_disable_tag 5
+#define perfetto_protos_DpuDispFrameStartTimeoutFtraceEvent_display_id_tag 1
+#define perfetto_protos_DpuDispFrameStartTimeoutFtraceEvent_output_id_tag 2
+#define perfetto_protos_DpuDispFrameStartTimeoutFtraceEvent_frames_pending_tag 3
+#define perfetto_protos_DpuDispFrameStartTimeoutFtraceEvent_te_count_tag 4
+#define perfetto_protos_DpuDispFrameDoneMissingFtraceEvent_display_id_tag 1
+#define perfetto_protos_DpuDispFrameDoneMissingFtraceEvent_output_id_tag 2
+#define perfetto_protos_DpuDispFrameDoneMissingFtraceEvent_frames_pending_tag 3
+#define perfetto_protos_DpuDispFrameDoneMissingFtraceEvent_te_count_tag 4
+#define perfetto_protos_DpuDispFrameStartMissingFtraceEvent_display_id_tag 1
+#define perfetto_protos_DpuDispFrameStartMissingFtraceEvent_output_id_tag 2
+#define perfetto_protos_DpuDispFrameStartMissingFtraceEvent_frames_pending_tag 3
+#define perfetto_protos_DpuDispFrameStartMissingFtraceEvent_te_count_tag 4
+#define perfetto_protos_DpuDispDpuLineUnderrunFtraceEvent_id_tag 1
+#define perfetto_protos_DpuDispDpuLineUnderrunFtraceEvent_frames_pending_tag 2
+#define perfetto_protos_DpuDispDpuLineUnderrunFtraceEvent_vsync_count_tag 3
 #define perfetto_protos_DrmVblankEventFtraceEvent_crtc_tag 1
 #define perfetto_protos_DrmVblankEventFtraceEvent_high_prec_tag 2
 #define perfetto_protos_DrmVblankEventFtraceEvent_seq_tag 3
@@ -26515,6 +28538,19 @@ extern "C" {
 #define perfetto_protos_F2fsGcEndFtraceEvent_free_seg_tag 9
 #define perfetto_protos_F2fsGcEndFtraceEvent_reserved_seg_tag 10
 #define perfetto_protos_F2fsGcEndFtraceEvent_prefree_seg_tag 11
+#define perfetto_protos_F2fsLockElapsedTimeFtraceEvent_dev_tag 1
+#define perfetto_protos_F2fsLockElapsedTimeFtraceEvent_comm_tag 2
+#define perfetto_protos_F2fsLockElapsedTimeFtraceEvent_pid_tag 3
+#define perfetto_protos_F2fsLockElapsedTimeFtraceEvent_prio_tag 4
+#define perfetto_protos_F2fsLockElapsedTimeFtraceEvent_ioprio_class_tag 5
+#define perfetto_protos_F2fsLockElapsedTimeFtraceEvent_ioprio_data_tag 6
+#define perfetto_protos_F2fsLockElapsedTimeFtraceEvent_lock_name_tag 7
+#define perfetto_protos_F2fsLockElapsedTimeFtraceEvent_is_write_tag 8
+#define perfetto_protos_F2fsLockElapsedTimeFtraceEvent_total_time_tag 9
+#define perfetto_protos_F2fsLockElapsedTimeFtraceEvent_running_time_tag 10
+#define perfetto_protos_F2fsLockElapsedTimeFtraceEvent_runnable_time_tag 11
+#define perfetto_protos_F2fsLockElapsedTimeFtraceEvent_io_sleep_time_tag 12
+#define perfetto_protos_F2fsLockElapsedTimeFtraceEvent_other_time_tag 13
 #define perfetto_protos_FastrpcDmaStatFtraceEvent_cid_tag 1
 #define perfetto_protos_FastrpcDmaStatFtraceEvent_len_tag 2
 #define perfetto_protos_FastrpcDmaStatFtraceEvent_total_allocated_tag 3
@@ -27295,6 +29331,23 @@ extern "C" {
 #define perfetto_protos_PanelWriteGenericFtraceEvent_name_tag 4
 #define perfetto_protos_PanelWriteGenericFtraceEvent_type_tag 5
 #define perfetto_protos_PanelWriteGenericFtraceEvent_value_tag 6
+#define perfetto_protos_GramCollisionFtraceEvent_panel_index_tag 1
+#define perfetto_protos_GramCollisionFtraceEvent_collision_cnt_tag 2
+#define perfetto_protos_PanelSettingsFullFtraceEvent_panel_index_tag 1
+#define perfetto_protos_PanelSettingsFullFtraceEvent_hbm_tag 2
+#define perfetto_protos_PanelSettingsFullFtraceEvent_irc_tag 3
+#define perfetto_protos_PanelSettingsFullFtraceEvent_h_pwm_tag 4
+#define perfetto_protos_PanelSettingsFullFtraceEvent_fi_auto_tag 5
+#define perfetto_protos_PanelSettingsFullFtraceEvent_fi_manual_tag 6
+#define perfetto_protos_PanelSettingsFullFtraceEvent_early_exit_tag 7
+#define perfetto_protos_PanelSettingsFullFtraceEvent_min_rr_tag 8
+#define perfetto_protos_PanelSettingsFullFtraceEvent_max_rr_tag 9
+#define perfetto_protos_PanelSettingsFullFtraceEvent_te_freq_tag 10
+#define perfetto_protos_PanelSettingsLiteFtraceEvent_panel_index_tag 1
+#define perfetto_protos_PanelSettingsLiteFtraceEvent_vrr_tag 2
+#define perfetto_protos_PanelSettingsLiteFtraceEvent_min_rr_tag 3
+#define perfetto_protos_PanelSettingsLiteFtraceEvent_max_rr_tag 4
+#define perfetto_protos_PanelSettingsLiteFtraceEvent_te_freq_tag 5
 #define perfetto_protos_SchedSwitchWithCtrsFtraceEvent_old_pid_tag 1
 #define perfetto_protos_SchedSwitchWithCtrsFtraceEvent_new_pid_tag 2
 #define perfetto_protos_SchedSwitchWithCtrsFtraceEvent_cctr_tag 3
@@ -27463,6 +29516,10 @@ extern "C" {
 #define perfetto_protos_SchedWakeupTaskAttrFtraceEvent_task_util_tag 3
 #define perfetto_protos_SchedWakeupTaskAttrFtraceEvent_uclamp_min_tag 4
 #define perfetto_protos_SchedWakeupTaskAttrFtraceEvent_vruntime_tag 5
+#define perfetto_protos_SchedGroupTrackerFtraceEvent_comm_tag 1
+#define perfetto_protos_SchedGroupTrackerFtraceEvent_pid_tag 2
+#define perfetto_protos_SchedGroupTrackerFtraceEvent_group_tag 3
+#define perfetto_protos_SchedGroupTrackerFtraceEvent_group_num_tag 4
 #define perfetto_protos_ScmCallStartFtraceEvent_arginfo_tag 1
 #define perfetto_protos_ScmCallStartFtraceEvent_x0_tag 2
 #define perfetto_protos_ScmCallStartFtraceEvent_x5_tag 3
@@ -27858,6 +29915,10 @@ extern "C" {
 #define perfetto_protos_MmShrinkSlabEndFtraceEvent_total_scan_tag 5
 #define perfetto_protos_MmShrinkSlabEndFtraceEvent_unused_scan_tag 6
 #define perfetto_protos_MmShrinkSlabEndFtraceEvent_nid_tag 7
+#define perfetto_protos_MmVmscanMemcgReclaimBeginFtraceEvent_order_tag 1
+#define perfetto_protos_MmVmscanMemcgReclaimBeginFtraceEvent_may_writepage_tag 2
+#define perfetto_protos_MmVmscanMemcgReclaimBeginFtraceEvent_gfp_flags_tag 3
+#define perfetto_protos_MmVmscanMemcgReclaimEndFtraceEvent_nr_reclaimed_tag 1
 #define perfetto_protos_WorkqueueActivateWorkFtraceEvent_work_tag 1
 #define perfetto_protos_WorkqueueActivateWorkFtraceEvent_function_tag 2
 #define perfetto_protos_WorkqueueExecuteEndFtraceEvent_work_tag 1
@@ -28451,6 +30512,18 @@ extern "C" {
 #define perfetto_protos_FtraceEvent_scsi_eh_wakeup_tag 599
 #define perfetto_protos_FtraceEvent_fwtp_perfetto_slice_tag 600
 #define perfetto_protos_FtraceEvent_gpu_power_state_tag 601
+#define perfetto_protos_FtraceEvent_gram_collision_tag 602
+#define perfetto_protos_FtraceEvent_f2fs_lock_elapsed_time_tag 603
+#define perfetto_protos_FtraceEvent_sched_group_tracker_tag 604
+#define perfetto_protos_FtraceEvent_dpu_disp_frame_done_timeout_tag 605
+#define perfetto_protos_FtraceEvent_dpu_disp_frame_start_timeout_tag 606
+#define perfetto_protos_FtraceEvent_mm_vmscan_memcg_reclaim_begin_tag 607
+#define perfetto_protos_FtraceEvent_mm_vmscan_memcg_reclaim_end_tag 608
+#define perfetto_protos_FtraceEvent_dpu_disp_frame_done_missing_tag 609
+#define perfetto_protos_FtraceEvent_dpu_disp_frame_start_missing_tag 610
+#define perfetto_protos_FtraceEvent_panel_settings_full_tag 611
+#define perfetto_protos_FtraceEvent_panel_settings_lite_tag 612
+#define perfetto_protos_FtraceEvent_dpu_disp_dpu_line_underrun_tag 613
 #define perfetto_protos_FtraceEvent_common_flags_tag 5
 #define perfetto_protos_FtraceCpuStats_cpu_tag   1
 #define perfetto_protos_FtraceCpuStats_entries_tag 2
@@ -28505,6 +30578,8 @@ extern "C" {
 #define perfetto_protos_FtraceEventBundle_GenericEventDescriptor_field_id_tag 1
 #define perfetto_protos_FtraceEventBundle_GenericEventDescriptor_event_descriptor_tag 2
 #define perfetto_protos_FtraceEventBundle_GenericEventDescriptor_group_name_tag 3
+#define perfetto_protos_GenericGpuFrequencyEvent_gpu_id_tag 1
+#define perfetto_protos_GenericGpuFrequencyEvent_frequency_khz_tag 2
 #define perfetto_protos_GenericKernelCpuFrequencyEvent_cpu_tag 1
 #define perfetto_protos_GenericKernelCpuFrequencyEvent_freq_hz_tag 2
 #define perfetto_protos_GenericKernelTaskStateEvent_cpu_tag 1
@@ -28520,20 +30595,41 @@ extern "C" {
 #define perfetto_protos_GenericKernelProcessTree_Thread_pid_tag 2
 #define perfetto_protos_GenericKernelProcessTree_Thread_comm_tag 3
 #define perfetto_protos_GenericKernelProcessTree_Thread_is_main_thread_tag 4
+#define perfetto_protos_GenericKernelProcessTree_Thread_is_idle_tag 5
 #define perfetto_protos_GenericKernelProcessTree_Process_pid_tag 1
 #define perfetto_protos_GenericKernelProcessTree_Process_ppid_tag 2
 #define perfetto_protos_GenericKernelProcessTree_Process_cmdline_tag 3
 #define perfetto_protos_GpuCounterEvent_counter_descriptor_tag 1
+#define perfetto_protos_GpuCounterEvent_counter_descriptor_iid_tag 4
 #define perfetto_protos_GpuCounterEvent_counters_tag 2
 #define perfetto_protos_GpuCounterEvent_gpu_id_tag 3
 #define perfetto_protos_GpuCounterEvent_GpuCounter_counter_id_tag 1
 #define perfetto_protos_GpuCounterEvent_GpuCounter_int_value_tag 2
 #define perfetto_protos_GpuCounterEvent_GpuCounter_double_value_tag 3
+#define perfetto_protos_InternedGpuCounterDescriptor_iid_tag 1
+#define perfetto_protos_InternedGpuCounterDescriptor_counter_descriptor_tag 2
+#define perfetto_protos_InternedGpuCounterDescriptor_gpu_id_tag 3
 #define perfetto_protos_GpuLog_severity_tag      1
 #define perfetto_protos_GpuLog_tag_tag           2
 #define perfetto_protos_GpuLog_log_message_tag   3
+#define perfetto_protos_GpuMemTotalEvent_gpu_id_tag 1
+#define perfetto_protos_GpuMemTotalEvent_pid_tag 2
+#define perfetto_protos_GpuMemTotalEvent_size_tag 3
 #define perfetto_protos_GpuRenderStageEvent_ExtraData_name_tag 1
 #define perfetto_protos_GpuRenderStageEvent_ExtraData_value_tag 2
+#define perfetto_protos_GpuRenderStageEvent_Dim3_x_tag 1
+#define perfetto_protos_GpuRenderStageEvent_Dim3_y_tag 2
+#define perfetto_protos_GpuRenderStageEvent_Dim3_z_tag 3
+#define perfetto_protos_GpuRenderStageEvent_ExtraComputeArg_name_iid_tag 1
+#define perfetto_protos_GpuRenderStageEvent_ExtraComputeArg_name_tag 2
+#define perfetto_protos_GpuRenderStageEvent_ExtraComputeArg_int_value_tag 3
+#define perfetto_protos_GpuRenderStageEvent_ExtraComputeArg_uint_value_tag 4
+#define perfetto_protos_GpuRenderStageEvent_ExtraComputeArg_double_value_tag 5
+#define perfetto_protos_GpuRenderStageEvent_ExtraComputeArg_string_value_tag 6
+#define perfetto_protos_GpuRenderStageEvent_ExtraComputeArg_string_value_iid_tag 7
+#define perfetto_protos_GpuRenderStageEvent_ComputeKernelLaunch_grid_size_tag 1
+#define perfetto_protos_GpuRenderStageEvent_ComputeKernelLaunch_workgroup_size_tag 2
+#define perfetto_protos_GpuRenderStageEvent_ComputeKernelLaunch_args_tag 3
 #define perfetto_protos_GpuRenderStageEvent_Specifications_ContextSpec_context_tag 1
 #define perfetto_protos_GpuRenderStageEvent_Specifications_ContextSpec_pid_tag 2
 #define perfetto_protos_GpuRenderStageEvent_Specifications_context_spec_tag 1
@@ -28555,6 +30651,11 @@ extern "C" {
 #define perfetto_protos_GpuRenderStageEvent_stage_iid_tag 14
 #define perfetto_protos_GpuRenderStageEvent_render_subpass_index_mask_tag 15
 #define perfetto_protos_GpuRenderStageEvent_render_pass_instance_id_tag 16
+#define perfetto_protos_GpuRenderStageEvent_name_tag 17
+#define perfetto_protos_GpuRenderStageEvent_name_iid_tag 20
+#define perfetto_protos_GpuRenderStageEvent_event_wait_ids_tag 18
+#define perfetto_protos_GpuRenderStageEvent_kernel_iid_tag 19
+#define perfetto_protos_GpuRenderStageEvent_launch_tag 21
 #define perfetto_protos_GpuRenderStageEvent_Specifications_Description_name_tag 1
 #define perfetto_protos_GpuRenderStageEvent_Specifications_Description_description_tag 2
 #define perfetto_protos_InternedGraphicsContext_iid_tag 1
@@ -28564,6 +30665,13 @@ extern "C" {
 #define perfetto_protos_InternedGpuRenderStageSpecification_name_tag 2
 #define perfetto_protos_InternedGpuRenderStageSpecification_description_tag 3
 #define perfetto_protos_InternedGpuRenderStageSpecification_category_tag 4
+#define perfetto_protos_InternedComputeKernel_iid_tag 1
+#define perfetto_protos_InternedComputeKernel_name_tag 2
+#define perfetto_protos_InternedComputeKernel_demangled_name_tag 3
+#define perfetto_protos_InternedComputeKernel_arch_tag 4
+#define perfetto_protos_InternedComputeKernel_args_tag 5
+#define perfetto_protos_InternedComputeArgName_iid_tag 1
+#define perfetto_protos_InternedComputeArgName_name_tag 2
 #define perfetto_protos_VulkanApiEvent_VkDebugUtilsObjectName_pid_tag 1
 #define perfetto_protos_VulkanApiEvent_VkDebugUtilsObjectName_vk_device_tag 2
 #define perfetto_protos_VulkanApiEvent_VkDebugUtilsObjectName_object_type_tag 3
@@ -28824,6 +30932,8 @@ extern "C" {
 #define perfetto_protos_ChromeWindowHandleEventInfo_message_id_tag 2
 #define perfetto_protos_ChromeWindowHandleEventInfo_hwnd_ptr_tag 3
 #define perfetto_protos_Screenshot_jpg_image_tag 1
+#define perfetto_protos_Screenshot_pam_image_tag 2
+#define perfetto_protos_Screenshot_ppm_image_tag 3
 #define perfetto_protos_TaskExecution_posted_from_iid_tag 1
 #define perfetto_protos_TrackEvent_Callstack_frames_tag 1
 #define perfetto_protos_TrackEvent_Callstack_Frame_function_name_tag 1
@@ -28932,13 +31042,27 @@ extern "C" {
 #define perfetto_protos_InternedData_viewcapture_window_name_tag 39
 #define perfetto_protos_InternedData_viewcapture_view_id_tag 40
 #define perfetto_protos_InternedData_viewcapture_class_name_tag 41
-#define perfetto_protos_InternedData_app_wakelock_info_tag 42
 #define perfetto_protos_InternedData_correlation_id_str_tag 43
 #define perfetto_protos_InternedData_android_job_name_tag 44
 #define perfetto_protos_InternedData_viewcapture_content_description_tag 45
 #define perfetto_protos_InternedData_viewcapture_text_tag 46
+#define perfetto_protos_InternedData_gpu_counter_descriptors_tag 47
 #define perfetto_protos_AndroidJobName_iid_tag   1
 #define perfetto_protos_AndroidJobName_name_tag  2
+#define perfetto_protos_SystemdJournaldEvent_pid_tag 1
+#define perfetto_protos_SystemdJournaldEvent_tid_tag 2
+#define perfetto_protos_SystemdJournaldEvent_uid_tag 3
+#define perfetto_protos_SystemdJournaldEvent_gid_tag 4
+#define perfetto_protos_SystemdJournaldEvent_prio_tag 5
+#define perfetto_protos_SystemdJournaldEvent_tag_tag 6
+#define perfetto_protos_SystemdJournaldEvent_message_tag 7
+#define perfetto_protos_SystemdJournaldEvent_comm_tag 8
+#define perfetto_protos_SystemdJournaldEvent_exe_tag 9
+#define perfetto_protos_SystemdJournaldEvent_systemd_unit_tag 10
+#define perfetto_protos_SystemdJournaldEvent_hostname_tag 11
+#define perfetto_protos_SystemdJournaldEvent_transport_tag 12
+#define perfetto_protos_SystemdJournaldEvent_num_total_tag 20
+#define perfetto_protos_SystemdJournaldEvent_num_failed_tag 21
 #define perfetto_protos_MemoryTrackerSnapshot_global_dump_id_tag 1
 #define perfetto_protos_MemoryTrackerSnapshot_level_of_detail_tag 2
 #define perfetto_protos_MemoryTrackerSnapshot_process_memory_dumps_tag 3
@@ -28975,6 +31099,10 @@ extern "C" {
 #define perfetto_protos_PerfettoMetatrace_Arg_value_iid_tag 4
 #define perfetto_protos_PerfettoMetatrace_InternedString_iid_tag 1
 #define perfetto_protos_PerfettoMetatrace_InternedString_value_tag 2
+#define perfetto_protos_TraceProvenance_buffers_tag 2
+#define perfetto_protos_TraceProvenance_Sequence_id_tag 1
+#define perfetto_protos_TraceProvenance_Sequence_producer_id_tag 2
+#define perfetto_protos_TraceProvenance_Buffer_sequences_tag 1
 #define perfetto_protos_TracingServiceEvent_DataSources_data_source_tag 1
 #define perfetto_protos_TracingServiceEvent_all_data_sources_started_tag 1
 #define perfetto_protos_TracingServiceEvent_tracing_started_tag 2
@@ -29028,6 +31156,19 @@ extern "C" {
 #define perfetto_protos_PowerRails_EnergyData_index_tag 1
 #define perfetto_protos_PowerRails_EnergyData_timestamp_ms_tag 2
 #define perfetto_protos_PowerRails_EnergyData_energy_tag 3
+#define perfetto_protos_JavaFrame_method_name_tag 1
+#define perfetto_protos_JavaFrame_source_file_tag 2
+#define perfetto_protos_JavaFrame_line_number_tag 3
+#define perfetto_protos_JavaStack_frames_tag     1
+#define perfetto_protos_ArtProcessMetadata_pid_tag 1
+#define perfetto_protos_ArtProcessMetadata_uid_tag 2
+#define perfetto_protos_ArtProcessMetadata_process_name_tag 3
+#define perfetto_protos_ArtProcessMetadata_package_name_tag 4
+#define perfetto_protos_ArtProcessMetadata_oom_allocation_size_tag 5
+#define perfetto_protos_ArtProcessMetadata_oom_total_bytes_free_tag 6
+#define perfetto_protos_ArtProcessMetadata_oom_free_bytes_until_oom_tag 7
+#define perfetto_protos_ArtProcessMetadata_oom_thread_java_stack_tag 8
+#define perfetto_protos_ArtProcessMetadata_oom_error_msg_tag 9
 #define perfetto_protos_ObfuscatedMember_obfuscated_name_tag 1
 #define perfetto_protos_ObfuscatedMember_deobfuscated_name_tag 2
 #define perfetto_protos_ObfuscatedMember_obfuscated_line_start_tag 3
@@ -29061,6 +31202,11 @@ extern "C" {
 #define perfetto_protos_HeapGraphObject_native_allocation_registry_size_field_tag 8
 #define perfetto_protos_HeapGraphObject_heap_type_delta_tag 9
 #define perfetto_protos_HeapGraphObject_runtime_internal_object_id_tag 10
+#define perfetto_protos_HeapGraphObject_bitmap_id_field_tag 11
+#define perfetto_protos_HeapGraphObject_bitmap_source_id_field_tag 12
+#define perfetto_protos_HeapGraphObject_bitmap_width_field_tag 13
+#define perfetto_protos_HeapGraphObject_bitmap_height_field_tag 14
+#define perfetto_protos_HeapGraphObject_application_info_long_version_code_field_tag 15
 #define perfetto_protos_HeapGraph_pid_tag        1
 #define perfetto_protos_HeapGraph_objects_tag    2
 #define perfetto_protos_HeapGraph_field_names_tag 4
@@ -29069,6 +31215,7 @@ extern "C" {
 #define perfetto_protos_HeapGraph_roots_tag      7
 #define perfetto_protos_HeapGraph_location_names_tag 8
 #define perfetto_protos_HeapGraph_types_tag      9
+#define perfetto_protos_HeapGraph_heap_bytes_allocated_tag 10
 #define perfetto_protos_ProfilePacket_strings_tag 1
 #define perfetto_protos_ProfilePacket_frames_tag 2
 #define perfetto_protos_ProfilePacket_callstacks_tag 3
@@ -29151,8 +31298,24 @@ extern "C" {
 #define perfetto_protos_SmapsEntry_shared_clean_resident_kb_tag 13
 #define perfetto_protos_SmapsEntry_locked_kb_tag 14
 #define perfetto_protos_SmapsEntry_proportional_resident_kb_tag 15
+#define perfetto_protos_PackedSmaps_string_table_tag 1
+#define perfetto_protos_PackedSmaps_name_id_tag  2
+#define perfetto_protos_PackedSmaps_aggregate_count_tag 3
+#define perfetto_protos_PackedSmaps_size_kb_tag  4
+#define perfetto_protos_PackedSmaps_rss_kb_tag   5
+#define perfetto_protos_PackedSmaps_anonymous_kb_tag 6
+#define perfetto_protos_PackedSmaps_swap_kb_tag  7
+#define perfetto_protos_PackedSmaps_shared_clean_kb_tag 8
+#define perfetto_protos_PackedSmaps_shared_dirty_kb_tag 9
+#define perfetto_protos_PackedSmaps_private_clean_kb_tag 10
+#define perfetto_protos_PackedSmaps_private_dirty_kb_tag 11
+#define perfetto_protos_PackedSmaps_locked_kb_tag 12
+#define perfetto_protos_PackedSmaps_pss_kb_tag   13
+#define perfetto_protos_PackedSmaps_pss_dirty_kb_tag 14
+#define perfetto_protos_PackedSmaps_swap_pss_kb_tag 15
 #define perfetto_protos_SmapsPacket_pid_tag      1
 #define perfetto_protos_SmapsPacket_entries_tag  2
+#define perfetto_protos_SmapsPacket_packed_entries_tag 3
 #define perfetto_protos_ProcessStats_processes_tag 1
 #define perfetto_protos_ProcessStats_collection_end_timestamp_tag 2
 #define perfetto_protos_ProcessStats_Thread_tid_tag 1
@@ -29219,6 +31382,7 @@ extern "C" {
 #define perfetto_protos_SysStats_thermal_zone_tag 15
 #define perfetto_protos_SysStats_cpuidle_state_tag 16
 #define perfetto_protos_SysStats_gpufreq_mhz_tag 17
+#define perfetto_protos_SysStats_slab_info_tag   18
 #define perfetto_protos_SysStats_MeminfoValue_key_tag 1
 #define perfetto_protos_SysStats_MeminfoValue_value_tag 2
 #define perfetto_protos_SysStats_VmstatValue_key_tag 1
@@ -29257,6 +31421,9 @@ extern "C" {
 #define perfetto_protos_SysStats_CpuIdleStateEntry_duration_us_tag 2
 #define perfetto_protos_SysStats_CpuIdleState_cpu_id_tag 1
 #define perfetto_protos_SysStats_CpuIdleState_cpuidle_state_entry_tag 2
+#define perfetto_protos_SysStats_SlabInfo_name_tag 1
+#define perfetto_protos_SysStats_SlabInfo_pages_per_slab_tag 2
+#define perfetto_protos_SysStats_SlabInfo_num_slabs_tag 3
 #define perfetto_protos_CpuInfo_cpus_tag         1
 #define perfetto_protos_CpuInfo_ArmCpuIdentifier_implementer_tag 1
 #define perfetto_protos_CpuInfo_ArmCpuIdentifier_architecture_tag 2
@@ -29268,6 +31435,19 @@ extern "C" {
 #define perfetto_protos_CpuInfo_Cpu_capacity_tag 3
 #define perfetto_protos_CpuInfo_Cpu_arm_identifier_tag 4
 #define perfetto_protos_CpuInfo_Cpu_features_tag 5
+#define perfetto_protos_GpuInfo_gpus_tag         1
+#define perfetto_protos_GpuInfo_Gpu_name_tag     1
+#define perfetto_protos_GpuInfo_Gpu_vendor_tag   2
+#define perfetto_protos_GpuInfo_Gpu_model_tag    3
+#define perfetto_protos_GpuInfo_Gpu_architecture_tag 4
+#define perfetto_protos_GpuInfo_Gpu_uuid_tag     5
+#define perfetto_protos_GpuInfo_Gpu_extra_info_tag 6
+#define perfetto_protos_GpuInfo_Gpu_pci_bdf_tag  7
+#define perfetto_protos_GpuInfo_Gpu_KeyValue_key_tag 1
+#define perfetto_protos_GpuInfo_Gpu_KeyValue_value_tag 2
+#define perfetto_protos_InterruptInfo_irq_mapping_tag 1
+#define perfetto_protos_InterruptInfo_InterruptMapping_irq_id_tag 1
+#define perfetto_protos_InterruptInfo_InterruptMapping_name_tag 2
 #define perfetto_protos_TestEvent_TestPayload_str_tag 1
 #define perfetto_protos_TestEvent_TestPayload_nested_tag 2
 #define perfetto_protos_TestEvent_TestPayload_remaining_nesting_depth_tag 3
@@ -29275,11 +31455,25 @@ extern "C" {
 #define perfetto_protos_TestEvent_TestPayload_single_int_tag 5
 #define perfetto_protos_TestEvent_TestPayload_repeated_ints_tag 6
 #define perfetto_protos_TestEvent_TestPayload_debug_annotations_tag 7
+#define perfetto_protos_TestEvent_ProtoVmMessage_ProtoVmSubmessage_single_int_tag 1
+#define perfetto_protos_TestEvent_ProtoVmMessage_id_tag 1
+#define perfetto_protos_TestEvent_ProtoVmMessage_submessage_tag 2
+#define perfetto_protos_TestEvent_ProtoVmPatch_string_to_merge_tag 1
+#define perfetto_protos_TestEvent_ProtoVmPatch_int_to_merge_tag 2
+#define perfetto_protos_TestEvent_ProtoVmPatch_single_message_tag 3
+#define perfetto_protos_TestEvent_ProtoVmPatch_messages_tag 4
+#define perfetto_protos_TestEvent_ProtoVmPatch_delete_message_ids_tag 5
+#define perfetto_protos_TestEvent_ProtoVmIncrementalState_string_merged_tag 1
+#define perfetto_protos_TestEvent_ProtoVmIncrementalState_int_merged_tag 2
+#define perfetto_protos_TestEvent_ProtoVmIncrementalState_single_message_tag 3
+#define perfetto_protos_TestEvent_ProtoVmIncrementalState_messages_tag 4
 #define perfetto_protos_TestEvent_str_tag        1
 #define perfetto_protos_TestEvent_seq_value_tag  2
 #define perfetto_protos_TestEvent_counter_tag    3
 #define perfetto_protos_TestEvent_is_last_tag    4
 #define perfetto_protos_TestEvent_payload_tag    5
+#define perfetto_protos_TestEvent_protovm_patch_tag 6
+#define perfetto_protos_TestEvent_protovm_incremental_state_tag 7
 #define perfetto_protos_TracePacketDefaults_track_event_defaults_tag 11
 #define perfetto_protos_TracePacketDefaults_perf_sample_defaults_tag 12
 #define perfetto_protos_TracePacketDefaults_timestamp_clock_id_tag 58
@@ -29371,6 +31565,7 @@ extern "C" {
 #define perfetto_protos_UiState_timeline_start_ts_tag 1
 #define perfetto_protos_UiState_timeline_end_ts_tag 2
 #define perfetto_protos_UiState_highlight_process_tag 3
+#define perfetto_protos_TracePacket_ProtoVms_instance_tag 1
 #define perfetto_protos_TracePacket_ftrace_events_tag 1
 #define perfetto_protos_TracePacket_process_tree_tag 2
 #define perfetto_protos_TracePacket_inode_file_map_tag 4
@@ -29451,7 +31646,6 @@ extern "C" {
 #define perfetto_protos_TracePacket_clone_snapshot_trigger_tag 113
 #define perfetto_protos_TracePacket_bluetooth_trace_event_tag 114
 #define perfetto_protos_TracePacket_kernel_wakelock_data_tag 115
-#define perfetto_protos_TracePacket_app_wakelock_bundle_tag 116
 #define perfetto_protos_TracePacket_generic_kernel_task_state_event_tag 117
 #define perfetto_protos_TracePacket_generic_kernel_cpu_freq_event_tag 118
 #define perfetto_protos_TracePacket_cpu_per_uid_data_tag 119
@@ -29459,6 +31653,15 @@ extern "C" {
 #define perfetto_protos_TracePacket_evdev_event_tag 121
 #define perfetto_protos_TracePacket_generic_kernel_process_tree_tag 122
 #define perfetto_protos_TracePacket_user_list_tag 123
+#define perfetto_protos_TracePacket_trace_provenance_tag 124
+#define perfetto_protos_TracePacket_protovms_tag 125
+#define perfetto_protos_TracePacket_trace_attributes_tag 126
+#define perfetto_protos_TracePacket_android_aflags_tag 127
+#define perfetto_protos_TracePacket_gpu_info_tag 128
+#define perfetto_protos_TracePacket_generic_gpu_frequency_event_tag 129
+#define perfetto_protos_TracePacket_interrupt_info_tag 130
+#define perfetto_protos_TracePacket_art_process_metadata_tag 131
+#define perfetto_protos_TracePacket_journald_event_tag 132
 #define perfetto_protos_TracePacket_for_testing_tag 900
 #define perfetto_protos_TracePacket_trusted_uid_tag 3
 #define perfetto_protos_TracePacket_timestamp_tag 8
@@ -29472,6 +31675,10 @@ extern "C" {
 #define perfetto_protos_TracePacket_trusted_pid_tag 79
 #define perfetto_protos_TracePacket_first_packet_on_sequence_tag 87
 #define perfetto_protos_TracePacket_machine_id_tag 98
+#define perfetto_protos_TracePacket_ProtoVms_Instance_program_tag 1
+#define perfetto_protos_TracePacket_ProtoVms_Instance_state_tag 2
+#define perfetto_protos_TracePacket_ProtoVms_Instance_memory_limit_kb_tag 3
+#define perfetto_protos_TracePacket_ProtoVms_Instance_producer_id_tag 4
 #define perfetto_protos_Trace_packet_tag         1
 
 /* Struct field encoding specification for nanopb */
@@ -29492,11 +31699,15 @@ X(a, CALLBACK, REPEATED, MESSAGE,  specs,             1) \
 X(a, CALLBACK, REPEATED, MESSAGE,  blocks,            2) \
 X(a, STATIC,   OPTIONAL, UINT64,   min_sampling_period_ns,   3) \
 X(a, STATIC,   OPTIONAL, UINT64,   max_sampling_period_ns,   4) \
-X(a, STATIC,   OPTIONAL, BOOL,     supports_instrumented_sampling,   5)
+X(a, STATIC,   OPTIONAL, BOOL,     supports_instrumented_sampling,   5) \
+X(a, CALLBACK, REPEATED, MESSAGE,  counter_groups,    6) \
+X(a, STATIC,   OPTIONAL, BOOL,     supports_counter_names,   7) \
+X(a, STATIC,   OPTIONAL, BOOL,     supports_counter_name_globs,   8)
 #define perfetto_protos_GpuCounterDescriptor_CALLBACK pb_default_field_callback
 #define perfetto_protos_GpuCounterDescriptor_DEFAULT NULL
 #define perfetto_protos_GpuCounterDescriptor_specs_MSGTYPE perfetto_protos_GpuCounterDescriptor_GpuCounterSpec
 #define perfetto_protos_GpuCounterDescriptor_blocks_MSGTYPE perfetto_protos_GpuCounterDescriptor_GpuCounterBlock
+#define perfetto_protos_GpuCounterDescriptor_counter_groups_MSGTYPE perfetto_protos_GpuCounterDescriptor_GpuCounterGroupSpec
 
 #define perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, UINT32,   counter_id,        1) \
@@ -29507,7 +31718,8 @@ X(a, STATIC,   ONEOF,    DOUBLE,   (peak_value,double_peak_value,peak_value.doub
 X(a, CALLBACK, REPEATED, UENUM,    numerator_units,   7) \
 X(a, CALLBACK, REPEATED, UENUM,    denominator_units,   8) \
 X(a, STATIC,   OPTIONAL, BOOL,     select_by_default,   9) \
-X(a, CALLBACK, REPEATED, UENUM,    groups,           10)
+X(a, CALLBACK, REPEATED, UENUM,    groups,           10) \
+X(a, STATIC,   OPTIONAL, UENUM,    value_direction,  11)
 #define perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_CALLBACK pb_default_field_callback
 #define perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_DEFAULT NULL
 
@@ -29519,6 +31731,14 @@ X(a, CALLBACK, OPTIONAL, STRING,   description,       4) \
 X(a, CALLBACK, REPEATED, UINT32,   counter_ids,       5)
 #define perfetto_protos_GpuCounterDescriptor_GpuCounterBlock_CALLBACK pb_default_field_callback
 #define perfetto_protos_GpuCounterDescriptor_GpuCounterBlock_DEFAULT NULL
+
+#define perfetto_protos_GpuCounterDescriptor_GpuCounterGroupSpec_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UINT32,   group_id,          1) \
+X(a, CALLBACK, OPTIONAL, STRING,   name,              2) \
+X(a, CALLBACK, OPTIONAL, STRING,   description,       3) \
+X(a, CALLBACK, REPEATED, UINT32,   counter_ids,       4)
+#define perfetto_protos_GpuCounterDescriptor_GpuCounterGroupSpec_CALLBACK pb_default_field_callback
+#define perfetto_protos_GpuCounterDescriptor_GpuCounterGroupSpec_DEFAULT NULL
 
 #define perfetto_protos_TrackEventCategory_FIELDLIST(X, a) \
 X(a, CALLBACK, OPTIONAL, STRING,   name,              1) \
@@ -29533,6 +31753,70 @@ X(a, CALLBACK, REPEATED, MESSAGE,  available_categories,   1)
 #define perfetto_protos_TrackEventDescriptor_DEFAULT NULL
 #define perfetto_protos_TrackEventDescriptor_available_categories_MSGTYPE perfetto_protos_TrackEventCategory
 
+#define perfetto_protos_VmProgram_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UINT32,   version,           1) \
+X(a, CALLBACK, REPEATED, MESSAGE,  instructions,      2)
+#define perfetto_protos_VmProgram_CALLBACK pb_default_field_callback
+#define perfetto_protos_VmProgram_DEFAULT NULL
+#define perfetto_protos_VmProgram_instructions_MSGTYPE perfetto_protos_VmInstruction
+
+#define perfetto_protos_VmInstruction_FIELDLIST(X, a) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (operation,select,operation.select),   1) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (operation,reg_load,operation.reg_load),   2) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (operation,merge,operation.merge),   3) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (operation,set,operation.set),   4) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (operation,del,operation.del),   5) \
+X(a, STATIC,   OPTIONAL, UENUM,    abort_level,       6) \
+X(a, CALLBACK, REPEATED, MESSAGE,  nested_instructions,   7)
+#define perfetto_protos_VmInstruction_CALLBACK pb_default_field_callback
+#define perfetto_protos_VmInstruction_DEFAULT (const pb_byte_t*)"\x30\x01\x00"
+#define perfetto_protos_VmInstruction_operation_select_MSGTYPE perfetto_protos_VmOpSelect
+#define perfetto_protos_VmInstruction_operation_reg_load_MSGTYPE perfetto_protos_VmOpRegLoad
+#define perfetto_protos_VmInstruction_operation_merge_MSGTYPE perfetto_protos_VmOpMerge
+#define perfetto_protos_VmInstruction_operation_set_MSGTYPE perfetto_protos_VmOpSet
+#define perfetto_protos_VmInstruction_operation_del_MSGTYPE perfetto_protos_VmOpDel
+#define perfetto_protos_VmInstruction_nested_instructions_MSGTYPE perfetto_protos_VmInstruction
+
+#define perfetto_protos_VmOpSelect_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UENUM,    cursor,            1) \
+X(a, CALLBACK, REPEATED, MESSAGE,  relative_path,     2) \
+X(a, STATIC,   OPTIONAL, BOOL,     create_if_not_exist,   3)
+#define perfetto_protos_VmOpSelect_CALLBACK pb_default_field_callback
+#define perfetto_protos_VmOpSelect_DEFAULT NULL
+#define perfetto_protos_VmOpSelect_relative_path_MSGTYPE perfetto_protos_VmOpSelect_PathComponent
+
+#define perfetto_protos_VmOpSelect_PathComponent_FIELDLIST(X, a) \
+X(a, STATIC,   ONEOF,    UINT32,   (field,field_id,field.field_id),   1) \
+X(a, STATIC,   ONEOF,    UINT32,   (field,array_index,field.array_index),   2) \
+X(a, STATIC,   ONEOF,    UINT32,   (field,map_key_field_id,field.map_key_field_id),   3) \
+X(a, STATIC,   OPTIONAL, BOOL,     is_repeated,       5) \
+X(a, STATIC,   OPTIONAL, UINT32,   register_to_match,   6) \
+X(a, STATIC,   OPTIONAL, UINT32,   store_foreach_index_into_register,   7)
+#define perfetto_protos_VmOpSelect_PathComponent_CALLBACK NULL
+#define perfetto_protos_VmOpSelect_PathComponent_DEFAULT NULL
+
+#define perfetto_protos_VmOpRegLoad_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UENUM,    cursor,            1) \
+X(a, STATIC,   OPTIONAL, UINT32,   dst_register,      2)
+#define perfetto_protos_VmOpRegLoad_CALLBACK NULL
+#define perfetto_protos_VmOpRegLoad_DEFAULT NULL
+
+#define perfetto_protos_VmOpMerge_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, BOOL,     skip_submessages,   1) \
+X(a, STATIC,   OPTIONAL, BOOL,     del_if_src_empty,   2)
+#define perfetto_protos_VmOpMerge_CALLBACK NULL
+#define perfetto_protos_VmOpMerge_DEFAULT NULL
+
+#define perfetto_protos_VmOpSet_FIELDLIST(X, a) \
+
+#define perfetto_protos_VmOpSet_CALLBACK NULL
+#define perfetto_protos_VmOpSet_DEFAULT NULL
+
+#define perfetto_protos_VmOpDel_FIELDLIST(X, a) \
+
+#define perfetto_protos_VmOpDel_CALLBACK NULL
+#define perfetto_protos_VmOpDel_DEFAULT NULL
+
 #define perfetto_protos_DataSourceDescriptor_FIELDLIST(X, a) \
 X(a, CALLBACK, OPTIONAL, STRING,   name,              1) \
 X(a, STATIC,   OPTIONAL, BOOL,     will_notify_on_stop,   2) \
@@ -29542,12 +31826,14 @@ X(a, STATIC,   OPTIONAL, MESSAGE,  gpu_counter_descriptor,   5) \
 X(a, STATIC,   OPTIONAL, MESSAGE,  track_event_descriptor,   6) \
 X(a, STATIC,   OPTIONAL, UINT64,   id,                7) \
 X(a, STATIC,   OPTIONAL, MESSAGE,  ftrace_descriptor,   8) \
-X(a, STATIC,   OPTIONAL, BOOL,     no_flush,          9)
+X(a, STATIC,   OPTIONAL, BOOL,     no_flush,          9) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  protovm_program,  10)
 #define perfetto_protos_DataSourceDescriptor_CALLBACK pb_default_field_callback
 #define perfetto_protos_DataSourceDescriptor_DEFAULT NULL
 #define perfetto_protos_DataSourceDescriptor_gpu_counter_descriptor_MSGTYPE perfetto_protos_GpuCounterDescriptor
 #define perfetto_protos_DataSourceDescriptor_track_event_descriptor_MSGTYPE perfetto_protos_TrackEventDescriptor
 #define perfetto_protos_DataSourceDescriptor_ftrace_descriptor_MSGTYPE perfetto_protos_FtraceDescriptor
+#define perfetto_protos_DataSourceDescriptor_protovm_program_MSGTYPE perfetto_protos_VmProgram
 
 #define perfetto_protos_TracingServiceState_FIELDLIST(X, a) \
 X(a, CALLBACK, REPEATED, MESSAGE,  producers,         1) \
@@ -29569,7 +31855,9 @@ X(a, CALLBACK, OPTIONAL, STRING,   name,              2) \
 X(a, STATIC,   OPTIONAL, INT32,    uid,               3) \
 X(a, CALLBACK, OPTIONAL, STRING,   sdk_version,       4) \
 X(a, STATIC,   OPTIONAL, INT32,    pid,               5) \
-X(a, STATIC,   OPTIONAL, BOOL,     frozen,            6)
+X(a, STATIC,   OPTIONAL, BOOL,     frozen,            6) \
+X(a, STATIC,   OPTIONAL, UINT32,   machine_id,        7) \
+X(a, CALLBACK, OPTIONAL, STRING,   machine_name,      8)
 #define perfetto_protos_TracingServiceState_Producer_CALLBACK pb_default_field_callback
 #define perfetto_protos_TracingServiceState_Producer_DEFAULT NULL
 
@@ -29595,6 +31883,11 @@ X(a, STATIC,   OPTIONAL, BOOL,     is_started,       11)
 #define perfetto_protos_TracingServiceState_TracingSession_CALLBACK pb_default_field_callback
 #define perfetto_protos_TracingServiceState_TracingSession_DEFAULT NULL
 
+#define perfetto_protos_AndroidAflagsConfig_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UINT32,   poll_ms,           1)
+#define perfetto_protos_AndroidAflagsConfig_CALLBACK NULL
+#define perfetto_protos_AndroidAflagsConfig_DEFAULT NULL
+
 #define perfetto_protos_AndroidGameInterventionListConfig_FIELDLIST(X, a) \
 X(a, CALLBACK, REPEATED, STRING,   package_name_filter,   1)
 #define perfetto_protos_AndroidGameInterventionListConfig_CALLBACK pb_default_field_callback
@@ -29604,7 +31897,8 @@ X(a, CALLBACK, REPEATED, STRING,   package_name_filter,   1)
 X(a, STATIC,   OPTIONAL, UENUM,    mode,              1) \
 X(a, CALLBACK, REPEATED, MESSAGE,  rules,             2) \
 X(a, STATIC,   OPTIONAL, BOOL,     trace_dispatcher_input_events,   3) \
-X(a, STATIC,   OPTIONAL, BOOL,     trace_dispatcher_window_dispatch,   4)
+X(a, STATIC,   OPTIONAL, BOOL,     trace_dispatcher_window_dispatch,   4) \
+X(a, STATIC,   OPTIONAL, BOOL,     trace_evdev_events,   5)
 #define perfetto_protos_AndroidInputEventConfig_CALLBACK pb_default_field_callback
 #define perfetto_protos_AndroidInputEventConfig_DEFAULT NULL
 #define perfetto_protos_AndroidInputEventConfig_rules_MSGTYPE perfetto_protos_AndroidInputEventConfig_TraceRule
@@ -29621,7 +31915,8 @@ X(a, STATIC,   OPTIONAL, BOOL,     match_ime_connection_active,   5)
 #define perfetto_protos_AndroidLogConfig_FIELDLIST(X, a) \
 X(a, CALLBACK, REPEATED, UENUM,    log_ids,           1) \
 X(a, STATIC,   OPTIONAL, UENUM,    min_prio,          3) \
-X(a, CALLBACK, REPEATED, STRING,   filter_tags,       4)
+X(a, CALLBACK, REPEATED, STRING,   filter_tags,       4) \
+X(a, STATIC,   OPTIONAL, BOOL,     preserve_log_buffer,   5)
 #define perfetto_protos_AndroidLogConfig_CALLBACK pb_default_field_callback
 #define perfetto_protos_AndroidLogConfig_DEFAULT NULL
 
@@ -29679,7 +31974,8 @@ X(a, STATIC,   OPTIONAL, BOOL,     drop_tcp_flags,    6)
 
 #define perfetto_protos_PackagesListConfig_FIELDLIST(X, a) \
 X(a, CALLBACK, REPEATED, STRING,   package_name_filter,   1) \
-X(a, STATIC,   OPTIONAL, UINT32,   only_write_on_cpu_use_every_ms,   2)
+X(a, STATIC,   OPTIONAL, UINT32,   only_write_on_cpu_use_every_ms,   2) \
+X(a, CALLBACK, REPEATED, STRING,   package_name_regex_filter,   3)
 #define perfetto_protos_PackagesListConfig_CALLBACK pb_default_field_callback
 #define perfetto_protos_PackagesListConfig_DEFAULT NULL
 
@@ -29723,7 +32019,8 @@ X(a, CALLBACK, REPEATED, STRING,   user_type_filter,   1)
 
 #define perfetto_protos_WindowManagerConfig_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, UENUM,    log_frequency,     1) \
-X(a, STATIC,   OPTIONAL, UENUM,    log_level,         2)
+X(a, STATIC,   OPTIONAL, UENUM,    log_level,         2) \
+X(a, STATIC,   OPTIONAL, UENUM,    log_mode,          3)
 #define perfetto_protos_WindowManagerConfig_CALLBACK NULL
 #define perfetto_protos_WindowManagerConfig_DEFAULT NULL
 
@@ -29766,7 +32063,10 @@ X(a, STATIC,   OPTIONAL, BOOL,     log_instructions,   2)
 X(a, CALLBACK, REPEATED, UENUM,    kernel_flags,      1) \
 X(a, CALLBACK, REPEATED, STRING,   scheduler_provider_events,   2) \
 X(a, CALLBACK, REPEATED, STRING,   memory_provider_events,   3) \
-X(a, CALLBACK, REPEATED, STRING,   file_provider_events,   4)
+X(a, CALLBACK, REPEATED, STRING,   file_provider_events,   4) \
+X(a, CALLBACK, REPEATED, STRING,   stack_sampling_events,   5) \
+X(a, CALLBACK, REPEATED, STRING,   disk_provider_events,   6) \
+X(a, CALLBACK, REPEATED, STRING,   system_io_provider_events,   7)
 #define perfetto_protos_EtwConfig_CALLBACK pb_default_field_callback
 #define perfetto_protos_EtwConfig_DEFAULT NULL
 
@@ -29853,10 +32153,35 @@ X(a, STATIC,   OPTIONAL, UENUM,    state,             2)
 #define perfetto_protos_GpuCounterConfig_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, UINT64,   counter_period_ns,   1) \
 X(a, CALLBACK, REPEATED, UINT32,   counter_ids,       2) \
-X(a, STATIC,   OPTIONAL, BOOL,     instrumented_sampling,   3) \
-X(a, STATIC,   OPTIONAL, BOOL,     fix_gpu_clock,     4)
+X(a, STATIC,   ONEOF,    BOOL,     (instrumented_sampling_mode,instrumented_sampling,instrumented_sampling_mode.instrumented_sampling),   3) \
+X(a, STATIC,   OPTIONAL, BOOL,     fix_gpu_clock,     4) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (instrumented_sampling_mode,instrumented_sampling_config,instrumented_sampling_mode.instrumented_sampling_config),   5) \
+X(a, CALLBACK, REPEATED, STRING,   counter_names,     6)
 #define perfetto_protos_GpuCounterConfig_CALLBACK pb_default_field_callback
 #define perfetto_protos_GpuCounterConfig_DEFAULT NULL
+#define perfetto_protos_GpuCounterConfig_instrumented_sampling_mode_instrumented_sampling_config_MSGTYPE perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig
+
+#define perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_FIELDLIST(X, a) \
+X(a, CALLBACK, REPEATED, MESSAGE,  activity_name_filters,   3) \
+X(a, CALLBACK, REPEATED, MESSAGE,  activity_ranges,   5) \
+X(a, CALLBACK, REPEATED, STRING,   activity_tx_include_globs,   6) \
+X(a, CALLBACK, REPEATED, STRING,   activity_tx_exclude_globs,   7)
+#define perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_CALLBACK pb_default_field_callback
+#define perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_DEFAULT NULL
+#define perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_activity_name_filters_MSGTYPE perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityNameFilter
+#define perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_activity_ranges_MSGTYPE perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityRange
+
+#define perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityNameFilter_FIELDLIST(X, a) \
+X(a, CALLBACK, OPTIONAL, STRING,   name_glob,         1) \
+X(a, STATIC,   OPTIONAL, UENUM,    name_base,         2)
+#define perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityNameFilter_CALLBACK pb_default_field_callback
+#define perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityNameFilter_DEFAULT NULL
+
+#define perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityRange_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UINT32,   skip,              1) \
+X(a, STATIC,   OPTIONAL, UINT32,   count,             2)
+#define perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityRange_CALLBACK NULL
+#define perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityRange_DEFAULT NULL
 
 #define perfetto_protos_GpuRenderStagesConfig_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, BOOL,     full_loadstore,    1) \
@@ -29900,6 +32225,13 @@ X(a, STATIC,   OPTIONAL, MESSAGE,  console_config,  100)
 #define perfetto_protos_InterceptorConfig_CALLBACK pb_default_field_callback
 #define perfetto_protos_InterceptorConfig_DEFAULT NULL
 #define perfetto_protos_InterceptorConfig_console_config_MSGTYPE perfetto_protos_ConsoleConfig
+
+#define perfetto_protos_SystemdJournaldConfig_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UINT32,   min_prio,          1) \
+X(a, CALLBACK, REPEATED, STRING,   filter_identifiers,   2) \
+X(a, CALLBACK, REPEATED, STRING,   filter_units,      3)
+#define perfetto_protos_SystemdJournaldConfig_CALLBACK pb_default_field_callback
+#define perfetto_protos_SystemdJournaldConfig_DEFAULT NULL
 
 #define perfetto_protos_AndroidPowerConfig_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, UINT32,   battery_poll_ms,   1) \
@@ -29966,6 +32298,24 @@ X(a, STATIC,   OPTIONAL, UINT32,   dump_interval_ms,   6)
 #define perfetto_protos_HeapprofdConfig_ContinuousDumpConfig_CALLBACK NULL
 #define perfetto_protos_HeapprofdConfig_ContinuousDumpConfig_DEFAULT NULL
 
+#define perfetto_protos_SmapsConfig_FIELDLIST(X, a) \
+X(a, CALLBACK, REPEATED, UENUM,    vma_fields,        1) \
+X(a, STATIC,   OPTIONAL, BOOL,     unaggregated,      2) \
+X(a, CALLBACK, REPEATED, MESSAGE,  name_redaction_rules,   3)
+#define perfetto_protos_SmapsConfig_CALLBACK pb_default_field_callback
+#define perfetto_protos_SmapsConfig_DEFAULT NULL
+#define perfetto_protos_SmapsConfig_name_redaction_rules_MSGTYPE perfetto_protos_RedactionRule
+
+#define perfetto_protos_RedactionRule_FIELDLIST(X, a) \
+X(a, CALLBACK, OPTIONAL, STRING,   pattern,           1) \
+X(a, STATIC,   OPTIONAL, UENUM,    match_mode,        2) \
+X(a, STATIC,   OPTIONAL, BOOL,     keep_full,         3) \
+X(a, CALLBACK, OPTIONAL, STRING,   replacement_name,   4) \
+X(a, STATIC,   OPTIONAL, BOOL,     keep_file_extension,   5) \
+X(a, STATIC,   OPTIONAL, UINT32,   keep_path_elements,   6)
+#define perfetto_protos_RedactionRule_CALLBACK pb_default_field_callback
+#define perfetto_protos_RedactionRule_DEFAULT NULL
+
 #define perfetto_protos_JavaHprofConfig_FIELDLIST(X, a) \
 X(a, CALLBACK, REPEATED, STRING,   process_cmdline,   1) \
 X(a, CALLBACK, REPEATED, UINT64,   pid,               2) \
@@ -29973,10 +32323,12 @@ X(a, STATIC,   OPTIONAL, MESSAGE,  continuous_dump_config,   3) \
 X(a, STATIC,   OPTIONAL, UINT32,   min_anonymous_memory_kb,   4) \
 X(a, STATIC,   OPTIONAL, BOOL,     dump_smaps,        5) \
 X(a, CALLBACK, REPEATED, STRING,   ignored_types,     6) \
-X(a, CALLBACK, REPEATED, STRING,   target_installed_by,   7)
+X(a, CALLBACK, REPEATED, STRING,   target_installed_by,   7) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  smaps_config,      8)
 #define perfetto_protos_JavaHprofConfig_CALLBACK pb_default_field_callback
 #define perfetto_protos_JavaHprofConfig_DEFAULT NULL
 #define perfetto_protos_JavaHprofConfig_continuous_dump_config_MSGTYPE perfetto_protos_JavaHprofConfig_ContinuousDumpConfig
+#define perfetto_protos_JavaHprofConfig_smaps_config_MSGTYPE perfetto_protos_SmapsConfig
 
 #define perfetto_protos_JavaHprofConfig_ContinuousDumpConfig_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, UINT32,   dump_phase_ms,     1) \
@@ -30015,8 +32367,9 @@ X(a, CALLBACK, OPTIONAL, STRING,   filter,            2)
 X(a, STATIC,   OPTIONAL, UINT32,   type,              1) \
 X(a, STATIC,   OPTIONAL, UINT64,   config,            2) \
 X(a, STATIC,   OPTIONAL, UINT64,   config1,           3) \
-X(a, STATIC,   OPTIONAL, UINT64,   config2,           4)
-#define perfetto_protos_PerfEvents_RawEvent_CALLBACK NULL
+X(a, STATIC,   OPTIONAL, UINT64,   config2,           4) \
+X(a, CALLBACK, OPTIONAL, STRING,   pmu_name,          5)
+#define perfetto_protos_PerfEvents_RawEvent_CALLBACK pb_default_field_callback
 #define perfetto_protos_PerfEvents_RawEvent_DEFAULT NULL
 
 #define perfetto_protos_FollowerEvent_FIELDLIST(X, a) \
@@ -30049,7 +32402,9 @@ X(a, STATIC,   OPTIONAL, MESSAGE,  callstack_sampling,  16) \
 X(a, STATIC,   OPTIONAL, UINT64,   max_enqueued_footprint_kb,  17) \
 X(a, CALLBACK, REPEATED, STRING,   target_installed_by,  18) \
 X(a, CALLBACK, REPEATED, MESSAGE,  followers,        19) \
-X(a, CALLBACK, REPEATED, UINT32,   target_cpu,       20)
+X(a, CALLBACK, REPEATED, UINT32,   target_cpu,       20) \
+X(a, STATIC,   OPTIONAL, BOOL,     ignore_open_failure,  21) \
+X(a, CALLBACK, REPEATED, STRING,   cpuid,            22)
 #define perfetto_protos_PerfEventConfig_CALLBACK pb_default_field_callback
 #define perfetto_protos_PerfEventConfig_DEFAULT NULL
 #define perfetto_protos_PerfEventConfig_timebase_MSGTYPE perfetto_protos_PerfEvents_Timebase
@@ -30073,6 +32428,21 @@ X(a, STATIC,   OPTIONAL, UINT32,   additional_cmdline_count,   5) \
 X(a, STATIC,   OPTIONAL, UINT32,   process_shard_count,   6)
 #define perfetto_protos_PerfEventConfig_Scope_CALLBACK pb_default_field_callback
 #define perfetto_protos_PerfEventConfig_Scope_DEFAULT NULL
+
+#define perfetto_protos_ProtoVmConfig_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UINT32,   memory_limit_kb,   1)
+#define perfetto_protos_ProtoVmConfig_CALLBACK NULL
+#define perfetto_protos_ProtoVmConfig_DEFAULT NULL
+
+#define perfetto_protos_QnxConfig_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UINT32,   qnx_kernel_buffers,   1) \
+X(a, STATIC,   OPTIONAL, UINT32,   qnx_kernel_kbuffers,   2) \
+X(a, STATIC,   OPTIONAL, BOOL,     qnx_kernel_wide_events,   3) \
+X(a, STATIC,   OPTIONAL, UINT32,   qnx_cache_pages,   4) \
+X(a, STATIC,   OPTIONAL, INT32,    qnx_cache_max_pages,   5) \
+X(a, STATIC,   OPTIONAL, UINT32,   qnx_trace_buffer_init_bytes,   6)
+#define perfetto_protos_QnxConfig_CALLBACK NULL
+#define perfetto_protos_QnxConfig_DEFAULT NULL
 
 #define perfetto_protos_StatsdTracingConfig_FIELDLIST(X, a) \
 X(a, CALLBACK, REPEATED, UENUM,    push_atom_id,      1) \
@@ -30104,12 +32474,13 @@ X(a, STATIC,   OPTIONAL, UINT32,   diskstat_period_ms,  10) \
 X(a, STATIC,   OPTIONAL, UINT32,   psi_period_ms,    11) \
 X(a, STATIC,   OPTIONAL, UINT32,   thermal_period_ms,  12) \
 X(a, STATIC,   OPTIONAL, UINT32,   cpuidle_period_ms,  13) \
-X(a, STATIC,   OPTIONAL, UINT32,   gpufreq_period_ms,  14)
+X(a, STATIC,   OPTIONAL, UINT32,   gpufreq_period_ms,  14) \
+X(a, STATIC,   OPTIONAL, UINT32,   slab_period_ms,   15)
 #define perfetto_protos_SysStatsConfig_CALLBACK pb_default_field_callback
 #define perfetto_protos_SysStatsConfig_DEFAULT NULL
 
 #define perfetto_protos_SystemInfoConfig_FIELDLIST(X, a) \
-
+X(a, STATIC,   OPTIONAL, BOOL,     irq_names,         1)
 #define perfetto_protos_SystemInfoConfig_CALLBACK NULL
 #define perfetto_protos_SystemInfoConfig_DEFAULT NULL
 
@@ -30167,6 +32538,7 @@ X(a, STATIC,   OPTIONAL, UENUM,    session_initiator,   8) \
 X(a, STATIC,   OPTIONAL, UENUM,    buffer_exhausted_policy,   9) \
 X(a, STATIC,   OPTIONAL, MESSAGE,  priority_boost,   10) \
 X(a, CALLBACK, OPTIONAL, STRING,   target_buffer_name,  11) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  protovm_config,   12) \
 X(a, STATIC,   OPTIONAL, MESSAGE,  ftrace_config,   100) \
 X(a, STATIC,   OPTIONAL, MESSAGE,  chrome_config,   101) \
 X(a, STATIC,   OPTIONAL, MESSAGE,  inode_file_config, 102) \
@@ -30207,11 +32579,15 @@ X(a, STATIC,   OPTIONAL, MESSAGE,  frozen_ftrace_config, 136) \
 X(a, STATIC,   OPTIONAL, MESSAGE,  cpu_per_uid_config, 137) \
 X(a, STATIC,   OPTIONAL, MESSAGE,  user_list_config, 138) \
 X(a, STATIC,   OPTIONAL, MESSAGE,  inputmethod_config, 139) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  android_aflags_config, 140) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  journald_config, 141) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  qnx_config,      150) \
 X(a, CALLBACK, OPTIONAL, STRING,   legacy_config,   1000) \
 X(a, STATIC,   OPTIONAL, MESSAGE,  for_testing,     1001)
 #define perfetto_protos_DataSourceConfig_CALLBACK pb_default_field_callback
 #define perfetto_protos_DataSourceConfig_DEFAULT NULL
 #define perfetto_protos_DataSourceConfig_priority_boost_MSGTYPE perfetto_protos_PriorityBoostConfig
+#define perfetto_protos_DataSourceConfig_protovm_config_MSGTYPE perfetto_protos_ProtoVmConfig
 #define perfetto_protos_DataSourceConfig_ftrace_config_MSGTYPE perfetto_protos_FtraceConfig
 #define perfetto_protos_DataSourceConfig_chrome_config_MSGTYPE perfetto_protos_ChromeConfig
 #define perfetto_protos_DataSourceConfig_inode_file_config_MSGTYPE perfetto_protos_InodeFileConfig
@@ -30251,6 +32627,9 @@ X(a, STATIC,   OPTIONAL, MESSAGE,  for_testing,     1001)
 #define perfetto_protos_DataSourceConfig_cpu_per_uid_config_MSGTYPE perfetto_protos_CpuPerUidConfig
 #define perfetto_protos_DataSourceConfig_user_list_config_MSGTYPE perfetto_protos_AndroidUserListConfig
 #define perfetto_protos_DataSourceConfig_inputmethod_config_MSGTYPE perfetto_protos_InputMethodConfig
+#define perfetto_protos_DataSourceConfig_android_aflags_config_MSGTYPE perfetto_protos_AndroidAflagsConfig
+#define perfetto_protos_DataSourceConfig_journald_config_MSGTYPE perfetto_protos_SystemdJournaldConfig
+#define perfetto_protos_DataSourceConfig_qnx_config_MSGTYPE perfetto_protos_QnxConfig
 #define perfetto_protos_DataSourceConfig_for_testing_MSGTYPE perfetto_protos_TestConfig
 
 #define perfetto_protos_TraceConfig_FIELDLIST(X, a) \
@@ -30293,7 +32672,8 @@ X(a, STATIC,   OPTIONAL, MESSAGE,  priority_boost,   40) \
 X(a, STATIC,   OPTIONAL, UINT32,   exclusive_prio,   41) \
 X(a, STATIC,   OPTIONAL, BOOL,     trace_all_machines,  43) \
 X(a, STATIC,   OPTIONAL, UENUM,    write_flush_mode,  44) \
-X(a, STATIC,   OPTIONAL, UENUM,    fflush_post_write,  45)
+X(a, STATIC,   OPTIONAL, UENUM,    fflush_post_write,  45) \
+X(a, CALLBACK, REPEATED, MESSAGE,  notes,            46)
 #define perfetto_protos_TraceConfig_CALLBACK pb_default_field_callback
 #define perfetto_protos_TraceConfig_DEFAULT NULL
 #define perfetto_protos_TraceConfig_buffers_MSGTYPE perfetto_protos_TraceConfig_BufferConfig
@@ -30310,6 +32690,7 @@ X(a, STATIC,   OPTIONAL, UENUM,    fflush_post_write,  45)
 #define perfetto_protos_TraceConfig_cmd_trace_start_delay_MSGTYPE perfetto_protos_TraceConfig_CmdTraceStartDelay
 #define perfetto_protos_TraceConfig_session_semaphores_MSGTYPE perfetto_protos_TraceConfig_SessionSemaphore
 #define perfetto_protos_TraceConfig_priority_boost_MSGTYPE perfetto_protos_PriorityBoostConfig
+#define perfetto_protos_TraceConfig_notes_MSGTYPE perfetto_protos_TraceConfig_Note
 
 #define perfetto_protos_TraceConfig_BufferConfig_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, UINT32,   size_kb,           1) \
@@ -30338,7 +32719,8 @@ X(a, STATIC,   OPTIONAL, BOOL,     disable_service_events,   4) \
 X(a, STATIC,   OPTIONAL, UENUM,    primary_trace_clock,   5) \
 X(a, STATIC,   OPTIONAL, UINT32,   snapshot_interval_ms,   6) \
 X(a, STATIC,   OPTIONAL, BOOL,     prefer_suspend_clock_for_snapshot,   7) \
-X(a, STATIC,   OPTIONAL, BOOL,     disable_chunk_usage_histograms,   8)
+X(a, STATIC,   OPTIONAL, BOOL,     disable_chunk_usage_histograms,   8) \
+X(a, STATIC,   OPTIONAL, BOOL,     disable_extension_descriptors,   9)
 #define perfetto_protos_TraceConfig_BuiltinDataSource_CALLBACK NULL
 #define perfetto_protos_TraceConfig_BuiltinDataSource_DEFAULT NULL
 
@@ -30441,6 +32823,12 @@ X(a, STATIC,   OPTIONAL, UINT64,   max_other_session_count,   2)
 #define perfetto_protos_TraceConfig_SessionSemaphore_CALLBACK pb_default_field_callback
 #define perfetto_protos_TraceConfig_SessionSemaphore_DEFAULT NULL
 
+#define perfetto_protos_TraceConfig_Note_FIELDLIST(X, a) \
+X(a, CALLBACK, OPTIONAL, STRING,   key,               1) \
+X(a, CALLBACK, OPTIONAL, STRING,   value,             2)
+#define perfetto_protos_TraceConfig_Note_CALLBACK pb_default_field_callback
+#define perfetto_protos_TraceConfig_Note_DEFAULT NULL
+
 #define perfetto_protos_Utsname_FIELDLIST(X, a) \
 X(a, CALLBACK, OPTIONAL, STRING,   sysname,           1) \
 X(a, CALLBACK, OPTIONAL, STRING,   version,           2) \
@@ -30469,6 +32857,19 @@ X(a, STATIC,   OPTIONAL, UINT64,   system_ram_bytes,  16)
 #define perfetto_protos_SystemInfo_CALLBACK pb_default_field_callback
 #define perfetto_protos_SystemInfo_DEFAULT NULL
 #define perfetto_protos_SystemInfo_utsname_MSGTYPE perfetto_protos_Utsname
+
+#define perfetto_protos_TraceAttributes_FIELDLIST(X, a) \
+X(a, CALLBACK, REPEATED, MESSAGE,  attribute,         1)
+#define perfetto_protos_TraceAttributes_CALLBACK pb_default_field_callback
+#define perfetto_protos_TraceAttributes_DEFAULT NULL
+#define perfetto_protos_TraceAttributes_attribute_MSGTYPE perfetto_protos_TraceAttributes_Attribute
+
+#define perfetto_protos_TraceAttributes_Attribute_FIELDLIST(X, a) \
+X(a, CALLBACK, OPTIONAL, STRING,   key,               1) \
+X(a, STATIC,   ONEOF,    INT64,    (value,long_value,value.long_value),   2) \
+X(a, CALLBACK, ONEOF,    STRING,   (value,string_value,value.string_value),   3)
+#define perfetto_protos_TraceAttributes_Attribute_CALLBACK pb_default_field_callback
+#define perfetto_protos_TraceAttributes_Attribute_DEFAULT NULL
 
 #define perfetto_protos_TraceStats_FIELDLIST(X, a) \
 X(a, CALLBACK, REPEATED, MESSAGE,  buffer_stats,      1) \
@@ -30526,7 +32927,8 @@ X(a, STATIC,   OPTIONAL, UINT64,   packets_only_v1,   3) \
 X(a, STATIC,   OPTIONAL, UINT64,   packets_only_v2,   4) \
 X(a, STATIC,   OPTIONAL, UINT64,   patches_attempted,   5) \
 X(a, STATIC,   OPTIONAL, UINT64,   v1_patches_succeeded,   6) \
-X(a, STATIC,   OPTIONAL, UINT64,   v2_patches_succeeded,   7)
+X(a, STATIC,   OPTIONAL, UINT64,   v2_patches_succeeded,   7) \
+X(a, STATIC,   OPTIONAL, UINT32,   stats_version,     8)
 #define perfetto_protos_TraceStats_BufferStats_ShadowBufferStats_CALLBACK NULL
 #define perfetto_protos_TraceStats_BufferStats_ShadowBufferStats_DEFAULT NULL
 
@@ -30547,6 +32949,27 @@ X(a, STATIC,   OPTIONAL, UINT64,   time_taken_ns,     5) \
 X(a, CALLBACK, REPEATED, UINT64,   bytes_discarded_per_buffer,  20)
 #define perfetto_protos_TraceStats_FilterStats_CALLBACK pb_default_field_callback
 #define perfetto_protos_TraceStats_FilterStats_DEFAULT NULL
+
+#define perfetto_protos_AndroidAflags_FIELDLIST(X, a) \
+X(a, CALLBACK, REPEATED, MESSAGE,  flags,             1) \
+X(a, CALLBACK, OPTIONAL, STRING,   error,             2)
+#define perfetto_protos_AndroidAflags_CALLBACK pb_default_field_callback
+#define perfetto_protos_AndroidAflags_DEFAULT NULL
+#define perfetto_protos_AndroidAflags_flags_MSGTYPE perfetto_protos_AndroidAflags_Flag
+
+#define perfetto_protos_AndroidAflags_Flag_FIELDLIST(X, a) \
+X(a, CALLBACK, OPTIONAL, STRING,   flag_namespace,    1) \
+X(a, CALLBACK, OPTIONAL, STRING,   name,              2) \
+X(a, CALLBACK, OPTIONAL, STRING,   pkg,               3) \
+X(a, CALLBACK, OPTIONAL, STRING,   container,         4) \
+X(a, CALLBACK, OPTIONAL, STRING,   value,             5) \
+X(a, CALLBACK, OPTIONAL, STRING,   staged_value,      6) \
+X(a, STATIC,   OPTIONAL, UENUM,    permission,        7) \
+X(a, STATIC,   OPTIONAL, UENUM,    value_picked_from,   8) \
+X(a, STATIC,   OPTIONAL, UENUM,    storage_backend,   9) \
+X(a, STATIC,   OPTIONAL, UENUM,    type,             10)
+#define perfetto_protos_AndroidAflags_Flag_CALLBACK pb_default_field_callback
+#define perfetto_protos_AndroidAflags_Flag_DEFAULT NULL
 
 #define perfetto_protos_AndroidGameInterventionList_FIELDLIST(X, a) \
 X(a, CALLBACK, REPEATED, MESSAGE,  game_packages,     1) \
@@ -30621,25 +33044,6 @@ X(a, CALLBACK, OPTIONAL, STRING,   name,              1) \
 X(a, CALLBACK, OPTIONAL, STRING,   value,             2)
 #define perfetto_protos_AndroidSystemProperty_PropertyValue_CALLBACK pb_default_field_callback
 #define perfetto_protos_AndroidSystemProperty_PropertyValue_DEFAULT NULL
-
-#define perfetto_protos_AppWakelockInfo_FIELDLIST(X, a) \
-X(a, STATIC,   OPTIONAL, INT32,    iid,               1) \
-X(a, CALLBACK, OPTIONAL, STRING,   tag,               2) \
-X(a, STATIC,   OPTIONAL, INT32,    flags,             3) \
-X(a, STATIC,   OPTIONAL, INT32,    owner_pid,         4) \
-X(a, STATIC,   OPTIONAL, INT32,    owner_uid,         5) \
-X(a, STATIC,   OPTIONAL, INT32,    work_uid,          6)
-#define perfetto_protos_AppWakelockInfo_CALLBACK pb_default_field_callback
-#define perfetto_protos_AppWakelockInfo_DEFAULT NULL
-
-#define perfetto_protos_AppWakelockBundle_FIELDLIST(X, a) \
-X(a, CALLBACK, REPEATED, UINT32,   intern_id,         1) \
-X(a, CALLBACK, REPEATED, UINT64,   encoded_ts,        2) \
-X(a, STATIC,   OPTIONAL, MESSAGE,  info,              3) \
-X(a, STATIC,   OPTIONAL, BOOL,     acquired,          4)
-#define perfetto_protos_AppWakelockBundle_CALLBACK pb_default_field_callback
-#define perfetto_protos_AppWakelockBundle_DEFAULT NULL
-#define perfetto_protos_AppWakelockBundle_info_MSGTYPE perfetto_protos_AppWakelockInfo
 
 #define perfetto_protos_BluetoothTraceEvent_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, UENUM,    packet_type,       1) \
@@ -30764,7 +33168,9 @@ X(a, STATIC,   OPTIONAL, FLOAT,    vsync_resynced_jitter_millis,  14) \
 X(a, STATIC,   OPTIONAL, FLOAT,    jank_severity_score,  15) \
 X(a, STATIC,   OPTIONAL, INT32,    jank_type_experimental,  16) \
 X(a, STATIC,   OPTIONAL, UENUM,    present_type_experimental,  17) \
-X(a, STATIC,   OPTIONAL, FLOAT,    jank_debug_metadata,  18)
+X(a, STATIC,   OPTIONAL, FLOAT,    jank_debug_metadata,  18) \
+X(a, STATIC,   OPTIONAL, UENUM,    latched_fence_state,  19) \
+X(a, STATIC,   OPTIONAL, FLOAT,    animation_time_millis,  20)
 #define perfetto_protos_FrameTimelineEvent_ActualSurfaceFrameStart_CALLBACK pb_default_field_callback
 #define perfetto_protos_FrameTimelineEvent_ActualSurfaceFrameStart_DEFAULT NULL
 
@@ -30789,7 +33195,9 @@ X(a, STATIC,   OPTIONAL, FLOAT,    present_delay_millis,  10) \
 X(a, STATIC,   OPTIONAL, FLOAT,    jank_severity_score,  11) \
 X(a, STATIC,   OPTIONAL, INT32,    jank_type_experimental,  12) \
 X(a, STATIC,   OPTIONAL, UENUM,    present_type_experimental,  13) \
-X(a, STATIC,   OPTIONAL, FLOAT,    jank_debug_metadata,  14)
+X(a, STATIC,   OPTIONAL, FLOAT,    jank_debug_metadata,  14) \
+X(a, STATIC,   OPTIONAL, INT64,    latched_unsignaled_count,  15) \
+X(a, STATIC,   OPTIONAL, INT64,    addressable_unsignaled_latch_count,  16)
 #define perfetto_protos_FrameTimelineEvent_ActualDisplayFrameStart_CALLBACK NULL
 #define perfetto_protos_FrameTimelineEvent_ActualDisplayFrameStart_DEFAULT NULL
 
@@ -30797,13 +33205,6 @@ X(a, STATIC,   OPTIONAL, FLOAT,    jank_debug_metadata,  14)
 X(a, STATIC,   OPTIONAL, INT64,    cookie,            1)
 #define perfetto_protos_FrameTimelineEvent_FrameEnd_CALLBACK NULL
 #define perfetto_protos_FrameTimelineEvent_FrameEnd_DEFAULT NULL
-
-#define perfetto_protos_GpuMemTotalEvent_FIELDLIST(X, a) \
-X(a, STATIC,   OPTIONAL, UINT32,   gpu_id,            1) \
-X(a, STATIC,   OPTIONAL, UINT32,   pid,               2) \
-X(a, STATIC,   OPTIONAL, UINT64,   size,              3)
-#define perfetto_protos_GpuMemTotalEvent_CALLBACK NULL
-#define perfetto_protos_GpuMemTotalEvent_DEFAULT NULL
 
 #define perfetto_protos_GraphicsFrameEvent_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, MESSAGE,  buffer_event,      1)
@@ -30938,6 +33339,14 @@ X(a, CALLBACK, OPTIONAL, STRING,   tag,               3)
 #define perfetto_protos_ProtoLogViewerConfig_Group_CALLBACK pb_default_field_callback
 #define perfetto_protos_ProtoLogViewerConfig_Group_DEFAULT NULL
 
+#define perfetto_protos_RectProto_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, INT32,    left,              1) \
+X(a, STATIC,   OPTIONAL, INT32,    top,               2) \
+X(a, STATIC,   OPTIONAL, INT32,    right,             3) \
+X(a, STATIC,   OPTIONAL, INT32,    bottom,            4)
+#define perfetto_protos_RectProto_CALLBACK NULL
+#define perfetto_protos_RectProto_DEFAULT NULL
+
 #define perfetto_protos_ShellTransition_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, INT32,    id,                1) \
 X(a, STATIC,   OPTIONAL, INT64,    create_time_ns,    2) \
@@ -30952,21 +33361,29 @@ X(a, STATIC,   OPTIONAL, UINT64,   start_transaction_id,  10) \
 X(a, STATIC,   OPTIONAL, UINT64,   finish_transaction_id,  11) \
 X(a, STATIC,   OPTIONAL, INT32,    handler,          12) \
 X(a, STATIC,   OPTIONAL, INT32,    type,             13) \
-X(a, CALLBACK, REPEATED, MESSAGE,  targets,          14) \
+X(a, CALLBACK, REPEATED, MESSAGE,  changes,          14) \
 X(a, STATIC,   OPTIONAL, INT32,    merge_target,     15) \
 X(a, STATIC,   OPTIONAL, INT32,    flags,            16) \
 X(a, STATIC,   OPTIONAL, INT64,    starting_window_remove_time_ns,  17)
 #define perfetto_protos_ShellTransition_CALLBACK pb_default_field_callback
 #define perfetto_protos_ShellTransition_DEFAULT NULL
-#define perfetto_protos_ShellTransition_targets_MSGTYPE perfetto_protos_ShellTransition_Target
+#define perfetto_protos_ShellTransition_changes_MSGTYPE perfetto_protos_ShellTransition_Change
 
-#define perfetto_protos_ShellTransition_Target_FIELDLIST(X, a) \
+#define perfetto_protos_ShellTransition_Change_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, INT32,    mode,              1) \
 X(a, STATIC,   OPTIONAL, INT32,    layer_id,          2) \
 X(a, STATIC,   OPTIONAL, INT32,    window_id,         3) \
-X(a, STATIC,   OPTIONAL, INT32,    flags,             4)
-#define perfetto_protos_ShellTransition_Target_CALLBACK NULL
-#define perfetto_protos_ShellTransition_Target_DEFAULT NULL
+X(a, STATIC,   OPTIONAL, INT32,    flags,             4) \
+X(a, STATIC,   OPTIONAL, INT32,    start_display_id,   5) \
+X(a, STATIC,   OPTIONAL, INT32,    end_display_id,    6) \
+X(a, STATIC,   OPTIONAL, INT32,    start_rotation,    7) \
+X(a, STATIC,   OPTIONAL, INT32,    end_rotation,      8) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  start_absolute_bounds,   9) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  end_absolute_bounds,  10)
+#define perfetto_protos_ShellTransition_Change_CALLBACK NULL
+#define perfetto_protos_ShellTransition_Change_DEFAULT NULL
+#define perfetto_protos_ShellTransition_Change_start_absolute_bounds_MSGTYPE perfetto_protos_RectProto
+#define perfetto_protos_ShellTransition_Change_end_absolute_bounds_MSGTYPE perfetto_protos_RectProto
 
 #define perfetto_protos_ShellHandlerMappings_FIELDLIST(X, a) \
 X(a, CALLBACK, REPEATED, MESSAGE,  mapping,           1)
@@ -30980,13 +33397,13 @@ X(a, CALLBACK, OPTIONAL, STRING,   name,              2)
 #define perfetto_protos_ShellHandlerMapping_CALLBACK pb_default_field_callback
 #define perfetto_protos_ShellHandlerMapping_DEFAULT NULL
 
-#define perfetto_protos_RectProto_FIELDLIST(X, a) \
-X(a, STATIC,   OPTIONAL, INT32,    left,              1) \
-X(a, STATIC,   OPTIONAL, INT32,    top,               2) \
-X(a, STATIC,   OPTIONAL, INT32,    right,             3) \
-X(a, STATIC,   OPTIONAL, INT32,    bottom,            4)
-#define perfetto_protos_RectProto_CALLBACK NULL
-#define perfetto_protos_RectProto_DEFAULT NULL
+#define perfetto_protos_CornerRadiiProto_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, FLOAT,    tl,                1) \
+X(a, STATIC,   OPTIONAL, FLOAT,    tr,                2) \
+X(a, STATIC,   OPTIONAL, FLOAT,    bl,                3) \
+X(a, STATIC,   OPTIONAL, FLOAT,    br,                4)
+#define perfetto_protos_CornerRadiiProto_CALLBACK NULL
+#define perfetto_protos_CornerRadiiProto_DEFAULT NULL
 
 #define perfetto_protos_RegionProto_FIELDLIST(X, a) \
 X(a, CALLBACK, REPEATED, MESSAGE,  rect,              2)
@@ -31112,6 +33529,22 @@ X(a, STATIC,   OPTIONAL, INT64,    vsync_id,          8)
 #define perfetto_protos_LayersSnapshotProto_layers_MSGTYPE perfetto_protos_LayersProto
 #define perfetto_protos_LayersSnapshotProto_displays_MSGTYPE perfetto_protos_DisplayProto
 
+#define perfetto_protos_LayersPatchProto_FIELDLIST(X, a) \
+X(a, CALLBACK, REPEATED, MESSAGE,  layers,            1) \
+X(a, CALLBACK, REPEATED, MESSAGE,  displays,          2) \
+X(a, CALLBACK, REPEATED, INT32,    deleted_layer_ids,   3) \
+X(a, CALLBACK, REPEATED, UINT64,   deleted_display_ids,   4) \
+X(a, STATIC,   OPTIONAL, SFIXED64, elapsed_realtime_nanos,   5) \
+X(a, CALLBACK, OPTIONAL, STRING,   where,             6) \
+X(a, CALLBACK, OPTIONAL, STRING,   hwc_blob,          7) \
+X(a, STATIC,   OPTIONAL, BOOL,     excludes_composition_state,   8) \
+X(a, STATIC,   OPTIONAL, UINT32,   missed_entries,    9) \
+X(a, STATIC,   OPTIONAL, INT64,    vsync_id,         10)
+#define perfetto_protos_LayersPatchProto_CALLBACK pb_default_field_callback
+#define perfetto_protos_LayersPatchProto_DEFAULT NULL
+#define perfetto_protos_LayersPatchProto_layers_MSGTYPE perfetto_protos_LayerProto
+#define perfetto_protos_LayersPatchProto_displays_MSGTYPE perfetto_protos_DisplayProto
+
 #define perfetto_protos_LayersProto_FIELDLIST(X, a) \
 X(a, CALLBACK, REPEATED, MESSAGE,  layers,            1)
 #define perfetto_protos_LayersProto_CALLBACK pb_default_field_callback
@@ -31201,7 +33634,9 @@ X(a, STATIC,   OPTIONAL, MESSAGE,  client_drawn_corner_radii,  63) \
 X(a, STATIC,   OPTIONAL, INT32,    system_content_priority,  64) \
 X(a, STATIC,   OPTIONAL, MESSAGE,  box_shadow_settings,  65) \
 X(a, STATIC,   OPTIONAL, MESSAGE,  border_settings,  66) \
-X(a, STATIC,   OPTIONAL, MESSAGE,  effective_radii,  67)
+X(a, STATIC,   OPTIONAL, MESSAGE,  effective_radii,  67) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  reported_radii,   68) \
+X(a, STATIC,   OPTIONAL, BOOL,     disable_client_drawn_radii,  69)
 #define perfetto_protos_LayerProto_CALLBACK pb_default_field_callback
 #define perfetto_protos_LayerProto_DEFAULT NULL
 #define perfetto_protos_LayerProto_transparent_region_MSGTYPE perfetto_protos_RegionProto
@@ -31237,10 +33672,11 @@ X(a, STATIC,   OPTIONAL, MESSAGE,  effective_radii,  67)
 #define perfetto_protos_LayerProto_box_shadow_settings_MSGTYPE perfetto_protos_BoxShadowSettings
 #define perfetto_protos_LayerProto_border_settings_MSGTYPE perfetto_protos_BorderSettings
 #define perfetto_protos_LayerProto_effective_radii_MSGTYPE perfetto_protos_CornerRadiiProto
+#define perfetto_protos_LayerProto_reported_radii_MSGTYPE perfetto_protos_CornerRadiiProto
 
 #define perfetto_protos_LayerProto_MetadataEntry_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, INT32,    key,               1) \
-X(a, CALLBACK, OPTIONAL, STRING,   value,             2)
+X(a, CALLBACK, OPTIONAL, BYTES,    value,             2)
 #define perfetto_protos_LayerProto_MetadataEntry_CALLBACK pb_default_field_callback
 #define perfetto_protos_LayerProto_MetadataEntry_DEFAULT NULL
 
@@ -31257,14 +33693,6 @@ X(a, STATIC,   OPTIONAL, FLOAT,    right,             3) \
 X(a, STATIC,   OPTIONAL, FLOAT,    bottom,            4)
 #define perfetto_protos_FloatRectProto_CALLBACK NULL
 #define perfetto_protos_FloatRectProto_DEFAULT NULL
-
-#define perfetto_protos_CornerRadiiProto_FIELDLIST(X, a) \
-X(a, STATIC,   OPTIONAL, FLOAT,    tl,                1) \
-X(a, STATIC,   OPTIONAL, FLOAT,    tr,                2) \
-X(a, STATIC,   OPTIONAL, FLOAT,    bl,                3) \
-X(a, STATIC,   OPTIONAL, FLOAT,    br,                4)
-#define perfetto_protos_CornerRadiiProto_CALLBACK NULL
-#define perfetto_protos_CornerRadiiProto_DEFAULT NULL
 
 #define perfetto_protos_ActiveBufferProto_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, UINT32,   width,             1) \
@@ -31542,7 +33970,11 @@ X(a, STATIC,   OPTIONAL, BOOL,     had_failures,      9)
 X(a, STATIC,   OPTIONAL, MESSAGE,  background_tracing_metadata,   1) \
 X(a, STATIC,   OPTIONAL, INT32,    chrome_version_code,   2) \
 X(a, CALLBACK, OPTIONAL, STRING,   enabled_categories,   3) \
-X(a, CALLBACK, REPEATED, MESSAGE,  field_trial_hashes,   4)
+X(a, CALLBACK, REPEATED, MESSAGE,  field_trial_hashes,   4) \
+X(a, CALLBACK, OPTIONAL, STRING,   app_package_name,   5) \
+X(a, CALLBACK, OPTIONAL, STRING,   app_version,       6) \
+X(a, STATIC,   OPTIONAL, UINT32,   channel,           7) \
+X(a, CALLBACK, OPTIONAL, STRING,   os_name,           8)
 #define perfetto_protos_ChromeMetadataPacket_CALLBACK pb_default_field_callback
 #define perfetto_protos_ChromeMetadataPacket_DEFAULT NULL
 #define perfetto_protos_ChromeMetadataPacket_background_tracing_metadata_MSGTYPE perfetto_protos_BackgroundTracingMetadata
@@ -31750,7 +34182,10 @@ X(a, STATIC,   OPTIONAL, UENUM,    tier,              4) \
 X(a, STATIC,   OPTIONAL, UINT64,   instruction_start,   5) \
 X(a, STATIC,   OPTIONAL, UINT64,   instruction_size_bytes,   6) \
 X(a, CALLBACK, ONEOF,    BYTES,    (instructions,machine_code,instructions.machine_code),   7) \
-X(a, CALLBACK, ONEOF,    BYTES,    (instructions,bytecode,instructions.bytecode),   8)
+X(a, CALLBACK, ONEOF,    BYTES,    (instructions,bytecode,instructions.bytecode),   8) \
+X(a, CALLBACK, ONEOF,    BYTES,    (source_map,source_positions,source_map.source_positions),   9) \
+X(a, CALLBACK, ONEOF,    BYTES,    (source_map,bytecode_positions,source_map.bytecode_positions),  10) \
+X(a, CALLBACK, ONEOF,    BYTES,    (source_map,inlined_bytecode_positions,source_map.inlined_bytecode_positions),  11)
 #define perfetto_protos_V8JsCode_CALLBACK pb_default_field_callback
 #define perfetto_protos_V8JsCode_DEFAULT NULL
 
@@ -31928,6 +34363,37 @@ X(a, STATIC,   OPTIONAL, UINT32,   nt_status,         3)
 #define perfetto_protos_FileIoOpEndEtwEvent_CALLBACK NULL
 #define perfetto_protos_FileIoOpEndEtwEvent_DEFAULT NULL
 
+#define perfetto_protos_FileIoPathOperationEtwEvent_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UINT64,   irp_ptr,           1) \
+X(a, STATIC,   OPTIONAL, UINT64,   file_object,       2) \
+X(a, STATIC,   OPTIONAL, UINT64,   file_key,          3) \
+X(a, STATIC,   OPTIONAL, UINT64,   extra_info,        4) \
+X(a, STATIC,   OPTIONAL, UINT32,   ttid,              5) \
+X(a, STATIC,   OPTIONAL, UINT32,   info_class,        6) \
+X(a, CALLBACK, OPTIONAL, STRING,   file_name,         7) \
+X(a, STATIC,   OPTIONAL, UINT32,   opcode,            8)
+#define perfetto_protos_FileIoPathOperationEtwEvent_CALLBACK pb_default_field_callback
+#define perfetto_protos_FileIoPathOperationEtwEvent_DEFAULT NULL
+
+#define perfetto_protos_StackWalkEtwEvent_FIELDLIST(X, a) \
+X(a, CALLBACK, OPTIONAL, STRING,   trigger,           1) \
+X(a, STATIC,   OPTIONAL, UINT64,   callstack_iid,     2)
+#define perfetto_protos_StackWalkEtwEvent_CALLBACK pb_default_field_callback
+#define perfetto_protos_StackWalkEtwEvent_DEFAULT NULL
+
+#define perfetto_protos_DiskIoEtwEvent_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UINT32,   disk_number,       1) \
+X(a, STATIC,   OPTIONAL, UINT32,   irp_flags,         2) \
+X(a, STATIC,   OPTIONAL, UINT32,   transfer_size,     3) \
+X(a, STATIC,   OPTIONAL, INT64,    byte_offset,       4) \
+X(a, STATIC,   OPTIONAL, UINT64,   file_object,       5) \
+X(a, STATIC,   OPTIONAL, UINT64,   irp_ptr,           6) \
+X(a, STATIC,   OPTIONAL, INT64,    response_time,     7) \
+X(a, STATIC,   OPTIONAL, UINT32,   issuing_thread_id,   8) \
+X(a, STATIC,   OPTIONAL, UINT32,   opcode,            9)
+#define perfetto_protos_DiskIoEtwEvent_CALLBACK NULL
+#define perfetto_protos_DiskIoEtwEvent_DEFAULT NULL
+
 #define perfetto_protos_EtwTraceEvent_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, UINT64,   timestamp,         1) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (event,c_switch,event.c_switch),   2) \
@@ -31940,7 +34406,10 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (event,file_io_dir_enum,event.file_io_dir_enu
 X(a, STATIC,   ONEOF,    MESSAGE,  (event,file_io_info,event.file_io_info),   9) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (event,file_io_read_write,event.file_io_read_write),  10) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (event,file_io_simple_op,event.file_io_simple_op),  11) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (event,file_io_op_end,event.file_io_op_end),  12)
+X(a, STATIC,   ONEOF,    MESSAGE,  (event,file_io_op_end,event.file_io_op_end),  12) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (event,stack_walk,event.stack_walk),  13) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (event,file_io_path_operation,event.file_io_path_operation),  14) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (event,disk_io,event.disk_io),  15)
 #define perfetto_protos_EtwTraceEvent_CALLBACK NULL
 #define perfetto_protos_EtwTraceEvent_DEFAULT NULL
 #define perfetto_protos_EtwTraceEvent_event_c_switch_MSGTYPE perfetto_protos_CSwitchEtwEvent
@@ -31952,6 +34421,9 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (event,file_io_op_end,event.file_io_op_end), 
 #define perfetto_protos_EtwTraceEvent_event_file_io_read_write_MSGTYPE perfetto_protos_FileIoReadWriteEtwEvent
 #define perfetto_protos_EtwTraceEvent_event_file_io_simple_op_MSGTYPE perfetto_protos_FileIoSimpleOpEtwEvent
 #define perfetto_protos_EtwTraceEvent_event_file_io_op_end_MSGTYPE perfetto_protos_FileIoOpEndEtwEvent
+#define perfetto_protos_EtwTraceEvent_event_stack_walk_MSGTYPE perfetto_protos_StackWalkEtwEvent
+#define perfetto_protos_EtwTraceEvent_event_file_io_path_operation_MSGTYPE perfetto_protos_FileIoPathOperationEtwEvent
+#define perfetto_protos_EtwTraceEvent_event_disk_io_MSGTYPE perfetto_protos_DiskIoEtwEvent
 
 #define perfetto_protos_EtwTraceEventBundle_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, UINT32,   cpu,               1) \
@@ -31962,10 +34434,14 @@ X(a, CALLBACK, REPEATED, MESSAGE,  event,             2)
 
 #define perfetto_protos_EvdevEvent_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, UINT32,   device_id,         1) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (event,input_event,event.input_event),   2)
+X(a, STATIC,   ONEOF,    MESSAGE,  (event,input_event,event.input_event),   2) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (event,add_event,event.add_event),   3) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (event,remove_event,event.remove_event),   4)
 #define perfetto_protos_EvdevEvent_CALLBACK NULL
 #define perfetto_protos_EvdevEvent_DEFAULT NULL
 #define perfetto_protos_EvdevEvent_event_input_event_MSGTYPE perfetto_protos_EvdevEvent_InputEvent
+#define perfetto_protos_EvdevEvent_event_add_event_MSGTYPE perfetto_protos_EvdevEvent_DeviceAddition
+#define perfetto_protos_EvdevEvent_event_remove_event_MSGTYPE perfetto_protos_EvdevEvent_DeviceRemoval
 
 #define perfetto_protos_EvdevEvent_InputEvent_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, UINT64,   kernel_timestamp,   1) \
@@ -31974,6 +34450,106 @@ X(a, STATIC,   OPTIONAL, UINT32,   code,              3) \
 X(a, STATIC,   OPTIONAL, SINT32,   value,             4)
 #define perfetto_protos_EvdevEvent_InputEvent_CALLBACK NULL
 #define perfetto_protos_EvdevEvent_InputEvent_DEFAULT NULL
+
+#define perfetto_protos_EvdevEvent_DeviceAddition_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  device,            1)
+#define perfetto_protos_EvdevEvent_DeviceAddition_CALLBACK NULL
+#define perfetto_protos_EvdevEvent_DeviceAddition_DEFAULT NULL
+#define perfetto_protos_EvdevEvent_DeviceAddition_device_MSGTYPE perfetto_protos_EvdevDevice
+
+#define perfetto_protos_EvdevEvent_DeviceRemoval_FIELDLIST(X, a) \
+
+#define perfetto_protos_EvdevEvent_DeviceRemoval_CALLBACK NULL
+#define perfetto_protos_EvdevEvent_DeviceRemoval_DEFAULT NULL
+
+#define perfetto_protos_EvdevDevice_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UINT32,   device_id,         1) \
+X(a, STATIC,   OPTIONAL, UINT32,   device_num,        2) \
+X(a, CALLBACK, OPTIONAL, STRING,   name,              3) \
+X(a, CALLBACK, OPTIONAL, STRING,   phys,              4) \
+X(a, CALLBACK, OPTIONAL, STRING,   uniq,              5) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  id,                6) \
+X(a, CALLBACK, REPEATED, MESSAGE,  absolute_axis_infos,   7) \
+X(a, CALLBACK, OPTIONAL, BYTES,    ev_bitmask,        8) \
+X(a, CALLBACK, REPEATED, MESSAGE,  event_type_bitmasks,   9) \
+X(a, CALLBACK, OPTIONAL, BYTES,    prop_bitmask,     10) \
+X(a, CALLBACK, REPEATED, MESSAGE,  axis_states,      11) \
+X(a, CALLBACK, REPEATED, MESSAGE,  abs_mt_states,    12)
+#define perfetto_protos_EvdevDevice_CALLBACK pb_default_field_callback
+#define perfetto_protos_EvdevDevice_DEFAULT NULL
+#define perfetto_protos_EvdevDevice_id_MSGTYPE perfetto_protos_EvdevDevice_Identifier
+#define perfetto_protos_EvdevDevice_absolute_axis_infos_MSGTYPE perfetto_protos_EvdevDevice_AbsoluteAxisInfosEntry
+#define perfetto_protos_EvdevDevice_event_type_bitmasks_MSGTYPE perfetto_protos_EvdevDevice_EventTypeBitmasksEntry
+#define perfetto_protos_EvdevDevice_axis_states_MSGTYPE perfetto_protos_EvdevDevice_AxisStatesEntry
+#define perfetto_protos_EvdevDevice_abs_mt_states_MSGTYPE perfetto_protos_EvdevDevice_AbsMtStatesEntry
+
+#define perfetto_protos_EvdevDevice_Identifier_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UINT32,   bustype,           1) \
+X(a, STATIC,   OPTIONAL, UINT32,   vendor,            2) \
+X(a, STATIC,   OPTIONAL, UINT32,   product,           3) \
+X(a, STATIC,   OPTIONAL, UINT32,   version,           4)
+#define perfetto_protos_EvdevDevice_Identifier_CALLBACK NULL
+#define perfetto_protos_EvdevDevice_Identifier_DEFAULT NULL
+
+#define perfetto_protos_EvdevDevice_AbsInfo_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, SINT32,   minimum,           1) \
+X(a, STATIC,   OPTIONAL, SINT32,   maximum,           2) \
+X(a, STATIC,   OPTIONAL, INT32,    fuzz,              3) \
+X(a, STATIC,   OPTIONAL, INT32,    flat,              4) \
+X(a, STATIC,   OPTIONAL, INT32,    resolution,        5)
+#define perfetto_protos_EvdevDevice_AbsInfo_CALLBACK NULL
+#define perfetto_protos_EvdevDevice_AbsInfo_DEFAULT NULL
+
+#define perfetto_protos_EvdevDevice_AbsoluteAxisInfosEntry_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UINT32,   key,               1) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  value,             2)
+#define perfetto_protos_EvdevDevice_AbsoluteAxisInfosEntry_CALLBACK NULL
+#define perfetto_protos_EvdevDevice_AbsoluteAxisInfosEntry_DEFAULT NULL
+#define perfetto_protos_EvdevDevice_AbsoluteAxisInfosEntry_value_MSGTYPE perfetto_protos_EvdevDevice_AbsInfo
+
+#define perfetto_protos_EvdevDevice_EventTypeBitmasksEntry_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UINT32,   key,               1) \
+X(a, CALLBACK, OPTIONAL, BYTES,    value,             2)
+#define perfetto_protos_EvdevDevice_EventTypeBitmasksEntry_CALLBACK pb_default_field_callback
+#define perfetto_protos_EvdevDevice_EventTypeBitmasksEntry_DEFAULT NULL
+
+#define perfetto_protos_EvdevDevice_AxisMap_FIELDLIST(X, a) \
+X(a, CALLBACK, REPEATED, MESSAGE,  axis_states,       1)
+#define perfetto_protos_EvdevDevice_AxisMap_CALLBACK pb_default_field_callback
+#define perfetto_protos_EvdevDevice_AxisMap_DEFAULT NULL
+#define perfetto_protos_EvdevDevice_AxisMap_axis_states_MSGTYPE perfetto_protos_EvdevDevice_AxisMap_AxisStatesEntry
+
+#define perfetto_protos_EvdevDevice_AxisMap_AxisStatesEntry_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UINT32,   key,               1) \
+X(a, STATIC,   OPTIONAL, SINT32,   value,             2)
+#define perfetto_protos_EvdevDevice_AxisMap_AxisStatesEntry_CALLBACK NULL
+#define perfetto_protos_EvdevDevice_AxisMap_AxisStatesEntry_DEFAULT NULL
+
+#define perfetto_protos_EvdevDevice_AxisStatesEntry_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UINT32,   key,               1) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  value,             2)
+#define perfetto_protos_EvdevDevice_AxisStatesEntry_CALLBACK NULL
+#define perfetto_protos_EvdevDevice_AxisStatesEntry_DEFAULT NULL
+#define perfetto_protos_EvdevDevice_AxisStatesEntry_value_MSGTYPE perfetto_protos_EvdevDevice_AxisMap
+
+#define perfetto_protos_EvdevDevice_SlotValuesMap_FIELDLIST(X, a) \
+X(a, CALLBACK, REPEATED, MESSAGE,  slot_values,       1)
+#define perfetto_protos_EvdevDevice_SlotValuesMap_CALLBACK pb_default_field_callback
+#define perfetto_protos_EvdevDevice_SlotValuesMap_DEFAULT NULL
+#define perfetto_protos_EvdevDevice_SlotValuesMap_slot_values_MSGTYPE perfetto_protos_EvdevDevice_SlotValuesMap_SlotValuesEntry
+
+#define perfetto_protos_EvdevDevice_SlotValuesMap_SlotValuesEntry_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UINT32,   key,               1) \
+X(a, STATIC,   OPTIONAL, SINT32,   value,             2)
+#define perfetto_protos_EvdevDevice_SlotValuesMap_SlotValuesEntry_CALLBACK NULL
+#define perfetto_protos_EvdevDevice_SlotValuesMap_SlotValuesEntry_DEFAULT NULL
+
+#define perfetto_protos_EvdevDevice_AbsMtStatesEntry_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UINT32,   key,               1) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  value,             2)
+#define perfetto_protos_EvdevDevice_AbsMtStatesEntry_CALLBACK NULL
+#define perfetto_protos_EvdevDevice_AbsMtStatesEntry_DEFAULT NULL
+#define perfetto_protos_EvdevDevice_AbsMtStatesEntry_value_MSGTYPE perfetto_protos_EvdevDevice_SlotValuesMap
 
 #define perfetto_protos_FileDescriptorSet_FIELDLIST(X, a) \
 X(a, CALLBACK, REPEATED, MESSAGE,  file,              1)
@@ -32086,10 +34662,12 @@ X(a, CALLBACK, OPTIONAL, EXTENSION, extensions,      1000)
 #define perfetto_protos_OneofOptions_DEFAULT NULL
 
 #define perfetto_protos_ExtensionDescriptor_FIELDLIST(X, a) \
-X(a, STATIC,   OPTIONAL, MESSAGE,  extension_set,     1)
-#define perfetto_protos_ExtensionDescriptor_CALLBACK NULL
+X(a, STATIC,   ONEOF,    MESSAGE,  (descriptor,extension_set,descriptor.extension_set),   1) \
+X(a, CALLBACK, ONEOF,    BYTES,    (descriptor,extension_set_gzip,descriptor.extension_set_gzip),   2) \
+X(a, CALLBACK, OPTIONAL, STRING,   file_name,         3)
+#define perfetto_protos_ExtensionDescriptor_CALLBACK pb_default_field_callback
 #define perfetto_protos_ExtensionDescriptor_DEFAULT NULL
-#define perfetto_protos_ExtensionDescriptor_extension_set_MSGTYPE perfetto_protos_FileDescriptorSet
+#define perfetto_protos_ExtensionDescriptor_descriptor_extension_set_MSGTYPE perfetto_protos_FileDescriptorSet
 
 #define perfetto_protos_InodeFileMap_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, UINT64,   block_device_id,   1) \
@@ -32828,6 +35406,46 @@ X(a, STATIC,   OPTIONAL, INT32,    output_id,         2) \
 X(a, STATIC,   OPTIONAL, INT32,    enable,            3)
 #define perfetto_protos_DpuDispVblankIrqEnableFtraceEvent_CALLBACK NULL
 #define perfetto_protos_DpuDispVblankIrqEnableFtraceEvent_DEFAULT NULL
+
+#define perfetto_protos_DpuDispFrameDoneTimeoutFtraceEvent_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, INT32,    display_id,        1) \
+X(a, STATIC,   OPTIONAL, UINT32,   output_id,         2) \
+X(a, STATIC,   OPTIONAL, INT32,    frames_pending,    3) \
+X(a, STATIC,   OPTIONAL, INT32,    te_count,          4) \
+X(a, STATIC,   OPTIONAL, UINT32,   during_disable,    5)
+#define perfetto_protos_DpuDispFrameDoneTimeoutFtraceEvent_CALLBACK NULL
+#define perfetto_protos_DpuDispFrameDoneTimeoutFtraceEvent_DEFAULT NULL
+
+#define perfetto_protos_DpuDispFrameStartTimeoutFtraceEvent_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, INT32,    display_id,        1) \
+X(a, STATIC,   OPTIONAL, UINT32,   output_id,         2) \
+X(a, STATIC,   OPTIONAL, INT32,    frames_pending,    3) \
+X(a, STATIC,   OPTIONAL, INT32,    te_count,          4)
+#define perfetto_protos_DpuDispFrameStartTimeoutFtraceEvent_CALLBACK NULL
+#define perfetto_protos_DpuDispFrameStartTimeoutFtraceEvent_DEFAULT NULL
+
+#define perfetto_protos_DpuDispFrameDoneMissingFtraceEvent_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, INT32,    display_id,        1) \
+X(a, STATIC,   OPTIONAL, UINT32,   output_id,         2) \
+X(a, STATIC,   OPTIONAL, INT32,    frames_pending,    3) \
+X(a, STATIC,   OPTIONAL, INT32,    te_count,          4)
+#define perfetto_protos_DpuDispFrameDoneMissingFtraceEvent_CALLBACK NULL
+#define perfetto_protos_DpuDispFrameDoneMissingFtraceEvent_DEFAULT NULL
+
+#define perfetto_protos_DpuDispFrameStartMissingFtraceEvent_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, INT32,    display_id,        1) \
+X(a, STATIC,   OPTIONAL, UINT32,   output_id,         2) \
+X(a, STATIC,   OPTIONAL, INT32,    frames_pending,    3) \
+X(a, STATIC,   OPTIONAL, INT32,    te_count,          4)
+#define perfetto_protos_DpuDispFrameStartMissingFtraceEvent_CALLBACK NULL
+#define perfetto_protos_DpuDispFrameStartMissingFtraceEvent_DEFAULT NULL
+
+#define perfetto_protos_DpuDispDpuLineUnderrunFtraceEvent_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, INT32,    id,                1) \
+X(a, STATIC,   OPTIONAL, INT32,    frames_pending,    2) \
+X(a, STATIC,   OPTIONAL, INT32,    vsync_count,       3)
+#define perfetto_protos_DpuDispDpuLineUnderrunFtraceEvent_CALLBACK NULL
+#define perfetto_protos_DpuDispDpuLineUnderrunFtraceEvent_DEFAULT NULL
 
 #define perfetto_protos_DrmVblankEventFtraceEvent_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, INT32,    crtc,              1) \
@@ -34278,6 +36896,23 @@ X(a, STATIC,   OPTIONAL, INT32,    reserved_seg,     10) \
 X(a, STATIC,   OPTIONAL, UINT32,   prefree_seg,      11)
 #define perfetto_protos_F2fsGcEndFtraceEvent_CALLBACK NULL
 #define perfetto_protos_F2fsGcEndFtraceEvent_DEFAULT NULL
+
+#define perfetto_protos_F2fsLockElapsedTimeFtraceEvent_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UINT64,   dev,               1) \
+X(a, CALLBACK, OPTIONAL, STRING,   comm,              2) \
+X(a, STATIC,   OPTIONAL, INT32,    pid,               3) \
+X(a, STATIC,   OPTIONAL, INT32,    prio,              4) \
+X(a, STATIC,   OPTIONAL, INT32,    ioprio_class,      5) \
+X(a, STATIC,   OPTIONAL, INT32,    ioprio_data,       6) \
+X(a, STATIC,   OPTIONAL, UINT32,   lock_name,         7) \
+X(a, STATIC,   OPTIONAL, UINT32,   is_write,          8) \
+X(a, STATIC,   OPTIONAL, UINT64,   total_time,        9) \
+X(a, STATIC,   OPTIONAL, UINT64,   running_time,     10) \
+X(a, STATIC,   OPTIONAL, UINT64,   runnable_time,    11) \
+X(a, STATIC,   OPTIONAL, UINT64,   io_sleep_time,    12) \
+X(a, STATIC,   OPTIONAL, UINT64,   other_time,       13)
+#define perfetto_protos_F2fsLockElapsedTimeFtraceEvent_CALLBACK pb_default_field_callback
+#define perfetto_protos_F2fsLockElapsedTimeFtraceEvent_DEFAULT NULL
 
 #define perfetto_protos_FastrpcDmaStatFtraceEvent_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, INT32,    cid,               1) \
@@ -35956,6 +38591,35 @@ X(a, STATIC,   OPTIONAL, INT32,    value,             6)
 #define perfetto_protos_PanelWriteGenericFtraceEvent_CALLBACK pb_default_field_callback
 #define perfetto_protos_PanelWriteGenericFtraceEvent_DEFAULT NULL
 
+#define perfetto_protos_GramCollisionFtraceEvent_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, INT32,    panel_index,       1) \
+X(a, STATIC,   OPTIONAL, UINT32,   collision_cnt,     2)
+#define perfetto_protos_GramCollisionFtraceEvent_CALLBACK NULL
+#define perfetto_protos_GramCollisionFtraceEvent_DEFAULT NULL
+
+#define perfetto_protos_PanelSettingsFullFtraceEvent_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, INT32,    panel_index,       1) \
+X(a, STATIC,   OPTIONAL, UINT32,   hbm,               2) \
+X(a, STATIC,   OPTIONAL, UINT32,   irc,               3) \
+X(a, STATIC,   OPTIONAL, UINT32,   h_pwm,             4) \
+X(a, STATIC,   OPTIONAL, UINT32,   fi_auto,           5) \
+X(a, STATIC,   OPTIONAL, UINT32,   fi_manual,         6) \
+X(a, STATIC,   OPTIONAL, UINT32,   early_exit,        7) \
+X(a, STATIC,   OPTIONAL, UINT32,   min_rr,            8) \
+X(a, STATIC,   OPTIONAL, UINT32,   max_rr,            9) \
+X(a, STATIC,   OPTIONAL, UINT32,   te_freq,          10)
+#define perfetto_protos_PanelSettingsFullFtraceEvent_CALLBACK NULL
+#define perfetto_protos_PanelSettingsFullFtraceEvent_DEFAULT NULL
+
+#define perfetto_protos_PanelSettingsLiteFtraceEvent_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, INT32,    panel_index,       1) \
+X(a, STATIC,   OPTIONAL, UINT32,   vrr,               2) \
+X(a, STATIC,   OPTIONAL, UINT32,   min_rr,            3) \
+X(a, STATIC,   OPTIONAL, UINT32,   max_rr,            4) \
+X(a, STATIC,   OPTIONAL, UINT32,   te_freq,           5)
+#define perfetto_protos_PanelSettingsLiteFtraceEvent_CALLBACK NULL
+#define perfetto_protos_PanelSettingsLiteFtraceEvent_DEFAULT NULL
+
 #define perfetto_protos_SchedSwitchWithCtrsFtraceEvent_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, INT32,    old_pid,           1) \
 X(a, STATIC,   OPTIONAL, INT32,    new_pid,           2) \
@@ -36303,6 +38967,14 @@ X(a, STATIC,   OPTIONAL, UINT64,   uclamp_min,        4) \
 X(a, STATIC,   OPTIONAL, UINT64,   vruntime,          5)
 #define perfetto_protos_SchedWakeupTaskAttrFtraceEvent_CALLBACK NULL
 #define perfetto_protos_SchedWakeupTaskAttrFtraceEvent_DEFAULT NULL
+
+#define perfetto_protos_SchedGroupTrackerFtraceEvent_FIELDLIST(X, a) \
+X(a, CALLBACK, OPTIONAL, STRING,   comm,              1) \
+X(a, STATIC,   OPTIONAL, INT32,    pid,               2) \
+X(a, CALLBACK, OPTIONAL, STRING,   group,             3) \
+X(a, STATIC,   OPTIONAL, INT32,    group_num,         4)
+#define perfetto_protos_SchedGroupTrackerFtraceEvent_CALLBACK pb_default_field_callback
+#define perfetto_protos_SchedGroupTrackerFtraceEvent_DEFAULT NULL
 
 #define perfetto_protos_ScmCallStartFtraceEvent_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, UINT32,   arginfo,           1) \
@@ -36996,6 +39668,18 @@ X(a, STATIC,   OPTIONAL, INT32,    nid,               7)
 #define perfetto_protos_MmShrinkSlabEndFtraceEvent_CALLBACK NULL
 #define perfetto_protos_MmShrinkSlabEndFtraceEvent_DEFAULT NULL
 
+#define perfetto_protos_MmVmscanMemcgReclaimBeginFtraceEvent_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, INT32,    order,             1) \
+X(a, STATIC,   OPTIONAL, INT32,    may_writepage,     2) \
+X(a, STATIC,   OPTIONAL, UINT64,   gfp_flags,         3)
+#define perfetto_protos_MmVmscanMemcgReclaimBeginFtraceEvent_CALLBACK NULL
+#define perfetto_protos_MmVmscanMemcgReclaimBeginFtraceEvent_DEFAULT NULL
+
+#define perfetto_protos_MmVmscanMemcgReclaimEndFtraceEvent_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UINT64,   nr_reclaimed,      1)
+#define perfetto_protos_MmVmscanMemcgReclaimEndFtraceEvent_CALLBACK NULL
+#define perfetto_protos_MmVmscanMemcgReclaimEndFtraceEvent_DEFAULT NULL
+
 #define perfetto_protos_WorkqueueActivateWorkFtraceEvent_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, UINT64,   work,              1) \
 X(a, STATIC,   OPTIONAL, UINT64,   function,          2)
@@ -37606,7 +40290,19 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (event,scsi_dispatch_cmd_error,event.scsi_dis
 X(a, STATIC,   ONEOF,    MESSAGE,  (event,scsi_dispatch_cmd_timeout,event.scsi_dispatch_cmd_timeout), 598) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (event,scsi_eh_wakeup,event.scsi_eh_wakeup), 599) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (event,fwtp_perfetto_slice,event.fwtp_perfetto_slice), 600) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (event,gpu_power_state,event.gpu_power_state), 601)
+X(a, STATIC,   ONEOF,    MESSAGE,  (event,gpu_power_state,event.gpu_power_state), 601) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (event,gram_collision,event.gram_collision), 602) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (event,f2fs_lock_elapsed_time,event.f2fs_lock_elapsed_time), 603) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (event,sched_group_tracker,event.sched_group_tracker), 604) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (event,dpu_disp_frame_done_timeout,event.dpu_disp_frame_done_timeout), 605) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (event,dpu_disp_frame_start_timeout,event.dpu_disp_frame_start_timeout), 606) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (event,mm_vmscan_memcg_reclaim_begin,event.mm_vmscan_memcg_reclaim_begin), 607) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (event,mm_vmscan_memcg_reclaim_end,event.mm_vmscan_memcg_reclaim_end), 608) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (event,dpu_disp_frame_done_missing,event.dpu_disp_frame_done_missing), 609) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (event,dpu_disp_frame_start_missing,event.dpu_disp_frame_start_missing), 610) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (event,panel_settings_full,event.panel_settings_full), 611) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (event,panel_settings_lite,event.panel_settings_lite), 612) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (event,dpu_disp_dpu_line_underrun,event.dpu_disp_dpu_line_underrun), 613)
 #define perfetto_protos_FtraceEvent_CALLBACK NULL
 #define perfetto_protos_FtraceEvent_DEFAULT NULL
 #define perfetto_protos_FtraceEvent_event_print_MSGTYPE perfetto_protos_PrintFtraceEvent
@@ -38189,6 +40885,18 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (event,gpu_power_state,event.gpu_power_state)
 #define perfetto_protos_FtraceEvent_event_scsi_eh_wakeup_MSGTYPE perfetto_protos_ScsiEhWakeupFtraceEvent
 #define perfetto_protos_FtraceEvent_event_fwtp_perfetto_slice_MSGTYPE perfetto_protos_FwtpPerfettoSliceFtraceEvent
 #define perfetto_protos_FtraceEvent_event_gpu_power_state_MSGTYPE perfetto_protos_GpuPowerStateFtraceEvent
+#define perfetto_protos_FtraceEvent_event_gram_collision_MSGTYPE perfetto_protos_GramCollisionFtraceEvent
+#define perfetto_protos_FtraceEvent_event_f2fs_lock_elapsed_time_MSGTYPE perfetto_protos_F2fsLockElapsedTimeFtraceEvent
+#define perfetto_protos_FtraceEvent_event_sched_group_tracker_MSGTYPE perfetto_protos_SchedGroupTrackerFtraceEvent
+#define perfetto_protos_FtraceEvent_event_dpu_disp_frame_done_timeout_MSGTYPE perfetto_protos_DpuDispFrameDoneTimeoutFtraceEvent
+#define perfetto_protos_FtraceEvent_event_dpu_disp_frame_start_timeout_MSGTYPE perfetto_protos_DpuDispFrameStartTimeoutFtraceEvent
+#define perfetto_protos_FtraceEvent_event_mm_vmscan_memcg_reclaim_begin_MSGTYPE perfetto_protos_MmVmscanMemcgReclaimBeginFtraceEvent
+#define perfetto_protos_FtraceEvent_event_mm_vmscan_memcg_reclaim_end_MSGTYPE perfetto_protos_MmVmscanMemcgReclaimEndFtraceEvent
+#define perfetto_protos_FtraceEvent_event_dpu_disp_frame_done_missing_MSGTYPE perfetto_protos_DpuDispFrameDoneMissingFtraceEvent
+#define perfetto_protos_FtraceEvent_event_dpu_disp_frame_start_missing_MSGTYPE perfetto_protos_DpuDispFrameStartMissingFtraceEvent
+#define perfetto_protos_FtraceEvent_event_panel_settings_full_MSGTYPE perfetto_protos_PanelSettingsFullFtraceEvent
+#define perfetto_protos_FtraceEvent_event_panel_settings_lite_MSGTYPE perfetto_protos_PanelSettingsLiteFtraceEvent
+#define perfetto_protos_FtraceEvent_event_dpu_disp_dpu_line_underrun_MSGTYPE perfetto_protos_DpuDispDpuLineUnderrunFtraceEvent
 
 #define perfetto_protos_FtraceCpuStats_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, UINT64,   cpu,               1) \
@@ -38277,6 +40985,12 @@ X(a, CALLBACK, OPTIONAL, STRING,   group_name,        3)
 #define perfetto_protos_FtraceEventBundle_GenericEventDescriptor_CALLBACK pb_default_field_callback
 #define perfetto_protos_FtraceEventBundle_GenericEventDescriptor_DEFAULT NULL
 
+#define perfetto_protos_GenericGpuFrequencyEvent_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UINT32,   gpu_id,            1) \
+X(a, STATIC,   OPTIONAL, UINT32,   frequency_khz,     2)
+#define perfetto_protos_GenericGpuFrequencyEvent_CALLBACK NULL
+#define perfetto_protos_GenericGpuFrequencyEvent_DEFAULT NULL
+
 #define perfetto_protos_GenericKernelCpuFrequencyEvent_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, INT32,    cpu,               1) \
 X(a, STATIC,   OPTIONAL, INT64,    freq_hz,           2)
@@ -38310,7 +41024,8 @@ X(a, CALLBACK, REPEATED, MESSAGE,  threads,           2)
 X(a, STATIC,   OPTIONAL, INT64,    tid,               1) \
 X(a, STATIC,   OPTIONAL, INT64,    pid,               2) \
 X(a, CALLBACK, OPTIONAL, STRING,   comm,              3) \
-X(a, STATIC,   OPTIONAL, BOOL,     is_main_thread,    4)
+X(a, STATIC,   OPTIONAL, BOOL,     is_main_thread,    4) \
+X(a, STATIC,   OPTIONAL, BOOL,     is_idle,           5)
 #define perfetto_protos_GenericKernelProcessTree_Thread_CALLBACK pb_default_field_callback
 #define perfetto_protos_GenericKernelProcessTree_Thread_DEFAULT NULL
 
@@ -38322,12 +41037,13 @@ X(a, CALLBACK, OPTIONAL, STRING,   cmdline,           3)
 #define perfetto_protos_GenericKernelProcessTree_Process_DEFAULT NULL
 
 #define perfetto_protos_GpuCounterEvent_FIELDLIST(X, a) \
-X(a, STATIC,   OPTIONAL, MESSAGE,  counter_descriptor,   1) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (desc,counter_descriptor,desc.counter_descriptor),   1) \
 X(a, CALLBACK, REPEATED, MESSAGE,  counters,          2) \
-X(a, STATIC,   OPTIONAL, INT32,    gpu_id,            3)
+X(a, STATIC,   OPTIONAL, INT32,    gpu_id,            3) \
+X(a, STATIC,   ONEOF,    UINT64,   (desc,counter_descriptor_iid,desc.counter_descriptor_iid),   4)
 #define perfetto_protos_GpuCounterEvent_CALLBACK pb_default_field_callback
 #define perfetto_protos_GpuCounterEvent_DEFAULT NULL
-#define perfetto_protos_GpuCounterEvent_counter_descriptor_MSGTYPE perfetto_protos_GpuCounterDescriptor
+#define perfetto_protos_GpuCounterEvent_desc_counter_descriptor_MSGTYPE perfetto_protos_GpuCounterDescriptor
 #define perfetto_protos_GpuCounterEvent_counters_MSGTYPE perfetto_protos_GpuCounterEvent_GpuCounter
 
 #define perfetto_protos_GpuCounterEvent_GpuCounter_FIELDLIST(X, a) \
@@ -38337,12 +41053,27 @@ X(a, STATIC,   ONEOF,    DOUBLE,   (value,double_value,value.double_value),   3)
 #define perfetto_protos_GpuCounterEvent_GpuCounter_CALLBACK NULL
 #define perfetto_protos_GpuCounterEvent_GpuCounter_DEFAULT NULL
 
+#define perfetto_protos_InternedGpuCounterDescriptor_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UINT64,   iid,               1) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  counter_descriptor,   2) \
+X(a, STATIC,   OPTIONAL, INT32,    gpu_id,            3)
+#define perfetto_protos_InternedGpuCounterDescriptor_CALLBACK NULL
+#define perfetto_protos_InternedGpuCounterDescriptor_DEFAULT NULL
+#define perfetto_protos_InternedGpuCounterDescriptor_counter_descriptor_MSGTYPE perfetto_protos_GpuCounterDescriptor
+
 #define perfetto_protos_GpuLog_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, UENUM,    severity,          1) \
 X(a, CALLBACK, OPTIONAL, STRING,   tag,               2) \
 X(a, CALLBACK, OPTIONAL, STRING,   log_message,       3)
 #define perfetto_protos_GpuLog_CALLBACK pb_default_field_callback
 #define perfetto_protos_GpuLog_DEFAULT NULL
+
+#define perfetto_protos_GpuMemTotalEvent_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UINT32,   gpu_id,            1) \
+X(a, STATIC,   OPTIONAL, UINT32,   pid,               2) \
+X(a, STATIC,   OPTIONAL, UINT64,   size,              3)
+#define perfetto_protos_GpuMemTotalEvent_CALLBACK NULL
+#define perfetto_protos_GpuMemTotalEvent_DEFAULT NULL
 
 #define perfetto_protos_GpuRenderStageEvent_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, UINT64,   event_id,          1) \
@@ -38361,17 +41092,51 @@ X(a, STATIC,   OPTIONAL, UINT64,   hw_queue_iid,     13) \
 X(a, STATIC,   OPTIONAL, UINT64,   stage_iid,        14) \
 X(a, CALLBACK, REPEATED, UINT64,   render_subpass_index_mask,  15) \
 X(a, STATIC,   OPTIONAL, UINT64,   render_pass_instance_id,  16) \
+X(a, CALLBACK, ONEOF,    STRING,   (name_field,name,name_field.name),  17) \
+X(a, CALLBACK, REPEATED, UINT64,   event_wait_ids,   18) \
+X(a, STATIC,   OPTIONAL, UINT64,   kernel_iid,       19) \
+X(a, STATIC,   ONEOF,    UINT64,   (name_field,name_iid,name_field.name_iid),  20) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  launch,           21) \
 X(a, CALLBACK, OPTIONAL, EXTENSION, extensions,      100)
 #define perfetto_protos_GpuRenderStageEvent_CALLBACK pb_default_field_callback
 #define perfetto_protos_GpuRenderStageEvent_DEFAULT NULL
 #define perfetto_protos_GpuRenderStageEvent_extra_data_MSGTYPE perfetto_protos_GpuRenderStageEvent_ExtraData
 #define perfetto_protos_GpuRenderStageEvent_specifications_MSGTYPE perfetto_protos_GpuRenderStageEvent_Specifications
+#define perfetto_protos_GpuRenderStageEvent_launch_MSGTYPE perfetto_protos_GpuRenderStageEvent_ComputeKernelLaunch
 
 #define perfetto_protos_GpuRenderStageEvent_ExtraData_FIELDLIST(X, a) \
 X(a, CALLBACK, OPTIONAL, STRING,   name,              1) \
 X(a, CALLBACK, OPTIONAL, STRING,   value,             2)
 #define perfetto_protos_GpuRenderStageEvent_ExtraData_CALLBACK pb_default_field_callback
 #define perfetto_protos_GpuRenderStageEvent_ExtraData_DEFAULT NULL
+
+#define perfetto_protos_GpuRenderStageEvent_Dim3_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UINT32,   x,                 1) \
+X(a, STATIC,   OPTIONAL, UINT32,   y,                 2) \
+X(a, STATIC,   OPTIONAL, UINT32,   z,                 3)
+#define perfetto_protos_GpuRenderStageEvent_Dim3_CALLBACK NULL
+#define perfetto_protos_GpuRenderStageEvent_Dim3_DEFAULT NULL
+
+#define perfetto_protos_GpuRenderStageEvent_ExtraComputeArg_FIELDLIST(X, a) \
+X(a, STATIC,   ONEOF,    UINT64,   (name_field,name_iid,name_field.name_iid),   1) \
+X(a, CALLBACK, ONEOF,    STRING,   (name_field,name,name_field.name),   2) \
+X(a, STATIC,   ONEOF,    INT64,    (value,int_value,value.int_value),   3) \
+X(a, STATIC,   ONEOF,    UINT64,   (value,uint_value,value.uint_value),   4) \
+X(a, STATIC,   ONEOF,    DOUBLE,   (value,double_value,value.double_value),   5) \
+X(a, CALLBACK, ONEOF,    STRING,   (value,string_value,value.string_value),   6) \
+X(a, STATIC,   ONEOF,    UINT64,   (value,string_value_iid,value.string_value_iid),   7)
+#define perfetto_protos_GpuRenderStageEvent_ExtraComputeArg_CALLBACK pb_default_field_callback
+#define perfetto_protos_GpuRenderStageEvent_ExtraComputeArg_DEFAULT NULL
+
+#define perfetto_protos_GpuRenderStageEvent_ComputeKernelLaunch_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  grid_size,         1) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  workgroup_size,    2) \
+X(a, CALLBACK, REPEATED, MESSAGE,  args,              3)
+#define perfetto_protos_GpuRenderStageEvent_ComputeKernelLaunch_CALLBACK pb_default_field_callback
+#define perfetto_protos_GpuRenderStageEvent_ComputeKernelLaunch_DEFAULT NULL
+#define perfetto_protos_GpuRenderStageEvent_ComputeKernelLaunch_grid_size_MSGTYPE perfetto_protos_GpuRenderStageEvent_Dim3
+#define perfetto_protos_GpuRenderStageEvent_ComputeKernelLaunch_workgroup_size_MSGTYPE perfetto_protos_GpuRenderStageEvent_Dim3
+#define perfetto_protos_GpuRenderStageEvent_ComputeKernelLaunch_args_MSGTYPE perfetto_protos_GpuRenderStageEvent_ExtraComputeArg
 
 #define perfetto_protos_GpuRenderStageEvent_Specifications_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, MESSAGE,  context_spec,      1) \
@@ -38409,6 +41174,22 @@ X(a, CALLBACK, OPTIONAL, STRING,   description,       3) \
 X(a, STATIC,   OPTIONAL, UENUM,    category,          4)
 #define perfetto_protos_InternedGpuRenderStageSpecification_CALLBACK pb_default_field_callback
 #define perfetto_protos_InternedGpuRenderStageSpecification_DEFAULT NULL
+
+#define perfetto_protos_InternedComputeKernel_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UINT64,   iid,               1) \
+X(a, CALLBACK, OPTIONAL, STRING,   name,              2) \
+X(a, CALLBACK, OPTIONAL, STRING,   demangled_name,    3) \
+X(a, CALLBACK, OPTIONAL, STRING,   arch,              4) \
+X(a, CALLBACK, REPEATED, MESSAGE,  args,              5)
+#define perfetto_protos_InternedComputeKernel_CALLBACK pb_default_field_callback
+#define perfetto_protos_InternedComputeKernel_DEFAULT NULL
+#define perfetto_protos_InternedComputeKernel_args_MSGTYPE perfetto_protos_GpuRenderStageEvent_ExtraComputeArg
+
+#define perfetto_protos_InternedComputeArgName_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UINT64,   iid,               1) \
+X(a, CALLBACK, OPTIONAL, STRING,   name,              2)
+#define perfetto_protos_InternedComputeArgName_CALLBACK pb_default_field_callback
+#define perfetto_protos_InternedComputeArgName_DEFAULT NULL
 
 #define perfetto_protos_VulkanApiEvent_FIELDLIST(X, a) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (event,vk_debug_utils_object_name,event.vk_debug_utils_object_name),   1) \
@@ -38874,7 +41655,9 @@ X(a, STATIC,   OPTIONAL, FIXED64,  hwnd_ptr,          3)
 #define perfetto_protos_ChromeWindowHandleEventInfo_DEFAULT NULL
 
 #define perfetto_protos_Screenshot_FIELDLIST(X, a) \
-X(a, CALLBACK, OPTIONAL, BYTES,    jpg_image,         1)
+X(a, CALLBACK, OPTIONAL, BYTES,    jpg_image,         1) \
+X(a, CALLBACK, OPTIONAL, BYTES,    pam_image,         2) \
+X(a, CALLBACK, OPTIONAL, BYTES,    ppm_image,         3)
 #define perfetto_protos_Screenshot_CALLBACK pb_default_field_callback
 #define perfetto_protos_Screenshot_DEFAULT NULL
 
@@ -39042,11 +41825,12 @@ X(a, CALLBACK, REPEATED, MESSAGE,  viewcapture_package_name,  38) \
 X(a, CALLBACK, REPEATED, MESSAGE,  viewcapture_window_name,  39) \
 X(a, CALLBACK, REPEATED, MESSAGE,  viewcapture_view_id,  40) \
 X(a, CALLBACK, REPEATED, MESSAGE,  viewcapture_class_name,  41) \
-X(a, CALLBACK, REPEATED, MESSAGE,  app_wakelock_info,  42) \
+X(a, CALLBACK, OPTIONAL, EXTENSION, extensions,       42) \
 X(a, CALLBACK, REPEATED, MESSAGE,  correlation_id_str,  43) \
 X(a, CALLBACK, REPEATED, MESSAGE,  android_job_name,  44) \
 X(a, CALLBACK, REPEATED, MESSAGE,  viewcapture_content_description,  45) \
-X(a, CALLBACK, REPEATED, MESSAGE,  viewcapture_text,  46)
+X(a, CALLBACK, REPEATED, MESSAGE,  viewcapture_text,  46) \
+X(a, CALLBACK, REPEATED, MESSAGE,  gpu_counter_descriptors,  47)
 #define perfetto_protos_InternedData_CALLBACK pb_default_field_callback
 #define perfetto_protos_InternedData_DEFAULT NULL
 #define perfetto_protos_InternedData_event_categories_MSGTYPE perfetto_protos_EventCategory
@@ -39081,17 +41865,35 @@ X(a, CALLBACK, REPEATED, MESSAGE,  viewcapture_text,  46)
 #define perfetto_protos_InternedData_viewcapture_window_name_MSGTYPE perfetto_protos_InternedString
 #define perfetto_protos_InternedData_viewcapture_view_id_MSGTYPE perfetto_protos_InternedString
 #define perfetto_protos_InternedData_viewcapture_class_name_MSGTYPE perfetto_protos_InternedString
-#define perfetto_protos_InternedData_app_wakelock_info_MSGTYPE perfetto_protos_AppWakelockInfo
 #define perfetto_protos_InternedData_correlation_id_str_MSGTYPE perfetto_protos_InternedString
 #define perfetto_protos_InternedData_android_job_name_MSGTYPE perfetto_protos_AndroidJobName
 #define perfetto_protos_InternedData_viewcapture_content_description_MSGTYPE perfetto_protos_InternedString
 #define perfetto_protos_InternedData_viewcapture_text_MSGTYPE perfetto_protos_InternedString
+#define perfetto_protos_InternedData_gpu_counter_descriptors_MSGTYPE perfetto_protos_InternedGpuCounterDescriptor
 
 #define perfetto_protos_AndroidJobName_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, UINT64,   iid,               1) \
 X(a, CALLBACK, OPTIONAL, STRING,   name,              2)
 #define perfetto_protos_AndroidJobName_CALLBACK pb_default_field_callback
 #define perfetto_protos_AndroidJobName_DEFAULT NULL
+
+#define perfetto_protos_SystemdJournaldEvent_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UINT32,   pid,               1) \
+X(a, STATIC,   OPTIONAL, UINT32,   tid,               2) \
+X(a, STATIC,   OPTIONAL, UINT32,   uid,               3) \
+X(a, STATIC,   OPTIONAL, UINT32,   gid,               4) \
+X(a, STATIC,   OPTIONAL, UINT32,   prio,              5) \
+X(a, CALLBACK, OPTIONAL, STRING,   tag,               6) \
+X(a, CALLBACK, OPTIONAL, STRING,   message,           7) \
+X(a, CALLBACK, OPTIONAL, STRING,   comm,              8) \
+X(a, CALLBACK, OPTIONAL, STRING,   exe,               9) \
+X(a, CALLBACK, OPTIONAL, STRING,   systemd_unit,     10) \
+X(a, CALLBACK, OPTIONAL, STRING,   hostname,         11) \
+X(a, CALLBACK, OPTIONAL, STRING,   transport,        12) \
+X(a, STATIC,   OPTIONAL, UINT64,   num_total,        20) \
+X(a, STATIC,   OPTIONAL, UINT64,   num_failed,       21)
+#define perfetto_protos_SystemdJournaldEvent_CALLBACK pb_default_field_callback
+#define perfetto_protos_SystemdJournaldEvent_DEFAULT NULL
 
 #define perfetto_protos_MemoryTrackerSnapshot_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, UINT64,   global_dump_id,    1) \
@@ -39166,6 +41968,24 @@ X(a, STATIC,   OPTIONAL, UINT64,   iid,               1) \
 X(a, CALLBACK, OPTIONAL, STRING,   value,             2)
 #define perfetto_protos_PerfettoMetatrace_InternedString_CALLBACK pb_default_field_callback
 #define perfetto_protos_PerfettoMetatrace_InternedString_DEFAULT NULL
+
+#define perfetto_protos_TraceProvenance_FIELDLIST(X, a) \
+X(a, CALLBACK, REPEATED, MESSAGE,  buffers,           2)
+#define perfetto_protos_TraceProvenance_CALLBACK pb_default_field_callback
+#define perfetto_protos_TraceProvenance_DEFAULT NULL
+#define perfetto_protos_TraceProvenance_buffers_MSGTYPE perfetto_protos_TraceProvenance_Buffer
+
+#define perfetto_protos_TraceProvenance_Sequence_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UINT32,   id,                1) \
+X(a, STATIC,   OPTIONAL, INT32,    producer_id,       2)
+#define perfetto_protos_TraceProvenance_Sequence_CALLBACK NULL
+#define perfetto_protos_TraceProvenance_Sequence_DEFAULT NULL
+
+#define perfetto_protos_TraceProvenance_Buffer_FIELDLIST(X, a) \
+X(a, CALLBACK, REPEATED, MESSAGE,  sequences,         1)
+#define perfetto_protos_TraceProvenance_Buffer_CALLBACK pb_default_field_callback
+#define perfetto_protos_TraceProvenance_Buffer_DEFAULT NULL
+#define perfetto_protos_TraceProvenance_Buffer_sequences_MSGTYPE perfetto_protos_TraceProvenance_Sequence
 
 #define perfetto_protos_TracingServiceEvent_FIELDLIST(X, a) \
 X(a, STATIC,   ONEOF,    BOOL,     (event_type,all_data_sources_started,event_type.all_data_sources_started),   1) \
@@ -39286,6 +42106,33 @@ X(a, STATIC,   OPTIONAL, UINT64,   energy,            3)
 #define perfetto_protos_PowerRails_EnergyData_CALLBACK NULL
 #define perfetto_protos_PowerRails_EnergyData_DEFAULT NULL
 
+#define perfetto_protos_JavaFrame_FIELDLIST(X, a) \
+X(a, CALLBACK, OPTIONAL, STRING,   method_name,       1) \
+X(a, CALLBACK, OPTIONAL, STRING,   source_file,       2) \
+X(a, STATIC,   OPTIONAL, INT32,    line_number,       3)
+#define perfetto_protos_JavaFrame_CALLBACK pb_default_field_callback
+#define perfetto_protos_JavaFrame_DEFAULT NULL
+
+#define perfetto_protos_JavaStack_FIELDLIST(X, a) \
+X(a, CALLBACK, REPEATED, MESSAGE,  frames,            1)
+#define perfetto_protos_JavaStack_CALLBACK pb_default_field_callback
+#define perfetto_protos_JavaStack_DEFAULT NULL
+#define perfetto_protos_JavaStack_frames_MSGTYPE perfetto_protos_JavaFrame
+
+#define perfetto_protos_ArtProcessMetadata_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, INT32,    pid,               1) \
+X(a, STATIC,   OPTIONAL, INT32,    uid,               2) \
+X(a, CALLBACK, OPTIONAL, STRING,   process_name,      3) \
+X(a, CALLBACK, OPTIONAL, STRING,   package_name,      4) \
+X(a, STATIC,   OPTIONAL, UINT64,   oom_allocation_size,   5) \
+X(a, STATIC,   OPTIONAL, UINT64,   oom_total_bytes_free,   6) \
+X(a, STATIC,   OPTIONAL, UINT64,   oom_free_bytes_until_oom,   7) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  oom_thread_java_stack,   8) \
+X(a, CALLBACK, OPTIONAL, STRING,   oom_error_msg,     9)
+#define perfetto_protos_ArtProcessMetadata_CALLBACK pb_default_field_callback
+#define perfetto_protos_ArtProcessMetadata_DEFAULT NULL
+#define perfetto_protos_ArtProcessMetadata_oom_thread_java_stack_MSGTYPE perfetto_protos_JavaStack
+
 #define perfetto_protos_ObfuscatedMember_FIELDLIST(X, a) \
 X(a, CALLBACK, OPTIONAL, STRING,   obfuscated_name,   1) \
 X(a, CALLBACK, OPTIONAL, STRING,   deobfuscated_name,   2) \
@@ -39342,7 +42189,12 @@ X(a, STATIC,   OPTIONAL, UINT64,   reference_field_id_base,   6) \
 X(a, STATIC,   ONEOF,    UINT64,   (identifier,id_delta,identifier.id_delta),   7) \
 X(a, STATIC,   OPTIONAL, INT64,    native_allocation_registry_size_field,   8) \
 X(a, STATIC,   OPTIONAL, UENUM,    heap_type_delta,   9) \
-X(a, CALLBACK, REPEATED, UINT64,   runtime_internal_object_id,  10)
+X(a, CALLBACK, REPEATED, UINT64,   runtime_internal_object_id,  10) \
+X(a, STATIC,   OPTIONAL, INT64,    bitmap_id_field,  11) \
+X(a, STATIC,   OPTIONAL, INT64,    bitmap_source_id_field,  12) \
+X(a, STATIC,   OPTIONAL, UINT32,   bitmap_width_field,  13) \
+X(a, STATIC,   OPTIONAL, UINT32,   bitmap_height_field,  14) \
+X(a, STATIC,   OPTIONAL, INT64,    application_info_long_version_code_field,  15)
 #define perfetto_protos_HeapGraphObject_CALLBACK pb_default_field_callback
 #define perfetto_protos_HeapGraphObject_DEFAULT NULL
 
@@ -39354,7 +42206,8 @@ X(a, STATIC,   OPTIONAL, BOOL,     continued,         5) \
 X(a, STATIC,   OPTIONAL, UINT64,   index,             6) \
 X(a, CALLBACK, REPEATED, MESSAGE,  roots,             7) \
 X(a, CALLBACK, REPEATED, MESSAGE,  location_names,    8) \
-X(a, CALLBACK, REPEATED, MESSAGE,  types,             9)
+X(a, CALLBACK, REPEATED, MESSAGE,  types,             9) \
+X(a, STATIC,   OPTIONAL, INT64,    heap_bytes_allocated,  10)
 #define perfetto_protos_HeapGraph_CALLBACK pb_default_field_callback
 #define perfetto_protos_HeapGraph_DEFAULT NULL
 #define perfetto_protos_HeapGraph_objects_MSGTYPE perfetto_protos_HeapGraphObject
@@ -39514,12 +42367,33 @@ X(a, STATIC,   OPTIONAL, UINT64,   proportional_resident_kb,  15)
 #define perfetto_protos_SmapsEntry_CALLBACK pb_default_field_callback
 #define perfetto_protos_SmapsEntry_DEFAULT NULL
 
+#define perfetto_protos_PackedSmaps_FIELDLIST(X, a) \
+X(a, CALLBACK, REPEATED, STRING,   string_table,      1) \
+X(a, CALLBACK, REPEATED, UINT32,   name_id,           2) \
+X(a, CALLBACK, REPEATED, UINT32,   aggregate_count,   3) \
+X(a, CALLBACK, REPEATED, UINT64,   size_kb,           4) \
+X(a, CALLBACK, REPEATED, UINT64,   rss_kb,            5) \
+X(a, CALLBACK, REPEATED, UINT64,   anonymous_kb,      6) \
+X(a, CALLBACK, REPEATED, UINT64,   swap_kb,           7) \
+X(a, CALLBACK, REPEATED, UINT64,   shared_clean_kb,   8) \
+X(a, CALLBACK, REPEATED, UINT64,   shared_dirty_kb,   9) \
+X(a, CALLBACK, REPEATED, UINT64,   private_clean_kb,  10) \
+X(a, CALLBACK, REPEATED, UINT64,   private_dirty_kb,  11) \
+X(a, CALLBACK, REPEATED, UINT64,   locked_kb,        12) \
+X(a, CALLBACK, REPEATED, UINT64,   pss_kb,           13) \
+X(a, CALLBACK, REPEATED, UINT64,   pss_dirty_kb,     14) \
+X(a, CALLBACK, REPEATED, UINT64,   swap_pss_kb,      15)
+#define perfetto_protos_PackedSmaps_CALLBACK pb_default_field_callback
+#define perfetto_protos_PackedSmaps_DEFAULT NULL
+
 #define perfetto_protos_SmapsPacket_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, UINT32,   pid,               1) \
-X(a, CALLBACK, REPEATED, MESSAGE,  entries,           2)
+X(a, CALLBACK, REPEATED, MESSAGE,  entries,           2) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  packed_entries,    3)
 #define perfetto_protos_SmapsPacket_CALLBACK pb_default_field_callback
 #define perfetto_protos_SmapsPacket_DEFAULT NULL
 #define perfetto_protos_SmapsPacket_entries_MSGTYPE perfetto_protos_SmapsEntry
+#define perfetto_protos_SmapsPacket_packed_entries_MSGTYPE perfetto_protos_PackedSmaps
 
 #define perfetto_protos_ProcessStats_FIELDLIST(X, a) \
 X(a, CALLBACK, REPEATED, MESSAGE,  processes,         1) \
@@ -39641,7 +42515,8 @@ X(a, CALLBACK, REPEATED, MESSAGE,  disk_stat,        13) \
 X(a, CALLBACK, REPEATED, MESSAGE,  psi,              14) \
 X(a, CALLBACK, REPEATED, MESSAGE,  thermal_zone,     15) \
 X(a, CALLBACK, REPEATED, MESSAGE,  cpuidle_state,    16) \
-X(a, CALLBACK, REPEATED, UINT64,   gpufreq_mhz,      17)
+X(a, CALLBACK, REPEATED, UINT64,   gpufreq_mhz,      17) \
+X(a, CALLBACK, REPEATED, MESSAGE,  slab_info,        18)
 #define perfetto_protos_SysStats_CALLBACK pb_default_field_callback
 #define perfetto_protos_SysStats_DEFAULT NULL
 #define perfetto_protos_SysStats_meminfo_MSGTYPE perfetto_protos_SysStats_MeminfoValue
@@ -39655,6 +42530,7 @@ X(a, CALLBACK, REPEATED, UINT64,   gpufreq_mhz,      17)
 #define perfetto_protos_SysStats_psi_MSGTYPE perfetto_protos_SysStats_PsiSample
 #define perfetto_protos_SysStats_thermal_zone_MSGTYPE perfetto_protos_SysStats_ThermalZone
 #define perfetto_protos_SysStats_cpuidle_state_MSGTYPE perfetto_protos_SysStats_CpuIdleState
+#define perfetto_protos_SysStats_slab_info_MSGTYPE perfetto_protos_SysStats_SlabInfo
 
 #define perfetto_protos_SysStats_MeminfoValue_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, UENUM,    key,               1) \
@@ -39739,6 +42615,13 @@ X(a, CALLBACK, REPEATED, MESSAGE,  cpuidle_state_entry,   2)
 #define perfetto_protos_SysStats_CpuIdleState_DEFAULT NULL
 #define perfetto_protos_SysStats_CpuIdleState_cpuidle_state_entry_MSGTYPE perfetto_protos_SysStats_CpuIdleStateEntry
 
+#define perfetto_protos_SysStats_SlabInfo_FIELDLIST(X, a) \
+X(a, CALLBACK, OPTIONAL, STRING,   name,              1) \
+X(a, STATIC,   OPTIONAL, UINT32,   pages_per_slab,    2) \
+X(a, STATIC,   OPTIONAL, UINT32,   num_slabs,         3)
+#define perfetto_protos_SysStats_SlabInfo_CALLBACK pb_default_field_callback
+#define perfetto_protos_SysStats_SlabInfo_DEFAULT NULL
+
 #define perfetto_protos_CpuInfo_FIELDLIST(X, a) \
 X(a, CALLBACK, REPEATED, MESSAGE,  cpus,              1)
 #define perfetto_protos_CpuInfo_CALLBACK pb_default_field_callback
@@ -39764,15 +42647,55 @@ X(a, STATIC,   OPTIONAL, UINT64,   features,          5)
 #define perfetto_protos_CpuInfo_Cpu_DEFAULT NULL
 #define perfetto_protos_CpuInfo_Cpu_identifier_arm_identifier_MSGTYPE perfetto_protos_CpuInfo_ArmCpuIdentifier
 
+#define perfetto_protos_GpuInfo_FIELDLIST(X, a) \
+X(a, CALLBACK, REPEATED, MESSAGE,  gpus,              1)
+#define perfetto_protos_GpuInfo_CALLBACK pb_default_field_callback
+#define perfetto_protos_GpuInfo_DEFAULT NULL
+#define perfetto_protos_GpuInfo_gpus_MSGTYPE perfetto_protos_GpuInfo_Gpu
+
+#define perfetto_protos_GpuInfo_Gpu_FIELDLIST(X, a) \
+X(a, CALLBACK, OPTIONAL, STRING,   name,              1) \
+X(a, CALLBACK, OPTIONAL, STRING,   vendor,            2) \
+X(a, CALLBACK, OPTIONAL, STRING,   model,             3) \
+X(a, CALLBACK, OPTIONAL, STRING,   architecture,      4) \
+X(a, CALLBACK, OPTIONAL, BYTES,    uuid,              5) \
+X(a, CALLBACK, REPEATED, MESSAGE,  extra_info,        6) \
+X(a, CALLBACK, OPTIONAL, STRING,   pci_bdf,           7)
+#define perfetto_protos_GpuInfo_Gpu_CALLBACK pb_default_field_callback
+#define perfetto_protos_GpuInfo_Gpu_DEFAULT NULL
+#define perfetto_protos_GpuInfo_Gpu_extra_info_MSGTYPE perfetto_protos_GpuInfo_Gpu_KeyValue
+
+#define perfetto_protos_GpuInfo_Gpu_KeyValue_FIELDLIST(X, a) \
+X(a, CALLBACK, OPTIONAL, STRING,   key,               1) \
+X(a, CALLBACK, OPTIONAL, STRING,   value,             2)
+#define perfetto_protos_GpuInfo_Gpu_KeyValue_CALLBACK pb_default_field_callback
+#define perfetto_protos_GpuInfo_Gpu_KeyValue_DEFAULT NULL
+
+#define perfetto_protos_InterruptInfo_FIELDLIST(X, a) \
+X(a, CALLBACK, REPEATED, MESSAGE,  irq_mapping,       1)
+#define perfetto_protos_InterruptInfo_CALLBACK pb_default_field_callback
+#define perfetto_protos_InterruptInfo_DEFAULT NULL
+#define perfetto_protos_InterruptInfo_irq_mapping_MSGTYPE perfetto_protos_InterruptInfo_InterruptMapping
+
+#define perfetto_protos_InterruptInfo_InterruptMapping_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UINT32,   irq_id,            1) \
+X(a, CALLBACK, OPTIONAL, STRING,   name,              2)
+#define perfetto_protos_InterruptInfo_InterruptMapping_CALLBACK pb_default_field_callback
+#define perfetto_protos_InterruptInfo_InterruptMapping_DEFAULT NULL
+
 #define perfetto_protos_TestEvent_FIELDLIST(X, a) \
 X(a, CALLBACK, OPTIONAL, STRING,   str,               1) \
 X(a, STATIC,   OPTIONAL, UINT32,   seq_value,         2) \
 X(a, STATIC,   OPTIONAL, UINT64,   counter,           3) \
 X(a, STATIC,   OPTIONAL, BOOL,     is_last,           4) \
-X(a, STATIC,   OPTIONAL, MESSAGE,  payload,           5)
+X(a, STATIC,   OPTIONAL, MESSAGE,  payload,           5) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  protovm_patch,     6) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  protovm_incremental_state,   7)
 #define perfetto_protos_TestEvent_CALLBACK pb_default_field_callback
 #define perfetto_protos_TestEvent_DEFAULT NULL
 #define perfetto_protos_TestEvent_payload_MSGTYPE perfetto_protos_TestEvent_TestPayload
+#define perfetto_protos_TestEvent_protovm_patch_MSGTYPE perfetto_protos_TestEvent_ProtoVmPatch
+#define perfetto_protos_TestEvent_protovm_incremental_state_MSGTYPE perfetto_protos_TestEvent_ProtoVmIncrementalState
 
 #define perfetto_protos_TestEvent_TestPayload_FIELDLIST(X, a) \
 X(a, CALLBACK, REPEATED, STRING,   str,               1) \
@@ -39786,6 +42709,39 @@ X(a, CALLBACK, REPEATED, MESSAGE,  debug_annotations,   7)
 #define perfetto_protos_TestEvent_TestPayload_DEFAULT NULL
 #define perfetto_protos_TestEvent_TestPayload_nested_MSGTYPE perfetto_protos_TestEvent_TestPayload
 #define perfetto_protos_TestEvent_TestPayload_debug_annotations_MSGTYPE perfetto_protos_DebugAnnotation
+
+#define perfetto_protos_TestEvent_ProtoVmMessage_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UINT32,   id,                1) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  submessage,        2)
+#define perfetto_protos_TestEvent_ProtoVmMessage_CALLBACK NULL
+#define perfetto_protos_TestEvent_ProtoVmMessage_DEFAULT NULL
+#define perfetto_protos_TestEvent_ProtoVmMessage_submessage_MSGTYPE perfetto_protos_TestEvent_ProtoVmMessage_ProtoVmSubmessage
+
+#define perfetto_protos_TestEvent_ProtoVmMessage_ProtoVmSubmessage_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UINT32,   single_int,        1)
+#define perfetto_protos_TestEvent_ProtoVmMessage_ProtoVmSubmessage_CALLBACK NULL
+#define perfetto_protos_TestEvent_ProtoVmMessage_ProtoVmSubmessage_DEFAULT NULL
+
+#define perfetto_protos_TestEvent_ProtoVmPatch_FIELDLIST(X, a) \
+X(a, CALLBACK, OPTIONAL, STRING,   string_to_merge,   1) \
+X(a, STATIC,   OPTIONAL, INT32,    int_to_merge,      2) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  single_message,    3) \
+X(a, CALLBACK, REPEATED, MESSAGE,  messages,          4) \
+X(a, CALLBACK, REPEATED, UINT32,   delete_message_ids,   5)
+#define perfetto_protos_TestEvent_ProtoVmPatch_CALLBACK pb_default_field_callback
+#define perfetto_protos_TestEvent_ProtoVmPatch_DEFAULT NULL
+#define perfetto_protos_TestEvent_ProtoVmPatch_single_message_MSGTYPE perfetto_protos_TestEvent_ProtoVmMessage
+#define perfetto_protos_TestEvent_ProtoVmPatch_messages_MSGTYPE perfetto_protos_TestEvent_ProtoVmMessage
+
+#define perfetto_protos_TestEvent_ProtoVmIncrementalState_FIELDLIST(X, a) \
+X(a, CALLBACK, OPTIONAL, STRING,   string_merged,     1) \
+X(a, STATIC,   OPTIONAL, INT32,    int_merged,        2) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  single_message,    3) \
+X(a, CALLBACK, REPEATED, MESSAGE,  messages,          4)
+#define perfetto_protos_TestEvent_ProtoVmIncrementalState_CALLBACK pb_default_field_callback
+#define perfetto_protos_TestEvent_ProtoVmIncrementalState_DEFAULT NULL
+#define perfetto_protos_TestEvent_ProtoVmIncrementalState_single_message_MSGTYPE perfetto_protos_TestEvent_ProtoVmMessage
+#define perfetto_protos_TestEvent_ProtoVmIncrementalState_messages_MSGTYPE perfetto_protos_TestEvent_ProtoVmMessage
 
 #define perfetto_protos_TracePacketDefaults_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, MESSAGE,  track_event_defaults,  11) \
@@ -39823,7 +42779,7 @@ X(a, STATIC,   OPTIONAL, INT64,    start_us,          1)
 
 #define perfetto_protos_ThreadDescriptor_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, INT32,    pid,               1) \
-X(a, STATIC,   OPTIONAL, INT32,    tid,               2) \
+X(a, STATIC,   OPTIONAL, INT64,    tid,               2) \
 X(a, STATIC,   OPTIONAL, INT32,    legacy_sort_index,   3) \
 X(a, STATIC,   OPTIONAL, UENUM,    chrome_thread_type,   4) \
 X(a, CALLBACK, OPTIONAL, STRING,   thread_name,       5) \
@@ -40097,7 +43053,7 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (data,winscope_extensions,data.winscope_exten
 X(a, STATIC,   ONEOF,    MESSAGE,  (data,clone_snapshot_trigger,data.clone_snapshot_trigger), 113) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (data,bluetooth_trace_event,data.bluetooth_trace_event), 114) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (data,kernel_wakelock_data,data.kernel_wakelock_data), 115) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (data,app_wakelock_bundle,data.app_wakelock_bundle), 116) \
+X(a, CALLBACK, OPTIONAL, EXTENSION, extensions,      116) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (data,generic_kernel_task_state_event,data.generic_kernel_task_state_event), 117) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (data,generic_kernel_cpu_freq_event,data.generic_kernel_cpu_freq_event), 118) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (data,cpu_per_uid_data,data.cpu_per_uid_data), 119) \
@@ -40105,6 +43061,15 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (data,generic_kernel_task_rename_event,data.g
 X(a, STATIC,   ONEOF,    MESSAGE,  (data,evdev_event,data.evdev_event), 121) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (data,generic_kernel_process_tree,data.generic_kernel_process_tree), 122) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (data,user_list,data.user_list), 123) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (data,trace_provenance,data.trace_provenance), 124) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (data,protovms,data.protovms), 125) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (data,trace_attributes,data.trace_attributes), 126) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (data,android_aflags,data.android_aflags), 127) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (data,gpu_info,data.gpu_info), 128) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (data,generic_gpu_frequency_event,data.generic_gpu_frequency_event), 129) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (data,interrupt_info,data.interrupt_info), 130) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (data,art_process_metadata,data.art_process_metadata), 131) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (data,journald_event,data.journald_event), 132) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (data,for_testing,data.for_testing), 900)
 #define perfetto_protos_TracePacket_CALLBACK pb_default_field_callback
 #define perfetto_protos_TracePacket_DEFAULT NULL
@@ -40188,7 +43153,6 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (data,for_testing,data.for_testing), 900)
 #define perfetto_protos_TracePacket_data_clone_snapshot_trigger_MSGTYPE perfetto_protos_Trigger
 #define perfetto_protos_TracePacket_data_bluetooth_trace_event_MSGTYPE perfetto_protos_BluetoothTraceEvent
 #define perfetto_protos_TracePacket_data_kernel_wakelock_data_MSGTYPE perfetto_protos_KernelWakelockData
-#define perfetto_protos_TracePacket_data_app_wakelock_bundle_MSGTYPE perfetto_protos_AppWakelockBundle
 #define perfetto_protos_TracePacket_data_generic_kernel_task_state_event_MSGTYPE perfetto_protos_GenericKernelTaskStateEvent
 #define perfetto_protos_TracePacket_data_generic_kernel_cpu_freq_event_MSGTYPE perfetto_protos_GenericKernelCpuFrequencyEvent
 #define perfetto_protos_TracePacket_data_cpu_per_uid_data_MSGTYPE perfetto_protos_CpuPerUidData
@@ -40196,7 +43160,32 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (data,for_testing,data.for_testing), 900)
 #define perfetto_protos_TracePacket_data_evdev_event_MSGTYPE perfetto_protos_EvdevEvent
 #define perfetto_protos_TracePacket_data_generic_kernel_process_tree_MSGTYPE perfetto_protos_GenericKernelProcessTree
 #define perfetto_protos_TracePacket_data_user_list_MSGTYPE perfetto_protos_AndroidUserList
+#define perfetto_protos_TracePacket_data_trace_provenance_MSGTYPE perfetto_protos_TraceProvenance
+#define perfetto_protos_TracePacket_data_protovms_MSGTYPE perfetto_protos_TracePacket_ProtoVms
+#define perfetto_protos_TracePacket_data_trace_attributes_MSGTYPE perfetto_protos_TraceAttributes
+#define perfetto_protos_TracePacket_data_android_aflags_MSGTYPE perfetto_protos_AndroidAflags
+#define perfetto_protos_TracePacket_data_gpu_info_MSGTYPE perfetto_protos_GpuInfo
+#define perfetto_protos_TracePacket_data_generic_gpu_frequency_event_MSGTYPE perfetto_protos_GenericGpuFrequencyEvent
+#define perfetto_protos_TracePacket_data_interrupt_info_MSGTYPE perfetto_protos_InterruptInfo
+#define perfetto_protos_TracePacket_data_art_process_metadata_MSGTYPE perfetto_protos_ArtProcessMetadata
+#define perfetto_protos_TracePacket_data_journald_event_MSGTYPE perfetto_protos_SystemdJournaldEvent
 #define perfetto_protos_TracePacket_data_for_testing_MSGTYPE perfetto_protos_TestEvent
+
+#define perfetto_protos_TracePacket_ProtoVms_FIELDLIST(X, a) \
+X(a, CALLBACK, REPEATED, MESSAGE,  instance,          1)
+#define perfetto_protos_TracePacket_ProtoVms_CALLBACK pb_default_field_callback
+#define perfetto_protos_TracePacket_ProtoVms_DEFAULT NULL
+#define perfetto_protos_TracePacket_ProtoVms_instance_MSGTYPE perfetto_protos_TracePacket_ProtoVms_Instance
+
+#define perfetto_protos_TracePacket_ProtoVms_Instance_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  program,           1) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  state,             2) \
+X(a, STATIC,   OPTIONAL, UINT32,   memory_limit_kb,   3) \
+X(a, CALLBACK, REPEATED, INT32,    producer_id,       4)
+#define perfetto_protos_TracePacket_ProtoVms_Instance_CALLBACK pb_default_field_callback
+#define perfetto_protos_TracePacket_ProtoVms_Instance_DEFAULT NULL
+#define perfetto_protos_TracePacket_ProtoVms_Instance_program_MSGTYPE perfetto_protos_VmProgram
+#define perfetto_protos_TracePacket_ProtoVms_Instance_state_MSGTYPE perfetto_protos_TracePacket
 
 #define perfetto_protos_Trace_FIELDLIST(X, a) \
 X(a, CALLBACK, REPEATED, MESSAGE,  packet,            1)
@@ -40209,13 +43198,23 @@ extern const pb_msgdesc_t perfetto_protos_FtraceDescriptor_AtraceCategory_msg;
 extern const pb_msgdesc_t perfetto_protos_GpuCounterDescriptor_msg;
 extern const pb_msgdesc_t perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_msg;
 extern const pb_msgdesc_t perfetto_protos_GpuCounterDescriptor_GpuCounterBlock_msg;
+extern const pb_msgdesc_t perfetto_protos_GpuCounterDescriptor_GpuCounterGroupSpec_msg;
 extern const pb_msgdesc_t perfetto_protos_TrackEventCategory_msg;
 extern const pb_msgdesc_t perfetto_protos_TrackEventDescriptor_msg;
+extern const pb_msgdesc_t perfetto_protos_VmProgram_msg;
+extern const pb_msgdesc_t perfetto_protos_VmInstruction_msg;
+extern const pb_msgdesc_t perfetto_protos_VmOpSelect_msg;
+extern const pb_msgdesc_t perfetto_protos_VmOpSelect_PathComponent_msg;
+extern const pb_msgdesc_t perfetto_protos_VmOpRegLoad_msg;
+extern const pb_msgdesc_t perfetto_protos_VmOpMerge_msg;
+extern const pb_msgdesc_t perfetto_protos_VmOpSet_msg;
+extern const pb_msgdesc_t perfetto_protos_VmOpDel_msg;
 extern const pb_msgdesc_t perfetto_protos_DataSourceDescriptor_msg;
 extern const pb_msgdesc_t perfetto_protos_TracingServiceState_msg;
 extern const pb_msgdesc_t perfetto_protos_TracingServiceState_Producer_msg;
 extern const pb_msgdesc_t perfetto_protos_TracingServiceState_DataSource_msg;
 extern const pb_msgdesc_t perfetto_protos_TracingServiceState_TracingSession_msg;
+extern const pb_msgdesc_t perfetto_protos_AndroidAflagsConfig_msg;
 extern const pb_msgdesc_t perfetto_protos_AndroidGameInterventionListConfig_msg;
 extern const pb_msgdesc_t perfetto_protos_AndroidInputEventConfig_msg;
 extern const pb_msgdesc_t perfetto_protos_AndroidInputEventConfig_TraceRule_msg;
@@ -40251,17 +43250,23 @@ extern const pb_msgdesc_t perfetto_protos_FtraceConfig_PrintFilter_Rule_AtraceMe
 extern const pb_msgdesc_t perfetto_protos_FtraceConfig_KprobeEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_FtraceConfig_TracefsOption_msg;
 extern const pb_msgdesc_t perfetto_protos_GpuCounterConfig_msg;
+extern const pb_msgdesc_t perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_msg;
+extern const pb_msgdesc_t perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityNameFilter_msg;
+extern const pb_msgdesc_t perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityRange_msg;
 extern const pb_msgdesc_t perfetto_protos_GpuRenderStagesConfig_msg;
 extern const pb_msgdesc_t perfetto_protos_VulkanMemoryConfig_msg;
 extern const pb_msgdesc_t perfetto_protos_InodeFileConfig_msg;
 extern const pb_msgdesc_t perfetto_protos_InodeFileConfig_MountPointMappingEntry_msg;
 extern const pb_msgdesc_t perfetto_protos_ConsoleConfig_msg;
 extern const pb_msgdesc_t perfetto_protos_InterceptorConfig_msg;
+extern const pb_msgdesc_t perfetto_protos_SystemdJournaldConfig_msg;
 extern const pb_msgdesc_t perfetto_protos_AndroidPowerConfig_msg;
 extern const pb_msgdesc_t perfetto_protos_PriorityBoostConfig_msg;
 extern const pb_msgdesc_t perfetto_protos_ProcessStatsConfig_msg;
 extern const pb_msgdesc_t perfetto_protos_HeapprofdConfig_msg;
 extern const pb_msgdesc_t perfetto_protos_HeapprofdConfig_ContinuousDumpConfig_msg;
+extern const pb_msgdesc_t perfetto_protos_SmapsConfig_msg;
+extern const pb_msgdesc_t perfetto_protos_RedactionRule_msg;
 extern const pb_msgdesc_t perfetto_protos_JavaHprofConfig_msg;
 extern const pb_msgdesc_t perfetto_protos_JavaHprofConfig_ContinuousDumpConfig_msg;
 extern const pb_msgdesc_t perfetto_protos_PerfEvents_msg;
@@ -40272,6 +43277,8 @@ extern const pb_msgdesc_t perfetto_protos_FollowerEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_PerfEventConfig_msg;
 extern const pb_msgdesc_t perfetto_protos_PerfEventConfig_CallstackSampling_msg;
 extern const pb_msgdesc_t perfetto_protos_PerfEventConfig_Scope_msg;
+extern const pb_msgdesc_t perfetto_protos_ProtoVmConfig_msg;
+extern const pb_msgdesc_t perfetto_protos_QnxConfig_msg;
 extern const pb_msgdesc_t perfetto_protos_StatsdTracingConfig_msg;
 extern const pb_msgdesc_t perfetto_protos_StatsdPullAtomConfig_msg;
 extern const pb_msgdesc_t perfetto_protos_SysStatsConfig_msg;
@@ -40297,13 +43304,18 @@ extern const pb_msgdesc_t perfetto_protos_TraceConfig_TraceFilter_StringFilterCh
 extern const pb_msgdesc_t perfetto_protos_TraceConfig_AndroidReportConfig_msg;
 extern const pb_msgdesc_t perfetto_protos_TraceConfig_CmdTraceStartDelay_msg;
 extern const pb_msgdesc_t perfetto_protos_TraceConfig_SessionSemaphore_msg;
+extern const pb_msgdesc_t perfetto_protos_TraceConfig_Note_msg;
 extern const pb_msgdesc_t perfetto_protos_Utsname_msg;
 extern const pb_msgdesc_t perfetto_protos_SystemInfo_msg;
+extern const pb_msgdesc_t perfetto_protos_TraceAttributes_msg;
+extern const pb_msgdesc_t perfetto_protos_TraceAttributes_Attribute_msg;
 extern const pb_msgdesc_t perfetto_protos_TraceStats_msg;
 extern const pb_msgdesc_t perfetto_protos_TraceStats_BufferStats_msg;
 extern const pb_msgdesc_t perfetto_protos_TraceStats_BufferStats_ShadowBufferStats_msg;
 extern const pb_msgdesc_t perfetto_protos_TraceStats_WriterStats_msg;
 extern const pb_msgdesc_t perfetto_protos_TraceStats_FilterStats_msg;
+extern const pb_msgdesc_t perfetto_protos_AndroidAflags_msg;
+extern const pb_msgdesc_t perfetto_protos_AndroidAflags_Flag_msg;
 extern const pb_msgdesc_t perfetto_protos_AndroidGameInterventionList_msg;
 extern const pb_msgdesc_t perfetto_protos_AndroidGameInterventionList_GameModeInfo_msg;
 extern const pb_msgdesc_t perfetto_protos_AndroidGameInterventionList_GamePackageInfo_msg;
@@ -40313,8 +43325,6 @@ extern const pb_msgdesc_t perfetto_protos_AndroidLogPacket_LogEvent_Arg_msg;
 extern const pb_msgdesc_t perfetto_protos_AndroidLogPacket_Stats_msg;
 extern const pb_msgdesc_t perfetto_protos_AndroidSystemProperty_msg;
 extern const pb_msgdesc_t perfetto_protos_AndroidSystemProperty_PropertyValue_msg;
-extern const pb_msgdesc_t perfetto_protos_AppWakelockInfo_msg;
-extern const pb_msgdesc_t perfetto_protos_AppWakelockBundle_msg;
 extern const pb_msgdesc_t perfetto_protos_BluetoothTraceEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_AndroidCameraFrameEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_AndroidCameraFrameEvent_CameraNodeProcessingDetails_msg;
@@ -40329,7 +43339,6 @@ extern const pb_msgdesc_t perfetto_protos_FrameTimelineEvent_ActualSurfaceFrameS
 extern const pb_msgdesc_t perfetto_protos_FrameTimelineEvent_ExpectedDisplayFrameStart_msg;
 extern const pb_msgdesc_t perfetto_protos_FrameTimelineEvent_ActualDisplayFrameStart_msg;
 extern const pb_msgdesc_t perfetto_protos_FrameTimelineEvent_FrameEnd_msg;
-extern const pb_msgdesc_t perfetto_protos_GpuMemTotalEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_GraphicsFrameEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_GraphicsFrameEvent_BufferEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_InitialDisplayState_msg;
@@ -40346,11 +43355,12 @@ extern const pb_msgdesc_t perfetto_protos_ProtoLogMessage_msg;
 extern const pb_msgdesc_t perfetto_protos_ProtoLogViewerConfig_msg;
 extern const pb_msgdesc_t perfetto_protos_ProtoLogViewerConfig_MessageData_msg;
 extern const pb_msgdesc_t perfetto_protos_ProtoLogViewerConfig_Group_msg;
+extern const pb_msgdesc_t perfetto_protos_RectProto_msg;
 extern const pb_msgdesc_t perfetto_protos_ShellTransition_msg;
-extern const pb_msgdesc_t perfetto_protos_ShellTransition_Target_msg;
+extern const pb_msgdesc_t perfetto_protos_ShellTransition_Change_msg;
 extern const pb_msgdesc_t perfetto_protos_ShellHandlerMappings_msg;
 extern const pb_msgdesc_t perfetto_protos_ShellHandlerMapping_msg;
-extern const pb_msgdesc_t perfetto_protos_RectProto_msg;
+extern const pb_msgdesc_t perfetto_protos_CornerRadiiProto_msg;
 extern const pb_msgdesc_t perfetto_protos_RegionProto_msg;
 extern const pb_msgdesc_t perfetto_protos_SizeProto_msg;
 extern const pb_msgdesc_t perfetto_protos_TransformProto_msg;
@@ -40363,13 +43373,13 @@ extern const pb_msgdesc_t perfetto_protos_BoxShadowSettings_BoxShadowParams_msg;
 extern const pb_msgdesc_t perfetto_protos_BorderSettings_msg;
 extern const pb_msgdesc_t perfetto_protos_LayersTraceFileProto_msg;
 extern const pb_msgdesc_t perfetto_protos_LayersSnapshotProto_msg;
+extern const pb_msgdesc_t perfetto_protos_LayersPatchProto_msg;
 extern const pb_msgdesc_t perfetto_protos_LayersProto_msg;
 extern const pb_msgdesc_t perfetto_protos_DisplayProto_msg;
 extern const pb_msgdesc_t perfetto_protos_LayerProto_msg;
 extern const pb_msgdesc_t perfetto_protos_LayerProto_MetadataEntry_msg;
 extern const pb_msgdesc_t perfetto_protos_PositionProto_msg;
 extern const pb_msgdesc_t perfetto_protos_FloatRectProto_msg;
-extern const pb_msgdesc_t perfetto_protos_CornerRadiiProto_msg;
 extern const pb_msgdesc_t perfetto_protos_ActiveBufferProto_msg;
 extern const pb_msgdesc_t perfetto_protos_BarrierLayerProto_msg;
 extern const pb_msgdesc_t perfetto_protos_TransactionTraceFile_msg;
@@ -40428,10 +43438,26 @@ extern const pb_msgdesc_t perfetto_protos_FileIoInfoEtwEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_FileIoReadWriteEtwEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_FileIoSimpleOpEtwEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_FileIoOpEndEtwEvent_msg;
+extern const pb_msgdesc_t perfetto_protos_FileIoPathOperationEtwEvent_msg;
+extern const pb_msgdesc_t perfetto_protos_StackWalkEtwEvent_msg;
+extern const pb_msgdesc_t perfetto_protos_DiskIoEtwEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_EtwTraceEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_EtwTraceEventBundle_msg;
 extern const pb_msgdesc_t perfetto_protos_EvdevEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_EvdevEvent_InputEvent_msg;
+extern const pb_msgdesc_t perfetto_protos_EvdevEvent_DeviceAddition_msg;
+extern const pb_msgdesc_t perfetto_protos_EvdevEvent_DeviceRemoval_msg;
+extern const pb_msgdesc_t perfetto_protos_EvdevDevice_msg;
+extern const pb_msgdesc_t perfetto_protos_EvdevDevice_Identifier_msg;
+extern const pb_msgdesc_t perfetto_protos_EvdevDevice_AbsInfo_msg;
+extern const pb_msgdesc_t perfetto_protos_EvdevDevice_AbsoluteAxisInfosEntry_msg;
+extern const pb_msgdesc_t perfetto_protos_EvdevDevice_EventTypeBitmasksEntry_msg;
+extern const pb_msgdesc_t perfetto_protos_EvdevDevice_AxisMap_msg;
+extern const pb_msgdesc_t perfetto_protos_EvdevDevice_AxisMap_AxisStatesEntry_msg;
+extern const pb_msgdesc_t perfetto_protos_EvdevDevice_AxisStatesEntry_msg;
+extern const pb_msgdesc_t perfetto_protos_EvdevDevice_SlotValuesMap_msg;
+extern const pb_msgdesc_t perfetto_protos_EvdevDevice_SlotValuesMap_SlotValuesEntry_msg;
+extern const pb_msgdesc_t perfetto_protos_EvdevDevice_AbsMtStatesEntry_msg;
 extern const pb_msgdesc_t perfetto_protos_FileDescriptorSet_msg;
 extern const pb_msgdesc_t perfetto_protos_FileDescriptorProto_msg;
 extern const pb_msgdesc_t perfetto_protos_DescriptorProto_msg;
@@ -40534,6 +43560,11 @@ extern const pb_msgdesc_t perfetto_protos_DpuDsiRxFtraceEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_DpuDsiTxFtraceEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_DpuDispDpuUnderrunFtraceEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_DpuDispVblankIrqEnableFtraceEvent_msg;
+extern const pb_msgdesc_t perfetto_protos_DpuDispFrameDoneTimeoutFtraceEvent_msg;
+extern const pb_msgdesc_t perfetto_protos_DpuDispFrameStartTimeoutFtraceEvent_msg;
+extern const pb_msgdesc_t perfetto_protos_DpuDispFrameDoneMissingFtraceEvent_msg;
+extern const pb_msgdesc_t perfetto_protos_DpuDispFrameStartMissingFtraceEvent_msg;
+extern const pb_msgdesc_t perfetto_protos_DpuDispDpuLineUnderrunFtraceEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_DrmVblankEventFtraceEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_DrmVblankEventDeliveredFtraceEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_Dwc3AllocRequestFtraceEvent_msg;
@@ -40682,6 +43713,7 @@ extern const pb_msgdesc_t perfetto_protos_F2fsIostatLatencyFtraceEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_F2fsBackgroundGcFtraceEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_F2fsGcBeginFtraceEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_F2fsGcEndFtraceEvent_msg;
+extern const pb_msgdesc_t perfetto_protos_F2fsLockElapsedTimeFtraceEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_FastrpcDmaStatFtraceEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_FastrpcDmaFreeFtraceEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_FastrpcDmaAllocFtraceEvent_msg;
@@ -40905,6 +43937,9 @@ extern const pb_msgdesc_t perfetto_protos_DsiCmdFifoStatusFtraceEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_DsiRxFtraceEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_DsiTxFtraceEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_PanelWriteGenericFtraceEvent_msg;
+extern const pb_msgdesc_t perfetto_protos_GramCollisionFtraceEvent_msg;
+extern const pb_msgdesc_t perfetto_protos_PanelSettingsFullFtraceEvent_msg;
+extern const pb_msgdesc_t perfetto_protos_PanelSettingsLiteFtraceEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_SchedSwitchWithCtrsFtraceEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_PixelMmKswapdWakeFtraceEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_PixelMmKswapdDoneFtraceEvent_msg;
@@ -40950,6 +43985,7 @@ extern const pb_msgdesc_t perfetto_protos_SchedPiSetprioFtraceEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_SchedCpuUtilCfsFtraceEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_SchedMigrateTaskFtraceEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_SchedWakeupTaskAttrFtraceEvent_msg;
+extern const pb_msgdesc_t perfetto_protos_SchedGroupTrackerFtraceEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_ScmCallStartFtraceEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_ScmCallEndFtraceEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_ScsiDispatchCmdErrorFtraceEvent_msg;
@@ -41024,6 +44060,8 @@ extern const pb_msgdesc_t perfetto_protos_MmVmscanKswapdWakeFtraceEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_MmVmscanKswapdSleepFtraceEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_MmShrinkSlabStartFtraceEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_MmShrinkSlabEndFtraceEvent_msg;
+extern const pb_msgdesc_t perfetto_protos_MmVmscanMemcgReclaimBeginFtraceEvent_msg;
+extern const pb_msgdesc_t perfetto_protos_MmVmscanMemcgReclaimEndFtraceEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_WorkqueueActivateWorkFtraceEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_WorkqueueExecuteEndFtraceEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_WorkqueueExecuteStartFtraceEvent_msg;
@@ -41036,6 +44074,7 @@ extern const pb_msgdesc_t perfetto_protos_FtraceEventBundle_msg;
 extern const pb_msgdesc_t perfetto_protos_FtraceEventBundle_CompactSched_msg;
 extern const pb_msgdesc_t perfetto_protos_FtraceEventBundle_FtraceError_msg;
 extern const pb_msgdesc_t perfetto_protos_FtraceEventBundle_GenericEventDescriptor_msg;
+extern const pb_msgdesc_t perfetto_protos_GenericGpuFrequencyEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_GenericKernelCpuFrequencyEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_GenericKernelTaskStateEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_GenericKernelTaskRenameEvent_msg;
@@ -41044,14 +44083,21 @@ extern const pb_msgdesc_t perfetto_protos_GenericKernelProcessTree_Thread_msg;
 extern const pb_msgdesc_t perfetto_protos_GenericKernelProcessTree_Process_msg;
 extern const pb_msgdesc_t perfetto_protos_GpuCounterEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_GpuCounterEvent_GpuCounter_msg;
+extern const pb_msgdesc_t perfetto_protos_InternedGpuCounterDescriptor_msg;
 extern const pb_msgdesc_t perfetto_protos_GpuLog_msg;
+extern const pb_msgdesc_t perfetto_protos_GpuMemTotalEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_GpuRenderStageEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_GpuRenderStageEvent_ExtraData_msg;
+extern const pb_msgdesc_t perfetto_protos_GpuRenderStageEvent_Dim3_msg;
+extern const pb_msgdesc_t perfetto_protos_GpuRenderStageEvent_ExtraComputeArg_msg;
+extern const pb_msgdesc_t perfetto_protos_GpuRenderStageEvent_ComputeKernelLaunch_msg;
 extern const pb_msgdesc_t perfetto_protos_GpuRenderStageEvent_Specifications_msg;
 extern const pb_msgdesc_t perfetto_protos_GpuRenderStageEvent_Specifications_ContextSpec_msg;
 extern const pb_msgdesc_t perfetto_protos_GpuRenderStageEvent_Specifications_Description_msg;
 extern const pb_msgdesc_t perfetto_protos_InternedGraphicsContext_msg;
 extern const pb_msgdesc_t perfetto_protos_InternedGpuRenderStageSpecification_msg;
+extern const pb_msgdesc_t perfetto_protos_InternedComputeKernel_msg;
+extern const pb_msgdesc_t perfetto_protos_InternedComputeArgName_msg;
 extern const pb_msgdesc_t perfetto_protos_VulkanApiEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_VulkanApiEvent_VkDebugUtilsObjectName_msg;
 extern const pb_msgdesc_t perfetto_protos_VulkanApiEvent_VkQueueSubmit_msg;
@@ -41108,6 +44154,7 @@ extern const pb_msgdesc_t perfetto_protos_EventCategory_msg;
 extern const pb_msgdesc_t perfetto_protos_EventName_msg;
 extern const pb_msgdesc_t perfetto_protos_InternedData_msg;
 extern const pb_msgdesc_t perfetto_protos_AndroidJobName_msg;
+extern const pb_msgdesc_t perfetto_protos_SystemdJournaldEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_MemoryTrackerSnapshot_msg;
 extern const pb_msgdesc_t perfetto_protos_MemoryTrackerSnapshot_ProcessSnapshot_msg;
 extern const pb_msgdesc_t perfetto_protos_MemoryTrackerSnapshot_ProcessSnapshot_MemoryNode_msg;
@@ -41116,6 +44163,9 @@ extern const pb_msgdesc_t perfetto_protos_MemoryTrackerSnapshot_ProcessSnapshot_
 extern const pb_msgdesc_t perfetto_protos_PerfettoMetatrace_msg;
 extern const pb_msgdesc_t perfetto_protos_PerfettoMetatrace_Arg_msg;
 extern const pb_msgdesc_t perfetto_protos_PerfettoMetatrace_InternedString_msg;
+extern const pb_msgdesc_t perfetto_protos_TraceProvenance_msg;
+extern const pb_msgdesc_t perfetto_protos_TraceProvenance_Sequence_msg;
+extern const pb_msgdesc_t perfetto_protos_TraceProvenance_Buffer_msg;
 extern const pb_msgdesc_t perfetto_protos_TracingServiceEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_TracingServiceEvent_DataSources_msg;
 extern const pb_msgdesc_t perfetto_protos_TracingServiceEvent_DataSources_DataSource_msg;
@@ -41130,6 +44180,9 @@ extern const pb_msgdesc_t perfetto_protos_BatteryCounters_msg;
 extern const pb_msgdesc_t perfetto_protos_PowerRails_msg;
 extern const pb_msgdesc_t perfetto_protos_PowerRails_RailDescriptor_msg;
 extern const pb_msgdesc_t perfetto_protos_PowerRails_EnergyData_msg;
+extern const pb_msgdesc_t perfetto_protos_JavaFrame_msg;
+extern const pb_msgdesc_t perfetto_protos_JavaStack_msg;
+extern const pb_msgdesc_t perfetto_protos_ArtProcessMetadata_msg;
 extern const pb_msgdesc_t perfetto_protos_ObfuscatedMember_msg;
 extern const pb_msgdesc_t perfetto_protos_ObfuscatedClass_msg;
 extern const pb_msgdesc_t perfetto_protos_DeobfuscationMapping_msg;
@@ -41151,6 +44204,7 @@ extern const pb_msgdesc_t perfetto_protos_PerfSample_msg;
 extern const pb_msgdesc_t perfetto_protos_PerfSample_ProducerEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_PerfSampleDefaults_msg;
 extern const pb_msgdesc_t perfetto_protos_SmapsEntry_msg;
+extern const pb_msgdesc_t perfetto_protos_PackedSmaps_msg;
 extern const pb_msgdesc_t perfetto_protos_SmapsPacket_msg;
 extern const pb_msgdesc_t perfetto_protos_ProcessStats_msg;
 extern const pb_msgdesc_t perfetto_protos_ProcessStats_Thread_msg;
@@ -41175,11 +44229,21 @@ extern const pb_msgdesc_t perfetto_protos_SysStats_PsiSample_msg;
 extern const pb_msgdesc_t perfetto_protos_SysStats_ThermalZone_msg;
 extern const pb_msgdesc_t perfetto_protos_SysStats_CpuIdleStateEntry_msg;
 extern const pb_msgdesc_t perfetto_protos_SysStats_CpuIdleState_msg;
+extern const pb_msgdesc_t perfetto_protos_SysStats_SlabInfo_msg;
 extern const pb_msgdesc_t perfetto_protos_CpuInfo_msg;
 extern const pb_msgdesc_t perfetto_protos_CpuInfo_ArmCpuIdentifier_msg;
 extern const pb_msgdesc_t perfetto_protos_CpuInfo_Cpu_msg;
+extern const pb_msgdesc_t perfetto_protos_GpuInfo_msg;
+extern const pb_msgdesc_t perfetto_protos_GpuInfo_Gpu_msg;
+extern const pb_msgdesc_t perfetto_protos_GpuInfo_Gpu_KeyValue_msg;
+extern const pb_msgdesc_t perfetto_protos_InterruptInfo_msg;
+extern const pb_msgdesc_t perfetto_protos_InterruptInfo_InterruptMapping_msg;
 extern const pb_msgdesc_t perfetto_protos_TestEvent_msg;
 extern const pb_msgdesc_t perfetto_protos_TestEvent_TestPayload_msg;
+extern const pb_msgdesc_t perfetto_protos_TestEvent_ProtoVmMessage_msg;
+extern const pb_msgdesc_t perfetto_protos_TestEvent_ProtoVmMessage_ProtoVmSubmessage_msg;
+extern const pb_msgdesc_t perfetto_protos_TestEvent_ProtoVmPatch_msg;
+extern const pb_msgdesc_t perfetto_protos_TestEvent_ProtoVmIncrementalState_msg;
 extern const pb_msgdesc_t perfetto_protos_TracePacketDefaults_msg;
 extern const pb_msgdesc_t perfetto_protos_TraceUuid_msg;
 extern const pb_msgdesc_t perfetto_protos_ProcessDescriptor_msg;
@@ -41207,6 +44271,8 @@ extern const pb_msgdesc_t perfetto_protos_Trigger_msg;
 extern const pb_msgdesc_t perfetto_protos_UiState_msg;
 extern const pb_msgdesc_t perfetto_protos_UiState_HighlightProcess_msg;
 extern const pb_msgdesc_t perfetto_protos_TracePacket_msg;
+extern const pb_msgdesc_t perfetto_protos_TracePacket_ProtoVms_msg;
+extern const pb_msgdesc_t perfetto_protos_TracePacket_ProtoVms_Instance_msg;
 extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 
 /* Defines for backwards compatibility with code written before nanopb-0.4.0 */
@@ -41215,13 +44281,23 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 #define perfetto_protos_GpuCounterDescriptor_fields &perfetto_protos_GpuCounterDescriptor_msg
 #define perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_fields &perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_msg
 #define perfetto_protos_GpuCounterDescriptor_GpuCounterBlock_fields &perfetto_protos_GpuCounterDescriptor_GpuCounterBlock_msg
+#define perfetto_protos_GpuCounterDescriptor_GpuCounterGroupSpec_fields &perfetto_protos_GpuCounterDescriptor_GpuCounterGroupSpec_msg
 #define perfetto_protos_TrackEventCategory_fields &perfetto_protos_TrackEventCategory_msg
 #define perfetto_protos_TrackEventDescriptor_fields &perfetto_protos_TrackEventDescriptor_msg
+#define perfetto_protos_VmProgram_fields &perfetto_protos_VmProgram_msg
+#define perfetto_protos_VmInstruction_fields &perfetto_protos_VmInstruction_msg
+#define perfetto_protos_VmOpSelect_fields &perfetto_protos_VmOpSelect_msg
+#define perfetto_protos_VmOpSelect_PathComponent_fields &perfetto_protos_VmOpSelect_PathComponent_msg
+#define perfetto_protos_VmOpRegLoad_fields &perfetto_protos_VmOpRegLoad_msg
+#define perfetto_protos_VmOpMerge_fields &perfetto_protos_VmOpMerge_msg
+#define perfetto_protos_VmOpSet_fields &perfetto_protos_VmOpSet_msg
+#define perfetto_protos_VmOpDel_fields &perfetto_protos_VmOpDel_msg
 #define perfetto_protos_DataSourceDescriptor_fields &perfetto_protos_DataSourceDescriptor_msg
 #define perfetto_protos_TracingServiceState_fields &perfetto_protos_TracingServiceState_msg
 #define perfetto_protos_TracingServiceState_Producer_fields &perfetto_protos_TracingServiceState_Producer_msg
 #define perfetto_protos_TracingServiceState_DataSource_fields &perfetto_protos_TracingServiceState_DataSource_msg
 #define perfetto_protos_TracingServiceState_TracingSession_fields &perfetto_protos_TracingServiceState_TracingSession_msg
+#define perfetto_protos_AndroidAflagsConfig_fields &perfetto_protos_AndroidAflagsConfig_msg
 #define perfetto_protos_AndroidGameInterventionListConfig_fields &perfetto_protos_AndroidGameInterventionListConfig_msg
 #define perfetto_protos_AndroidInputEventConfig_fields &perfetto_protos_AndroidInputEventConfig_msg
 #define perfetto_protos_AndroidInputEventConfig_TraceRule_fields &perfetto_protos_AndroidInputEventConfig_TraceRule_msg
@@ -41257,17 +44333,23 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 #define perfetto_protos_FtraceConfig_KprobeEvent_fields &perfetto_protos_FtraceConfig_KprobeEvent_msg
 #define perfetto_protos_FtraceConfig_TracefsOption_fields &perfetto_protos_FtraceConfig_TracefsOption_msg
 #define perfetto_protos_GpuCounterConfig_fields &perfetto_protos_GpuCounterConfig_msg
+#define perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_fields &perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_msg
+#define perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityNameFilter_fields &perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityNameFilter_msg
+#define perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityRange_fields &perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityRange_msg
 #define perfetto_protos_GpuRenderStagesConfig_fields &perfetto_protos_GpuRenderStagesConfig_msg
 #define perfetto_protos_VulkanMemoryConfig_fields &perfetto_protos_VulkanMemoryConfig_msg
 #define perfetto_protos_InodeFileConfig_fields &perfetto_protos_InodeFileConfig_msg
 #define perfetto_protos_InodeFileConfig_MountPointMappingEntry_fields &perfetto_protos_InodeFileConfig_MountPointMappingEntry_msg
 #define perfetto_protos_ConsoleConfig_fields &perfetto_protos_ConsoleConfig_msg
 #define perfetto_protos_InterceptorConfig_fields &perfetto_protos_InterceptorConfig_msg
+#define perfetto_protos_SystemdJournaldConfig_fields &perfetto_protos_SystemdJournaldConfig_msg
 #define perfetto_protos_AndroidPowerConfig_fields &perfetto_protos_AndroidPowerConfig_msg
 #define perfetto_protos_PriorityBoostConfig_fields &perfetto_protos_PriorityBoostConfig_msg
 #define perfetto_protos_ProcessStatsConfig_fields &perfetto_protos_ProcessStatsConfig_msg
 #define perfetto_protos_HeapprofdConfig_fields &perfetto_protos_HeapprofdConfig_msg
 #define perfetto_protos_HeapprofdConfig_ContinuousDumpConfig_fields &perfetto_protos_HeapprofdConfig_ContinuousDumpConfig_msg
+#define perfetto_protos_SmapsConfig_fields &perfetto_protos_SmapsConfig_msg
+#define perfetto_protos_RedactionRule_fields &perfetto_protos_RedactionRule_msg
 #define perfetto_protos_JavaHprofConfig_fields &perfetto_protos_JavaHprofConfig_msg
 #define perfetto_protos_JavaHprofConfig_ContinuousDumpConfig_fields &perfetto_protos_JavaHprofConfig_ContinuousDumpConfig_msg
 #define perfetto_protos_PerfEvents_fields &perfetto_protos_PerfEvents_msg
@@ -41278,6 +44360,8 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 #define perfetto_protos_PerfEventConfig_fields &perfetto_protos_PerfEventConfig_msg
 #define perfetto_protos_PerfEventConfig_CallstackSampling_fields &perfetto_protos_PerfEventConfig_CallstackSampling_msg
 #define perfetto_protos_PerfEventConfig_Scope_fields &perfetto_protos_PerfEventConfig_Scope_msg
+#define perfetto_protos_ProtoVmConfig_fields &perfetto_protos_ProtoVmConfig_msg
+#define perfetto_protos_QnxConfig_fields &perfetto_protos_QnxConfig_msg
 #define perfetto_protos_StatsdTracingConfig_fields &perfetto_protos_StatsdTracingConfig_msg
 #define perfetto_protos_StatsdPullAtomConfig_fields &perfetto_protos_StatsdPullAtomConfig_msg
 #define perfetto_protos_SysStatsConfig_fields &perfetto_protos_SysStatsConfig_msg
@@ -41303,13 +44387,18 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 #define perfetto_protos_TraceConfig_AndroidReportConfig_fields &perfetto_protos_TraceConfig_AndroidReportConfig_msg
 #define perfetto_protos_TraceConfig_CmdTraceStartDelay_fields &perfetto_protos_TraceConfig_CmdTraceStartDelay_msg
 #define perfetto_protos_TraceConfig_SessionSemaphore_fields &perfetto_protos_TraceConfig_SessionSemaphore_msg
+#define perfetto_protos_TraceConfig_Note_fields &perfetto_protos_TraceConfig_Note_msg
 #define perfetto_protos_Utsname_fields &perfetto_protos_Utsname_msg
 #define perfetto_protos_SystemInfo_fields &perfetto_protos_SystemInfo_msg
+#define perfetto_protos_TraceAttributes_fields &perfetto_protos_TraceAttributes_msg
+#define perfetto_protos_TraceAttributes_Attribute_fields &perfetto_protos_TraceAttributes_Attribute_msg
 #define perfetto_protos_TraceStats_fields &perfetto_protos_TraceStats_msg
 #define perfetto_protos_TraceStats_BufferStats_fields &perfetto_protos_TraceStats_BufferStats_msg
 #define perfetto_protos_TraceStats_BufferStats_ShadowBufferStats_fields &perfetto_protos_TraceStats_BufferStats_ShadowBufferStats_msg
 #define perfetto_protos_TraceStats_WriterStats_fields &perfetto_protos_TraceStats_WriterStats_msg
 #define perfetto_protos_TraceStats_FilterStats_fields &perfetto_protos_TraceStats_FilterStats_msg
+#define perfetto_protos_AndroidAflags_fields &perfetto_protos_AndroidAflags_msg
+#define perfetto_protos_AndroidAflags_Flag_fields &perfetto_protos_AndroidAflags_Flag_msg
 #define perfetto_protos_AndroidGameInterventionList_fields &perfetto_protos_AndroidGameInterventionList_msg
 #define perfetto_protos_AndroidGameInterventionList_GameModeInfo_fields &perfetto_protos_AndroidGameInterventionList_GameModeInfo_msg
 #define perfetto_protos_AndroidGameInterventionList_GamePackageInfo_fields &perfetto_protos_AndroidGameInterventionList_GamePackageInfo_msg
@@ -41319,8 +44408,6 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 #define perfetto_protos_AndroidLogPacket_Stats_fields &perfetto_protos_AndroidLogPacket_Stats_msg
 #define perfetto_protos_AndroidSystemProperty_fields &perfetto_protos_AndroidSystemProperty_msg
 #define perfetto_protos_AndroidSystemProperty_PropertyValue_fields &perfetto_protos_AndroidSystemProperty_PropertyValue_msg
-#define perfetto_protos_AppWakelockInfo_fields &perfetto_protos_AppWakelockInfo_msg
-#define perfetto_protos_AppWakelockBundle_fields &perfetto_protos_AppWakelockBundle_msg
 #define perfetto_protos_BluetoothTraceEvent_fields &perfetto_protos_BluetoothTraceEvent_msg
 #define perfetto_protos_AndroidCameraFrameEvent_fields &perfetto_protos_AndroidCameraFrameEvent_msg
 #define perfetto_protos_AndroidCameraFrameEvent_CameraNodeProcessingDetails_fields &perfetto_protos_AndroidCameraFrameEvent_CameraNodeProcessingDetails_msg
@@ -41335,7 +44422,6 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 #define perfetto_protos_FrameTimelineEvent_ExpectedDisplayFrameStart_fields &perfetto_protos_FrameTimelineEvent_ExpectedDisplayFrameStart_msg
 #define perfetto_protos_FrameTimelineEvent_ActualDisplayFrameStart_fields &perfetto_protos_FrameTimelineEvent_ActualDisplayFrameStart_msg
 #define perfetto_protos_FrameTimelineEvent_FrameEnd_fields &perfetto_protos_FrameTimelineEvent_FrameEnd_msg
-#define perfetto_protos_GpuMemTotalEvent_fields &perfetto_protos_GpuMemTotalEvent_msg
 #define perfetto_protos_GraphicsFrameEvent_fields &perfetto_protos_GraphicsFrameEvent_msg
 #define perfetto_protos_GraphicsFrameEvent_BufferEvent_fields &perfetto_protos_GraphicsFrameEvent_BufferEvent_msg
 #define perfetto_protos_InitialDisplayState_fields &perfetto_protos_InitialDisplayState_msg
@@ -41352,11 +44438,12 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 #define perfetto_protos_ProtoLogViewerConfig_fields &perfetto_protos_ProtoLogViewerConfig_msg
 #define perfetto_protos_ProtoLogViewerConfig_MessageData_fields &perfetto_protos_ProtoLogViewerConfig_MessageData_msg
 #define perfetto_protos_ProtoLogViewerConfig_Group_fields &perfetto_protos_ProtoLogViewerConfig_Group_msg
+#define perfetto_protos_RectProto_fields &perfetto_protos_RectProto_msg
 #define perfetto_protos_ShellTransition_fields &perfetto_protos_ShellTransition_msg
-#define perfetto_protos_ShellTransition_Target_fields &perfetto_protos_ShellTransition_Target_msg
+#define perfetto_protos_ShellTransition_Change_fields &perfetto_protos_ShellTransition_Change_msg
 #define perfetto_protos_ShellHandlerMappings_fields &perfetto_protos_ShellHandlerMappings_msg
 #define perfetto_protos_ShellHandlerMapping_fields &perfetto_protos_ShellHandlerMapping_msg
-#define perfetto_protos_RectProto_fields &perfetto_protos_RectProto_msg
+#define perfetto_protos_CornerRadiiProto_fields &perfetto_protos_CornerRadiiProto_msg
 #define perfetto_protos_RegionProto_fields &perfetto_protos_RegionProto_msg
 #define perfetto_protos_SizeProto_fields &perfetto_protos_SizeProto_msg
 #define perfetto_protos_TransformProto_fields &perfetto_protos_TransformProto_msg
@@ -41369,13 +44456,13 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 #define perfetto_protos_BorderSettings_fields &perfetto_protos_BorderSettings_msg
 #define perfetto_protos_LayersTraceFileProto_fields &perfetto_protos_LayersTraceFileProto_msg
 #define perfetto_protos_LayersSnapshotProto_fields &perfetto_protos_LayersSnapshotProto_msg
+#define perfetto_protos_LayersPatchProto_fields &perfetto_protos_LayersPatchProto_msg
 #define perfetto_protos_LayersProto_fields &perfetto_protos_LayersProto_msg
 #define perfetto_protos_DisplayProto_fields &perfetto_protos_DisplayProto_msg
 #define perfetto_protos_LayerProto_fields &perfetto_protos_LayerProto_msg
 #define perfetto_protos_LayerProto_MetadataEntry_fields &perfetto_protos_LayerProto_MetadataEntry_msg
 #define perfetto_protos_PositionProto_fields &perfetto_protos_PositionProto_msg
 #define perfetto_protos_FloatRectProto_fields &perfetto_protos_FloatRectProto_msg
-#define perfetto_protos_CornerRadiiProto_fields &perfetto_protos_CornerRadiiProto_msg
 #define perfetto_protos_ActiveBufferProto_fields &perfetto_protos_ActiveBufferProto_msg
 #define perfetto_protos_BarrierLayerProto_fields &perfetto_protos_BarrierLayerProto_msg
 #define perfetto_protos_TransactionTraceFile_fields &perfetto_protos_TransactionTraceFile_msg
@@ -41434,10 +44521,26 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 #define perfetto_protos_FileIoReadWriteEtwEvent_fields &perfetto_protos_FileIoReadWriteEtwEvent_msg
 #define perfetto_protos_FileIoSimpleOpEtwEvent_fields &perfetto_protos_FileIoSimpleOpEtwEvent_msg
 #define perfetto_protos_FileIoOpEndEtwEvent_fields &perfetto_protos_FileIoOpEndEtwEvent_msg
+#define perfetto_protos_FileIoPathOperationEtwEvent_fields &perfetto_protos_FileIoPathOperationEtwEvent_msg
+#define perfetto_protos_StackWalkEtwEvent_fields &perfetto_protos_StackWalkEtwEvent_msg
+#define perfetto_protos_DiskIoEtwEvent_fields &perfetto_protos_DiskIoEtwEvent_msg
 #define perfetto_protos_EtwTraceEvent_fields &perfetto_protos_EtwTraceEvent_msg
 #define perfetto_protos_EtwTraceEventBundle_fields &perfetto_protos_EtwTraceEventBundle_msg
 #define perfetto_protos_EvdevEvent_fields &perfetto_protos_EvdevEvent_msg
 #define perfetto_protos_EvdevEvent_InputEvent_fields &perfetto_protos_EvdevEvent_InputEvent_msg
+#define perfetto_protos_EvdevEvent_DeviceAddition_fields &perfetto_protos_EvdevEvent_DeviceAddition_msg
+#define perfetto_protos_EvdevEvent_DeviceRemoval_fields &perfetto_protos_EvdevEvent_DeviceRemoval_msg
+#define perfetto_protos_EvdevDevice_fields &perfetto_protos_EvdevDevice_msg
+#define perfetto_protos_EvdevDevice_Identifier_fields &perfetto_protos_EvdevDevice_Identifier_msg
+#define perfetto_protos_EvdevDevice_AbsInfo_fields &perfetto_protos_EvdevDevice_AbsInfo_msg
+#define perfetto_protos_EvdevDevice_AbsoluteAxisInfosEntry_fields &perfetto_protos_EvdevDevice_AbsoluteAxisInfosEntry_msg
+#define perfetto_protos_EvdevDevice_EventTypeBitmasksEntry_fields &perfetto_protos_EvdevDevice_EventTypeBitmasksEntry_msg
+#define perfetto_protos_EvdevDevice_AxisMap_fields &perfetto_protos_EvdevDevice_AxisMap_msg
+#define perfetto_protos_EvdevDevice_AxisMap_AxisStatesEntry_fields &perfetto_protos_EvdevDevice_AxisMap_AxisStatesEntry_msg
+#define perfetto_protos_EvdevDevice_AxisStatesEntry_fields &perfetto_protos_EvdevDevice_AxisStatesEntry_msg
+#define perfetto_protos_EvdevDevice_SlotValuesMap_fields &perfetto_protos_EvdevDevice_SlotValuesMap_msg
+#define perfetto_protos_EvdevDevice_SlotValuesMap_SlotValuesEntry_fields &perfetto_protos_EvdevDevice_SlotValuesMap_SlotValuesEntry_msg
+#define perfetto_protos_EvdevDevice_AbsMtStatesEntry_fields &perfetto_protos_EvdevDevice_AbsMtStatesEntry_msg
 #define perfetto_protos_FileDescriptorSet_fields &perfetto_protos_FileDescriptorSet_msg
 #define perfetto_protos_FileDescriptorProto_fields &perfetto_protos_FileDescriptorProto_msg
 #define perfetto_protos_DescriptorProto_fields &perfetto_protos_DescriptorProto_msg
@@ -41540,6 +44643,11 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 #define perfetto_protos_DpuDsiTxFtraceEvent_fields &perfetto_protos_DpuDsiTxFtraceEvent_msg
 #define perfetto_protos_DpuDispDpuUnderrunFtraceEvent_fields &perfetto_protos_DpuDispDpuUnderrunFtraceEvent_msg
 #define perfetto_protos_DpuDispVblankIrqEnableFtraceEvent_fields &perfetto_protos_DpuDispVblankIrqEnableFtraceEvent_msg
+#define perfetto_protos_DpuDispFrameDoneTimeoutFtraceEvent_fields &perfetto_protos_DpuDispFrameDoneTimeoutFtraceEvent_msg
+#define perfetto_protos_DpuDispFrameStartTimeoutFtraceEvent_fields &perfetto_protos_DpuDispFrameStartTimeoutFtraceEvent_msg
+#define perfetto_protos_DpuDispFrameDoneMissingFtraceEvent_fields &perfetto_protos_DpuDispFrameDoneMissingFtraceEvent_msg
+#define perfetto_protos_DpuDispFrameStartMissingFtraceEvent_fields &perfetto_protos_DpuDispFrameStartMissingFtraceEvent_msg
+#define perfetto_protos_DpuDispDpuLineUnderrunFtraceEvent_fields &perfetto_protos_DpuDispDpuLineUnderrunFtraceEvent_msg
 #define perfetto_protos_DrmVblankEventFtraceEvent_fields &perfetto_protos_DrmVblankEventFtraceEvent_msg
 #define perfetto_protos_DrmVblankEventDeliveredFtraceEvent_fields &perfetto_protos_DrmVblankEventDeliveredFtraceEvent_msg
 #define perfetto_protos_Dwc3AllocRequestFtraceEvent_fields &perfetto_protos_Dwc3AllocRequestFtraceEvent_msg
@@ -41688,6 +44796,7 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 #define perfetto_protos_F2fsBackgroundGcFtraceEvent_fields &perfetto_protos_F2fsBackgroundGcFtraceEvent_msg
 #define perfetto_protos_F2fsGcBeginFtraceEvent_fields &perfetto_protos_F2fsGcBeginFtraceEvent_msg
 #define perfetto_protos_F2fsGcEndFtraceEvent_fields &perfetto_protos_F2fsGcEndFtraceEvent_msg
+#define perfetto_protos_F2fsLockElapsedTimeFtraceEvent_fields &perfetto_protos_F2fsLockElapsedTimeFtraceEvent_msg
 #define perfetto_protos_FastrpcDmaStatFtraceEvent_fields &perfetto_protos_FastrpcDmaStatFtraceEvent_msg
 #define perfetto_protos_FastrpcDmaFreeFtraceEvent_fields &perfetto_protos_FastrpcDmaFreeFtraceEvent_msg
 #define perfetto_protos_FastrpcDmaAllocFtraceEvent_fields &perfetto_protos_FastrpcDmaAllocFtraceEvent_msg
@@ -41911,6 +45020,9 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 #define perfetto_protos_DsiRxFtraceEvent_fields &perfetto_protos_DsiRxFtraceEvent_msg
 #define perfetto_protos_DsiTxFtraceEvent_fields &perfetto_protos_DsiTxFtraceEvent_msg
 #define perfetto_protos_PanelWriteGenericFtraceEvent_fields &perfetto_protos_PanelWriteGenericFtraceEvent_msg
+#define perfetto_protos_GramCollisionFtraceEvent_fields &perfetto_protos_GramCollisionFtraceEvent_msg
+#define perfetto_protos_PanelSettingsFullFtraceEvent_fields &perfetto_protos_PanelSettingsFullFtraceEvent_msg
+#define perfetto_protos_PanelSettingsLiteFtraceEvent_fields &perfetto_protos_PanelSettingsLiteFtraceEvent_msg
 #define perfetto_protos_SchedSwitchWithCtrsFtraceEvent_fields &perfetto_protos_SchedSwitchWithCtrsFtraceEvent_msg
 #define perfetto_protos_PixelMmKswapdWakeFtraceEvent_fields &perfetto_protos_PixelMmKswapdWakeFtraceEvent_msg
 #define perfetto_protos_PixelMmKswapdDoneFtraceEvent_fields &perfetto_protos_PixelMmKswapdDoneFtraceEvent_msg
@@ -41956,6 +45068,7 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 #define perfetto_protos_SchedCpuUtilCfsFtraceEvent_fields &perfetto_protos_SchedCpuUtilCfsFtraceEvent_msg
 #define perfetto_protos_SchedMigrateTaskFtraceEvent_fields &perfetto_protos_SchedMigrateTaskFtraceEvent_msg
 #define perfetto_protos_SchedWakeupTaskAttrFtraceEvent_fields &perfetto_protos_SchedWakeupTaskAttrFtraceEvent_msg
+#define perfetto_protos_SchedGroupTrackerFtraceEvent_fields &perfetto_protos_SchedGroupTrackerFtraceEvent_msg
 #define perfetto_protos_ScmCallStartFtraceEvent_fields &perfetto_protos_ScmCallStartFtraceEvent_msg
 #define perfetto_protos_ScmCallEndFtraceEvent_fields &perfetto_protos_ScmCallEndFtraceEvent_msg
 #define perfetto_protos_ScsiDispatchCmdErrorFtraceEvent_fields &perfetto_protos_ScsiDispatchCmdErrorFtraceEvent_msg
@@ -42030,6 +45143,8 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 #define perfetto_protos_MmVmscanKswapdSleepFtraceEvent_fields &perfetto_protos_MmVmscanKswapdSleepFtraceEvent_msg
 #define perfetto_protos_MmShrinkSlabStartFtraceEvent_fields &perfetto_protos_MmShrinkSlabStartFtraceEvent_msg
 #define perfetto_protos_MmShrinkSlabEndFtraceEvent_fields &perfetto_protos_MmShrinkSlabEndFtraceEvent_msg
+#define perfetto_protos_MmVmscanMemcgReclaimBeginFtraceEvent_fields &perfetto_protos_MmVmscanMemcgReclaimBeginFtraceEvent_msg
+#define perfetto_protos_MmVmscanMemcgReclaimEndFtraceEvent_fields &perfetto_protos_MmVmscanMemcgReclaimEndFtraceEvent_msg
 #define perfetto_protos_WorkqueueActivateWorkFtraceEvent_fields &perfetto_protos_WorkqueueActivateWorkFtraceEvent_msg
 #define perfetto_protos_WorkqueueExecuteEndFtraceEvent_fields &perfetto_protos_WorkqueueExecuteEndFtraceEvent_msg
 #define perfetto_protos_WorkqueueExecuteStartFtraceEvent_fields &perfetto_protos_WorkqueueExecuteStartFtraceEvent_msg
@@ -42042,6 +45157,7 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 #define perfetto_protos_FtraceEventBundle_CompactSched_fields &perfetto_protos_FtraceEventBundle_CompactSched_msg
 #define perfetto_protos_FtraceEventBundle_FtraceError_fields &perfetto_protos_FtraceEventBundle_FtraceError_msg
 #define perfetto_protos_FtraceEventBundle_GenericEventDescriptor_fields &perfetto_protos_FtraceEventBundle_GenericEventDescriptor_msg
+#define perfetto_protos_GenericGpuFrequencyEvent_fields &perfetto_protos_GenericGpuFrequencyEvent_msg
 #define perfetto_protos_GenericKernelCpuFrequencyEvent_fields &perfetto_protos_GenericKernelCpuFrequencyEvent_msg
 #define perfetto_protos_GenericKernelTaskStateEvent_fields &perfetto_protos_GenericKernelTaskStateEvent_msg
 #define perfetto_protos_GenericKernelTaskRenameEvent_fields &perfetto_protos_GenericKernelTaskRenameEvent_msg
@@ -42050,14 +45166,21 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 #define perfetto_protos_GenericKernelProcessTree_Process_fields &perfetto_protos_GenericKernelProcessTree_Process_msg
 #define perfetto_protos_GpuCounterEvent_fields &perfetto_protos_GpuCounterEvent_msg
 #define perfetto_protos_GpuCounterEvent_GpuCounter_fields &perfetto_protos_GpuCounterEvent_GpuCounter_msg
+#define perfetto_protos_InternedGpuCounterDescriptor_fields &perfetto_protos_InternedGpuCounterDescriptor_msg
 #define perfetto_protos_GpuLog_fields &perfetto_protos_GpuLog_msg
+#define perfetto_protos_GpuMemTotalEvent_fields &perfetto_protos_GpuMemTotalEvent_msg
 #define perfetto_protos_GpuRenderStageEvent_fields &perfetto_protos_GpuRenderStageEvent_msg
 #define perfetto_protos_GpuRenderStageEvent_ExtraData_fields &perfetto_protos_GpuRenderStageEvent_ExtraData_msg
+#define perfetto_protos_GpuRenderStageEvent_Dim3_fields &perfetto_protos_GpuRenderStageEvent_Dim3_msg
+#define perfetto_protos_GpuRenderStageEvent_ExtraComputeArg_fields &perfetto_protos_GpuRenderStageEvent_ExtraComputeArg_msg
+#define perfetto_protos_GpuRenderStageEvent_ComputeKernelLaunch_fields &perfetto_protos_GpuRenderStageEvent_ComputeKernelLaunch_msg
 #define perfetto_protos_GpuRenderStageEvent_Specifications_fields &perfetto_protos_GpuRenderStageEvent_Specifications_msg
 #define perfetto_protos_GpuRenderStageEvent_Specifications_ContextSpec_fields &perfetto_protos_GpuRenderStageEvent_Specifications_ContextSpec_msg
 #define perfetto_protos_GpuRenderStageEvent_Specifications_Description_fields &perfetto_protos_GpuRenderStageEvent_Specifications_Description_msg
 #define perfetto_protos_InternedGraphicsContext_fields &perfetto_protos_InternedGraphicsContext_msg
 #define perfetto_protos_InternedGpuRenderStageSpecification_fields &perfetto_protos_InternedGpuRenderStageSpecification_msg
+#define perfetto_protos_InternedComputeKernel_fields &perfetto_protos_InternedComputeKernel_msg
+#define perfetto_protos_InternedComputeArgName_fields &perfetto_protos_InternedComputeArgName_msg
 #define perfetto_protos_VulkanApiEvent_fields &perfetto_protos_VulkanApiEvent_msg
 #define perfetto_protos_VulkanApiEvent_VkDebugUtilsObjectName_fields &perfetto_protos_VulkanApiEvent_VkDebugUtilsObjectName_msg
 #define perfetto_protos_VulkanApiEvent_VkQueueSubmit_fields &perfetto_protos_VulkanApiEvent_VkQueueSubmit_msg
@@ -42114,6 +45237,7 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 #define perfetto_protos_EventName_fields &perfetto_protos_EventName_msg
 #define perfetto_protos_InternedData_fields &perfetto_protos_InternedData_msg
 #define perfetto_protos_AndroidJobName_fields &perfetto_protos_AndroidJobName_msg
+#define perfetto_protos_SystemdJournaldEvent_fields &perfetto_protos_SystemdJournaldEvent_msg
 #define perfetto_protos_MemoryTrackerSnapshot_fields &perfetto_protos_MemoryTrackerSnapshot_msg
 #define perfetto_protos_MemoryTrackerSnapshot_ProcessSnapshot_fields &perfetto_protos_MemoryTrackerSnapshot_ProcessSnapshot_msg
 #define perfetto_protos_MemoryTrackerSnapshot_ProcessSnapshot_MemoryNode_fields &perfetto_protos_MemoryTrackerSnapshot_ProcessSnapshot_MemoryNode_msg
@@ -42122,6 +45246,9 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 #define perfetto_protos_PerfettoMetatrace_fields &perfetto_protos_PerfettoMetatrace_msg
 #define perfetto_protos_PerfettoMetatrace_Arg_fields &perfetto_protos_PerfettoMetatrace_Arg_msg
 #define perfetto_protos_PerfettoMetatrace_InternedString_fields &perfetto_protos_PerfettoMetatrace_InternedString_msg
+#define perfetto_protos_TraceProvenance_fields &perfetto_protos_TraceProvenance_msg
+#define perfetto_protos_TraceProvenance_Sequence_fields &perfetto_protos_TraceProvenance_Sequence_msg
+#define perfetto_protos_TraceProvenance_Buffer_fields &perfetto_protos_TraceProvenance_Buffer_msg
 #define perfetto_protos_TracingServiceEvent_fields &perfetto_protos_TracingServiceEvent_msg
 #define perfetto_protos_TracingServiceEvent_DataSources_fields &perfetto_protos_TracingServiceEvent_DataSources_msg
 #define perfetto_protos_TracingServiceEvent_DataSources_DataSource_fields &perfetto_protos_TracingServiceEvent_DataSources_DataSource_msg
@@ -42136,6 +45263,9 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 #define perfetto_protos_PowerRails_fields &perfetto_protos_PowerRails_msg
 #define perfetto_protos_PowerRails_RailDescriptor_fields &perfetto_protos_PowerRails_RailDescriptor_msg
 #define perfetto_protos_PowerRails_EnergyData_fields &perfetto_protos_PowerRails_EnergyData_msg
+#define perfetto_protos_JavaFrame_fields &perfetto_protos_JavaFrame_msg
+#define perfetto_protos_JavaStack_fields &perfetto_protos_JavaStack_msg
+#define perfetto_protos_ArtProcessMetadata_fields &perfetto_protos_ArtProcessMetadata_msg
 #define perfetto_protos_ObfuscatedMember_fields &perfetto_protos_ObfuscatedMember_msg
 #define perfetto_protos_ObfuscatedClass_fields &perfetto_protos_ObfuscatedClass_msg
 #define perfetto_protos_DeobfuscationMapping_fields &perfetto_protos_DeobfuscationMapping_msg
@@ -42157,6 +45287,7 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 #define perfetto_protos_PerfSample_ProducerEvent_fields &perfetto_protos_PerfSample_ProducerEvent_msg
 #define perfetto_protos_PerfSampleDefaults_fields &perfetto_protos_PerfSampleDefaults_msg
 #define perfetto_protos_SmapsEntry_fields &perfetto_protos_SmapsEntry_msg
+#define perfetto_protos_PackedSmaps_fields &perfetto_protos_PackedSmaps_msg
 #define perfetto_protos_SmapsPacket_fields &perfetto_protos_SmapsPacket_msg
 #define perfetto_protos_ProcessStats_fields &perfetto_protos_ProcessStats_msg
 #define perfetto_protos_ProcessStats_Thread_fields &perfetto_protos_ProcessStats_Thread_msg
@@ -42181,11 +45312,21 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 #define perfetto_protos_SysStats_ThermalZone_fields &perfetto_protos_SysStats_ThermalZone_msg
 #define perfetto_protos_SysStats_CpuIdleStateEntry_fields &perfetto_protos_SysStats_CpuIdleStateEntry_msg
 #define perfetto_protos_SysStats_CpuIdleState_fields &perfetto_protos_SysStats_CpuIdleState_msg
+#define perfetto_protos_SysStats_SlabInfo_fields &perfetto_protos_SysStats_SlabInfo_msg
 #define perfetto_protos_CpuInfo_fields &perfetto_protos_CpuInfo_msg
 #define perfetto_protos_CpuInfo_ArmCpuIdentifier_fields &perfetto_protos_CpuInfo_ArmCpuIdentifier_msg
 #define perfetto_protos_CpuInfo_Cpu_fields &perfetto_protos_CpuInfo_Cpu_msg
+#define perfetto_protos_GpuInfo_fields &perfetto_protos_GpuInfo_msg
+#define perfetto_protos_GpuInfo_Gpu_fields &perfetto_protos_GpuInfo_Gpu_msg
+#define perfetto_protos_GpuInfo_Gpu_KeyValue_fields &perfetto_protos_GpuInfo_Gpu_KeyValue_msg
+#define perfetto_protos_InterruptInfo_fields &perfetto_protos_InterruptInfo_msg
+#define perfetto_protos_InterruptInfo_InterruptMapping_fields &perfetto_protos_InterruptInfo_InterruptMapping_msg
 #define perfetto_protos_TestEvent_fields &perfetto_protos_TestEvent_msg
 #define perfetto_protos_TestEvent_TestPayload_fields &perfetto_protos_TestEvent_TestPayload_msg
+#define perfetto_protos_TestEvent_ProtoVmMessage_fields &perfetto_protos_TestEvent_ProtoVmMessage_msg
+#define perfetto_protos_TestEvent_ProtoVmMessage_ProtoVmSubmessage_fields &perfetto_protos_TestEvent_ProtoVmMessage_ProtoVmSubmessage_msg
+#define perfetto_protos_TestEvent_ProtoVmPatch_fields &perfetto_protos_TestEvent_ProtoVmPatch_msg
+#define perfetto_protos_TestEvent_ProtoVmIncrementalState_fields &perfetto_protos_TestEvent_ProtoVmIncrementalState_msg
 #define perfetto_protos_TracePacketDefaults_fields &perfetto_protos_TracePacketDefaults_msg
 #define perfetto_protos_TraceUuid_fields &perfetto_protos_TraceUuid_msg
 #define perfetto_protos_ProcessDescriptor_fields &perfetto_protos_ProcessDescriptor_msg
@@ -42213,6 +45354,8 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 #define perfetto_protos_UiState_fields &perfetto_protos_UiState_msg
 #define perfetto_protos_UiState_HighlightProcess_fields &perfetto_protos_UiState_HighlightProcess_msg
 #define perfetto_protos_TracePacket_fields &perfetto_protos_TracePacket_msg
+#define perfetto_protos_TracePacket_ProtoVms_fields &perfetto_protos_TracePacket_ProtoVms_msg
+#define perfetto_protos_TracePacket_ProtoVms_Instance_fields &perfetto_protos_TracePacket_ProtoVms_Instance_msg
 #define perfetto_protos_Trace_fields &perfetto_protos_Trace_msg
 
 /* Maximum encoded size of messages (where known) */
@@ -42221,8 +45364,12 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 /* perfetto_protos_GpuCounterDescriptor_size depends on runtime parameters */
 /* perfetto_protos_GpuCounterDescriptor_GpuCounterSpec_size depends on runtime parameters */
 /* perfetto_protos_GpuCounterDescriptor_GpuCounterBlock_size depends on runtime parameters */
+/* perfetto_protos_GpuCounterDescriptor_GpuCounterGroupSpec_size depends on runtime parameters */
 /* perfetto_protos_TrackEventCategory_size depends on runtime parameters */
 /* perfetto_protos_TrackEventDescriptor_size depends on runtime parameters */
+/* perfetto_protos_VmProgram_size depends on runtime parameters */
+/* perfetto_protos_VmInstruction_size depends on runtime parameters */
+/* perfetto_protos_VmOpSelect_size depends on runtime parameters */
 /* perfetto_protos_DataSourceDescriptor_size depends on runtime parameters */
 /* perfetto_protos_TracingServiceState_size depends on runtime parameters */
 /* perfetto_protos_TracingServiceState_Producer_size depends on runtime parameters */
@@ -42252,16 +45399,22 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 /* perfetto_protos_FtraceConfig_KprobeEvent_size depends on runtime parameters */
 /* perfetto_protos_FtraceConfig_TracefsOption_size depends on runtime parameters */
 /* perfetto_protos_GpuCounterConfig_size depends on runtime parameters */
+/* perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_size depends on runtime parameters */
+/* perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityNameFilter_size depends on runtime parameters */
 /* perfetto_protos_GpuRenderStagesConfig_size depends on runtime parameters */
 /* perfetto_protos_InodeFileConfig_size depends on runtime parameters */
 /* perfetto_protos_InodeFileConfig_MountPointMappingEntry_size depends on runtime parameters */
 /* perfetto_protos_InterceptorConfig_size depends on runtime parameters */
+/* perfetto_protos_SystemdJournaldConfig_size depends on runtime parameters */
 /* perfetto_protos_AndroidPowerConfig_size depends on runtime parameters */
 /* perfetto_protos_ProcessStatsConfig_size depends on runtime parameters */
 /* perfetto_protos_HeapprofdConfig_size depends on runtime parameters */
+/* perfetto_protos_SmapsConfig_size depends on runtime parameters */
+/* perfetto_protos_RedactionRule_size depends on runtime parameters */
 /* perfetto_protos_JavaHprofConfig_size depends on runtime parameters */
 /* perfetto_protos_PerfEvents_Timebase_size depends on runtime parameters */
 /* perfetto_protos_PerfEvents_Tracepoint_size depends on runtime parameters */
+/* perfetto_protos_PerfEvents_RawEvent_size depends on runtime parameters */
 /* perfetto_protos_FollowerEvent_size depends on runtime parameters */
 /* perfetto_protos_PerfEventConfig_size depends on runtime parameters */
 /* perfetto_protos_PerfEventConfig_CallstackSampling_size depends on runtime parameters */
@@ -42285,11 +45438,16 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 /* perfetto_protos_TraceConfig_TraceFilter_StringFilterChain_size depends on runtime parameters */
 /* perfetto_protos_TraceConfig_AndroidReportConfig_size depends on runtime parameters */
 /* perfetto_protos_TraceConfig_SessionSemaphore_size depends on runtime parameters */
+/* perfetto_protos_TraceConfig_Note_size depends on runtime parameters */
 /* perfetto_protos_Utsname_size depends on runtime parameters */
 /* perfetto_protos_SystemInfo_size depends on runtime parameters */
+/* perfetto_protos_TraceAttributes_size depends on runtime parameters */
+/* perfetto_protos_TraceAttributes_Attribute_size depends on runtime parameters */
 /* perfetto_protos_TraceStats_size depends on runtime parameters */
 /* perfetto_protos_TraceStats_WriterStats_size depends on runtime parameters */
 /* perfetto_protos_TraceStats_FilterStats_size depends on runtime parameters */
+/* perfetto_protos_AndroidAflags_size depends on runtime parameters */
+/* perfetto_protos_AndroidAflags_Flag_size depends on runtime parameters */
 /* perfetto_protos_AndroidGameInterventionList_size depends on runtime parameters */
 /* perfetto_protos_AndroidGameInterventionList_GamePackageInfo_size depends on runtime parameters */
 /* perfetto_protos_AndroidLogPacket_size depends on runtime parameters */
@@ -42297,8 +45455,6 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 /* perfetto_protos_AndroidLogPacket_LogEvent_Arg_size depends on runtime parameters */
 /* perfetto_protos_AndroidSystemProperty_size depends on runtime parameters */
 /* perfetto_protos_AndroidSystemProperty_PropertyValue_size depends on runtime parameters */
-/* perfetto_protos_AppWakelockInfo_size depends on runtime parameters */
-/* perfetto_protos_AppWakelockBundle_size depends on runtime parameters */
 /* perfetto_protos_AndroidCameraFrameEvent_size depends on runtime parameters */
 /* perfetto_protos_AndroidCameraSessionStats_size depends on runtime parameters */
 /* perfetto_protos_AndroidCameraSessionStats_CameraGraph_size depends on runtime parameters */
@@ -42332,6 +45488,7 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 /* perfetto_protos_BoxShadowSettings_size depends on runtime parameters */
 /* perfetto_protos_LayersTraceFileProto_size depends on runtime parameters */
 /* perfetto_protos_LayersSnapshotProto_size depends on runtime parameters */
+/* perfetto_protos_LayersPatchProto_size depends on runtime parameters */
 /* perfetto_protos_LayersProto_size depends on runtime parameters */
 /* perfetto_protos_DisplayProto_size depends on runtime parameters */
 /* perfetto_protos_LayerProto_size depends on runtime parameters */
@@ -42369,8 +45526,18 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 /* perfetto_protos_MemInfoEtwEvent_size depends on runtime parameters */
 /* perfetto_protos_FileIoCreateEtwEvent_size depends on runtime parameters */
 /* perfetto_protos_FileIoDirEnumEtwEvent_size depends on runtime parameters */
+/* perfetto_protos_FileIoPathOperationEtwEvent_size depends on runtime parameters */
+/* perfetto_protos_StackWalkEtwEvent_size depends on runtime parameters */
 /* perfetto_protos_EtwTraceEvent_size depends on runtime parameters */
 /* perfetto_protos_EtwTraceEventBundle_size depends on runtime parameters */
+/* perfetto_protos_EvdevEvent_size depends on runtime parameters */
+/* perfetto_protos_EvdevEvent_DeviceAddition_size depends on runtime parameters */
+/* perfetto_protos_EvdevDevice_size depends on runtime parameters */
+/* perfetto_protos_EvdevDevice_EventTypeBitmasksEntry_size depends on runtime parameters */
+/* perfetto_protos_EvdevDevice_AxisMap_size depends on runtime parameters */
+/* perfetto_protos_EvdevDevice_AxisStatesEntry_size depends on runtime parameters */
+/* perfetto_protos_EvdevDevice_SlotValuesMap_size depends on runtime parameters */
+/* perfetto_protos_EvdevDevice_AbsMtStatesEntry_size depends on runtime parameters */
 /* perfetto_protos_FileDescriptorSet_size depends on runtime parameters */
 /* perfetto_protos_FileDescriptorProto_size depends on runtime parameters */
 /* perfetto_protos_DescriptorProto_size depends on runtime parameters */
@@ -42450,6 +45617,7 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 /* perfetto_protos_Dwc3WritelFtraceEvent_size depends on runtime parameters */
 /* perfetto_protos_F2fsUnlinkEnterFtraceEvent_size depends on runtime parameters */
 /* perfetto_protos_F2fsWriteCheckpointFtraceEvent_size depends on runtime parameters */
+/* perfetto_protos_F2fsLockElapsedTimeFtraceEvent_size depends on runtime parameters */
 /* perfetto_protos_FenceInitFtraceEvent_size depends on runtime parameters */
 /* perfetto_protos_FenceDestroyFtraceEvent_size depends on runtime parameters */
 /* perfetto_protos_FenceEnableSignalFtraceEvent_size depends on runtime parameters */
@@ -42533,6 +45701,7 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 /* perfetto_protos_SchedProcessWaitFtraceEvent_size depends on runtime parameters */
 /* perfetto_protos_SchedPiSetprioFtraceEvent_size depends on runtime parameters */
 /* perfetto_protos_SchedMigrateTaskFtraceEvent_size depends on runtime parameters */
+/* perfetto_protos_SchedGroupTrackerFtraceEvent_size depends on runtime parameters */
 /* perfetto_protos_ScsiDispatchCmdErrorFtraceEvent_size depends on runtime parameters */
 /* perfetto_protos_ScsiDispatchCmdTimeoutFtraceEvent_size depends on runtime parameters */
 /* perfetto_protos_SdeTracingMarkWriteFtraceEvent_size depends on runtime parameters */
@@ -42569,12 +45738,17 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 /* perfetto_protos_GenericKernelProcessTree_Thread_size depends on runtime parameters */
 /* perfetto_protos_GenericKernelProcessTree_Process_size depends on runtime parameters */
 /* perfetto_protos_GpuCounterEvent_size depends on runtime parameters */
+/* perfetto_protos_InternedGpuCounterDescriptor_size depends on runtime parameters */
 /* perfetto_protos_GpuLog_size depends on runtime parameters */
 /* perfetto_protos_GpuRenderStageEvent_size depends on runtime parameters */
 /* perfetto_protos_GpuRenderStageEvent_ExtraData_size depends on runtime parameters */
+/* perfetto_protos_GpuRenderStageEvent_ExtraComputeArg_size depends on runtime parameters */
+/* perfetto_protos_GpuRenderStageEvent_ComputeKernelLaunch_size depends on runtime parameters */
 /* perfetto_protos_GpuRenderStageEvent_Specifications_size depends on runtime parameters */
 /* perfetto_protos_GpuRenderStageEvent_Specifications_Description_size depends on runtime parameters */
 /* perfetto_protos_InternedGpuRenderStageSpecification_size depends on runtime parameters */
+/* perfetto_protos_InternedComputeKernel_size depends on runtime parameters */
+/* perfetto_protos_InternedComputeArgName_size depends on runtime parameters */
 /* perfetto_protos_VulkanApiEvent_size depends on runtime parameters */
 /* perfetto_protos_VulkanApiEvent_VkDebugUtilsObjectName_size depends on runtime parameters */
 /* perfetto_protos_VulkanApiEvent_VkQueueSubmit_size depends on runtime parameters */
@@ -42614,6 +45788,7 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 /* perfetto_protos_EventName_size depends on runtime parameters */
 /* perfetto_protos_InternedData_size depends on runtime parameters */
 /* perfetto_protos_AndroidJobName_size depends on runtime parameters */
+/* perfetto_protos_SystemdJournaldEvent_size depends on runtime parameters */
 /* perfetto_protos_MemoryTrackerSnapshot_size depends on runtime parameters */
 /* perfetto_protos_MemoryTrackerSnapshot_ProcessSnapshot_size depends on runtime parameters */
 /* perfetto_protos_MemoryTrackerSnapshot_ProcessSnapshot_MemoryNode_size depends on runtime parameters */
@@ -42621,6 +45796,8 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 /* perfetto_protos_PerfettoMetatrace_size depends on runtime parameters */
 /* perfetto_protos_PerfettoMetatrace_Arg_size depends on runtime parameters */
 /* perfetto_protos_PerfettoMetatrace_InternedString_size depends on runtime parameters */
+/* perfetto_protos_TraceProvenance_size depends on runtime parameters */
+/* perfetto_protos_TraceProvenance_Buffer_size depends on runtime parameters */
 /* perfetto_protos_TracingServiceEvent_size depends on runtime parameters */
 /* perfetto_protos_TracingServiceEvent_DataSources_size depends on runtime parameters */
 /* perfetto_protos_TracingServiceEvent_DataSources_DataSource_size depends on runtime parameters */
@@ -42632,6 +45809,9 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 /* perfetto_protos_BatteryCounters_size depends on runtime parameters */
 /* perfetto_protos_PowerRails_size depends on runtime parameters */
 /* perfetto_protos_PowerRails_RailDescriptor_size depends on runtime parameters */
+/* perfetto_protos_JavaFrame_size depends on runtime parameters */
+/* perfetto_protos_JavaStack_size depends on runtime parameters */
+/* perfetto_protos_ArtProcessMetadata_size depends on runtime parameters */
 /* perfetto_protos_ObfuscatedMember_size depends on runtime parameters */
 /* perfetto_protos_ObfuscatedClass_size depends on runtime parameters */
 /* perfetto_protos_DeobfuscationMapping_size depends on runtime parameters */
@@ -42649,6 +45829,7 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 /* perfetto_protos_PerfSample_size depends on runtime parameters */
 /* perfetto_protos_PerfSampleDefaults_size depends on runtime parameters */
 /* perfetto_protos_SmapsEntry_size depends on runtime parameters */
+/* perfetto_protos_PackedSmaps_size depends on runtime parameters */
 /* perfetto_protos_SmapsPacket_size depends on runtime parameters */
 /* perfetto_protos_ProcessStats_size depends on runtime parameters */
 /* perfetto_protos_ProcessStats_FDInfo_size depends on runtime parameters */
@@ -42666,10 +45847,18 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 /* perfetto_protos_SysStats_ThermalZone_size depends on runtime parameters */
 /* perfetto_protos_SysStats_CpuIdleStateEntry_size depends on runtime parameters */
 /* perfetto_protos_SysStats_CpuIdleState_size depends on runtime parameters */
+/* perfetto_protos_SysStats_SlabInfo_size depends on runtime parameters */
 /* perfetto_protos_CpuInfo_size depends on runtime parameters */
 /* perfetto_protos_CpuInfo_Cpu_size depends on runtime parameters */
+/* perfetto_protos_GpuInfo_size depends on runtime parameters */
+/* perfetto_protos_GpuInfo_Gpu_size depends on runtime parameters */
+/* perfetto_protos_GpuInfo_Gpu_KeyValue_size depends on runtime parameters */
+/* perfetto_protos_InterruptInfo_size depends on runtime parameters */
+/* perfetto_protos_InterruptInfo_InterruptMapping_size depends on runtime parameters */
 /* perfetto_protos_TestEvent_size depends on runtime parameters */
 /* perfetto_protos_TestEvent_TestPayload_size depends on runtime parameters */
+/* perfetto_protos_TestEvent_ProtoVmPatch_size depends on runtime parameters */
+/* perfetto_protos_TestEvent_ProtoVmIncrementalState_size depends on runtime parameters */
 /* perfetto_protos_TracePacketDefaults_size depends on runtime parameters */
 /* perfetto_protos_ProcessDescriptor_size depends on runtime parameters */
 /* perfetto_protos_ThreadDescriptor_size depends on runtime parameters */
@@ -42694,6 +45883,8 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 /* perfetto_protos_UiState_size depends on runtime parameters */
 /* perfetto_protos_UiState_HighlightProcess_size depends on runtime parameters */
 /* perfetto_protos_TracePacket_size depends on runtime parameters */
+/* perfetto_protos_TracePacket_ProtoVms_size depends on runtime parameters */
+/* perfetto_protos_TracePacket_ProtoVms_Instance_size depends on runtime parameters */
 /* perfetto_protos_Trace_size depends on runtime parameters */
 #define PERFETTO_PROTOS_PERFETTO_TRACE_PB_H_MAX_SIZE perfetto_protos_TraceStats_BufferStats_size
 #define perfetto_protos_ActiveBufferProto_size   40
@@ -42703,6 +45894,7 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 #define perfetto_protos_AllocPagesSysEndFtraceEvent_size 12
 #define perfetto_protos_AllocPagesSysFailFtraceEvent_size 12
 #define perfetto_protos_AllocPagesSysStartFtraceEvent_size 12
+#define perfetto_protos_AndroidAflagsConfig_size 6
 #define perfetto_protos_AndroidCameraFrameEvent_CameraNodeProcessingDetails_size 44
 #define perfetto_protos_AndroidEnergyEstimationBreakdown_EnergyUidBreakdown_size 22
 #define perfetto_protos_AndroidFsDatareadEndFtraceEvent_size 33
@@ -42763,12 +45955,18 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 #define perfetto_protos_CrosEcSensorhubDataFtraceEvent_size 56
 #define perfetto_protos_DcvshFreqFtraceEvent_size 22
 #define perfetto_protos_DescriptorProto_ReservedRange_size 22
+#define perfetto_protos_DiskIoEtwEvent_size      74
 #define perfetto_protos_DisplayInfo_size         133
 #define perfetto_protos_DisplayState_size        139
 #define perfetto_protos_DmaAllocContiguousRetryFtraceEvent_size 11
 #define perfetto_protos_DmaHeapStatFtraceEvent_size 33
 #define perfetto_protos_DmabufRssStatFtraceEvent_size 33
+#define perfetto_protos_DpuDispDpuLineUnderrunFtraceEvent_size 33
 #define perfetto_protos_DpuDispDpuUnderrunFtraceEvent_size 33
+#define perfetto_protos_DpuDispFrameDoneMissingFtraceEvent_size 39
+#define perfetto_protos_DpuDispFrameDoneTimeoutFtraceEvent_size 45
+#define perfetto_protos_DpuDispFrameStartMissingFtraceEvent_size 39
+#define perfetto_protos_DpuDispFrameStartTimeoutFtraceEvent_size 39
 #define perfetto_protos_DpuDispVblankIrqEnableFtraceEvent_size 33
 #define perfetto_protos_DpuDsiCmdFifoStatusFtraceEvent_size 12
 #define perfetto_protos_DrmSchedJobAddDepFtraceEvent_size 44
@@ -42780,8 +45978,13 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 #define perfetto_protos_DsiCmdFifoStatusFtraceEvent_size 12
 #define perfetto_protos_Dwc3GadgetGenericCmdFtraceEvent_size 23
 #define perfetto_protos_EntityStateResidency_StateResidency_size 55
+#define perfetto_protos_EvdevDevice_AbsInfo_size 45
+#define perfetto_protos_EvdevDevice_AbsoluteAxisInfosEntry_size 53
+#define perfetto_protos_EvdevDevice_AxisMap_AxisStatesEntry_size 12
+#define perfetto_protos_EvdevDevice_Identifier_size 24
+#define perfetto_protos_EvdevDevice_SlotValuesMap_SlotValuesEntry_size 12
+#define perfetto_protos_EvdevEvent_DeviceRemoval_size 0
 #define perfetto_protos_EvdevEvent_InputEvent_size 29
-#define perfetto_protos_EvdevEvent_size          37
 #define perfetto_protos_Ext4AllocDaBlocksFtraceEvent_size 34
 #define perfetto_protos_Ext4AllocateBlocksFtraceEvent_size 96
 #define perfetto_protos_Ext4AllocateInodeFtraceEvent_size 39
@@ -42921,7 +46124,7 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 #define perfetto_protos_FileIoReadWriteEtwEvent_size 68
 #define perfetto_protos_FileIoSimpleOpEtwEvent_size 45
 #define perfetto_protos_FloatRectProto_size      20
-#define perfetto_protos_FrameTimelineEvent_ActualDisplayFrameStart_size 82
+#define perfetto_protos_FrameTimelineEvent_ActualDisplayFrameStart_size 105
 #define perfetto_protos_FrameTimelineEvent_ExpectedDisplayFrameStart_size 33
 #define perfetto_protos_FrameTimelineEvent_FrameEnd_size 11
 #define perfetto_protos_Frame_size               61
@@ -42931,14 +46134,18 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 #define perfetto_protos_FtraceKprobeStats_size   22
 #define perfetto_protos_FuncgraphEntryFtraceEvent_size 22
 #define perfetto_protos_FuncgraphExitFtraceEvent_size 55
+#define perfetto_protos_GenericGpuFrequencyEvent_size 12
 #define perfetto_protos_GenericKernelCpuFrequencyEvent_size 22
+#define perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityRange_size 12
 #define perfetto_protos_GpuCounterEvent_GpuCounter_size 17
 #define perfetto_protos_GpuFrequencyFtraceEvent_size 12
 #define perfetto_protos_GpuMemTotalEvent_size    23
 #define perfetto_protos_GpuMemTotalFtraceEvent_size 23
 #define perfetto_protos_GpuPowerStateFtraceEvent_size 22
+#define perfetto_protos_GpuRenderStageEvent_Dim3_size 18
 #define perfetto_protos_GpuRenderStageEvent_Specifications_ContextSpec_size 22
 #define perfetto_protos_GpuWorkPeriodFtraceEvent_size 45
+#define perfetto_protos_GramCollisionFtraceEvent_size 17
 #define perfetto_protos_HeapprofdConfig_ContinuousDumpConfig_size 12
 #define perfetto_protos_HostFfaCallFtraceEvent_size 77
 #define perfetto_protos_HostHcallFtraceEvent_size 12
@@ -43119,10 +46326,13 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 #define perfetto_protos_MmVmscanDirectReclaimEndFtraceEvent_size 11
 #define perfetto_protos_MmVmscanKswapdSleepFtraceEvent_size 11
 #define perfetto_protos_MmVmscanKswapdWakeFtraceEvent_size 33
+#define perfetto_protos_MmVmscanMemcgReclaimBeginFtraceEvent_size 33
+#define perfetto_protos_MmVmscanMemcgReclaimEndFtraceEvent_size 11
 #define perfetto_protos_NapiGroReceiveExitFtraceEvent_size 11
 #define perfetto_protos_NetworkPacketTraceConfig_size 24
 #define perfetto_protos_OneofOptions_size        0
-#define perfetto_protos_PerfEvents_RawEvent_size 39
+#define perfetto_protos_PanelSettingsFullFtraceEvent_size 65
+#define perfetto_protos_PanelSettingsLiteFtraceEvent_size 35
 #define perfetto_protos_PerfEvents_size          0
 #define perfetto_protos_PerfSample_ProducerEvent_size 2
 #define perfetto_protos_PixelMmKswapdDoneFtraceEvent_size 44
@@ -43134,7 +46344,9 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 #define perfetto_protos_ProfilePacket_HeapSample_size 88
 #define perfetto_protos_ProfilePacket_Histogram_Bucket_size 24
 #define perfetto_protos_Profiling_size           0
+#define perfetto_protos_ProtoVmConfig_size       6
 #define perfetto_protos_PsciMemProtectFtraceEvent_size 22
+#define perfetto_protos_QnxConfig_size           37
 #define perfetto_protos_ReadyThreadEtwEvent_size 34
 #define perfetto_protos_RectProto_size           44
 #define perfetto_protos_RotatorBwAoAsContextFtraceEvent_size 6
@@ -43151,7 +46363,7 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 #define perfetto_protos_SdeSdePerfCrtcUpdateFtraceEvent_size 107
 #define perfetto_protos_SdeSdePerfSetQosLutsFtraceEvent_size 41
 #define perfetto_protos_SdeSdePerfUpdateBusFtraceEvent_size 39
-#define perfetto_protos_ShellTransition_Target_size 44
+#define perfetto_protos_ShellTransition_Change_size 180
 #define perfetto_protos_SignalDeliverFtraceEvent_size 33
 #define perfetto_protos_SizeProto_size           22
 #define perfetto_protos_SmbusReadFtraceEvent_size 35
@@ -43169,22 +46381,25 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 #define perfetto_protos_SysStats_MeminfoValue_size 13
 #define perfetto_protos_SysStats_PsiSample_size  13
 #define perfetto_protos_SysStats_VmstatValue_size 14
-#define perfetto_protos_SystemInfoConfig_size    0
+#define perfetto_protos_SystemInfoConfig_size    2
 #define perfetto_protos_TaskExecution_size       11
 #define perfetto_protos_TcpRetransmitSkbFtraceEvent_size 57
+#define perfetto_protos_TestEvent_ProtoVmMessage_ProtoVmSubmessage_size 6
+#define perfetto_protos_TestEvent_ProtoVmMessage_size 14
 #define perfetto_protos_ThermalExynosAcpmBulkFtraceEvent_size 101
 #define perfetto_protos_ThermalExynosAcpmHighOverheadFtraceEvent_size 62
 #define perfetto_protos_TimerCancelFtraceEvent_size 11
 #define perfetto_protos_TimerExpireEntryFtraceEvent_size 44
 #define perfetto_protos_TimerExpireExitFtraceEvent_size 11
 #define perfetto_protos_TimerStartFtraceEvent_size 67
-#define perfetto_protos_TraceConfig_BuiltinDataSource_size 20
+#define perfetto_protos_TraceConfig_BuiltinDataSource_size 22
 #define perfetto_protos_TraceConfig_CmdTraceStartDelay_size 12
 #define perfetto_protos_TraceConfig_GuardrailOverrides_size 17
 #define perfetto_protos_TraceConfig_IncrementalStateConfig_size 6
 #define perfetto_protos_TraceConfig_StatsdMetadata_size 44
-#define perfetto_protos_TraceStats_BufferStats_ShadowBufferStats_size 77
-#define perfetto_protos_TraceStats_BufferStats_size 293
+#define perfetto_protos_TraceProvenance_Sequence_size 17
+#define perfetto_protos_TraceStats_BufferStats_ShadowBufferStats_size 83
+#define perfetto_protos_TraceStats_BufferStats_size 299
 #define perfetto_protos_TraceUuid_size           22
 #define perfetto_protos_TrackEventRangeOfInterest_size 11
 #define perfetto_protos_TransformProto_size      31
@@ -43214,9 +46429,14 @@ extern const pb_msgdesc_t perfetto_protos_Trace_msg;
 #define perfetto_protos_VirtioVideoCmdFtraceEvent_size 12
 #define perfetto_protos_VirtioVideoResourceQueueDoneFtraceEvent_size 63
 #define perfetto_protos_VirtioVideoResourceQueueFtraceEvent_size 63
+#define perfetto_protos_VmOpDel_size             0
+#define perfetto_protos_VmOpMerge_size           4
+#define perfetto_protos_VmOpRegLoad_size         8
+#define perfetto_protos_VmOpSelect_PathComponent_size 20
+#define perfetto_protos_VmOpSet_size             0
 #define perfetto_protos_VulkanMemoryConfig_size  4
 #define perfetto_protos_VulkanMemoryEventAnnotation_size 22
-#define perfetto_protos_WindowManagerConfig_size 4
+#define perfetto_protos_WindowManagerConfig_size 6
 #define perfetto_protos_WinscopeExtensions_size  0
 #define perfetto_protos_WorkqueueActivateWorkFtraceEvent_size 22
 #define perfetto_protos_WorkqueueExecuteEndFtraceEvent_size 22
