@@ -1874,67 +1874,67 @@ static __always_inline int utrace_handle_probe(void *ctx, enum utrace_handler_fl
 }
 
 SEC("?uprobe.s")
-int utrace_uprobe(struct pt_regs *ctx)
+int wprof_ut_uprobe(struct pt_regs *ctx)
 {
 	return utrace_handle_probe(ctx, 0);
 }
 
 SEC("?uretprobe.s")
-int utrace_uretprobe(struct pt_regs *ctx)
+int wprof_ut_uret(struct pt_regs *ctx)
 {
 	return utrace_handle_probe(ctx, 0);
 }
 
 SEC("?usdt.s")
-int utrace_usdt(struct pt_regs *ctx)
+int wprof_ut_usdt(struct pt_regs *ctx)
 {
 	return utrace_handle_probe(ctx, UTRACE_PF_USDT);
 }
 
 SEC("?raw_tp")
-int utrace_raw_tp(struct bpf_raw_tracepoint_args *ctx)
+int wprof_ut_raw_tp(struct bpf_raw_tracepoint_args *ctx)
 {
 	return utrace_handle_probe(ctx, UTRACE_PF_KERNEL | UTRACE_PF_RAW_TP);
 }
 
 SEC("?tp")
-int utrace_tp(void *ctx)
+int wprof_ut_tp(void *ctx)
 {
 	return utrace_handle_probe(ctx, UTRACE_PF_KERNEL | UTRACE_PF_TP);
 }
 
 SEC("?kprobe")
-int utrace_kprobe(struct pt_regs *ctx)
+int wprof_ut_kprobe(struct pt_regs *ctx)
 {
 	return utrace_handle_probe(ctx, UTRACE_PF_KERNEL);
 }
 
 SEC("?kprobe.multi")
-int utrace_kprobe_multi(struct pt_regs *ctx)
+int wprof_ut_kmulti(struct pt_regs *ctx)
 {
 	return utrace_handle_probe(ctx, UTRACE_PF_KERNEL);
 }
 
 SEC("?kretprobe")
-int utrace_kretprobe(struct pt_regs *ctx)
+int wprof_ut_kret(struct pt_regs *ctx)
 {
 	return utrace_handle_probe(ctx, UTRACE_PF_KERNEL);
 }
 
 SEC("?kretprobe.multi")
-int utrace_kretprobe_multi(struct pt_regs *ctx)
+int wprof_ut_kretmulti(struct pt_regs *ctx)
 {
 	return utrace_handle_probe(ctx, UTRACE_PF_KERNEL);
 }
 
 SEC("?fentry")
-int utrace_bpf_entry(void *ctx)
+int wprof_ut_bpf_entry(void *ctx)
 {
 	return utrace_handle_probe(ctx, UTRACE_PF_KERNEL | UTRACE_PF_FENTRY);
 }
 
 SEC("?fexit")
-int utrace_bpf_exit(void *ctx)
+int wprof_ut_bpf_exit(void *ctx)
 {
 	return utrace_handle_probe(ctx, UTRACE_PF_KERNEL | UTRACE_PF_FENTRY);
 }

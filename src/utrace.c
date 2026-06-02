@@ -1285,9 +1285,9 @@ int utrace_setup(struct wprof_bpf *skel)
 			case UTRACE_URETPROBE:
 			case UTRACE_UPROBE_SPAN:
 				if (cfg_needs_uprobe(leg))
-					bpf_program__set_autoload(skel->progs.utrace_uprobe, true);
+					bpf_program__set_autoload(skel->progs.wprof_ut_uprobe, true);
 				if (cfg_needs_uretprobe(leg))
-					bpf_program__set_autoload(skel->progs.utrace_uretprobe, true);
+					bpf_program__set_autoload(skel->progs.wprof_ut_uret, true);
 				err = resolve_uprobe_cfg(leg, mandatory);
 				break;
 			case UTRACE_KPROBE:
@@ -1296,25 +1296,25 @@ int utrace_setup(struct wprof_bpf *skel)
 				struct btf *vmlinux_btf = load_vmlinux_btf();
 				bool has_multi = btf__find_by_name_kind(vmlinux_btf, "bpf_kprobe_multi_link", BTF_KIND_STRUCT) > 0;
 				if (cfg_needs_kprobe(leg)) {
-					bpf_program__set_autoload(skel->progs.utrace_kprobe, true);
-					bpf_program__set_autoload(skel->progs.utrace_kprobe_multi, has_multi);
+					bpf_program__set_autoload(skel->progs.wprof_ut_kprobe, true);
+					bpf_program__set_autoload(skel->progs.wprof_ut_kmulti, has_multi);
 				}
 				if (cfg_needs_kretprobe(leg)) {
-					bpf_program__set_autoload(skel->progs.utrace_kretprobe, true);
-					bpf_program__set_autoload(skel->progs.utrace_kretprobe_multi, has_multi);
+					bpf_program__set_autoload(skel->progs.wprof_ut_kret, true);
+					bpf_program__set_autoload(skel->progs.wprof_ut_kretmulti, has_multi);
 				}
 				break;
 			}
 			case UTRACE_USDT:
-				bpf_program__set_autoload(skel->progs.utrace_usdt, true);
-				bpf_program__set_autoattach(skel->progs.utrace_usdt, false);
+				bpf_program__set_autoload(skel->progs.wprof_ut_usdt, true);
+				bpf_program__set_autoattach(skel->progs.wprof_ut_usdt, false);
 				err = resolve_usdt_cfg(leg, mandatory);
 				break;
 			case UTRACE_RAW_TRACEPOINT:
-				bpf_program__set_autoload(skel->progs.utrace_raw_tp, true);
+				bpf_program__set_autoload(skel->progs.wprof_ut_raw_tp, true);
 				break;
 			case UTRACE_TRACEPOINT:
-				bpf_program__set_autoload(skel->progs.utrace_tp, true);
+				bpf_program__set_autoload(skel->progs.wprof_ut_tp, true);
 				break;
 			case UTRACE_BPF_PROBE:
 			case UTRACE_BPF_RETPROBE:
@@ -1393,22 +1393,22 @@ int utrace_setup(struct wprof_bpf *skel)
 		 * (templates are only used as clone sources).
 		 */
 		if (need_fentry) {
-			err = bpf_program__set_attach_target(skel->progs.utrace_bpf_entry,
+			err = bpf_program__set_attach_target(skel->progs.wprof_ut_bpf_entry,
 							     first_prog_fd, first_func_name);
 			if (err) {
 				eprintf("utrace: failed to set fentry attach target: %d\n", err);
 				return err;
 			}
-			bpf_program__set_autoload(skel->progs.utrace_bpf_entry, true);
+			bpf_program__set_autoload(skel->progs.wprof_ut_bpf_entry, true);
 		}
 		if (need_fexit) {
-			err = bpf_program__set_attach_target(skel->progs.utrace_bpf_exit,
+			err = bpf_program__set_attach_target(skel->progs.wprof_ut_bpf_exit,
 							     first_prog_fd, first_func_name);
 			if (err) {
 				eprintf("utrace: failed to set fexit attach target: %d\n", err);
 				return err;
 			}
-			bpf_program__set_autoload(skel->progs.utrace_bpf_exit, true);
+			bpf_program__set_autoload(skel->progs.wprof_ut_bpf_exit, true);
 		}
 	}
 
@@ -1452,8 +1452,8 @@ static int attach_utrace_probe(struct bpf_state *st, struct wprof_bpf *skel,
 	case UTRACE_UPROBE:
 	case UTRACE_URETPROBE:
 	case UTRACE_UPROBE_SPAN: {
-		struct bpf_program *prog = is_retprobe ? skel->progs.utrace_uretprobe
-						       : skel->progs.utrace_uprobe;
+		struct bpf_program *prog = is_retprobe ? skel->progs.wprof_ut_uret
+						       : skel->progs.wprof_ut_uprobe;
 		LIBBPF_OPTS(bpf_uprobe_opts, opts, .bpf_cookie = *map_idx, .retprobe = is_retprobe);
 		struct bpf_link *link = bpf_program__attach_uprobe_opts(prog, cfg_pid(cfg),
 									cfg->uprobe.attach_path,
@@ -1485,7 +1485,7 @@ static int attach_utrace_probe(struct bpf_state *st, struct wprof_bpf *skel,
 		 * offsets or functions that aren't ftrace-attachable.
 		 */
 		if (has_multi && cfg->kprobe.off == 0) {
-			struct bpf_program *prog = is_retprobe ? skel->progs.utrace_kretprobe_multi : skel->progs.utrace_kprobe_multi;
+			struct bpf_program *prog = is_retprobe ? skel->progs.wprof_ut_kretmulti : skel->progs.wprof_ut_kmulti;
 			const char *sym = cfg->kprobe.name;
 			__u64 cookie = *map_idx;
 			LIBBPF_OPTS(bpf_kprobe_multi_opts, mopts,
@@ -1503,7 +1503,7 @@ static int attach_utrace_probe(struct bpf_state *st, struct wprof_bpf *skel,
 		}
 
 		if (!link) {
-			struct bpf_program *prog = is_retprobe ? skel->progs.utrace_kretprobe : skel->progs.utrace_kprobe;
+			struct bpf_program *prog = is_retprobe ? skel->progs.wprof_ut_kret : skel->progs.wprof_ut_kprobe;
 			LIBBPF_OPTS(bpf_kprobe_opts, opts,
 				.bpf_cookie = *map_idx,
 				.retprobe = is_retprobe,
@@ -1525,8 +1525,8 @@ static int attach_utrace_probe(struct bpf_state *st, struct wprof_bpf *skel,
 	case UTRACE_BPF_PROBE:
 	case UTRACE_BPF_RETPROBE:
 	case UTRACE_BPF_SPAN: {
-		struct bpf_program *tmpl = is_retprobe ? skel->progs.utrace_bpf_exit
-						       : skel->progs.utrace_bpf_entry;
+		struct bpf_program *tmpl = is_retprobe ? skel->progs.wprof_ut_bpf_exit
+						       : skel->progs.wprof_ut_bpf_entry;
 		enum bpf_attach_type atype = is_retprobe ? BPF_TRACE_FEXIT : BPF_TRACE_FENTRY;
 
 		LIBBPF_OPTS(bpf_prog_load_opts, clone_opts,
@@ -1555,7 +1555,7 @@ static int attach_utrace_probe(struct bpf_state *st, struct wprof_bpf *skel,
 	}
 	case UTRACE_TRACEPOINT: {
 		LIBBPF_OPTS(bpf_tracepoint_opts, opts, .bpf_cookie = *map_idx);
-		struct bpf_link *link = bpf_program__attach_tracepoint_opts(skel->progs.utrace_tp,
+		struct bpf_link *link = bpf_program__attach_tracepoint_opts(skel->progs.wprof_ut_tp,
 									    cfg->tp.cat, cfg->tp.name, &opts);
 		if (!link) {
 			err = -errno;
@@ -1570,7 +1570,7 @@ static int attach_utrace_probe(struct bpf_state *st, struct wprof_bpf *skel,
 	case UTRACE_RAW_TRACEPOINT: {
 		LIBBPF_OPTS(bpf_raw_tracepoint_opts, opts, .cookie = *map_idx);
 		struct bpf_link *link = bpf_program__attach_raw_tracepoint_opts(
-						skel->progs.utrace_raw_tp,
+						skel->progs.wprof_ut_raw_tp,
 						cfg->raw_tp.name, &opts);
 		if (!link) {
 			err = -errno;
@@ -1584,7 +1584,7 @@ static int attach_utrace_probe(struct bpf_state *st, struct wprof_bpf *skel,
 	}
 	case UTRACE_USDT: {
 		LIBBPF_OPTS(bpf_usdt_opts, opts, .usdt_cookie = *map_idx);
-		struct bpf_link *link = bpf_program__attach_usdt(skel->progs.utrace_usdt,
+		struct bpf_link *link = bpf_program__attach_usdt(skel->progs.wprof_ut_usdt,
 								 cfg_pid(cfg),
 								 cfg->usdt.attach_path,
 								 cfg->usdt.provider,
