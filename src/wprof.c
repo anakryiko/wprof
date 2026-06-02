@@ -824,8 +824,8 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 	 * process them, but must not be loaded into the kernel — they are only
 	 * used as clone sources. Unconditionally disable; harmless if unused.
 	 */
-	bpf_program__set_autoload(skel->progs.utrace_bpf_entry, false);
-	bpf_program__set_autoload(skel->progs.utrace_bpf_exit, false);
+	bpf_program__set_autoload(skel->progs.wprof_ut_bpf_entry, false);
+	bpf_program__set_autoload(skel->progs.wprof_ut_bpf_exit, false);
 
 	err = wprof_bpf__load(skel);
 	if (err) {
