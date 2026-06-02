@@ -808,22 +808,13 @@ static int utrace_augment_args(void)
 		}
 	}
 
-	struct btf *btf = NULL;
-	if (need_btf) {
-		btf = btf__parse("/sys/kernel/btf/vmlinux", NULL);
-		if (!btf)
-			wprintf("utrace: failed to load kernel BTF, arg types will default to u64\n");
-	}
+	struct btf *btf = need_btf ? load_vmlinux_btf() : NULL;
 
 	for (int i = 0; i < env.utrace_cfg_cnt; i++) {
 		int err = augment_cfg_args(&env.utrace_cfgs[i], btf);
-		if (err) {
-			btf__free(btf);
+		if (err)
 			return err;
-		}
 	}
-
-	btf__free(btf);
 
 	/* compile name format templates after all arg types/names are resolved */
 	for (int i = 0; i < env.utrace_cfg_cnt; i++) {
@@ -1301,12 +1292,19 @@ int utrace_setup(struct wprof_bpf *skel)
 				break;
 			case UTRACE_KPROBE:
 			case UTRACE_KRETPROBE:
-			case UTRACE_KPROBE_SPAN:
-				if (cfg_needs_kprobe(leg))
+			case UTRACE_KPROBE_SPAN: {
+				struct btf *vmlinux_btf = load_vmlinux_btf();
+				bool has_multi = btf__find_by_name_kind(vmlinux_btf, "bpf_kprobe_multi_link", BTF_KIND_STRUCT) > 0;
+				if (cfg_needs_kprobe(leg)) {
 					bpf_program__set_autoload(skel->progs.utrace_kprobe, true);
-				if (cfg_needs_kretprobe(leg))
+					bpf_program__set_autoload(skel->progs.utrace_kprobe_multi, has_multi);
+				}
+				if (cfg_needs_kretprobe(leg)) {
 					bpf_program__set_autoload(skel->progs.utrace_kretprobe, true);
+					bpf_program__set_autoload(skel->progs.utrace_kretprobe_multi, has_multi);
+				}
 				break;
+			}
 			case UTRACE_USDT:
 				bpf_program__set_autoload(skel->progs.utrace_usdt, true);
 				bpf_program__set_autoattach(skel->progs.utrace_usdt, false);
@@ -1475,14 +1473,48 @@ static int attach_utrace_probe(struct bpf_state *st, struct wprof_bpf *skel,
 	case UTRACE_KPROBE:
 	case UTRACE_KRETPROBE:
 	case UTRACE_KPROBE_SPAN: {
-		struct bpf_program *prog = is_retprobe ? skel->progs.utrace_kretprobe
-						       : skel->progs.utrace_kprobe;
-		LIBBPF_OPTS(bpf_kprobe_opts, opts, .bpf_cookie = *map_idx, .retprobe = is_retprobe);
-		struct bpf_link *link = bpf_program__attach_kprobe_opts(prog, cfg->kprobe.name, &opts);
+		const char *kind = is_retprobe ? "kretprobe" : "kprobe";
+		struct bpf_link *link = NULL;
+		struct btf *vmlinux_btf = load_vmlinux_btf();
+		bool has_multi = btf__find_by_name_kind(vmlinux_btf, "bpf_kprobe_multi_link", BTF_KIND_STRUCT) > 0;
+
+		/*
+		 * Multi-kprobe is generally faster than legacy breakpoint-based kprobes, but can
+		 * only attach at function entry. Use it when the offset is zero (always true for
+		 * kretprobe and span legs), and fall back to the legacy program for non-zero
+		 * offsets or functions that aren't ftrace-attachable.
+		 */
+		if (has_multi && cfg->kprobe.off == 0) {
+			struct bpf_program *prog = is_retprobe ? skel->progs.utrace_kretprobe_multi : skel->progs.utrace_kprobe_multi;
+			const char *sym = cfg->kprobe.name;
+			__u64 cookie = *map_idx;
+			LIBBPF_OPTS(bpf_kprobe_multi_opts, mopts,
+				.syms = &sym,
+				.cookies = &cookie,
+				.cnt = 1,
+				.retprobe = is_retprobe,
+			);
+			link = bpf_program__attach_kprobe_multi_opts(prog, NULL, &mopts);
+			if (!link) {
+				err = -errno;
+				vprintf("utrace: multi-%s attach to '%s' failed: %s. Falling back to legacy %s.\n",
+					kind, cfg->kprobe.name, errstr(err), kind);
+			}
+		}
+
+		if (!link) {
+			struct bpf_program *prog = is_retprobe ? skel->progs.utrace_kretprobe : skel->progs.utrace_kprobe;
+			LIBBPF_OPTS(bpf_kprobe_opts, opts,
+				.bpf_cookie = *map_idx,
+				.retprobe = is_retprobe,
+				.offset = cfg->kprobe.off,
+			);
+			link = bpf_program__attach_kprobe_opts(prog, cfg->kprobe.name, &opts);
+		}
+
 		if (!link) {
 			err = -errno;
-			eprintf("utrace: failed to attach %s to '%s': %d\n",
-				is_retprobe ? "kretprobe" : "kprobe", cfg->kprobe.name, err);
+			eprintf("utrace: failed to attach %s to '%s': %s\n", kind, cfg->kprobe.name, errstr(err));
 			return err;
 		}
 		err = add_link(st, link);

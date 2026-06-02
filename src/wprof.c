@@ -568,33 +568,27 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 	}
 
 	if (env.capture_scx) {
-		struct btf *vmlinux_btf = btf__parse("/sys/kernel/btf/vmlinux", NULL);
+		struct btf *vmlinux_btf = load_vmlinux_btf();
 
-		if (!vmlinux_btf) {
-			eprintf("Failed to parse /sys/kernel/btf/vmlinux, disabling SCX layer/DSQ capture\n");
-			env.capture_scx = FALSE;
+		if (btf__find_by_name_kind(vmlinux_btf, "scx_bpf_dsq_insert", BTF_KIND_FUNC) < 0) {
+			bpf_program__set_autoload(skel->progs.wprof_dispatch, true);
 		} else {
-			if (btf__find_by_name_kind(vmlinux_btf, "scx_bpf_dsq_insert", BTF_KIND_FUNC) < 0) {
-				bpf_program__set_autoload(skel->progs.wprof_dispatch, true);
-			} else {
-				bpf_program__set_autoload(skel->progs.wprof_dsq_insert, true);
-			}
-			if (btf__find_by_name_kind(vmlinux_btf, "scx_bpf_dsq_insert_vtime", BTF_KIND_FUNC) < 0) {
-				bpf_program__set_autoload(skel->progs.wprof_dispatch_vtime, true);
-			} else {
-				bpf_program__set_autoload(skel->progs.wprof_dsq_insert_vtime, true);
-			}
-			if (btf__find_by_name_kind(vmlinux_btf, "scx_bpf_dsq_move", BTF_KIND_FUNC) < 0) {
-				bpf_program__set_autoload(skel->progs.wprof_dispatch_from_dsq, true);
-			} else {
-				bpf_program__set_autoload(skel->progs.wprof_dsq_move, true);
-			}
-			if (btf__find_by_name_kind(vmlinux_btf, "scx_bpf_dsq_move_vtime", BTF_KIND_FUNC) < 0) {
-				bpf_program__set_autoload(skel->progs.wprof_dispatch_vtime_from_dsq, true);
-			} else {
-				bpf_program__set_autoload(skel->progs.wprof_dsq_move_vtime, true);
-			}
-			btf__free(vmlinux_btf);
+			bpf_program__set_autoload(skel->progs.wprof_dsq_insert, true);
+		}
+		if (btf__find_by_name_kind(vmlinux_btf, "scx_bpf_dsq_insert_vtime", BTF_KIND_FUNC) < 0) {
+			bpf_program__set_autoload(skel->progs.wprof_dispatch_vtime, true);
+		} else {
+			bpf_program__set_autoload(skel->progs.wprof_dsq_insert_vtime, true);
+		}
+		if (btf__find_by_name_kind(vmlinux_btf, "scx_bpf_dsq_move", BTF_KIND_FUNC) < 0) {
+			bpf_program__set_autoload(skel->progs.wprof_dispatch_from_dsq, true);
+		} else {
+			bpf_program__set_autoload(skel->progs.wprof_dsq_move, true);
+		}
+		if (btf__find_by_name_kind(vmlinux_btf, "scx_bpf_dsq_move_vtime", BTF_KIND_FUNC) < 0) {
+			bpf_program__set_autoload(skel->progs.wprof_dispatch_vtime_from_dsq, true);
+		} else {
+			bpf_program__set_autoload(skel->progs.wprof_dsq_move_vtime, true);
 		}
 
 		/*

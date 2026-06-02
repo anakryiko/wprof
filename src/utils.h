@@ -134,6 +134,13 @@ static inline void wprof_strlcpy(char *dst, const char *src, size_t sz)
 
 const char *sfmt(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
+const char *libbpf_errstr(int err); /* from libbpf */
+static inline const char *errstr(int err)  { return libbpf_errstr(err); }
+
+struct btf;
+/* Lazily parse and cache the running kernel's BTF; exits on failure. */
+struct btf *load_vmlinux_btf(void);
+
 static inline const char *fmt_timestamp_ns(u64 realtime_ns)
 {
 	time_t t = realtime_ns / 1000000000ULL;

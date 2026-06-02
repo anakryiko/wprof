@@ -1909,8 +1909,20 @@ int utrace_kprobe(struct pt_regs *ctx)
 	return utrace_handle_probe(ctx, UTRACE_PF_KERNEL);
 }
 
+SEC("?kprobe.multi")
+int utrace_kprobe_multi(struct pt_regs *ctx)
+{
+	return utrace_handle_probe(ctx, UTRACE_PF_KERNEL);
+}
+
 SEC("?kretprobe")
 int utrace_kretprobe(struct pt_regs *ctx)
+{
+	return utrace_handle_probe(ctx, UTRACE_PF_KERNEL);
+}
+
+SEC("?kretprobe.multi")
+int utrace_kretprobe_multi(struct pt_regs *ctx)
 {
 	return utrace_handle_probe(ctx, UTRACE_PF_KERNEL);
 }
