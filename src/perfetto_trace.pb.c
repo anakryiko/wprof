@@ -21,13 +21,40 @@ PB_BIND(perfetto_protos_GpuCounterDescriptor_GpuCounterSpec, perfetto_protos_Gpu
 PB_BIND(perfetto_protos_GpuCounterDescriptor_GpuCounterBlock, perfetto_protos_GpuCounterDescriptor_GpuCounterBlock, AUTO)
 
 
+PB_BIND(perfetto_protos_GpuCounterDescriptor_GpuCounterGroupSpec, perfetto_protos_GpuCounterDescriptor_GpuCounterGroupSpec, AUTO)
+
+
 PB_BIND(perfetto_protos_TrackEventCategory, perfetto_protos_TrackEventCategory, AUTO)
 
 
 PB_BIND(perfetto_protos_TrackEventDescriptor, perfetto_protos_TrackEventDescriptor, AUTO)
 
 
-PB_BIND(perfetto_protos_DataSourceDescriptor, perfetto_protos_DataSourceDescriptor, AUTO)
+PB_BIND(perfetto_protos_VmProgram, perfetto_protos_VmProgram, AUTO)
+
+
+PB_BIND(perfetto_protos_VmInstruction, perfetto_protos_VmInstruction, AUTO)
+
+
+PB_BIND(perfetto_protos_VmOpSelect, perfetto_protos_VmOpSelect, AUTO)
+
+
+PB_BIND(perfetto_protos_VmOpSelect_PathComponent, perfetto_protos_VmOpSelect_PathComponent, AUTO)
+
+
+PB_BIND(perfetto_protos_VmOpRegLoad, perfetto_protos_VmOpRegLoad, AUTO)
+
+
+PB_BIND(perfetto_protos_VmOpMerge, perfetto_protos_VmOpMerge, AUTO)
+
+
+PB_BIND(perfetto_protos_VmOpSet, perfetto_protos_VmOpSet, AUTO)
+
+
+PB_BIND(perfetto_protos_VmOpDel, perfetto_protos_VmOpDel, AUTO)
+
+
+PB_BIND(perfetto_protos_DataSourceDescriptor, perfetto_protos_DataSourceDescriptor, 2)
 
 
 PB_BIND(perfetto_protos_TracingServiceState, perfetto_protos_TracingServiceState, AUTO)
@@ -36,10 +63,13 @@ PB_BIND(perfetto_protos_TracingServiceState, perfetto_protos_TracingServiceState
 PB_BIND(perfetto_protos_TracingServiceState_Producer, perfetto_protos_TracingServiceState_Producer, AUTO)
 
 
-PB_BIND(perfetto_protos_TracingServiceState_DataSource, perfetto_protos_TracingServiceState_DataSource, AUTO)
+PB_BIND(perfetto_protos_TracingServiceState_DataSource, perfetto_protos_TracingServiceState_DataSource, 2)
 
 
 PB_BIND(perfetto_protos_TracingServiceState_TracingSession, perfetto_protos_TracingServiceState_TracingSession, AUTO)
+
+
+PB_BIND(perfetto_protos_AndroidAflagsConfig, perfetto_protos_AndroidAflagsConfig, AUTO)
 
 
 PB_BIND(perfetto_protos_AndroidGameInterventionListConfig, perfetto_protos_AndroidGameInterventionListConfig, AUTO)
@@ -147,6 +177,15 @@ PB_BIND(perfetto_protos_FtraceConfig_TracefsOption, perfetto_protos_FtraceConfig
 PB_BIND(perfetto_protos_GpuCounterConfig, perfetto_protos_GpuCounterConfig, AUTO)
 
 
+PB_BIND(perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig, perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig, AUTO)
+
+
+PB_BIND(perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityNameFilter, perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityNameFilter, AUTO)
+
+
+PB_BIND(perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityRange, perfetto_protos_GpuCounterConfig_InstrumentedSamplingConfig_ActivityRange, AUTO)
+
+
 PB_BIND(perfetto_protos_GpuRenderStagesConfig, perfetto_protos_GpuRenderStagesConfig, AUTO)
 
 
@@ -165,6 +204,9 @@ PB_BIND(perfetto_protos_ConsoleConfig, perfetto_protos_ConsoleConfig, AUTO)
 PB_BIND(perfetto_protos_InterceptorConfig, perfetto_protos_InterceptorConfig, 2)
 
 
+PB_BIND(perfetto_protos_SystemdJournaldConfig, perfetto_protos_SystemdJournaldConfig, AUTO)
+
+
 PB_BIND(perfetto_protos_AndroidPowerConfig, perfetto_protos_AndroidPowerConfig, AUTO)
 
 
@@ -178,6 +220,12 @@ PB_BIND(perfetto_protos_HeapprofdConfig, perfetto_protos_HeapprofdConfig, 2)
 
 
 PB_BIND(perfetto_protos_HeapprofdConfig_ContinuousDumpConfig, perfetto_protos_HeapprofdConfig_ContinuousDumpConfig, AUTO)
+
+
+PB_BIND(perfetto_protos_SmapsConfig, perfetto_protos_SmapsConfig, AUTO)
+
+
+PB_BIND(perfetto_protos_RedactionRule, perfetto_protos_RedactionRule, AUTO)
 
 
 PB_BIND(perfetto_protos_JavaHprofConfig, perfetto_protos_JavaHprofConfig, AUTO)
@@ -210,6 +258,12 @@ PB_BIND(perfetto_protos_PerfEventConfig_CallstackSampling, perfetto_protos_PerfE
 PB_BIND(perfetto_protos_PerfEventConfig_Scope, perfetto_protos_PerfEventConfig_Scope, AUTO)
 
 
+PB_BIND(perfetto_protos_ProtoVmConfig, perfetto_protos_ProtoVmConfig, AUTO)
+
+
+PB_BIND(perfetto_protos_QnxConfig, perfetto_protos_QnxConfig, AUTO)
+
+
 PB_BIND(perfetto_protos_StatsdTracingConfig, perfetto_protos_StatsdTracingConfig, AUTO)
 
 
@@ -240,7 +294,7 @@ PB_BIND(perfetto_protos_TraceConfig, perfetto_protos_TraceConfig, 2)
 PB_BIND(perfetto_protos_TraceConfig_BufferConfig, perfetto_protos_TraceConfig_BufferConfig, AUTO)
 
 
-PB_BIND(perfetto_protos_TraceConfig_DataSource, perfetto_protos_TraceConfig_DataSource, 2)
+PB_BIND(perfetto_protos_TraceConfig_DataSource, perfetto_protos_TraceConfig_DataSource, 4)
 
 
 PB_BIND(perfetto_protos_TraceConfig_BuiltinDataSource, perfetto_protos_TraceConfig_BuiltinDataSource, AUTO)
@@ -285,10 +339,19 @@ PB_BIND(perfetto_protos_TraceConfig_CmdTraceStartDelay, perfetto_protos_TraceCon
 PB_BIND(perfetto_protos_TraceConfig_SessionSemaphore, perfetto_protos_TraceConfig_SessionSemaphore, AUTO)
 
 
+PB_BIND(perfetto_protos_TraceConfig_Note, perfetto_protos_TraceConfig_Note, AUTO)
+
+
 PB_BIND(perfetto_protos_Utsname, perfetto_protos_Utsname, AUTO)
 
 
 PB_BIND(perfetto_protos_SystemInfo, perfetto_protos_SystemInfo, 2)
+
+
+PB_BIND(perfetto_protos_TraceAttributes, perfetto_protos_TraceAttributes, AUTO)
+
+
+PB_BIND(perfetto_protos_TraceAttributes_Attribute, perfetto_protos_TraceAttributes_Attribute, AUTO)
 
 
 PB_BIND(perfetto_protos_TraceStats, perfetto_protos_TraceStats, 2)
@@ -304,6 +367,12 @@ PB_BIND(perfetto_protos_TraceStats_WriterStats, perfetto_protos_TraceStats_Write
 
 
 PB_BIND(perfetto_protos_TraceStats_FilterStats, perfetto_protos_TraceStats_FilterStats, AUTO)
+
+
+PB_BIND(perfetto_protos_AndroidAflags, perfetto_protos_AndroidAflags, AUTO)
+
+
+PB_BIND(perfetto_protos_AndroidAflags_Flag, perfetto_protos_AndroidAflags_Flag, AUTO)
 
 
 PB_BIND(perfetto_protos_AndroidGameInterventionList, perfetto_protos_AndroidGameInterventionList, AUTO)
@@ -331,12 +400,6 @@ PB_BIND(perfetto_protos_AndroidSystemProperty, perfetto_protos_AndroidSystemProp
 
 
 PB_BIND(perfetto_protos_AndroidSystemProperty_PropertyValue, perfetto_protos_AndroidSystemProperty_PropertyValue, AUTO)
-
-
-PB_BIND(perfetto_protos_AppWakelockInfo, perfetto_protos_AppWakelockInfo, AUTO)
-
-
-PB_BIND(perfetto_protos_AppWakelockBundle, perfetto_protos_AppWakelockBundle, AUTO)
 
 
 PB_BIND(perfetto_protos_BluetoothTraceEvent, perfetto_protos_BluetoothTraceEvent, AUTO)
@@ -379,9 +442,6 @@ PB_BIND(perfetto_protos_FrameTimelineEvent_ActualDisplayFrameStart, perfetto_pro
 
 
 PB_BIND(perfetto_protos_FrameTimelineEvent_FrameEnd, perfetto_protos_FrameTimelineEvent_FrameEnd, AUTO)
-
-
-PB_BIND(perfetto_protos_GpuMemTotalEvent, perfetto_protos_GpuMemTotalEvent, AUTO)
 
 
 PB_BIND(perfetto_protos_GraphicsFrameEvent, perfetto_protos_GraphicsFrameEvent, AUTO)
@@ -432,10 +492,13 @@ PB_BIND(perfetto_protos_ProtoLogViewerConfig_MessageData, perfetto_protos_ProtoL
 PB_BIND(perfetto_protos_ProtoLogViewerConfig_Group, perfetto_protos_ProtoLogViewerConfig_Group, AUTO)
 
 
+PB_BIND(perfetto_protos_RectProto, perfetto_protos_RectProto, AUTO)
+
+
 PB_BIND(perfetto_protos_ShellTransition, perfetto_protos_ShellTransition, AUTO)
 
 
-PB_BIND(perfetto_protos_ShellTransition_Target, perfetto_protos_ShellTransition_Target, AUTO)
+PB_BIND(perfetto_protos_ShellTransition_Change, perfetto_protos_ShellTransition_Change, AUTO)
 
 
 PB_BIND(perfetto_protos_ShellHandlerMappings, perfetto_protos_ShellHandlerMappings, AUTO)
@@ -444,7 +507,7 @@ PB_BIND(perfetto_protos_ShellHandlerMappings, perfetto_protos_ShellHandlerMappin
 PB_BIND(perfetto_protos_ShellHandlerMapping, perfetto_protos_ShellHandlerMapping, AUTO)
 
 
-PB_BIND(perfetto_protos_RectProto, perfetto_protos_RectProto, AUTO)
+PB_BIND(perfetto_protos_CornerRadiiProto, perfetto_protos_CornerRadiiProto, AUTO)
 
 
 PB_BIND(perfetto_protos_RegionProto, perfetto_protos_RegionProto, AUTO)
@@ -483,6 +546,9 @@ PB_BIND(perfetto_protos_LayersTraceFileProto, perfetto_protos_LayersTraceFilePro
 PB_BIND(perfetto_protos_LayersSnapshotProto, perfetto_protos_LayersSnapshotProto, AUTO)
 
 
+PB_BIND(perfetto_protos_LayersPatchProto, perfetto_protos_LayersPatchProto, AUTO)
+
+
 PB_BIND(perfetto_protos_LayersProto, perfetto_protos_LayersProto, AUTO)
 
 
@@ -499,9 +565,6 @@ PB_BIND(perfetto_protos_PositionProto, perfetto_protos_PositionProto, AUTO)
 
 
 PB_BIND(perfetto_protos_FloatRectProto, perfetto_protos_FloatRectProto, AUTO)
-
-
-PB_BIND(perfetto_protos_CornerRadiiProto, perfetto_protos_CornerRadiiProto, AUTO)
 
 
 PB_BIND(perfetto_protos_ActiveBufferProto, perfetto_protos_ActiveBufferProto, AUTO)
@@ -564,7 +627,7 @@ PB_BIND(perfetto_protos_WinscopeExtensions, perfetto_protos_WinscopeExtensions, 
 PB_BIND(perfetto_protos_ChromeBenchmarkMetadata, perfetto_protos_ChromeBenchmarkMetadata, AUTO)
 
 
-PB_BIND(perfetto_protos_ChromeMetadataPacket, perfetto_protos_ChromeMetadataPacket, AUTO)
+PB_BIND(perfetto_protos_ChromeMetadataPacket, perfetto_protos_ChromeMetadataPacket, 2)
 
 
 PB_BIND(perfetto_protos_ChromeMetadataPacket_FinchHash, perfetto_protos_ChromeMetadataPacket_FinchHash, AUTO)
@@ -678,16 +741,64 @@ PB_BIND(perfetto_protos_FileIoSimpleOpEtwEvent, perfetto_protos_FileIoSimpleOpEt
 PB_BIND(perfetto_protos_FileIoOpEndEtwEvent, perfetto_protos_FileIoOpEndEtwEvent, AUTO)
 
 
+PB_BIND(perfetto_protos_FileIoPathOperationEtwEvent, perfetto_protos_FileIoPathOperationEtwEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_StackWalkEtwEvent, perfetto_protos_StackWalkEtwEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_DiskIoEtwEvent, perfetto_protos_DiskIoEtwEvent, AUTO)
+
+
 PB_BIND(perfetto_protos_EtwTraceEvent, perfetto_protos_EtwTraceEvent, 2)
 
 
 PB_BIND(perfetto_protos_EtwTraceEventBundle, perfetto_protos_EtwTraceEventBundle, AUTO)
 
 
-PB_BIND(perfetto_protos_EvdevEvent, perfetto_protos_EvdevEvent, AUTO)
+PB_BIND(perfetto_protos_EvdevEvent, perfetto_protos_EvdevEvent, 2)
 
 
 PB_BIND(perfetto_protos_EvdevEvent_InputEvent, perfetto_protos_EvdevEvent_InputEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_EvdevEvent_DeviceAddition, perfetto_protos_EvdevEvent_DeviceAddition, 2)
+
+
+PB_BIND(perfetto_protos_EvdevEvent_DeviceRemoval, perfetto_protos_EvdevEvent_DeviceRemoval, AUTO)
+
+
+PB_BIND(perfetto_protos_EvdevDevice, perfetto_protos_EvdevDevice, 2)
+
+
+PB_BIND(perfetto_protos_EvdevDevice_Identifier, perfetto_protos_EvdevDevice_Identifier, AUTO)
+
+
+PB_BIND(perfetto_protos_EvdevDevice_AbsInfo, perfetto_protos_EvdevDevice_AbsInfo, AUTO)
+
+
+PB_BIND(perfetto_protos_EvdevDevice_AbsoluteAxisInfosEntry, perfetto_protos_EvdevDevice_AbsoluteAxisInfosEntry, AUTO)
+
+
+PB_BIND(perfetto_protos_EvdevDevice_EventTypeBitmasksEntry, perfetto_protos_EvdevDevice_EventTypeBitmasksEntry, AUTO)
+
+
+PB_BIND(perfetto_protos_EvdevDevice_AxisMap, perfetto_protos_EvdevDevice_AxisMap, AUTO)
+
+
+PB_BIND(perfetto_protos_EvdevDevice_AxisMap_AxisStatesEntry, perfetto_protos_EvdevDevice_AxisMap_AxisStatesEntry, AUTO)
+
+
+PB_BIND(perfetto_protos_EvdevDevice_AxisStatesEntry, perfetto_protos_EvdevDevice_AxisStatesEntry, AUTO)
+
+
+PB_BIND(perfetto_protos_EvdevDevice_SlotValuesMap, perfetto_protos_EvdevDevice_SlotValuesMap, AUTO)
+
+
+PB_BIND(perfetto_protos_EvdevDevice_SlotValuesMap_SlotValuesEntry, perfetto_protos_EvdevDevice_SlotValuesMap_SlotValuesEntry, AUTO)
+
+
+PB_BIND(perfetto_protos_EvdevDevice_AbsMtStatesEntry, perfetto_protos_EvdevDevice_AbsMtStatesEntry, AUTO)
 
 
 PB_BIND(perfetto_protos_FileDescriptorSet, perfetto_protos_FileDescriptorSet, AUTO)
@@ -994,6 +1105,21 @@ PB_BIND(perfetto_protos_DpuDispDpuUnderrunFtraceEvent, perfetto_protos_DpuDispDp
 
 
 PB_BIND(perfetto_protos_DpuDispVblankIrqEnableFtraceEvent, perfetto_protos_DpuDispVblankIrqEnableFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_DpuDispFrameDoneTimeoutFtraceEvent, perfetto_protos_DpuDispFrameDoneTimeoutFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_DpuDispFrameStartTimeoutFtraceEvent, perfetto_protos_DpuDispFrameStartTimeoutFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_DpuDispFrameDoneMissingFtraceEvent, perfetto_protos_DpuDispFrameDoneMissingFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_DpuDispFrameStartMissingFtraceEvent, perfetto_protos_DpuDispFrameStartMissingFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_DpuDispDpuLineUnderrunFtraceEvent, perfetto_protos_DpuDispDpuLineUnderrunFtraceEvent, AUTO)
 
 
 PB_BIND(perfetto_protos_DrmVblankEventFtraceEvent, perfetto_protos_DrmVblankEventFtraceEvent, AUTO)
@@ -1438,6 +1564,9 @@ PB_BIND(perfetto_protos_F2fsGcBeginFtraceEvent, perfetto_protos_F2fsGcBeginFtrac
 
 
 PB_BIND(perfetto_protos_F2fsGcEndFtraceEvent, perfetto_protos_F2fsGcEndFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_F2fsLockElapsedTimeFtraceEvent, perfetto_protos_F2fsLockElapsedTimeFtraceEvent, AUTO)
 
 
 PB_BIND(perfetto_protos_FastrpcDmaStatFtraceEvent, perfetto_protos_FastrpcDmaStatFtraceEvent, AUTO)
@@ -2109,6 +2238,15 @@ PB_BIND(perfetto_protos_DsiTxFtraceEvent, perfetto_protos_DsiTxFtraceEvent, AUTO
 PB_BIND(perfetto_protos_PanelWriteGenericFtraceEvent, perfetto_protos_PanelWriteGenericFtraceEvent, AUTO)
 
 
+PB_BIND(perfetto_protos_GramCollisionFtraceEvent, perfetto_protos_GramCollisionFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_PanelSettingsFullFtraceEvent, perfetto_protos_PanelSettingsFullFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_PanelSettingsLiteFtraceEvent, perfetto_protos_PanelSettingsLiteFtraceEvent, AUTO)
+
+
 PB_BIND(perfetto_protos_SchedSwitchWithCtrsFtraceEvent, perfetto_protos_SchedSwitchWithCtrsFtraceEvent, 2)
 
 
@@ -2242,6 +2380,9 @@ PB_BIND(perfetto_protos_SchedMigrateTaskFtraceEvent, perfetto_protos_SchedMigrat
 
 
 PB_BIND(perfetto_protos_SchedWakeupTaskAttrFtraceEvent, perfetto_protos_SchedWakeupTaskAttrFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_SchedGroupTrackerFtraceEvent, perfetto_protos_SchedGroupTrackerFtraceEvent, AUTO)
 
 
 PB_BIND(perfetto_protos_ScmCallStartFtraceEvent, perfetto_protos_ScmCallStartFtraceEvent, AUTO)
@@ -2466,6 +2607,12 @@ PB_BIND(perfetto_protos_MmShrinkSlabStartFtraceEvent, perfetto_protos_MmShrinkSl
 PB_BIND(perfetto_protos_MmShrinkSlabEndFtraceEvent, perfetto_protos_MmShrinkSlabEndFtraceEvent, AUTO)
 
 
+PB_BIND(perfetto_protos_MmVmscanMemcgReclaimBeginFtraceEvent, perfetto_protos_MmVmscanMemcgReclaimBeginFtraceEvent, AUTO)
+
+
+PB_BIND(perfetto_protos_MmVmscanMemcgReclaimEndFtraceEvent, perfetto_protos_MmVmscanMemcgReclaimEndFtraceEvent, AUTO)
+
+
 PB_BIND(perfetto_protos_WorkqueueActivateWorkFtraceEvent, perfetto_protos_WorkqueueActivateWorkFtraceEvent, AUTO)
 
 
@@ -2502,6 +2649,9 @@ PB_BIND(perfetto_protos_FtraceEventBundle_FtraceError, perfetto_protos_FtraceEve
 PB_BIND(perfetto_protos_FtraceEventBundle_GenericEventDescriptor, perfetto_protos_FtraceEventBundle_GenericEventDescriptor, AUTO)
 
 
+PB_BIND(perfetto_protos_GenericGpuFrequencyEvent, perfetto_protos_GenericGpuFrequencyEvent, AUTO)
+
+
 PB_BIND(perfetto_protos_GenericKernelCpuFrequencyEvent, perfetto_protos_GenericKernelCpuFrequencyEvent, AUTO)
 
 
@@ -2526,13 +2676,28 @@ PB_BIND(perfetto_protos_GpuCounterEvent, perfetto_protos_GpuCounterEvent, AUTO)
 PB_BIND(perfetto_protos_GpuCounterEvent_GpuCounter, perfetto_protos_GpuCounterEvent_GpuCounter, AUTO)
 
 
+PB_BIND(perfetto_protos_InternedGpuCounterDescriptor, perfetto_protos_InternedGpuCounterDescriptor, AUTO)
+
+
 PB_BIND(perfetto_protos_GpuLog, perfetto_protos_GpuLog, AUTO)
+
+
+PB_BIND(perfetto_protos_GpuMemTotalEvent, perfetto_protos_GpuMemTotalEvent, AUTO)
 
 
 PB_BIND(perfetto_protos_GpuRenderStageEvent, perfetto_protos_GpuRenderStageEvent, 2)
 
 
 PB_BIND(perfetto_protos_GpuRenderStageEvent_ExtraData, perfetto_protos_GpuRenderStageEvent_ExtraData, AUTO)
+
+
+PB_BIND(perfetto_protos_GpuRenderStageEvent_Dim3, perfetto_protos_GpuRenderStageEvent_Dim3, AUTO)
+
+
+PB_BIND(perfetto_protos_GpuRenderStageEvent_ExtraComputeArg, perfetto_protos_GpuRenderStageEvent_ExtraComputeArg, AUTO)
+
+
+PB_BIND(perfetto_protos_GpuRenderStageEvent_ComputeKernelLaunch, perfetto_protos_GpuRenderStageEvent_ComputeKernelLaunch, AUTO)
 
 
 PB_BIND(perfetto_protos_GpuRenderStageEvent_Specifications, perfetto_protos_GpuRenderStageEvent_Specifications, AUTO)
@@ -2548,6 +2713,12 @@ PB_BIND(perfetto_protos_InternedGraphicsContext, perfetto_protos_InternedGraphic
 
 
 PB_BIND(perfetto_protos_InternedGpuRenderStageSpecification, perfetto_protos_InternedGpuRenderStageSpecification, AUTO)
+
+
+PB_BIND(perfetto_protos_InternedComputeKernel, perfetto_protos_InternedComputeKernel, AUTO)
+
+
+PB_BIND(perfetto_protos_InternedComputeArgName, perfetto_protos_InternedComputeArgName, AUTO)
 
 
 PB_BIND(perfetto_protos_VulkanApiEvent, perfetto_protos_VulkanApiEvent, AUTO)
@@ -2718,6 +2889,9 @@ PB_BIND(perfetto_protos_InternedData, perfetto_protos_InternedData, 2)
 PB_BIND(perfetto_protos_AndroidJobName, perfetto_protos_AndroidJobName, AUTO)
 
 
+PB_BIND(perfetto_protos_SystemdJournaldEvent, perfetto_protos_SystemdJournaldEvent, AUTO)
+
+
 PB_BIND(perfetto_protos_MemoryTrackerSnapshot, perfetto_protos_MemoryTrackerSnapshot, AUTO)
 
 
@@ -2740,6 +2914,15 @@ PB_BIND(perfetto_protos_PerfettoMetatrace_Arg, perfetto_protos_PerfettoMetatrace
 
 
 PB_BIND(perfetto_protos_PerfettoMetatrace_InternedString, perfetto_protos_PerfettoMetatrace_InternedString, AUTO)
+
+
+PB_BIND(perfetto_protos_TraceProvenance, perfetto_protos_TraceProvenance, AUTO)
+
+
+PB_BIND(perfetto_protos_TraceProvenance_Sequence, perfetto_protos_TraceProvenance_Sequence, AUTO)
+
+
+PB_BIND(perfetto_protos_TraceProvenance_Buffer, perfetto_protos_TraceProvenance_Buffer, AUTO)
 
 
 PB_BIND(perfetto_protos_TracingServiceEvent, perfetto_protos_TracingServiceEvent, AUTO)
@@ -2782,6 +2965,15 @@ PB_BIND(perfetto_protos_PowerRails_RailDescriptor, perfetto_protos_PowerRails_Ra
 
 
 PB_BIND(perfetto_protos_PowerRails_EnergyData, perfetto_protos_PowerRails_EnergyData, AUTO)
+
+
+PB_BIND(perfetto_protos_JavaFrame, perfetto_protos_JavaFrame, AUTO)
+
+
+PB_BIND(perfetto_protos_JavaStack, perfetto_protos_JavaStack, AUTO)
+
+
+PB_BIND(perfetto_protos_ArtProcessMetadata, perfetto_protos_ArtProcessMetadata, AUTO)
 
 
 PB_BIND(perfetto_protos_ObfuscatedMember, perfetto_protos_ObfuscatedMember, AUTO)
@@ -2847,7 +3039,10 @@ PB_BIND(perfetto_protos_PerfSampleDefaults, perfetto_protos_PerfSampleDefaults, 
 PB_BIND(perfetto_protos_SmapsEntry, perfetto_protos_SmapsEntry, 2)
 
 
-PB_BIND(perfetto_protos_SmapsPacket, perfetto_protos_SmapsPacket, AUTO)
+PB_BIND(perfetto_protos_PackedSmaps, perfetto_protos_PackedSmaps, 2)
+
+
+PB_BIND(perfetto_protos_SmapsPacket, perfetto_protos_SmapsPacket, 2)
 
 
 PB_BIND(perfetto_protos_ProcessStats, perfetto_protos_ProcessStats, AUTO)
@@ -2919,6 +3114,9 @@ PB_BIND(perfetto_protos_SysStats_CpuIdleStateEntry, perfetto_protos_SysStats_Cpu
 PB_BIND(perfetto_protos_SysStats_CpuIdleState, perfetto_protos_SysStats_CpuIdleState, AUTO)
 
 
+PB_BIND(perfetto_protos_SysStats_SlabInfo, perfetto_protos_SysStats_SlabInfo, AUTO)
+
+
 PB_BIND(perfetto_protos_CpuInfo, perfetto_protos_CpuInfo, AUTO)
 
 
@@ -2928,10 +3126,37 @@ PB_BIND(perfetto_protos_CpuInfo_ArmCpuIdentifier, perfetto_protos_CpuInfo_ArmCpu
 PB_BIND(perfetto_protos_CpuInfo_Cpu, perfetto_protos_CpuInfo_Cpu, AUTO)
 
 
-PB_BIND(perfetto_protos_TestEvent, perfetto_protos_TestEvent, AUTO)
+PB_BIND(perfetto_protos_GpuInfo, perfetto_protos_GpuInfo, AUTO)
+
+
+PB_BIND(perfetto_protos_GpuInfo_Gpu, perfetto_protos_GpuInfo_Gpu, AUTO)
+
+
+PB_BIND(perfetto_protos_GpuInfo_Gpu_KeyValue, perfetto_protos_GpuInfo_Gpu_KeyValue, AUTO)
+
+
+PB_BIND(perfetto_protos_InterruptInfo, perfetto_protos_InterruptInfo, AUTO)
+
+
+PB_BIND(perfetto_protos_InterruptInfo_InterruptMapping, perfetto_protos_InterruptInfo_InterruptMapping, AUTO)
+
+
+PB_BIND(perfetto_protos_TestEvent, perfetto_protos_TestEvent, 2)
 
 
 PB_BIND(perfetto_protos_TestEvent_TestPayload, perfetto_protos_TestEvent_TestPayload, AUTO)
+
+
+PB_BIND(perfetto_protos_TestEvent_ProtoVmMessage, perfetto_protos_TestEvent_ProtoVmMessage, AUTO)
+
+
+PB_BIND(perfetto_protos_TestEvent_ProtoVmMessage_ProtoVmSubmessage, perfetto_protos_TestEvent_ProtoVmMessage_ProtoVmSubmessage, AUTO)
+
+
+PB_BIND(perfetto_protos_TestEvent_ProtoVmPatch, perfetto_protos_TestEvent_ProtoVmPatch, AUTO)
+
+
+PB_BIND(perfetto_protos_TestEvent_ProtoVmIncrementalState, perfetto_protos_TestEvent_ProtoVmIncrementalState, AUTO)
 
 
 PB_BIND(perfetto_protos_TracePacketDefaults, perfetto_protos_TracePacketDefaults, 2)
@@ -3015,7 +3240,37 @@ PB_BIND(perfetto_protos_UiState_HighlightProcess, perfetto_protos_UiState_Highli
 PB_BIND(perfetto_protos_TracePacket, perfetto_protos_TracePacket, 2)
 
 
+PB_BIND(perfetto_protos_TracePacket_ProtoVms, perfetto_protos_TracePacket_ProtoVms, AUTO)
+
+
+PB_BIND(perfetto_protos_TracePacket_ProtoVms_Instance, perfetto_protos_TracePacket_ProtoVms_Instance, 4)
+
+
 PB_BIND(perfetto_protos_Trace, perfetto_protos_Trace, AUTO)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
