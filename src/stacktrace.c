@@ -474,56 +474,42 @@ struct addr_set {
 
 static struct addr_set entry_set_timer = {
 	.names = (const char * const []){
-#if defined(__x86_64__)
 		"asm_sysvec_apic_timer_interrupt",	/* x86-64, v5.8+ */
-#elif defined(__aarch64__)
 		"el1h_64_irq_handler",			/* arm64, v5.14+ */
 		"el0t_64_irq_handler",			/* arm64, v5.14+ */
-#endif
 		NULL,
 	},
 };
 static struct addr_set entry_set_offcpu = {
 	.names = (const char * const []){
-#if defined(__x86_64__)
-		"__traceiter_sched_switch",
-#elif defined(__aarch64__)
-		"__bpf_trace_sched_switch",
-#endif
+		"__traceiter_sched_switch",		/* x86-64 */
+		"__bpf_trace_sched_switch",		/* arm64 */
 		"bpf_trace_run4",
 		NULL,
 	},
 };
 static struct addr_set entry_set_waker = {
 	.names = (const char * const []){
-#if defined(__x86_64__)
-		"__traceiter_sched_waking",
-		"__traceiter_sched_wakeup_new",
-#elif defined(__aarch64__)
-		"__bpf_trace_sched_wakeup_template", /* covers waking and wakeup_new */
-#endif
+		"__traceiter_sched_waking",		/* x86-64 */
+		"__traceiter_sched_wakeup_new",		/* x86-64 */
+		"__bpf_trace_sched_wakeup_template",	/* arm64, covers waking and wakeup_new */
 		"bpf_trace_run1",
 		NULL,
 	},
 };
 static struct addr_set entry_set_kprobe = {
 	.names = (const char * const []){
-#if defined(__x86_64__)
+		"fprobe_handler",	/* -> kprobe_multi_link_handler */
 		"ftrace_trampoline",
 		"kprobe_ftrace_handler",
-#elif defined(__aarch64__)
-		"el1h_64_sync_handler", /* eventually leading to kprobe_breakpoint_handler */
-#endif
+		"el1h_64_sync_handler", /* arm64, -> kprobe_breakpoint_handler */
 		NULL,
 	},
 };
 static struct addr_set entry_set_kretprobe = {
 	.names = (const char * const []){
-#if defined(__x86_64__)
 		"arch_rethook_trampoline",
-#elif defined(__aarch64__)
-		"el1h_64_sync_handler", /* eventually leading to [K] kretprobe_breakpoint_handler */
-#endif
+		"el1h_64_sync_handler", /* arm64, -> kretprobe_breakpoint_handler */
 		NULL,
 	},
 };
@@ -548,6 +534,12 @@ static struct addr_set entry_set_raw_tp = {
 		"bpf_trace_run10",
 		"bpf_trace_run11",
 		"bpf_trace_run12",
+		NULL,
+	},
+};
+static struct addr_set entry_set_bpf = {
+	.names = (const char * const []){
+		"__bpf_get_task_stack",
 		NULL,
 	},
 };
@@ -591,6 +583,8 @@ static const struct addr_set *strip_set_for(const struct wprof_event *e,
 		case UTRACE_KRETPROBE:      return &entry_set_kretprobe;
 		case UTRACE_TRACEPOINT:     return &entry_set_tp;
 		case UTRACE_RAW_TRACEPOINT: return &entry_set_raw_tp;
+		case UTRACE_BPF_PROBE:      return &entry_set_bpf;
+		case UTRACE_BPF_RETPROBE:   return &entry_set_bpf;
 		default:                    return NULL;
 		}
 	}
@@ -708,6 +702,7 @@ int process_stack_traces(struct worker_state *workers, int worker_cnt, FILE *sta
 	addr_set_resolve(&entry_set_kretprobe, ksyms);
 	addr_set_resolve(&entry_set_tp, ksyms);
 	addr_set_resolve(&entry_set_raw_tp, ksyms);
+	addr_set_resolve(&entry_set_bpf, ksyms);
 skip_ksyms:
 
 	/* Collect stack traces across all ringbuf dumps */
