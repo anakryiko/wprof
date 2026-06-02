@@ -22,8 +22,23 @@
 #include <sys/signal.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <bpf/btf.h>
 
 #include "utils.h"
+
+struct btf *load_vmlinux_btf(void)
+{
+	static struct btf *vmlinux_btf;
+
+	if (!vmlinux_btf) {
+		vmlinux_btf = btf__parse("/sys/kernel/btf/vmlinux", NULL);
+		if (!vmlinux_btf) {
+			eprintf("Failed to parse /sys/kernel/btf/vmlinux: %s\n", errstr(-errno));
+			exit(1);
+		}
+	}
+	return vmlinux_btf;
+}
 
 int append_str(char ***strs, int *cnt, const char *str)
 {
