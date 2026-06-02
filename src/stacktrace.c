@@ -485,29 +485,45 @@ static struct addr_set entry_set_timer = {
 };
 static struct addr_set entry_set_offcpu = {
 	.names = (const char * const []){
+#if defined(__x86_64__)
 		"__traceiter_sched_switch",
+#elif defined(__aarch64__)
+		"__bpf_trace_sched_switch",
+#endif
 		"bpf_trace_run4",
 		NULL,
 	},
 };
 static struct addr_set entry_set_waker = {
 	.names = (const char * const []){
+#if defined(__x86_64__)
 		"__traceiter_sched_waking",
 		"__traceiter_sched_wakeup_new",
+#elif defined(__aarch64__)
+		"__bpf_trace_sched_wakeup_template", /* covers waking and wakeup_new */
+#endif
 		"bpf_trace_run1",
 		NULL,
 	},
 };
 static struct addr_set entry_set_kprobe = {
 	.names = (const char * const []){
+#if defined(__x86_64__)
 		"ftrace_trampoline",
 		"kprobe_ftrace_handler",
+#elif defined(__aarch64__)
+		"el1h_64_sync_handler", /* eventually leading to kprobe_breakpoint_handler */
+#endif
 		NULL,
 	},
 };
 static struct addr_set entry_set_kretprobe = {
 	.names = (const char * const []){
+#if defined(__x86_64__)
 		"arch_rethook_trampoline",
+#elif defined(__aarch64__)
+		"el1h_64_sync_handler", /* eventually leading to [K] kretprobe_breakpoint_handler */
+#endif
 		NULL,
 	},
 };
