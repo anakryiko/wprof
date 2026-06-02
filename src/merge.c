@@ -206,8 +206,10 @@ static void collect_extras(struct persist_state *ps, struct wprof_extra_param **
 		struct utsname uts;
 		if (gethostname(hostname, sizeof(hostname)) == 0)
 			add_extra(extras, cnt, WEXTRA_METADATA, persist_stroff(ps, sfmt("hostname=%s", hostname)));
-		if (uname(&uts) == 0)
+		if (uname(&uts) == 0) {
 			add_extra(extras, cnt, WEXTRA_METADATA, persist_stroff(ps, sfmt("kernel=%s", uts.release)));
+			add_extra(extras, cnt, WEXTRA_METADATA, persist_stroff(ps, sfmt("arch=%s", uts.machine)));
+		}
 	}
 	for (int i = 0; i < env.metadata_cnt; i++)
 		add_extra(extras, cnt, WEXTRA_METADATA, persist_stroff(ps, env.metadata[i]));
