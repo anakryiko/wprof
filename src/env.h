@@ -55,6 +55,7 @@ enum pytrace_discover_strategy {
 
 struct wprof_bpf;
 struct req_list_cfg;
+struct ksyms;
 
 struct env {
 	bool verbose;
@@ -134,6 +135,7 @@ struct env {
 	bool pb_debug_interns;
 	bool pb_disable_interns;
 	bool keep_workdir;
+	bool raw_stacks;
 
 	/* FILTERING */
 	char **allow_pnames, **deny_pnames;

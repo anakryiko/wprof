@@ -17,6 +17,8 @@
 #include "stacktrace.h"
 #include "data.h"
 #include "pysym.h"
+#include "ksyms.h"
+#include "utrace_cfg.h"
 
 #include "blazesym.h"
 #include "../libbpf/src/strset.h"
@@ -437,6 +439,177 @@ static void stack_frame_append(struct symb_state *s, int pid, int orig_pid, u64 
 	s->sframe_cnt++;
 }
 
+/*
+ * Per-attach-type "entry frame" sets, used to strip BPF-dispatch / kernel
+ * dispatcher noise from the leaf side of captured kernel stack traces.
+ *
+ * Each set lists the kernel function(s) that participate in dispatching
+ * into the BPF program for that attach type — typically the outermost
+ * dispatcher (e.g. __traceiter_sched_switch) plus one or two inner runners
+ * (e.g. bpf_trace_run4, __bpf_trace_run) to act as fallbacks when the
+ * compiler inlines the outer entry. At init we resolve each name in
+ * /proc/kallsyms to an (addr, addr+size) range.
+ *
+ * At filter time we walk a captured kernel stack from the leaf toward the
+ * root, looking for the first address that falls in any range of the set.
+ * Once found, we keep walking and extend the strip as long as subsequent
+ * root-ward frames also match — this absorbs a contiguous run of marker
+ * frames so the boundary lands at the outermost marker even when an inner
+ * one matches first. The contiguous run plus everything closer to the
+ * leaf is stripped.
+ *
+ * Tables are intentionally small — the BPF runtime chain between the
+ * markers and the leaf is removed implicitly by stripping "from the
+ * outermost marker on down".
+ */
+struct addr_range {
+	u64 lo, hi;
+};
+
+struct addr_set {
+	const char * const *names;	/* hardcoded NULL-terminated list */
+	struct addr_range *ranges;	/* resolved at init from names */
+	int range_cnt;
+};
+
+static struct addr_set entry_set_timer = {
+	.names = (const char * const []){
+#if defined(__x86_64__)
+		"asm_sysvec_apic_timer_interrupt",	/* x86-64, v5.8+ */
+#elif defined(__aarch64__)
+		"el1h_64_irq_handler",			/* arm64, v5.14+ */
+		"el0t_64_irq_handler",			/* arm64, v5.14+ */
+#endif
+		NULL,
+	},
+};
+static struct addr_set entry_set_offcpu = {
+	.names = (const char * const []){
+		"__traceiter_sched_switch",
+		"bpf_trace_run4",
+		NULL,
+	},
+};
+static struct addr_set entry_set_waker = {
+	.names = (const char * const []){
+		"__traceiter_sched_waking",
+		"__traceiter_sched_wakeup_new",
+		"bpf_trace_run1",
+		NULL,
+	},
+};
+static struct addr_set entry_set_kprobe = {
+	.names = (const char * const []){
+		"ftrace_trampoline",
+		"kprobe_ftrace_handler",
+		NULL,
+	},
+};
+static struct addr_set entry_set_kretprobe = {
+	.names = (const char * const []){
+		"arch_rethook_trampoline",
+		NULL,
+	},
+};
+static struct addr_set entry_set_tp = {
+	.names = (const char * const []){
+		"trace_call_bpf",
+		"perf_trace_run_bpf_submit",
+		NULL,
+	},
+};
+static struct addr_set entry_set_raw_tp = {
+	.names = (const char * const []){
+		"bpf_trace_run1",
+		"bpf_trace_run2",
+		"bpf_trace_run3",
+		"bpf_trace_run4",
+		"bpf_trace_run5",
+		"bpf_trace_run6",
+		"bpf_trace_run7",
+		"bpf_trace_run8",
+		"bpf_trace_run9",
+		"bpf_trace_run10",
+		"bpf_trace_run11",
+		"bpf_trace_run12",
+		NULL,
+	},
+};
+
+static void addr_set_resolve(struct addr_set *s, const struct ksyms *ksyms)
+{
+	int name_cnt = 0;
+	for (const char * const *p = s->names; *p; p++)
+		name_cnt++;
+
+	s->ranges = calloc(name_cnt, sizeof(*s->ranges));
+	s->range_cnt = 0;
+
+	for (const char * const *p = s->names; *p; p++) {
+		const struct ksym *ks = ksyms__get_symbol(ksyms, *p, NULL, KSYM_FUNC);
+		if (!ks || !ks->size)
+			continue;
+		s->ranges[s->range_cnt].lo = ks->addr;
+		s->ranges[s->range_cnt].hi = ks->addr + ks->size;
+		s->range_cnt++;
+	}
+}
+
+static const struct addr_set *strip_set_for(const struct wprof_event *e,
+					    enum stack_trace_kind kind)
+{
+	switch (kind) {
+	case ST_TIMER:  return &entry_set_timer;
+	case ST_OFFCPU: return &entry_set_offcpu;
+	case ST_WAKER:  return &entry_set_waker;
+	case ST_UTRACE: {
+		const struct utrace_cfg *cfg = &env.utrace_cfgs[e->utrace.utrace_id];
+		/* For generic UTRACE_SPAN, the actual probe lives in the entry/exit leg;
+		 * pick the leg matching the event side. For all other types, the cfg
+		 * itself carries the probe type.
+		 */
+		if (cfg->type == UTRACE_SPAN)
+			cfg = (e->kind == EV_UTRACE_EXIT) ? cfg->span.exit : cfg->span.entry;
+		switch (cfg->type) {
+		case UTRACE_KPROBE:         return &entry_set_kprobe;
+		case UTRACE_KRETPROBE:      return &entry_set_kretprobe;
+		case UTRACE_TRACEPOINT:     return &entry_set_tp;
+		case UTRACE_RAW_TRACEPOINT: return &entry_set_raw_tp;
+		default:                    return NULL;
+		}
+	}
+	default: return NULL;
+	}
+}
+
+static bool addr_in_set(u64 addr, const struct addr_set *s)
+{
+	for (int i = 0; i < s->range_cnt; i++) {
+		if (addr >= s->ranges[i].lo && addr < s->ranges[i].hi)
+			return true;
+	}
+	return false;
+}
+
+static int kstack_strip_count(const struct wprof_event *e, enum stack_trace_kind kind,
+			      const u64 *kaddrs, int kcnt)
+{
+	const struct addr_set *set = strip_set_for(e, kind);
+	if (!set || set->range_cnt == 0)
+		return 0;
+
+	int strip = 0;
+	for (int i = 0; i < kcnt; i++) {
+		if (addr_in_set(kaddrs[i], set)) {
+			strip = i + 1;
+		} else if (strip) {
+			break; /* end of the contiguous marker run */
+		}
+	}
+
+	return strip;
+}
+
 static int process_stack_trace(struct symb_state *state, const struct wprof_event *e)
 {
 	const u64 *kaddrs = NULL, *uaddrs = NULL;
@@ -478,9 +651,10 @@ static int process_stack_trace(struct symb_state *state, const struct wprof_even
 		}
 
 		if (kaddrs) {
-			stack_trace_append(state, tr, 0, state->sframe_cnt, kcnt, !!uaddrs /*combine*/);
-			/* see above about that -1 compensation */
-			for (int i = kcnt - 1; i >= 0; i--)
+			int scnt = env.raw_stacks ? 0 : kstack_strip_count(e, tr->kind, kaddrs, kcnt);
+			stack_trace_append(state, tr, 0, state->sframe_cnt, kcnt - scnt, !!uaddrs /*combine*/);
+			/* see above about that -1 compensation; new leaf is at index `scnt` */
+			for (int i = kcnt - 1; i >= scnt; i--)
 				stack_frame_append(state, 0 /* kernel */, pid, kaddrs[i] + ((i != 0) ? -1 : 0));
 		}
 
@@ -499,9 +673,26 @@ int process_stack_traces(struct worker_state *workers, int worker_cnt, FILE *sta
 	u64 start_ns = ktime_now_ns();
 	int err;
 	u64 base_off = 0;
+	struct ksyms *ksyms = NULL;
 
 	wprintf("Symbolizing...\n");
 	u64 symb_start_ns = ktime_now_ns();
+
+	if (env.raw_stacks)
+		goto skip_ksyms;
+	ksyms = ksyms__load();
+	if (!ksyms) {
+		wprintf("Failed to load /proc/kallsyms! Stack trace trimming is disable.\n");
+		goto skip_ksyms;
+	}
+	addr_set_resolve(&entry_set_timer, ksyms);
+	addr_set_resolve(&entry_set_offcpu, ksyms);
+	addr_set_resolve(&entry_set_waker, ksyms);
+	addr_set_resolve(&entry_set_kprobe, ksyms);
+	addr_set_resolve(&entry_set_kretprobe, ksyms);
+	addr_set_resolve(&entry_set_tp, ksyms);
+	addr_set_resolve(&entry_set_raw_tp, ksyms);
+skip_ksyms:
 
 	/* Collect stack traces across all ringbuf dumps */
 	for (int i = 0; i < worker_cnt; i++) {

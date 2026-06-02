@@ -26,6 +26,7 @@
 #include "proc.h"
 #include "persist.h"
 #include "stacktrace.h"
+#include "ksyms.h"
 #include "utrace_cfg.h"
 #include "strs.h"
 #include "../libbpf/src/strset.h"
