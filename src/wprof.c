@@ -1834,7 +1834,7 @@ skip_data_collection:
 		if (!env.json_path) {
 			w->stream = (pb_ostream_t){&file_stream_cb, w->trace, SIZE_MAX, 0};
 
-			if (init_pb_trace(&w->stream)) {
+			if (init_pb_trace(&w->stream, w->dump_hdr)) {
 				err = -1;
 				eprintf("Failed to init protobuf!\n");
 				goto cleanup;

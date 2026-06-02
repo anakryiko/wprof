@@ -479,7 +479,8 @@ bool enc_clock(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
 
 void enc_trace_packet(pb_ostream_t *stream, TracePacket *msg);
 
-int init_pb_trace(pb_ostream_t *stream);
+struct wprof_data_hdr;
+int init_pb_trace(pb_ostream_t *stream, struct wprof_data_hdr *hdr);
 
 struct hashmap;
 
