@@ -142,7 +142,7 @@ static const struct argp_option opts[] = {
 
 	/* event subset targeting */
 	{ "feature", 'f', "FEAT", 0,
-	  "Data capture feature selector. Supported: ipi, req[=PATH|PID], scx, cuda, "
+	  "Data capture feature selector. Supported: ipi, req[=PATH|PID], scx, cuda[=nv-smi|all|PID], "
 	  "py-stacks[=nv-smi|PID], py-trace[=nv-smi|PID], py-torch[=nv-smi|PID], "
 	  "softirq, hardirq, irq. All features can be prefixed with 'no-' to disable them explicitly." },
 
@@ -402,6 +402,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		} else if (strcasecmp(arg, "cuda") == 0) {
 			env.cuda_discovery = (val == TRUE) ? CUDA_DISCOVER_SMI : CUDA_DISCOVER_NONE;
 			env.capture_cuda = val;
+		} else if (strcasecmp(arg, "cuda=nv-smi") == 0 || strcasecmp(arg, "cuda=nvidia-smi") == 0) {
+			env.cuda_discovery = (val == TRUE) ? CUDA_DISCOVER_SMI : CUDA_DISCOVER_NONE;
+			env.capture_cuda = val;
 		} else if (strcasecmp(arg, "cuda=all") == 0) {
 			env.cuda_discovery = (val == TRUE) ? CUDA_DISCOVER_PROC : CUDA_DISCOVER_NONE;
 			env.capture_cuda = val;
@@ -421,7 +424,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 					return err;
 				}
 			} else {
-				eprintf("Use -fcuda or -fcuda=<PID> to enable CUDA tracking!\n");
+				eprintf("Use -fcuda, -fcuda=all, or -fcuda=<PID> to enable CUDA tracking!\n");
 				return -EINVAL;
 			}
 			env.capture_cuda = val;
