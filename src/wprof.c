@@ -90,6 +90,59 @@ const struct capture_feature capture_features[] = {
 
 const int capture_feature_cnt = ARRAY_SIZE(capture_features);
 
+const struct emit_feature emit_features[] = {
+	{WEXTRA_EMIT_NUMA, offsetof(struct env, emit_numa), DEFAULT_EMIT_NUMA},
+	{WEXTRA_EMIT_TIDPID, offsetof(struct env, emit_tidpid), DEFAULT_EMIT_TIDPID},
+	{WEXTRA_EMIT_TIMER_TICKS, offsetof(struct env, emit_timer_ticks), DEFAULT_EMIT_TIMER_TICKS},
+	{WEXTRA_EMIT_SCHED, offsetof(struct env, emit_sched_view), DEFAULT_EMIT_SCHED},
+	{WEXTRA_EMIT_SCHED_EXTRAS, offsetof(struct env, emit_sched_extras), DEFAULT_EMIT_SCHED_EXTRAS},
+	{WEXTRA_EMIT_PYSTACKS_ONLY, offsetof(struct env, emit_pystacks_only), DEFAULT_EMIT_PYSTACKS_ONLY},
+	{WEXTRA_EMIT_REQ_SPLIT, offsetof(struct env, emit_req_split), DEFAULT_EMIT_REQ_SPLIT},
+	{WEXTRA_EMIT_REQ_EMBED, offsetof(struct env, emit_req_embed), DEFAULT_EMIT_REQ_EMBED},
+	{WEXTRA_EMIT_EMBED_STACKS, offsetof(struct env, emit_embed_stacks), DEFAULT_EMIT_EMBED_STACKS},
+};
+
+const int emit_feature_cnt = ARRAY_SIZE(emit_features);
+
+/*
+ * Render an extra param as the CLI option that produced it. -e options carry
+ * their on/off value in the union; everything else carries an optional string
+ * argument in stroff.
+ */
+const char *extra_param_str(struct wprof_data_hdr *hdr, const struct wprof_extra_param *e)
+{
+	switch (e->kind) {
+	case WEXTRA_FILTER_PID_ALLOW:		return sfmt("--pid %s", wevent_str(hdr, e->stroff));
+	case WEXTRA_FILTER_PID_DENY:		return sfmt("--no-pid %s", wevent_str(hdr, e->stroff));
+	case WEXTRA_FILTER_TID_ALLOW:		return sfmt("--tid %s", wevent_str(hdr, e->stroff));
+	case WEXTRA_FILTER_TID_DENY:		return sfmt("--no-tid %s", wevent_str(hdr, e->stroff));
+	case WEXTRA_FILTER_PNAME_ALLOW:		return sfmt("--process-name %s", wevent_str(hdr, e->stroff));
+	case WEXTRA_FILTER_PNAME_DENY:		return sfmt("--no-process-name %s", wevent_str(hdr, e->stroff));
+	case WEXTRA_FILTER_TNAME_ALLOW:		return sfmt("--thread-name %s", wevent_str(hdr, e->stroff));
+	case WEXTRA_FILTER_TNAME_DENY:		return sfmt("--no-thread-name %s", wevent_str(hdr, e->stroff));
+	case WEXTRA_FILTER_IDLE_ALLOW:		return "--idle";
+	case WEXTRA_FILTER_IDLE_DENY:		return "--no-idle";
+	case WEXTRA_FILTER_KTHREAD_ALLOW:	return "--kthread";
+	case WEXTRA_FILTER_KTHREAD_DENY:	return "--no-kthread";
+	case WEXTRA_UTRACE_DEF:			return sfmt("--utrace %s", wevent_str(hdr, e->stroff));
+	case WEXTRA_METADATA:			return sfmt("--metadata %s", wevent_str(hdr, e->stroff));
+	case WEXTRA_STATS:			return "--stats";
+	case WEXTRA_PMU:			return sfmt("--pmu %s", wevent_str(hdr, e->stroff));
+	case WEXTRA_EMIT_NUMA:			return e->value ? "-e numa" : "-e no-numa";
+	case WEXTRA_EMIT_TIDPID:		return e->value ? "-e tidpid" : "-e no-tidpid";
+	case WEXTRA_EMIT_TIMER_TICKS:		return e->value ? "-e timer-ticks" : "-e no-timer-ticks";
+	case WEXTRA_EMIT_SCHED:			return e->value ? "-e sched" : "-e no-sched";
+	case WEXTRA_EMIT_SCHED_EXTRAS:		return e->value ? "-e sched-extras" : "-e no-sched-extras";
+	case WEXTRA_EMIT_PYSTACKS_ONLY:		return e->value ? "-e py-stacks-only" : "-e no-py-stacks-only";
+	case WEXTRA_EMIT_REQ_SPLIT:		return e->value ? "-e req-split" : "-e no-req-split";
+	case WEXTRA_EMIT_REQ_EMBED:		return e->value ? "-e req-embed" : "-e no-req-embed";
+	case WEXTRA_EMIT_EMBED_STACKS:		return e->value ? "-e embed-stacks" : "-e no-embed-stacks";
+	default:
+		eprintf("Unknown extra param kind %d!\n", e->kind);
+		exit(1);
+	}
+}
+
 static volatile bool exiting;
 
 static void sig_timer(int sig)
@@ -1272,7 +1325,7 @@ int main(int argc, char **argv)
 		for (u64 i = 0; i < dump_hdr->extra_cnt; i++) {
 			struct wprof_extra_param *ep = wevent_extra_param(dump_hdr, i);
 			if (ep->kind == WEXTRA_STATS) {
-				env.stats = wevent_blob(dump_hdr, ep->stroff);
+				env.stats = wevent_blob(dump_hdr, ep->bloboff);
 				break;
 			}
 		}
@@ -1365,9 +1418,7 @@ int main(int argc, char **argv)
 						struct wprof_extra_param *e = wevent_extra_param(dump_hdr, i);
 						if (e->kind == WEXTRA_METADATA || e->kind == WEXTRA_STATS)
 							continue;
-						const char *name = extra_param_kind_name(e->kind);
-						const char *val = e->stroff ? wevent_str(dump_hdr, e->stroff) : NULL;
-						wprintf("    %s%s%s\n", name, val ? " " : "", val ?: "");
+						wprintf("    %s\n", extra_param_str(dump_hdr, e));
 					}
 				}
 			}
@@ -1544,17 +1595,56 @@ int main(int argc, char **argv)
 			case WEXTRA_UTRACE_DEF:
 				err = utrace_cfg_parse(val);
 				break;
+			/*
+			 * Emit (-e) options keep their CLI value if set, otherwise
+			 * inherit the persisted on/off value.
+			 */
+			case WEXTRA_EMIT_NUMA:
+				env.emit_numa = env.emit_numa != UNSET ? env.emit_numa : ep->value;
+				break;
+			case WEXTRA_EMIT_TIDPID:
+				env.emit_tidpid = env.emit_tidpid != UNSET ? env.emit_tidpid : ep->value;
+				break;
+			case WEXTRA_EMIT_TIMER_TICKS:
+				env.emit_timer_ticks = env.emit_timer_ticks != UNSET ? env.emit_timer_ticks : ep->value;
+				break;
+			case WEXTRA_EMIT_SCHED:
+				env.emit_sched_view = env.emit_sched_view != UNSET ? env.emit_sched_view : ep->value;
+				break;
+			case WEXTRA_EMIT_SCHED_EXTRAS:
+				env.emit_sched_extras = env.emit_sched_extras != UNSET ? env.emit_sched_extras : ep->value;
+				break;
+			case WEXTRA_EMIT_PYSTACKS_ONLY:
+				env.emit_pystacks_only = env.emit_pystacks_only != UNSET ? env.emit_pystacks_only : ep->value;
+				break;
+			case WEXTRA_EMIT_REQ_SPLIT:
+				env.emit_req_split = env.emit_req_split != UNSET ? env.emit_req_split : ep->value;
+				break;
+			case WEXTRA_EMIT_REQ_EMBED:
+				env.emit_req_embed = env.emit_req_embed != UNSET ? env.emit_req_embed : ep->value;
+				break;
+			case WEXTRA_EMIT_EMBED_STACKS:
+				env.emit_embed_stacks = env.emit_embed_stacks != UNSET ? env.emit_embed_stacks : ep->value;
+				break;
 			case WEXTRA_METADATA:
 			case WEXTRA_STATS:
 			case WEXTRA_PMU:
 				break;
 			default:
-				eprintf("Unrecognized extra param kind %d in data file!\n", ep->kind);
-				err = -EINVAL;
+				eprintf("Unrecognized extra param kind %d in data file, skipping\n", ep->kind);
 				break;
 			}
 			if (err)
 				goto cleanup;
+		}
+
+		/* resolve emit (-e) options not set on the CLI or in the data dump */
+		for (int i = 0; i < emit_feature_cnt; i++) {
+			const struct emit_feature *f = &emit_features[i];
+			enum tristate *flag = (void *)&env + f->env_flag_off;
+
+			if (*flag == UNSET)
+				*flag = f->default_val;
 		}
 
 		goto skip_data_collection;
@@ -1587,6 +1677,14 @@ int main(int argc, char **argv)
 		env.requested_stack_traces = DEFAULT_REQUESTED_STACK_TRACES;
 	for (int i = 0; i < ARRAY_SIZE(capture_features); i++) {
 		const struct capture_feature *f = &capture_features[i];
+		enum tristate *flag = (void *)&env + f->env_flag_off;
+
+		if (*flag == UNSET)
+			*flag = f->default_val;
+	}
+	/* resolve emit (-e) options not set on the CLI */
+	for (int i = 0; i < emit_feature_cnt; i++) {
+		const struct emit_feature *f = &emit_features[i];
 		enum tristate *flag = (void *)&env + f->env_flag_off;
 
 		if (*flag == UNSET)

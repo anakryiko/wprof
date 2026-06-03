@@ -4090,11 +4090,7 @@ static void emit_header_json(struct worker_state *w)
 				struct wprof_extra_param *e = wevent_extra_param(hdr, i);
 				if (e->kind == WEXTRA_METADATA || e->kind == WEXTRA_STATS)
 					continue;
-				const char *val = e->stroff ? wevent_str(hdr, e->stroff) : NULL;
-				if (val)
-					json_arr_str(j, sfmt("%s %s", extra_param_kind_name(e->kind), val));
-				else
-					json_arr_str(j, extra_param_kind_name(e->kind));
+				json_arr_str(j, extra_param_str(hdr, e));
 			}
 			json_arr_end(j);
 		}

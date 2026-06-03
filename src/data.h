@@ -37,52 +37,46 @@ struct wprof_data_cfg {
 	int timer_freq_hz;
 };
 
+/*
+ * Persisted in data dumps, so values are explicit and stable: never renumber
+ * existing entries; to retire one, drop it and leave its value as a hole.
+ */
 enum wprof_extra_param_kind {
-	WEXTRA_INVALID = 0,
-	WEXTRA_FILTER_PID_ALLOW,
-	WEXTRA_FILTER_PID_DENY,
-	WEXTRA_FILTER_TID_ALLOW,
-	WEXTRA_FILTER_TID_DENY,
-	WEXTRA_FILTER_PNAME_ALLOW,
-	WEXTRA_FILTER_PNAME_DENY,
-	WEXTRA_FILTER_TNAME_ALLOW,
-	WEXTRA_FILTER_TNAME_DENY,
-	WEXTRA_FILTER_IDLE_ALLOW,
-	WEXTRA_FILTER_IDLE_DENY,
-	WEXTRA_FILTER_KTHREAD_ALLOW,
-	WEXTRA_FILTER_KTHREAD_DENY,
-	WEXTRA_UTRACE_DEF,
-	WEXTRA_METADATA,
-	WEXTRA_STATS,
-	WEXTRA_PMU,
+	WEXTRA_INVALID			= 0,
+	WEXTRA_FILTER_PID_ALLOW		= 1,
+	WEXTRA_FILTER_PID_DENY		= 2,
+	WEXTRA_FILTER_TID_ALLOW		= 3,
+	WEXTRA_FILTER_TID_DENY		= 4,
+	WEXTRA_FILTER_PNAME_ALLOW	= 5,
+	WEXTRA_FILTER_PNAME_DENY	= 6,
+	WEXTRA_FILTER_TNAME_ALLOW	= 7,
+	WEXTRA_FILTER_TNAME_DENY	= 8,
+	WEXTRA_FILTER_IDLE_ALLOW	= 9,
+	WEXTRA_FILTER_IDLE_DENY		= 10,
+	WEXTRA_FILTER_KTHREAD_ALLOW	= 11,
+	WEXTRA_FILTER_KTHREAD_DENY	= 12,
+	WEXTRA_UTRACE_DEF		= 13,
+	WEXTRA_METADATA			= 14,
+	WEXTRA_STATS			= 15,
+	WEXTRA_PMU			= 16,
+	WEXTRA_EMIT_NUMA		= 17,
+	WEXTRA_EMIT_TIDPID		= 18,
+	WEXTRA_EMIT_TIMER_TICKS		= 19,
+	WEXTRA_EMIT_SCHED		= 20,
+	WEXTRA_EMIT_SCHED_EXTRAS	= 21,
+	WEXTRA_EMIT_PYSTACKS_ONLY	= 22,
+	WEXTRA_EMIT_REQ_SPLIT		= 23,
+	WEXTRA_EMIT_REQ_EMBED		= 24,
+	WEXTRA_EMIT_EMBED_STACKS	= 25,
 };
-
-static inline const char *extra_param_kind_name(enum wprof_extra_param_kind kind)
-{
-	switch (kind) {
-	case WEXTRA_FILTER_PID_ALLOW:	return "--pid";
-	case WEXTRA_FILTER_PID_DENY:	return "--no-pid";
-	case WEXTRA_FILTER_TID_ALLOW:	return "--tid";
-	case WEXTRA_FILTER_TID_DENY:	return "--no-tid";
-	case WEXTRA_FILTER_PNAME_ALLOW:	return "--process-name";
-	case WEXTRA_FILTER_PNAME_DENY:	return "--no-process-name";
-	case WEXTRA_FILTER_TNAME_ALLOW:	return "--thread-name";
-	case WEXTRA_FILTER_TNAME_DENY:	return "--no-thread-name";
-	case WEXTRA_FILTER_IDLE_ALLOW:	return "--idle";
-	case WEXTRA_FILTER_IDLE_DENY:	return "--no-idle";
-	case WEXTRA_FILTER_KTHREAD_ALLOW: return "--kthread";
-	case WEXTRA_FILTER_KTHREAD_DENY: return "--no-kthread";
-	case WEXTRA_UTRACE_DEF:		return "--utrace";
-	case WEXTRA_METADATA:		return "--metadata";
-	case WEXTRA_STATS:		return "--stats";
-	case WEXTRA_PMU:		return "--pmu";
-	default:			return "???";
-	}
-}
 
 struct wprof_extra_param {
 	enum wprof_extra_param_kind kind;
-	u32 stroff;
+	union {
+		u32 stroff;	/* offset into the string pool (filters, metadata, pmu, utrace) */
+		u32 bloboff;	/* offset into the blob pool (stats) */
+		u32 value;	/* on/off value for -e options */
+	};
 };
 
 /*
@@ -281,6 +275,9 @@ typedef int (*handle_event_fn)(struct worker_state *w, const struct wevent *e);
 int process_events(struct worker_state *w, handle_event_fn *handlers, size_t handler_cnt);
 
 const char *event_kind_str(enum event_kind kind);
+
+/* Render an extra param as its CLI form for display (value-aware for -e). */
+const char *extra_param_str(struct wprof_data_hdr *hdr, const struct wprof_extra_param *e);
 
 /* ==================== ACCESSOR FUNCTIONS ==================== */
 

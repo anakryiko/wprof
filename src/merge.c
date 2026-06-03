@@ -145,11 +145,12 @@ static int wpytrace_event_cmp(const void *a, const void *b)
 	return (s64)(x->ts - y->ts) < 0 ? -1 : 1;
 }
 
+/* arg is the kind-specific union payload: a stroff, bloboff, or on/off value. */
 static void add_extra(struct wprof_extra_param **extras, u64 *cnt,
-		      enum wprof_extra_param_kind kind, u32 stroff)
+		      enum wprof_extra_param_kind kind, u32 arg)
 {
 	*extras = realloc(*extras, (*cnt + 1) * sizeof(**extras));
-	(*extras)[*cnt] = (struct wprof_extra_param){ .kind = kind, .stroff = stroff };
+	(*extras)[*cnt] = (struct wprof_extra_param){ .kind = kind, .stroff = arg };
 	*cnt += 1;
 }
 
@@ -199,6 +200,15 @@ static void collect_extras(struct persist_state *ps, struct wprof_extra_param **
 	for (int i = 0; i < env.pmu_deriv_cnt; i++) {
 		if (env.pmu_derivs[i].spec)
 			add_extra(extras, cnt, WEXTRA_PMU, persist_stroff(ps, env.pmu_derivs[i].spec));
+	}
+
+	/* persist emit (-e) options that differ from default, storing the on/off value */
+	for (int i = 0; i < emit_feature_cnt; i++) {
+		const struct emit_feature *f = &emit_features[i];
+		enum tristate *flag = (void *)&env + f->env_flag_off;
+
+		if (*flag != f->default_val)
+			add_extra(extras, cnt, f->kind, *flag == TRUE);
 	}
 
 	{

@@ -53,12 +53,20 @@ struct env env = {
 	.capture_scx = UNSET,
 	.capture_cuda = UNSET,
 	.capture_pystacks = UNSET,
-	.emit_req_split = true,
 	.capture_pytrace = UNSET,
 	.capture_pytorch = UNSET,
 	.capture_utrace = UNSET,
 	.capture_softirq = UNSET,
 	.capture_hardirq = UNSET,
+	.emit_sched_view = UNSET,
+	.emit_numa = UNSET,
+	.emit_tidpid = UNSET,
+	.emit_timer_ticks = UNSET,
+	.emit_sched_extras = UNSET,
+	.emit_pystacks_only = UNSET,
+	.emit_req_split = UNSET,
+	.emit_req_embed = UNSET,
+	.emit_embed_stacks = UNSET,
 	.pmu_real_cnt = -1,
 	.pmu_deriv_cnt = -1,
 	.pmu_unresolved_cnt = -1,
@@ -528,27 +536,27 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	}
 	case 'e':
 		if (strcasecmp(arg, "numa") == 0) {
-			env.emit_numa = true;
+			env.emit_numa = TRUE;
 		} else if (strcasecmp(arg, "tidpid") == 0) {
-			env.emit_tidpid = true;
+			env.emit_tidpid = TRUE;
 		} else if (strcasecmp(arg, "timer-ticks") == 0) {
-			env.emit_timer_ticks = true;
+			env.emit_timer_ticks = TRUE;
 		} else if (strcasecmp(arg, "sched") == 0) {
-			env.emit_sched_view = true;
+			env.emit_sched_view = TRUE;
 		} else if (strcasecmp(arg, "sched-extras") == 0) {
-			env.emit_sched_extras = true;
+			env.emit_sched_extras = TRUE;
 		} else if (strcasecmp(arg, "py-stacks-only") == 0) {
-			env.emit_pystacks_only = true;
+			env.emit_pystacks_only = TRUE;
 		} else if (strcasecmp(arg, "req-split") == 0) {
-			env.emit_req_split = true;
+			env.emit_req_split = TRUE;
 		} else if (strcasecmp(arg, "no-req-split") == 0) {
-			env.emit_req_split = false;
+			env.emit_req_split = FALSE;
 		} else if (strcasecmp(arg, "req-embed") == 0) {
-			env.emit_req_embed = true;
+			env.emit_req_embed = TRUE;
 		} else if (strcasecmp(arg, "no-req-embed") == 0) {
-			env.emit_req_embed = false;
+			env.emit_req_embed = FALSE;
 		} else if (strcasecmp(arg, "embed-stacks") == 0) {
-			env.emit_embed_stacks = true;
+			env.emit_embed_stacks = TRUE;
 		} else {
 			fprintf(stderr, "Unrecognized emit feature '%s!\n", arg);
 			return -EINVAL;
