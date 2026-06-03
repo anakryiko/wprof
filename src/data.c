@@ -78,12 +78,9 @@ int process_events(struct worker_state *w, handle_event_fn *handlers, size_t han
 		if (!is_ts_in_range(e->ts))
 			continue;
 
-		if (e->kind >= handler_cnt || !(handler = handlers[e->kind])) {
-			eprintf("UNHANDLED EVENT #%d KIND %s (%d)\n",
-				rec->idx, event_kind_str(e->kind), e->kind);
-			exit(1);
-			return 0;
-		}
+		if (e->kind >= handler_cnt || !(handler = handlers[e->kind]))
+			BUG("unhandled event #%d kind %s (%d)\n",
+			    rec->idx, event_kind_str(e->kind), e->kind);
 
 		err = handler(w, rec->e);
 		if (err) {

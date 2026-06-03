@@ -77,6 +77,7 @@ extern enum log_subset env_log_set;
 __printf(2, 3) void log_printf(int verbosity, const char *fmt, ...);
 
 #define eprintf(fmt, ...) log_printf(-1, fmt, ##__VA_ARGS__)
+#define BUG(fmt, ...) do { eprintf("BUG (%s:%d): " fmt, __FILE__, __LINE__, ##__VA_ARGS__); exit(1); } while (0)
 #define wprintf(fmt, ...) log_printf(0, fmt, ##__VA_ARGS__)
 #define vprintf(fmt, ...) log_printf(1, fmt, ##__VA_ARGS__)
 #define dprintf(_level, fmt, ...) log_printf(1 + _level, fmt, ##__VA_ARGS__)

@@ -257,8 +257,7 @@ int pytrace_trace_setup(int workdir_fd)
 	case PYTRACE_DISCOVER_NONE:
 		break;
 	default:
-		eprintf("Unrecognized pytrace discovery strategy %d!\n", env.pytrace_discovery);
-		return -EOPNOTSUPP;
+		BUG("unrecognized pytrace discovery strategy %d\n", env.pytrace_discovery);
 	}
 
 	/* Also try explicitly specified PIDs; try_inject_to_python_process() dedups. */

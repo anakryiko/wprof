@@ -285,8 +285,7 @@ static int stat_elem_cnt(enum wprof_stat_id id, int rb_cnt, int cpu_cnt,
 	case WSTAT_PMU_ACTIVE_FRAC:
 		return 1 + pmu_cnt;
 	default:
-		eprintf("BUG: unknown stat id %d\n", id);
-		exit(1);
+		BUG("unknown stat id %d\n", id);
 	}
 }
 

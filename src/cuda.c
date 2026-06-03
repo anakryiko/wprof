@@ -206,8 +206,7 @@ int cuda_trace_setup(int workdir_fd)
 		break;
 	}
 	default:
-		eprintf("Unrecognized CUDA discovery strategy %d!\n", env.cuda_discovery);
-		return -EOPNOTSUPP;
+		BUG("unrecognized CUDA discovery strategy %d\n", env.cuda_discovery);
 	}
 
 	for (int i = 0; i < env.cuda_pid_cnt; i++) {

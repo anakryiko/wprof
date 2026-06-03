@@ -187,8 +187,7 @@ static size_t track_state_size(enum dyn_track_kind kind)
 	case DTK_THREAD_CUDA:
 		return offsetof(struct track_state, req);
 	default:
-		eprintf("BUG: unknown dynamic track kind %d\n", kind);
-		exit(1);
+		BUG("unknown dynamic track kind %d\n", kind);
 	}
 }
 
@@ -399,16 +398,13 @@ static void emit_trace_packet(pb_ostream_t *stream, TracePacket *pb)
 {
 	if (em.str_iids.cnt > 0) {
 		if (pb->has_interned_data && pb->interned_data.event_names.funcs.encode) {
-			eprintf("BUG: interned_data.event_names is already set!\n");
-			exit(1);
+			BUG("interned_data.event_names is already set!\n");
 		}
 		if (pb->has_interned_data && pb->interned_data.debug_annotation_string_values.funcs.encode) {
-			eprintf("BUG: interned_data.debug_annotation_string_values is already set!\n");
-			exit(1);
+			BUG("interned_data.debug_annotation_string_values is already set!\n");
 		}
 		if (pb->has_interned_data && pb->interned_data.debug_annotation_names.funcs.encode) {
-			eprintf("BUG: interned_data.debug_annotation_names is already set!\n");
-			exit(1);
+			BUG("interned_data.debug_annotation_names is already set!\n");
 		}
 		pb->has_interned_data = true;
 		pb->interned_data.event_names = PB_STR_IIDS(&em.str_iids);
@@ -494,8 +490,7 @@ static int track_pid(const struct wprof_task *t)
 	case TASK_KTHREAD:
 		return TRACK_PID_KTHREAD;
 	default:
-		eprintf("BUG: unexpected task kind in track_pid(): %d\n", kind);
-		exit(1);
+		BUG("unexpected task kind in track_pid(): %d\n", kind);
 	}
 }
 
@@ -518,8 +513,7 @@ static int track_process_rank(const struct wprof_task *t)
 	case TASK_KTHREAD:
 		return TRACK_RANK_KTHREAD;
 	default:
-		eprintf("BUG: unexpected task kind in track_process_rank(): %d\n", kind);
-		exit(1);
+		BUG("unexpected task kind in track_process_rank(): %d\n", kind);
 	}
 }
 
@@ -541,8 +535,7 @@ static const char *track_pcomm(const struct wprof_task *t)
 	case TASK_KTHREAD:
 		return TRACK_NAME_KTHREAD;
 	default:
-		eprintf("BUG: unexpected task kind in track_pcomm(): %d\n", kind);
-		exit(1);
+		BUG("unexpected task kind in track_pcomm(): %d\n", kind);
 	}
 }
 
@@ -557,8 +550,7 @@ static const u64 kind_track_uuid(enum task_kind kind)
 	case TASK_KTHREAD:
 		return TRACK_UUID_KTHREAD;
 	default:
-		eprintf("BUG: unexpected task kind in kind_track_uuid(): %d\n", kind);
-		exit(1);
+		BUG("unexpected task kind in kind_track_uuid(): %d\n", kind);
 	}
 }
 
@@ -573,8 +565,7 @@ static const u64 kind_track_pid(enum task_kind kind)
 	case TASK_KTHREAD:
 		return TRACK_PID_KTHREAD;
 	default:
-		eprintf("BUG: unexpected task kind in kind_track_pid(): %d\n", kind);
-		exit(1);
+		BUG("unexpected task kind in kind_track_pid(): %d\n", kind);
 	}
 }
 
@@ -589,8 +580,7 @@ static const char *kind_track_name(enum task_kind kind)
 	case TASK_KTHREAD:
 		return TRACK_NAME_KTHREAD;
 	default:
-		eprintf("BUG: unexpected task kind in kind_track_name(): %d\n", kind);
-		exit(1);
+		BUG("unexpected task kind in kind_track_name(): %d\n", kind);
 	}
 }
 
@@ -605,8 +595,7 @@ static const int kind_track_rank(enum task_kind kind)
 	case TASK_KTHREAD:
 		return TRACK_RANK_KTHREAD;
 	default:
-		eprintf("BUG: unexpected task kind in kind_track_rank(): %d\n", kind);
-		exit(1);
+		BUG("unexpected task kind in kind_track_rank(): %d\n", kind);
 	}
 }
 
@@ -822,7 +811,7 @@ static void emit_track_descr_impl(pb_ostream_t *stream, __u64 track_uuid, __u64 
 			break;
 		case CHILD_ORDER_INVALID:
 		default:
-			eprintf("BUG: invalid child_order in track_child_order()\n");
+			BUG("invalid child_order in track_child_order()\n");
 			break;
 	}
 
@@ -2740,8 +2729,7 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e)
 		break;
 	}
 	default:
-		eprintf("UNHANDLED REQ EVENT %d\n", e->req.req_event);
-		exit(1);
+		BUG("unhandled req event %d\n", e->req.req_event);
 	}
 }
 
@@ -2812,8 +2800,7 @@ static int process_req_event(struct worker_state *w, const struct wevent *e)
 		st->req_id = 0;
 		break;
 	default:
-		eprintf("UNHANDLED REQ EVENT %d\n", e->req.req_event);
-		exit(1);
+		BUG("unhandled req event %d\n", e->req.req_event);
 	}
 
 	if (env.json_path)
@@ -2887,8 +2874,7 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e)
 		}
 		break;
 	default:
-		eprintf("UNHANDLED REQ TASK EVENT %d\n", e->req_task.req_task_event);
-		exit(1);
+		BUG("unhandled req task event %d\n", e->req_task.req_task_event);
 	}
 }
 

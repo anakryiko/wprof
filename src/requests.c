@@ -295,7 +295,7 @@ static bool filter_cmp(int cmp, enum req_filter_op op)
 	case REQ_OP_GE:             return cmp >= 0;
 	case REQ_OP_GLOB_MATCH:     return cmp == 0;
 	case REQ_OP_GLOB_MISMATCH:  return cmp != 0;
-	default: eprintf("BUG: unknown filter op %d\n", op); exit(1);
+	default: BUG("unknown filter op %d\n", op);
 	}
 }
 
@@ -334,8 +334,7 @@ static bool req_entry_matches(const struct req_entry *e, const struct req_filter
 		break;
 	}
 	default:
-		eprintf("BUG: unknown filter field %d\n", f->field);
-		exit(1);
+		BUG("unknown filter field %d\n", f->field);
 	}
 	return filter_cmp(cmp, f->op);
 }
@@ -374,8 +373,7 @@ static int req_entry_cmp(const void *_a, const void *_b, void *ctx)
 			break;
 		}
 		default:
-			eprintf("BUG: unknown sort field %d\n", s->field);
-			exit(1);
+			BUG("unknown sort field %d\n", s->field);
 		}
 
 		if (cmp == 0)
