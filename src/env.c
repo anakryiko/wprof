@@ -156,8 +156,8 @@ static const struct argp_option opts[] = {
 
 	/* trace emitting options */
 	{ "emit-feature", 'e', "FEAT", 0,
-	  "Trace visualization feature. Supported: sched, sched-extras, numa, tidpid, timer-ticks, py-stacks-only, "
-	  "req-split (on by default), no-req-split, req-embed, no-req-embed, embed-stacks" },
+	  "Trace visualization feature, any can be negated with a 'no-' prefix. Supported: sched, sched-extras, "
+	  "numa, tidpid, timer-ticks, py-stacks-only, req-split (on by default), req-embed, embed-stacks" },
 
 	/* tuning */
 	{ "ringbuf-size", OPT_RINGBUF_SZ, "SIZE", 0, "BPF ringbuf size (in KBs)" },
@@ -534,34 +534,45 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		}
 		break;
 	}
-	case 'e':
+	case 'e': {
+		/* any emit feature can be negated with a "no-" prefix */
+		enum tristate val = TRUE, *flag;
+
+		if (strncasecmp(arg, "no-", 3) == 0) {
+			val = FALSE;
+			arg += 3;
+		}
+
 		if (strcasecmp(arg, "numa") == 0) {
-			env.emit_numa = TRUE;
+			flag = &env.emit_numa;
 		} else if (strcasecmp(arg, "tidpid") == 0) {
-			env.emit_tidpid = TRUE;
+			flag = &env.emit_tidpid;
 		} else if (strcasecmp(arg, "timer-ticks") == 0) {
-			env.emit_timer_ticks = TRUE;
+			flag = &env.emit_timer_ticks;
 		} else if (strcasecmp(arg, "sched") == 0) {
-			env.emit_sched_view = TRUE;
+			flag = &env.emit_sched_view;
 		} else if (strcasecmp(arg, "sched-extras") == 0) {
-			env.emit_sched_extras = TRUE;
+			flag = &env.emit_sched_extras;
 		} else if (strcasecmp(arg, "py-stacks-only") == 0) {
-			env.emit_pystacks_only = TRUE;
+			flag = &env.emit_pystacks_only;
 		} else if (strcasecmp(arg, "req-split") == 0) {
-			env.emit_req_split = TRUE;
-		} else if (strcasecmp(arg, "no-req-split") == 0) {
-			env.emit_req_split = FALSE;
+			flag = &env.emit_req_split;
 		} else if (strcasecmp(arg, "req-embed") == 0) {
-			env.emit_req_embed = TRUE;
-		} else if (strcasecmp(arg, "no-req-embed") == 0) {
-			env.emit_req_embed = FALSE;
+			flag = &env.emit_req_embed;
 		} else if (strcasecmp(arg, "embed-stacks") == 0) {
-			env.emit_embed_stacks = TRUE;
+			flag = &env.emit_embed_stacks;
 		} else {
-			fprintf(stderr, "Unrecognized emit feature '%s!\n", arg);
+			fprintf(stderr, "Unrecognized emit feature '%s'!\n", arg);
 			return -EINVAL;
 		}
+
+		if (*flag != UNSET && *flag != val) {
+			fprintf(stderr, "Conflicting -e %s setting!\n", arg);
+			return -EINVAL;
+		}
+		*flag = val;
 		break;
+	}
 	/* FILTERING */
 	case 'p':
 		err = append_num(&env.allow_pids, &env.allow_pid_cnt, arg);
