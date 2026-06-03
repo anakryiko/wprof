@@ -138,8 +138,7 @@ const char *extra_param_str(struct wprof_data_hdr *hdr, const struct wprof_extra
 	case WEXTRA_EMIT_REQ_EMBED:		return e->value ? "-e req-embed" : "-e no-req-embed";
 	case WEXTRA_EMIT_EMBED_STACKS:		return e->value ? "-e embed-stacks" : "-e no-embed-stacks";
 	default:
-		eprintf("Unknown extra param kind %d!\n", e->kind);
-		exit(1);
+		BUG("unknown extra param kind %d\n", e->kind);
 	}
 }
 

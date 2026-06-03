@@ -443,8 +443,7 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 	}
 
 	default:
-		eprintf("Unrecognized event type %d while persisting!\n", e->kind);
-		return -EINVAL;
+		BUG("unrecognized event type %d while persisting\n", e->kind);
 	}
 
 	return dst->sz;
@@ -606,8 +605,7 @@ int persist_cuda_event(struct persist_state *ps, const struct wcuda_event *e, st
 		break;
 
 	default:
-		eprintf("Unrecognized CUDA event type %d while persisting!\n", e->kind);
-		return -EINVAL;
+		BUG("unrecognized CUDA event type %d while persisting\n", e->kind);
 	}
 
 	return dst->sz;
