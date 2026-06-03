@@ -31,6 +31,16 @@
 #define DEFAULT_CAPTURE_SOFTIRQ TRUE
 #define DEFAULT_CAPTURE_HARDIRQ TRUE
 
+#define DEFAULT_EMIT_NUMA FALSE
+#define DEFAULT_EMIT_TIDPID FALSE
+#define DEFAULT_EMIT_TIMER_TICKS FALSE
+#define DEFAULT_EMIT_SCHED FALSE
+#define DEFAULT_EMIT_SCHED_EXTRAS FALSE
+#define DEFAULT_EMIT_PYSTACKS_ONLY FALSE
+#define DEFAULT_EMIT_REQ_SPLIT TRUE
+#define DEFAULT_EMIT_REQ_EMBED FALSE
+#define DEFAULT_EMIT_EMBED_STACKS FALSE
+
 extern bool env_verbose;
 extern int env_debug_level;
 extern enum log_subset env_log_set;
@@ -91,15 +101,15 @@ struct env {
 	enum tristate capture_hardirq;
 
 	/* trace visualization features */
-	bool emit_sched_view;
-	bool emit_numa;
-	bool emit_tidpid;
-	bool emit_timer_ticks;
-	bool emit_sched_extras;
-	bool emit_pystacks_only;
-	bool emit_req_split;
-	bool emit_req_embed;
-	bool emit_embed_stacks;
+	enum tristate emit_sched_view;
+	enum tristate emit_numa;
+	enum tristate emit_tidpid;
+	enum tristate emit_timer_ticks;
+	enum tristate emit_sched_extras;
+	enum tristate emit_pystacks_only;
+	enum tristate emit_req_split;
+	enum tristate emit_req_embed;
+	enum tristate emit_embed_stacks;
 
 	int timer_freq_hz;
 	u64 timer_period_ns;	/* derived from timer_freq_hz */
@@ -228,6 +238,21 @@ struct capture_feature {
 
 extern const struct capture_feature capture_features[];
 extern const int capture_feature_cnt;
+
+/*
+ * Table of trace emit (-e) options: the WEXTRA_EMIT_* kind they persist as,
+ * their env field, and default value. Used to resolve UNSET options to their
+ * default and to persist non-default ones (see wprof.c and collect_extras()).
+ * Restore and rendering use explicit switches keyed on the kind.
+ */
+struct emit_feature {
+	enum wprof_extra_param_kind kind;
+	size_t env_flag_off;
+	enum tristate default_val;
+};
+
+extern const struct emit_feature emit_features[];
+extern const int emit_feature_cnt;
 
 struct worker_state {
 	int worker_id;
