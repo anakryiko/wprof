@@ -1,0 +1,15 @@
+[package]
+name = "wpb-c"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+prost = "0.14"
+
+[build-dependencies]
+prost-build = "0.14"
+protox = "0.9.1"

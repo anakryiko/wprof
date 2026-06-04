@@ -1188,6 +1188,8 @@ static void cleanup_workers(struct worker_state *workers, int worker_cnt)
 		if (!w)
 			return;
 
+		wpb_writer_free(w->wpb_writer);
+
 		if (w->trace && w->trace != stdout)
 			fclose(w->trace);
 
@@ -1922,6 +1924,11 @@ skip_data_collection:
 			}
 		}
 
+		if (!env.json_path) {
+			w->stream = (pb_ostream_t){&file_stream_cb, w->trace, SIZE_MAX, 0};
+			w->wpb_writer = wpb_writer_new(wpb_stream_write, &w->stream);
+		}
+
 		err = init_emit(w);
 		if (err) {
 			eprintf("Failed to init trace emitting logic: %d\n", err);
@@ -1929,8 +1936,6 @@ skip_data_collection:
 		}
 
 		if (!env.json_path) {
-			w->stream = (pb_ostream_t){&file_stream_cb, w->trace, SIZE_MAX, 0};
-
 			if (init_pb_trace(&w->stream, w->dump_hdr)) {
 				err = -1;
 				eprintf("Failed to init protobuf!\n");
