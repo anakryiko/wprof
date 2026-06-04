@@ -1925,7 +1925,7 @@ skip_data_collection:
 		}
 
 		if (!env.json_path) {
-			w->stream = (pb_ostream_t){&file_stream_cb, w->trace, SIZE_MAX, 0};
+			w->stream = (struct trace_stream){ .file = w->trace };
 			w->wpb_writer = wpb_writer_new(wpb_stream_write, &w->stream);
 		}
 

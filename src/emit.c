@@ -67,7 +67,7 @@ struct task_state {
 
 static struct hashmap *tasks;
 static struct hashmap *emitted_descrs;
-static __thread pb_ostream_t *cur_stream;
+static __thread struct trace_stream *cur_stream;
 
 static inline u64 clamp_ts(u64 ts)
 {
@@ -327,7 +327,7 @@ int init_emit(struct worker_state *w)
  * HIGH-LEVEL TRACE RECORD EMITTING INTERFACES
  */
 struct emit_state {
-	TracePacket pb;
+	struct wpb_track_event ev;
 	struct pb_anns anns;
 	struct pb_str_iids str_iids;
 	struct pb_id_set flow_ids;
@@ -413,30 +413,9 @@ static struct wpb_str wpb_str_from_cstr(u64 iid, const char *s)
 	return (struct wpb_str){ .s = s, .len = strlen(s) };
 }
 
-static struct wpb_str wpb_str_from_callback(const pb_callback_t *cb)
+static struct wpb_str wpb_str_from_pb_str(struct pb_str s)
 {
-	if (!cb->funcs.encode)
-		return wpb_no_str();
-	return wpb_str_from_cstr(0, cb->arg);
-}
-
-static struct wpb_str wpb_track_event_name(const TrackEvent *te)
-{
-	switch (te->which_name_field) {
-	case perfetto_protos_TrackEvent_name_iid_tag:
-		return (struct wpb_str){ .iid = te->name_field.name_iid };
-	case perfetto_protos_TrackEvent_name_tag:
-		return wpb_str_from_callback(&te->name_field.name);
-	default:
-		return wpb_no_str();
-	}
-}
-
-static struct wpb_str wpb_track_event_category(const TrackEvent *te)
-{
-	if (te->category_iids.funcs.encode)
-		return (struct wpb_str){ .iid = (uintptr_t)te->category_iids.arg };
-	return wpb_str_from_callback(&te->categories);
+	return wpb_str_from_cstr(s.iid, s.s);
 }
 
 static void wpb_convert_ann_val(const struct pb_ann_val *src, struct wpb_annot *dst)
@@ -478,17 +457,10 @@ static void wpb_convert_ann_val(const struct pb_ann_val *src, struct wpb_annot *
 static void wpb_convert_annotations(struct wpb_annot *dst, const struct pb_anns *src)
 {
 	for (int i = 0; i < src->cnt; i++) {
-		const struct pb_ann *ann = src->ann_ptrs[i];
-
-		if (ann->dict)
-			BUG("unsupported annotation dict in Rust protobuf encoder\n");
-		if (ann->arr)
-			BUG("unsupported annotation array in Rust protobuf encoder\n");
-		if (!ann->val)
-			BUG("annotation without scalar value in Rust protobuf encoder\n");
+		const struct pb_ann *ann = &src->anns[i];
 
 		dst[i].name = wpb_str_from_cstr(ann->name_iid, ann->name);
-		wpb_convert_ann_val(ann->val, &dst[i]);
+		wpb_convert_ann_val(&ann->val, &dst[i]);
 	}
 }
 
@@ -576,80 +548,24 @@ static ssize_t wpb_emit_ftrace_bundle_packet(struct wpb_writer *writer, uint32_t
 	return bytes_written;
 }
 
-static bool emit_trace_packet_rust(pb_ostream_t *stream, TracePacket *pb)
+static void emit_cleanup(struct emit_rec *r)
 {
-	if (pb->which_data != perfetto_protos_TracePacket_track_event_tag)
-		return false;
-	if (pb->has_interned_data)
-		BUG("TrackEvent already has interned_data before Rust protobuf encoding\n");
-
-	const TrackEvent *te = &pb->data.track_event;
 	struct wpb_annot annots[MAX_ANN_CNT];
 	struct wpb_intern *interns = wpb_get_interns(em.str_iids.cnt);
 
 	wpb_convert_annotations(annots, &em.anns);
 	wpb_convert_interns(interns, &em.str_iids);
 
-	struct wpb_track_event ev = {
-		.ts = pb->has_timestamp ? pb->timestamp : 0,
-		.trusted_packet_sequence_id = pb->which_optional_trusted_packet_sequence_id
-			? pb->optional_trusted_packet_sequence_id.trusted_packet_sequence_id : 0,
-		.sequence_flags = pb->has_sequence_flags ? pb->sequence_flags : 0,
-		.track_uuid = te->has_track_uuid ? te->track_uuid : 0,
-		.event_type = te->has_type ? te->type : 0,
-		.name = wpb_track_event_name(te),
-		.category = wpb_track_event_category(te),
-		.annots = annots,
-		.annot_cnt = em.anns.cnt,
-		.flow_ids = (const uint64_t *)em.flow_ids.ids,
-		.flow_cnt = em.flow_ids.cnt,
-		.interns = interns,
-		.intern_cnt = em.str_iids.cnt,
-		.callstack_iid = em.callstack_iid,
-	};
-	stream->bytes_written += wpb_emit_track_event_packet(&ev);
-	return true;
-}
+	em.ev.annots = annots;
+	em.ev.annot_cnt = em.anns.cnt;
+	em.ev.flow_ids = (const uint64_t *)em.flow_ids.ids;
+	em.ev.flow_cnt = em.flow_ids.cnt;
+	em.ev.interns = interns;
+	em.ev.intern_cnt = em.str_iids.cnt;
+	em.ev.callstack_iid = em.callstack_iid;
 
-static void emit_trace_packet(pb_ostream_t *stream, TracePacket *pb)
-{
-	if (emit_trace_packet_rust(stream, pb))
-		goto reset_state;
-
-	if (em.str_iids.cnt > 0) {
-		if (pb->has_interned_data && pb->interned_data.event_names.funcs.encode) {
-			BUG("interned_data.event_names is already set!\n");
-		}
-		if (pb->has_interned_data && pb->interned_data.debug_annotation_string_values.funcs.encode) {
-			BUG("interned_data.debug_annotation_string_values is already set!\n");
-		}
-		if (pb->has_interned_data && pb->interned_data.debug_annotation_names.funcs.encode) {
-			BUG("interned_data.debug_annotation_names is already set!\n");
-		}
-		pb->has_interned_data = true;
-		pb->interned_data.event_names = PB_STR_IIDS(&em.str_iids);
-		pb->interned_data.debug_annotation_string_values = PB_STR_IIDS(&em.str_iids);
-		/* The event would disappear in perfetto UI without debug_annotation_names */
-		pb->interned_data.debug_annotation_names = PB_STR_IIDS(&em.str_iids);
-	}
-
-	if (em.flow_ids.cnt > 0)
-		pb->data.track_event.flow_ids = PB_FLOW_IDS(&em.flow_ids);
-
-	if (em.callstack_iid > 0) {
-		pb->data.track_event.which_callstack_field = perfetto_protos_TrackEvent_callstack_iid_tag;
-		pb->data.track_event.callstack_field.callstack_iid = em.callstack_iid;
-	}
-
-	enc_trace_packet(stream, pb);
-
-reset_state:
+	cur_stream->bytes_written += wpb_emit_track_event_packet(&em.ev);
 	reset_pending_emit_state();
-}
-
-static void emit_cleanup(struct emit_rec *r)
-{
-	emit_trace_packet(cur_stream, &em.pb);
 }
 
 enum task_kind {
@@ -893,17 +809,13 @@ static struct emit_rec emit_instant_pre(u64 track_uuid, u64 ts,
 					struct pb_str name, struct pb_str cat,
 					enum emit_flags flags)
 {
-	em.pb = (TracePacket) {
-		PB_INIT(timestamp) = ts - env.sess_start_ts,
-		PB_TRUST_SEQ_ID(PB_SEQ_ID_GENERIC),
-		PB_ONEOF(data, TracePacket_track_event) = { .track_event = {
-			PB_INIT(track_uuid) = track_uuid,
-			PB_INIT(type) = perfetto_protos_TrackEvent_Type_TYPE_INSTANT,
-			.category_iids = cat.iid ? PB_STRING_IID(cat.iid) : PB_NONE,
-			.categories = cat.iid ? PB_NONE : PB_STRING(cat.s),
-			PB_NAME(TrackEvent, name_field, name.iid, name.s),
-			.debug_annotations = PB_ANNOTATIONS(&em.anns),
-		}},
+	em.ev = (struct wpb_track_event) {
+		.ts = ts - env.sess_start_ts,
+		.trusted_packet_sequence_id = WPB_SEQ_ID_GENERIC,
+		.track_uuid = track_uuid,
+		.event_type = WPB_TRACK_EVENT_INSTANT,
+		.name = wpb_str_from_pb_str(name),
+		.category = wpb_str_from_pb_str(cat),
 	};
 	anns_reset(&em.anns);
 
@@ -921,27 +833,21 @@ static struct emit_rec emit_slice_point_pre(u64 track_uuid, u64 ts,
 					    struct pb_str name, struct pb_str cat,
 					    enum emit_flags flags)
 {
-	em.pb = (TracePacket) {
-		PB_INIT(timestamp) = ts - env.sess_start_ts,
-		PB_TRUST_SEQ_ID(PB_SEQ_ID_GENERIC),
-		PB_ONEOF(data, TracePacket_track_event) = { .track_event = {
-			PB_INIT(track_uuid) = track_uuid,
-			PB_INIT(type) = (flags & EM_END)
-				? perfetto_protos_TrackEvent_Type_TYPE_SLICE_END
-				: perfetto_protos_TrackEvent_Type_TYPE_SLICE_BEGIN,
-			.category_iids = cat.iid ? PB_STRING_IID(cat.iid) : PB_NONE,
-			.categories = cat.iid ? PB_NONE : PB_STRING(cat.s),
-			PB_NAME(TrackEvent, name_field, name.iid, name.s),
-			.debug_annotations = PB_ANNOTATIONS(&em.anns),
-		}},
+	em.ev = (struct wpb_track_event) {
+		.ts = ts - env.sess_start_ts,
+		.trusted_packet_sequence_id = WPB_SEQ_ID_GENERIC,
+		.track_uuid = track_uuid,
+		.event_type = (flags & EM_END) ? WPB_TRACK_EVENT_SLICE_END : WPB_TRACK_EVENT_SLICE_BEGIN,
+		.name = wpb_str_from_pb_str(name),
+		.category = wpb_str_from_pb_str(cat),
 	};
 
 	/* allow explicitly not providing the name */
 	if (!name.iid && !name.s)
-		em.pb.data.track_event.which_name_field = 0;
+		em.ev.name = wpb_no_str();
 	/* end slice points don't need to repeat the name */
 	if (flags & EM_END)
-		em.pb.data.track_event.which_name_field = 0;
+		em.ev.name = wpb_no_str();
 	anns_reset(&em.anns);
 
 	/* ... could have args emitted afterwards */
@@ -991,7 +897,7 @@ static bool kind_track_emitted[] = {
 	[TASK_KTHREAD] = false,
 };
 
-static void emit_kind_track_descr(pb_ostream_t *stream, enum task_kind k)
+static void emit_kind_track_descr(struct trace_stream *stream, enum task_kind k)
 {
 	u64 track_uuid = kind_track_uuid(k);
 	const char *track_name = kind_track_name(k);
@@ -1011,7 +917,7 @@ static void emit_kind_track_descr(pb_ostream_t *stream, enum task_kind k)
 	stream->bytes_written += wpb_emit_track_descriptor_packet(&desc);
 }
 
-static void emit_track_descr_impl(pb_ostream_t *stream, __u64 track_uuid, __u64 parent_track_uuid,
+static void emit_track_descr_impl(struct trace_stream *stream, __u64 track_uuid, __u64 parent_track_uuid,
 				  const char *name, int rank,
 				  enum track_child_order child_order, enum track_merge_behavior merge)
 {
@@ -1061,17 +967,17 @@ static void emit_track_descr_impl(pb_ostream_t *stream, __u64 track_uuid, __u64 
 	stream->bytes_written += wpb_emit_track_descriptor_packet(&desc);
 }
 
-static void emit_track_descr(pb_ostream_t *stream, __u64 track_uuid, __u64 parent_track_uuid, const char *name, int rank)
+static void emit_track_descr(struct trace_stream *stream, __u64 track_uuid, __u64 parent_track_uuid, const char *name, int rank)
 {
 	emit_track_descr_impl(stream, track_uuid, parent_track_uuid, name, rank, CHILD_ORDER_CHRONO, MERGE_DEFAULT);
 }
 
-static void emit_track_descr_explicit(pb_ostream_t *stream, __u64 track_uuid, __u64 parent_track_uuid, const char *name, int rank)
+static void emit_track_descr_explicit(struct trace_stream *stream, __u64 track_uuid, __u64 parent_track_uuid, const char *name, int rank)
 {
 	emit_track_descr_impl(stream, track_uuid, parent_track_uuid, name, rank, CHILD_ORDER_EXPLICIT, MERGE_DEFAULT);
 }
 
-static void emit_process_track_descr(pb_ostream_t *stream, const struct wprof_task *t)
+static void emit_process_track_descr(struct trace_stream *stream, const struct wprof_task *t)
 {
 	const char *pcomm;
 
@@ -1089,7 +995,7 @@ static void emit_process_track_descr(pb_ostream_t *stream, const struct wprof_ta
 	stream->bytes_written += wpb_emit_track_descriptor_packet(&desc);
 }
 
-static void emit_thread_track_descr(pb_ostream_t *stream, const struct wprof_task *t, const char *comm)
+static void emit_thread_track_descr(struct trace_stream *stream, const struct wprof_task *t, const char *comm)
 {
 	struct wpb_track_descriptor desc = {
 		.trusted_packet_sequence_id = WPB_SEQ_ID_THREADS,
@@ -1117,7 +1023,7 @@ static pb_iid emit_intern_str(struct worker_state *w, const char *s)
 	return iid;
 }
 
-static void emit_pmu_intern_names(struct worker_state *w, pb_ostream_t *stream)
+static void emit_pmu_intern_names(struct worker_state *w, struct trace_stream *stream)
 {
 	if (env.pmu_real_cnt + env.pmu_deriv_cnt == 0)
 		return;

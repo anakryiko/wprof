@@ -3,19 +3,13 @@
 #ifndef __PROTOBUF_H_
 #define __PROTOBUF_H_
 
+#include <stdio.h>
+
 #include "utils.h"
 #include "wprof.h"
-#include "pb_common.h"
-#include "pb_encode.h"
-#include "perfetto_trace.pb.h"
 #include "wpb.h"
 
 typedef u32 pb_iid;
-
-typedef perfetto_protos_TracePacket TracePacket;
-typedef perfetto_protos_TrackEvent TrackEvent;
-typedef perfetto_protos_DebugAnnotation DebugAnnotation;
-typedef perfetto_protos_InternedString InternedString;
 
 /* from include/linux/interrupt.h */
 enum irq_vec {
@@ -273,7 +267,11 @@ enum pb_static_iid {
 
 const char *pb_static_str(enum pb_static_iid);
 
-bool file_stream_cb(pb_ostream_t *stream, const uint8_t *buf, size_t count);
+struct trace_stream {
+	FILE *file;
+	size_t bytes_written;
+};
+
 int wpb_stream_write(void *ctx, const uint8_t *buf, size_t count);
 
 struct pb_str {
@@ -283,32 +281,6 @@ struct pb_str {
 
 #define iid_str(id, str) ((struct pb_str){.iid=(id),.s=(str)})
 
-#define PB_INIT(field) .has_##field = true, .field
-
-#define PB_SEQ_ID_THREADS 0x7
-#define PB_SEQ_ID_GENERIC 0x7
-
-#define PB_TRUST_SEQ_ID(id) \
-	.which_optional_trusted_packet_sequence_id = perfetto_protos_TracePacket_trusted_packet_sequence_id_tag, \
-	.optional_trusted_packet_sequence_id = { (id) }
-
-#define PB_NONE ((pb_callback_t){})
-#define PB_ONEOF(field, _type) .which_##field = perfetto_protos_##_type##_tag, .field
-
-bool enc_string(pb_ostream_t *stream, const pb_field_t *field, void * const *arg);
-bool enc_string_iid(pb_ostream_t *stream, const pb_field_t *field, void * const *arg);
-
-#define PB_STRING(s) ((pb_callback_t){{.encode=enc_string}, (void *)(s)})
-#define PB_STRING_IID(iid) ((pb_callback_t){{.encode=enc_string_iid}, (void *)(unsigned long)(iid)})
-
-#define PB_NAME(_type, field, iid, name_str)							\
-	.which_##field = (iid && !env.pb_disable_interns)					\
-			 ? perfetto_protos_##_type##_name_iid_tag				\
-			 : perfetto_protos_##_type##_name_tag,					\
-	.field = { .name = (iid && !env.pb_disable_interns)					\
-			   ? (pb_callback_t){.funcs={(void *)(long)(iid)}}			\
-			   : PB_STRING(name_str) }
-
 struct pb_id_set {
 	u64 *ids;
 	int cnt;
@@ -317,12 +289,6 @@ struct pb_id_set {
 
 void ids_reset(struct pb_id_set *ids);
 void ids_append_id(struct pb_id_set *ids, u64 id);
-
-bool enc_flow_id(pb_ostream_t *stream, const pb_field_t *field, void * const *arg);
-#define PB_FLOW_ID(id) ((pb_callback_t){{.encode=enc_flow_id}, (void *)(id)})
-
-bool enc_flow_ids(pb_ostream_t *stream, const pb_field_t *field, void * const *arg);
-#define PB_FLOW_IDS(ids) ((pb_callback_t){{.encode=enc_flow_ids}, (void *)(ids)})
 
 enum pb_ann_kind {
 	PB_ANN_BOOL,
@@ -347,58 +313,30 @@ struct pb_ann_val {
 	};
 };
 
-struct pb_ann_kv {
+struct pb_ann {
 	const char *name;
 	u64 name_iid;
 	struct pb_ann_val val;
 };
 
-struct pb_ann {
-	const char *name;
-	u64 name_iid;
-	struct pb_ann_kv **dict;
-	struct pb_ann_val **arr;
-	struct pb_ann_val *val;
-};
-
 #define MAX_ANN_CNT 16
 struct pb_anns {
 	int cnt;
-	struct pb_ann *ann_ptrs[MAX_ANN_CNT];
 	struct pb_ann anns[MAX_ANN_CNT];
-	struct pb_ann_val vals[MAX_ANN_CNT];
 };
 
 void anns_reset(struct pb_anns *anns);
-void anns_add_ann(struct pb_anns *anns, struct pb_ann *ann);
 struct pb_ann_val *anns_add_val(struct pb_anns *anns, pb_iid key_iid, const char *key);
 void anns_add_str(struct pb_anns *anns, pb_iid key_iid, const char *key, pb_iid value_iid, const char *value);
 void anns_add_uint(struct pb_anns *anns, pb_iid key_iid, const char *key, uint64_t value);
 void anns_add_int(struct pb_anns *anns, pb_iid key_iid, const char *key, int64_t value);
 void anns_add_double(struct pb_anns *anns, pb_iid key_iid, const char *key, double value);
-void ann_set_value(DebugAnnotation *ann_proto, const struct pb_ann_val *val);
-bool enc_ann_dict(pb_ostream_t *stream, const pb_field_t *field, void * const *arg);
-bool enc_ann_arr(pb_ostream_t *stream, const pb_field_t *field, void * const *arg);
-bool enc_annotations(pb_ostream_t *stream, const pb_field_t *field, void * const *arg);
-
-#define PB_ANNOTATIONS(p) ((pb_callback_t){{.encode=enc_annotations}, (void *)(p)})
-
-struct pb_str_iid {
-	pb_iid iid;
-	const char *s;
-};
 
 struct pb_str_iids {
 	int cnt, cap;
 	int *iids;
 	const char **strs;
 };
-
-bool enc_str_iid(pb_ostream_t *stream, const pb_field_t *field, void * const *arg);
-bool enc_str_iids(pb_ostream_t *stream, const pb_field_t *field, void * const *arg);
-
-#define PB_STR_IID(iid, str) ((pb_callback_t){{.encode=enc_str_iid}, (void *)&((struct pb_str_iid){ iid, str })})
-#define PB_STR_IIDS(p) ((pb_callback_t){{.encode=enc_str_iids}, (void *)(p)})
 
 struct pb_mapping {
 	int iid;
@@ -412,10 +350,6 @@ struct pb_mapping_iids {
 	struct pb_mapping *mappings;
 };
 
-bool enc_mappings(pb_ostream_t *stream, const pb_field_t *field, void * const *arg);
-
-#define PB_MAPPINGS(p) ((pb_callback_t){{.encode=enc_mappings}, (void *)(p)})
-
 struct pb_frame {
 	int iid;
 	int function_name_id;
@@ -428,10 +362,6 @@ struct pb_frame_iids {
 	struct pb_frame *frames;
 };
 
-bool enc_frames(pb_ostream_t *stream, const pb_field_t *field, void * const *arg);
-
-#define PB_FRAMES(p) ((pb_callback_t){{.encode=enc_frames}, (void *)(p)})
-
 struct pb_callstack {
 	int iid;
 	int frame_cnt;
@@ -443,24 +373,14 @@ struct pb_callstack_iids {
 	struct pb_callstack *callstacks;
 };
 
-bool enc_callstack_frame_ids(pb_ostream_t *stream, const pb_field_t *field, void * const *arg);
-
-#define PB_CALLSTACK_FRAME_IDS(p) ((pb_callback_t){{.encode=enc_callstack_frame_ids}, (void *)(p)})
-
-bool enc_callstacks(pb_ostream_t *stream, const pb_field_t *field, void * const *arg);
-
-#define PB_CALLSTACKS(p) ((pb_callback_t){{.encode=enc_callstacks}, (void *)(p)})
-
 void reset_str_iids(struct pb_str_iids *iids);
 void append_str_iid(struct pb_str_iids *iids, int iid, const char *s);
 void append_mapping_iid(struct pb_mapping_iids *iids, int iid, u64 start, u64 end, u64 offset);
 void append_frame_iid(struct pb_frame_iids *iids, int iid, int mapping_iid, int fname_iid, u64 rel_pc);
 void append_callstack_frame_iid(struct pb_callstack_iids *iids, int iid, int frame_iid);
 
-void enc_trace_packet(pb_ostream_t *stream, TracePacket *msg);
-
 struct wprof_data_hdr;
-int init_pb_trace(pb_ostream_t *stream, struct wpb_writer *writer, struct wprof_data_hdr *hdr);
+int init_pb_trace(struct trace_stream *stream, struct wpb_writer *writer, struct wprof_data_hdr *hdr);
 
 struct hashmap;
 
