@@ -1,27 +1,11 @@
 # Perfetto protobuf regeneration
 
 Perfetto repo: https://github.com/google/perfetto.git
-nanopb repo: https://github.com/nanopb/nanopb.git
 
-To generate perfetto_trace.pb.[ch] (combined .proto):
-
-```
-$ python3 ~/nanopb/generator/nanopb_generator.py --output-dir=$(realpath ~/perfetto) --strip-path --generated-include-format=quote --library-include-format=quote protos/perfetto/trace/perfetto_trace.proto
-$ cp protos/perfetto/trace/perfetto_trace.{pb.c,pb.h,proto} ~/wprof/src
-```
-
-Copy over nanopb encoder (also pb.h / pb_common.h if the runtime changed):
-```
-$ cp ~/nanopb/pb_{common,encode}.[ch] ~/nanopb/pb.h .
-```
-
-## Meta specific details due to devserver limitations
+To refresh the combined Perfetto trace schema used by the Rust wpb encoder:
 
 ```
-python3 -m venv ~/nanopb-venv
-source ~/nanopb-venv/bin/activate
-pip install --proxy http://fwdproxy:8080 protobuf grpcio-tools
-deactivate
+$ cp protos/perfetto/trace/perfetto_trace.proto ~/wprof/src
 ```
 
 # CUDA headers and generated files

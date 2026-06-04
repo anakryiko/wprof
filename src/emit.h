@@ -6,9 +6,6 @@
 #include "utils.h"
 #include "wprof.h"
 #include "env.h"
-#include "pb_common.h"
-#include "pb_encode.h"
-#include "perfetto_trace.pb.h"
 
 int init_emit(struct worker_state *w);
 int emit_trace(struct worker_state *w);

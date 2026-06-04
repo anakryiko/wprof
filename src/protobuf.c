@@ -8,25 +8,18 @@
 #include <fcntl.h>
 #include <time.h>
 #include <unistd.h>
+#include <errno.h>
 
 #include "protobuf.h"
 #include "env.h"
 #include "utils.h"
 #include "data.h"
 
-bool file_stream_cb(pb_ostream_t *stream, const uint8_t *buf, size_t count)
-{
-	FILE *f = stream->state;
-
-	return fwrite(buf, 1, count, f) == count;
-}
-
 int wpb_stream_write(void *ctx, const uint8_t *buf, size_t count)
 {
-	pb_ostream_t *stream = ctx;
-	FILE *f = stream->state;
+	struct trace_stream *stream = ctx;
 
-	return fwrite(buf, 1, count, f) == count ? 0 : -EIO;
+	return fwrite(buf, 1, count, stream->file) == count ? 0 : -EIO;
 }
 
 static struct wpb_str wpb_cstr(const char *s)
@@ -436,22 +429,6 @@ const char *pb_static_str(enum pb_static_iid iid)
 	return pb_static_strs[iid];
 }
 
-bool enc_string(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
-{
-	const char *s = *arg;
-
-	return pb_encode_tag_for_field(stream, field) &&
-	       pb_encode_string(stream, (void *)s, strlen(s));
-}
-
-bool enc_string_iid(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
-{
-	pb_iid iid = *(pb_iid *)arg;
-
-	return pb_encode_tag_for_field(stream, field) &&
-	       pb_encode_varint(stream, iid);
-}
-
 void ids_reset(struct pb_id_set *ids)
 {
 	ids->cnt = 0;
@@ -468,45 +445,13 @@ void ids_append_id(struct pb_id_set *ids, u64 id)
 	ids->cnt += 1;
 }
 
-bool enc_flow_id(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
-{
-	u64 flow_id = (u64)*arg;
-
-	return pb_encode_tag_for_field(stream, field) &&
-	       pb_encode_fixed64(stream, &flow_id);
-}
-
-bool enc_flow_ids(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
-{
-	const struct pb_id_set *ids = *(const struct pb_id_set **)arg;
-
-	for (int i = 0; i < ids->cnt; i++) {
-		if (!pb_encode_tag_for_field(stream, field))
-			return false;
-		if (!pb_encode_fixed64(stream, &ids->ids[i]))
-			return false;
-	}
-	return true;
-}
-
 void anns_reset(struct pb_anns *anns)
 {
 	anns->cnt = 0;
 }
 
-void anns_add_ann(struct pb_anns *anns, struct pb_ann *ann)
-{
-	if (anns->cnt == MAX_ANN_CNT) {
-		eprintf("Annotations overflow!\n");
-		exit(1);
-	}
-
-	anns->ann_ptrs[anns->cnt++] = ann;
-}
-
 struct pb_ann_val *anns_add_val(struct pb_anns *anns, pb_iid key_iid, const char *key)
 {
-	struct pb_ann_val *val;
 	struct pb_ann *ann;
 
 	if (anns->cnt == ARRAY_SIZE(anns->anns)) {
@@ -514,17 +459,13 @@ struct pb_ann_val *anns_add_val(struct pb_anns *anns, pb_iid key_iid, const char
 		exit(1);
 	}
 
-	val = &anns->vals[anns->cnt];
 	ann = &anns->anns[anns->cnt];
-	anns->ann_ptrs[anns->cnt++] = ann;
+	anns->cnt++;
 
 	ann->name = key;
 	ann->name_iid = key_iid;
-	ann->val = val;
-	ann->dict = NULL;
-	ann->arr = NULL;
 
-	return val;
+	return &ann->val;
 }
 
 void anns_add_str(struct pb_anns *anns, pb_iid key_iid, const char *key,
@@ -563,222 +504,6 @@ void anns_add_double(struct pb_anns *anns, pb_iid key_iid, const char *key, doub
 
 	val->kind = PB_ANN_DOUBLE;
 	val->val_double = value;
-}
-
-void ann_set_value(DebugAnnotation *ann_proto, const struct pb_ann_val *val)
-{
-	switch (val->kind) {
-		case PB_ANN_BOOL:
-			ann_proto->which_value = perfetto_protos_DebugAnnotation_bool_value_tag;
-			ann_proto->value.bool_value = val->val_bool;
-			break;
-		case PB_ANN_UINT:
-			ann_proto->which_value = perfetto_protos_DebugAnnotation_uint_value_tag;
-			ann_proto->value.uint_value = val->val_uint;
-			break;
-		case PB_ANN_INT:
-			ann_proto->which_value = perfetto_protos_DebugAnnotation_int_value_tag;
-			ann_proto->value.int_value = val->val_int;
-			break;
-		case PB_ANN_DOUBLE:
-			ann_proto->which_value = perfetto_protos_DebugAnnotation_double_value_tag;
-			ann_proto->value.double_value = val->val_double;
-			break;
-		case PB_ANN_PTR:
-			ann_proto->which_value = perfetto_protos_DebugAnnotation_pointer_value_tag;
-			ann_proto->value.pointer_value = (uint64_t)val->val_ptr;
-			break;
-		case PB_ANN_STR:
-			ann_proto->which_value = perfetto_protos_DebugAnnotation_string_value_tag;
-			ann_proto->value.string_value = PB_STRING(val->val_str);
-			break;
-		case PB_ANN_STR_IID:
-			ann_proto->which_value = perfetto_protos_DebugAnnotation_string_value_iid_tag;
-			ann_proto->value.string_value_iid = val->val_str_iid;
-			break;
-	}
-}
-
-bool enc_ann_dict(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
-{
-	const struct pb_ann *ann = *arg;
-	struct pb_ann_kv **kvs = ann->dict;
-
-	while (*kvs) {
-		const struct pb_ann_kv *kv = *kvs;
-		DebugAnnotation ann_proto = {
-			PB_NAME(DebugAnnotation, name_field, kv->name_iid, kv->name),
-		};
-
-		if (!pb_encode_tag_for_field(stream, field))
-			return false;
-
-		ann_set_value(&ann_proto, &kv->val);
-
-		if (!pb_encode_submessage(stream, perfetto_protos_DebugAnnotation_fields, &ann_proto))
-			return false;
-		kvs++;
-	}
-
-	return true;
-}
-
-bool enc_ann_arr(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
-{
-	const struct pb_ann *ann = *arg;
-	struct pb_ann_val **vals = ann->arr;
-
-	while (*vals) {
-		const struct pb_ann_val *v = *vals;
-		DebugAnnotation ann_proto = {};
-
-		ann_set_value(&ann_proto, v);
-
-		if (!pb_encode_tag_for_field(stream, field))
-			return false;
-
-		if (!pb_encode_submessage(stream, perfetto_protos_DebugAnnotation_fields, &ann_proto))
-			return false;
-		vals++;
-	}
-
-	return true;
-}
-
-bool enc_annotations(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
-{
-	const struct pb_anns *anns = *arg;
-
-	for (int i = 0; i < anns->cnt; i++) {
-		const struct pb_ann *ann = anns->ann_ptrs[i];
-		DebugAnnotation ann_proto = {
-			PB_NAME(DebugAnnotation, name_field, ann->name_iid, ann->name),
-		};
-
-		if (ann->dict)
-			ann_proto.dict_entries = (pb_callback_t){{.encode=enc_ann_dict}, (void *)ann};
-		if (ann->arr)
-			ann_proto.array_values = (pb_callback_t){{.encode=enc_ann_arr}, (void *)ann};
-		if (ann->val)
-			ann_set_value(&ann_proto, ann->val);
-
-		if (!pb_encode_tag_for_field(stream, field))
-			return false;
-		if (!pb_encode_submessage(stream, perfetto_protos_DebugAnnotation_fields, &ann_proto))
-			return false;
-	}
-
-	return true;
-}
-
-bool enc_str_iid(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
-{
-	const struct pb_str_iid *pair = *arg;
-	InternedString pb = {
-		PB_INIT(iid) = pair->iid,
-		.str = PB_STRING(pair->s),
-	};
-
-	if (!pb_encode_tag_for_field(stream, field))
-		return false;
-	if (!pb_encode_submessage(stream, perfetto_protos_InternedString_fields, &pb))
-		return false;
-
-	return true;
-}
-
-bool enc_str_iids(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
-{
-	const struct pb_str_iids *iids = *arg;
-
-	for (int i = 0; i < iids->cnt; i++) {
-		InternedString pb = {
-			PB_INIT(iid) = iids->iids[i],
-			.str = PB_STRING(iids->strs[i]),
-		};
-
-		if (!pb_encode_tag_for_field(stream, field))
-			return false;
-		if (!pb_encode_submessage(stream, perfetto_protos_InternedString_fields, &pb))
-			return false;
-	}
-
-	return true;
-}
-
-bool enc_mappings(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
-{
-	const struct pb_mapping_iids *iids = *arg;
-
-	for (int i = 0; i < iids->cnt; i++) {
-		perfetto_protos_Mapping pb = {
-			PB_INIT(iid) = iids->mappings[i].iid,
-			PB_INIT(start) = iids->mappings[i].start,
-			PB_INIT(end) = iids->mappings[i].end,
-			PB_INIT(start_offset) = iids->mappings[i].start_offset,
-		};
-
-		if (!pb_encode_tag_for_field(stream, field))
-			return false;
-		if (!pb_encode_submessage(stream, perfetto_protos_Mapping_fields, &pb))
-			return false;
-	}
-
-	return true;
-}
-
-bool enc_frames(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
-{
-	const struct pb_frame_iids *iids = *arg;
-
-	for (int i = 0; i < iids->cnt; i++) {
-		perfetto_protos_Frame pb = {
-			PB_INIT(iid) = iids->frames[i].iid,
-			PB_INIT(mapping_id) = iids->frames[i].mapping_id,
-			PB_INIT(function_name_id) = iids->frames[i].function_name_id,
-			PB_INIT(rel_pc) = iids->frames[i].rel_pc,
-		};
-
-		if (!pb_encode_tag_for_field(stream, field))
-			return false;
-		if (!pb_encode_submessage(stream, perfetto_protos_Frame_fields, &pb))
-			return false;
-	}
-
-	return true;
-}
-
-bool enc_callstack_frame_ids(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
-{
-	const struct pb_callstack *callstack = *arg;
-
-	for (int i = 0; i < callstack->frame_cnt; i++) {
-		if (!pb_encode_tag_for_field(stream, field))
-			return false;
-		if (!pb_encode_varint(stream, callstack->frame_ids[i]))
-			return false;
-	}
-
-	return true;
-}
-
-bool enc_callstacks(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
-{
-	const struct pb_callstack_iids *iids = *arg;
-
-	for (int i = 0; i < iids->cnt; i++) {
-		perfetto_protos_Callstack pb = {
-			PB_INIT(iid) = iids->callstacks[i].iid,
-			.frame_ids = PB_CALLSTACK_FRAME_IDS(&iids->callstacks[i]),
-		};
-
-		if (!pb_encode_tag_for_field(stream, field))
-			return false;
-		if (!pb_encode_submessage(stream, perfetto_protos_Callstack_fields, &pb))
-			return false;
-	}
-
-	return true;
 }
 
 void reset_str_iids(struct pb_str_iids *iids)
@@ -853,20 +578,6 @@ void append_callstack_frame_iid(struct pb_callstack_iids *iids, int iid, int fra
 	cs->frame_cnt++;
 }
 
-static pb_field_iter_t trace_pkt_it;
-
-void enc_trace_packet(pb_ostream_t *stream, TracePacket *msg)
-{
-	if (!pb_encode_tag_for_field(stream, &trace_pkt_it)) {
-		eprintf("Failed to encode Trace.packet field tag!\n");
-		exit(1);
-	}
-	if (!pb_encode_submessage(stream, perfetto_protos_TracePacket_fields, msg)) {
-		eprintf("Failed to encode TracePacket value!\n");
-		exit(1);
-	}
-}
-
 /*
  * Trace timestamps are emitted relative to the session start (see emit.c),
  * i.e. the trace timeline starts at 0 in the default BOOTTIME domain. Pair
@@ -874,7 +585,7 @@ void enc_trace_packet(pb_ostream_t *stream, TracePacket *msg)
  * render absolute timestamps. env.sess_start_ts already accounts for a
  * --replay-start offset, so the mapping stays correct for replay sub-windows.
  */
-static void emit_clock_snapshot(pb_ostream_t *stream, struct wpb_writer *writer)
+static void emit_clock_snapshot(struct trace_stream *stream, struct wpb_writer *writer)
 {
 	stream->bytes_written += wpb_emit_clock_snapshot_packet(writer, ktime_to_realtime_ns(env.sess_start_ts));
 }
@@ -905,7 +616,7 @@ static const char *meta_lookup(struct wprof_data_hdr *hdr, const char *key)
  * here as they are emitted via SystemInfo (system_name / system_release /
  * system_machine) instead.
  */
-static void emit_metadata(pb_ostream_t *stream, struct wpb_writer *writer, struct wprof_data_hdr *hdr)
+static void emit_metadata(struct trace_stream *stream, struct wpb_writer *writer, struct wprof_data_hdr *hdr)
 {
 	const char *kernel = meta_lookup(hdr, "kernel");
 	const char *hostname = meta_lookup(hdr, "hostname");
@@ -965,17 +676,8 @@ static void wpb_fill_static_interns(struct wpb_intern *interns, int start_id, in
 	}
 }
 
-int init_pb_trace(pb_ostream_t *stream, struct wpb_writer *writer, struct wprof_data_hdr *hdr)
+int init_pb_trace(struct trace_stream *stream, struct wpb_writer *writer, struct wprof_data_hdr *hdr)
 {
-	if (!pb_field_iter_begin(&trace_pkt_it, perfetto_protos_Trace_fields, NULL)) {
-		eprintf("Failed to start Trace fields iterator!\n");
-		return -1;
-	}
-	if (!pb_field_iter_find(&trace_pkt_it, 1)) {
-		eprintf("Failed to find Trace field!\n");
-		return -1;
-	}
-
 	emit_clock_snapshot(stream, writer);
 	emit_metadata(stream, writer, hdr);
 
