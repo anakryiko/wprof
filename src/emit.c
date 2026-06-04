@@ -517,6 +517,65 @@ static void wpb_convert_interns(struct wpb_intern *dst, const struct pb_str_iids
 	}
 }
 
+static void reset_pending_emit_state(void)
+{
+	reset_str_iids(&em.str_iids);
+	ids_reset(&em.flow_ids);
+	em.callstack_iid = 0;
+}
+
+static ssize_t wpb_emit_track_event_packet(const struct wpb_track_event *ev)
+{
+	ssize_t bytes_written = wpb_emit_track_event(cur_wpb_writer, ev);
+
+	if (bytes_written < 0) {
+		eprintf("Failed to encode TrackEvent through Rust protobuf encoder: %zd\n", bytes_written);
+		exit(1);
+	}
+	return bytes_written;
+}
+
+static ssize_t wpb_emit_track_descriptor_packet(struct wpb_track_descriptor *desc)
+{
+	struct wpb_intern *interns = wpb_get_interns(em.str_iids.cnt);
+
+	wpb_convert_interns(interns, &em.str_iids);
+	desc->interned_strings = (struct wpb_intern_set) {
+		.entries = interns,
+		.cnt = em.str_iids.cnt,
+	};
+	ssize_t bytes_written = wpb_emit_track_descriptor(cur_wpb_writer, desc);
+	if (bytes_written < 0) {
+		eprintf("Failed to encode TrackDescriptor through Rust protobuf encoder: %zd\n", bytes_written);
+		exit(1);
+	}
+	reset_pending_emit_state();
+	return bytes_written;
+}
+
+static ssize_t wpb_emit_interned_data_packet(const struct wpb_interned_data *data)
+{
+	ssize_t bytes_written = wpb_emit_interned_data(cur_wpb_writer, data);
+
+	if (bytes_written < 0) {
+		eprintf("Failed to encode InternedData through Rust protobuf encoder: %zd\n", bytes_written);
+		exit(1);
+	}
+	return bytes_written;
+}
+
+static ssize_t wpb_emit_ftrace_bundle_packet(struct wpb_writer *writer, uint32_t cpu,
+					     const struct wpb_ftrace_event *events, size_t event_cnt)
+{
+	ssize_t bytes_written = wpb_emit_ftrace_bundle(writer, cpu, events, event_cnt);
+
+	if (bytes_written < 0) {
+		eprintf("Failed to encode FtraceEventBundle through Rust protobuf encoder: %zd\n", bytes_written);
+		exit(1);
+	}
+	return bytes_written;
+}
+
 static bool emit_trace_packet_rust(pb_ostream_t *stream, TracePacket *pb)
 {
 	if (pb->which_data != perfetto_protos_TracePacket_track_event_tag)
@@ -548,12 +607,7 @@ static bool emit_trace_packet_rust(pb_ostream_t *stream, TracePacket *pb)
 		.intern_cnt = em.str_iids.cnt,
 		.callstack_iid = em.callstack_iid,
 	};
-	ssize_t bytes_written = wpb_emit_track_event(cur_wpb_writer, &ev);
-	if (bytes_written < 0) {
-		eprintf("Failed to encode TrackEvent through Rust protobuf encoder: %zd\n", bytes_written);
-		exit(1);
-	}
-	stream->bytes_written += bytes_written;
+	stream->bytes_written += wpb_emit_track_event_packet(&ev);
 	return true;
 }
 
@@ -590,9 +644,7 @@ static void emit_trace_packet(pb_ostream_t *stream, TracePacket *pb)
 	enc_trace_packet(stream, pb);
 
 reset_state:
-	reset_str_iids(&em.str_iids);
-	ids_reset(&em.flow_ids);
-	em.callstack_iid = 0;
+	reset_pending_emit_state();
 }
 
 static void emit_cleanup(struct emit_rec *r)
@@ -946,35 +998,30 @@ static void emit_kind_track_descr(pb_ostream_t *stream, enum task_kind k)
 	int track_rank = kind_track_rank(k);
 	int track_pid = kind_track_pid(k);
 
-	TracePacket desc_pb = {
-		PB_TRUST_SEQ_ID(PB_SEQ_ID_THREADS),
-		PB_ONEOF(data, TracePacket_track_descriptor) = { .track_descriptor = {
-			PB_INIT(uuid) = track_uuid,
-			PB_INIT(process) = {
-				PB_INIT(pid) = track_pid,
-				.process_name = PB_STRING(track_name),
-			},
-			PB_INIT(child_ordering) = k == TASK_KWORKER
-				? perfetto_protos_TrackDescriptor_ChildTracksOrdering_LEXICOGRAPHIC
-				: perfetto_protos_TrackDescriptor_ChildTracksOrdering_EXPLICIT,
-			PB_INIT(sibling_order_rank) = track_rank,
-			/* sibling_merge_behavior left as default (mergeable) */
-		}},
+	struct wpb_track_descriptor desc = {
+		.trusted_packet_sequence_id = WPB_SEQ_ID_THREADS,
+		.kind = WPB_TRACK_DESCRIPTOR_PROCESS,
+		.uuid = track_uuid,
+		.process_pid = track_pid,
+		.process_name = wpb_str_from_cstr(0, track_name),
+		.child_ordering = k == TASK_KWORKER ? WPB_TRACK_CHILD_ORDER_LEXICOGRAPHIC : WPB_TRACK_CHILD_ORDER_EXPLICIT,
+		.sibling_order_rank = track_rank,
+		/* sibling_merge_behavior left as default (mergeable) */
 	};
-	emit_trace_packet(stream, &desc_pb);
+	stream->bytes_written += wpb_emit_track_descriptor_packet(&desc);
 }
 
 static void emit_track_descr_impl(pb_ostream_t *stream, __u64 track_uuid, __u64 parent_track_uuid,
 				  const char *name, int rank,
 				  enum track_child_order child_order, enum track_merge_behavior merge)
 {
-	perfetto_protos_TrackDescriptor_ChildTracksOrdering child_ordering;
+	int child_ordering;
 	switch (child_order) {
 		case CHILD_ORDER_CHRONO:
-			child_ordering = perfetto_protos_TrackDescriptor_ChildTracksOrdering_CHRONOLOGICAL;
+			child_ordering = WPB_TRACK_CHILD_ORDER_CHRONOLOGICAL;
 			break;
 		case CHILD_ORDER_EXPLICIT:
-			child_ordering = perfetto_protos_TrackDescriptor_ChildTracksOrdering_EXPLICIT;
+			child_ordering = WPB_TRACK_CHILD_ORDER_EXPLICIT;
 			break;
 		case CHILD_ORDER_INVALID:
 		default:
@@ -982,39 +1029,36 @@ static void emit_track_descr_impl(pb_ostream_t *stream, __u64 track_uuid, __u64 
 			break;
 	}
 
-	perfetto_protos_TrackDescriptor_SiblingMergeBehavior merge_behavior;
+	int merge_behavior;
 	switch (merge) {
 		case MERGE_BY_NAME:
-			merge_behavior = perfetto_protos_TrackDescriptor_SiblingMergeBehavior_SIBLING_MERGE_BEHAVIOR_BY_TRACK_NAME;
+			merge_behavior = WPB_TRACK_MERGE_BY_TRACK_NAME;
 			break;
 		case MERGE_NONE:
-			merge_behavior = perfetto_protos_TrackDescriptor_SiblingMergeBehavior_SIBLING_MERGE_BEHAVIOR_NONE;
+			merge_behavior = WPB_TRACK_MERGE_NONE;
 			break;
 		case MERGE_BY_KEY:
-			merge_behavior = perfetto_protos_TrackDescriptor_SiblingMergeBehavior_SIBLING_MERGE_BEHAVIOR_BY_SIBLING_MERGE_KEY;
+			merge_behavior = WPB_TRACK_MERGE_BY_KEY;
 			break;
 		case MERGE_DEFAULT:
 		default:
-			merge_behavior = perfetto_protos_TrackDescriptor_SiblingMergeBehavior_SIBLING_MERGE_BEHAVIOR_UNSPECIFIED;
+			merge_behavior = 0;
 			break;
 	}
 
-	TracePacket desc = {
-		PB_TRUST_SEQ_ID(PB_SEQ_ID_GENERIC),
-		PB_ONEOF(data, TracePacket_track_descriptor) = { .track_descriptor = {
-			PB_INIT(uuid) = track_uuid,
-			PB_INIT(disallow_merging_with_system_tracks) = false,
-			.parent_uuid = parent_track_uuid,
-			.has_parent_uuid = parent_track_uuid != 0,
-			PB_ONEOF(static_or_dynamic_name, TrackDescriptor_name) = { .name = PB_STRING(name) },
-			PB_INIT(child_ordering) = child_ordering,
-			.sibling_order_rank = rank,
-			.has_sibling_order_rank = rank != 0,
-			.has_sibling_merge_behavior = merge != MERGE_DEFAULT,
-			.sibling_merge_behavior = merge_behavior,
-		}},
+	struct wpb_track_descriptor desc = {
+		.trusted_packet_sequence_id = WPB_SEQ_ID_GENERIC,
+		.kind = WPB_TRACK_DESCRIPTOR_GENERIC,
+		.uuid = track_uuid,
+		.parent_uuid = parent_track_uuid,
+		.name = wpb_str_from_cstr(0, name),
+		.child_ordering = child_ordering,
+		.sibling_order_rank = rank,
+		.sibling_merge_behavior = merge_behavior,
+		.emit_disallow_merging_with_system_tracks = 1,
+		.disallow_merging_with_system_tracks = 0,
 	};
-	emit_trace_packet(stream, &desc);
+	stream->bytes_written += wpb_emit_track_descriptor_packet(&desc);
 }
 
 static void emit_track_descr(pb_ostream_t *stream, __u64 track_uuid, __u64 parent_track_uuid, const char *name, int rank)
@@ -1032,39 +1076,33 @@ static void emit_process_track_descr(pb_ostream_t *stream, const struct wprof_ta
 	const char *pcomm;
 
 	pcomm = track_pcomm(t);
-	TracePacket proc_desc = {
-		PB_TRUST_SEQ_ID(PB_SEQ_ID_THREADS),
-		PB_ONEOF(data, TracePacket_track_descriptor) = { .track_descriptor = {
-			PB_INIT(uuid) = trackid_process(t),
-			PB_INIT(process) = {
-				PB_INIT(pid) = track_pid(t),
-				.process_name = PB_STRING(pcomm),
-			},
-			PB_INIT(child_ordering) = perfetto_protos_TrackDescriptor_ChildTracksOrdering_EXPLICIT,
-			PB_INIT(sibling_order_rank) = track_process_rank(t),
-			/* sibling_merge_behavior left as default (mergeable) */
-		}},
+	struct wpb_track_descriptor desc = {
+		.trusted_packet_sequence_id = WPB_SEQ_ID_THREADS,
+		.kind = WPB_TRACK_DESCRIPTOR_PROCESS,
+		.uuid = trackid_process(t),
+		.process_pid = track_pid(t),
+		.process_name = wpb_str_from_cstr(0, pcomm),
+		.child_ordering = WPB_TRACK_CHILD_ORDER_EXPLICIT,
+		.sibling_order_rank = track_process_rank(t),
+		/* sibling_merge_behavior left as default (mergeable) */
 	};
-	emit_trace_packet(stream, &proc_desc);
+	stream->bytes_written += wpb_emit_track_descriptor_packet(&desc);
 }
 
 static void emit_thread_track_descr(pb_ostream_t *stream, const struct wprof_task *t, const char *comm)
 {
-	TracePacket thread_desc = {
-		PB_TRUST_SEQ_ID(PB_SEQ_ID_THREADS),
-		PB_ONEOF(data, TracePacket_track_descriptor) = { .track_descriptor = {
-			PB_INIT(uuid) = trackid_thread_meta(t),
-			PB_INIT(thread) = {
-				PB_INIT(tid) = track_tid(t),
-				PB_INIT(pid) = track_pid(t),
-				.thread_name = PB_STRING(comm),
-			},
-			PB_INIT(child_ordering) = perfetto_protos_TrackDescriptor_ChildTracksOrdering_EXPLICIT,
-			PB_INIT(sibling_order_rank) = track_thread_rank(t),
-			/* sibling_merge_behavior left as default (mergeable) */
-		}},
+	struct wpb_track_descriptor desc = {
+		.trusted_packet_sequence_id = WPB_SEQ_ID_THREADS,
+		.kind = WPB_TRACK_DESCRIPTOR_THREAD,
+		.uuid = trackid_thread_meta(t),
+		.thread_tid = track_tid(t),
+		.thread_pid = track_pid(t),
+		.thread_name = wpb_str_from_cstr(0, comm),
+		.child_ordering = WPB_TRACK_CHILD_ORDER_EXPLICIT,
+		.sibling_order_rank = track_thread_rank(t),
+		/* sibling_merge_behavior left as default (mergeable) */
 	};
-	emit_trace_packet(stream, &thread_desc);
+	stream->bytes_written += wpb_emit_track_descriptor_packet(&desc);
 }
 
 static pb_iid emit_intern_str(struct worker_state *w, const char *s)
@@ -1101,16 +1139,16 @@ static void emit_pmu_intern_names(struct worker_state *w, pb_ostream_t *stream)
 		append_str_iid(&iids, pmu->name_iid, s);
 	}
 
-	TracePacket pkt = {
-		PB_INIT(timestamp) = 0,
-		PB_TRUST_SEQ_ID(PB_SEQ_ID_THREADS),
-		PB_INIT(interned_data) = {
-			.event_names = PB_STR_IIDS(&iids),
-			.debug_annotation_names = PB_STR_IIDS(&iids),
-			.debug_annotation_string_values = PB_STR_IIDS(&iids),
-		},
+	struct wpb_intern *interns = wpb_get_interns(iids.cnt);
+	wpb_convert_interns(interns, &iids);
+	struct wpb_interned_data data = {
+		.ts = 0,
+		.trusted_packet_sequence_id = WPB_SEQ_ID_THREADS,
+		.event_names = { .entries = interns, .cnt = iids.cnt },
+		.debug_annotation_names = { .entries = interns, .cnt = iids.cnt },
+		.debug_annotation_string_values = { .entries = interns, .cnt = iids.cnt },
 	};
-	enc_trace_packet(stream, &pkt);
+	stream->bytes_written += wpb_emit_interned_data_packet(&data);
 
 	free(iids.iids);
 	free(iids.strs);
@@ -1514,14 +1552,7 @@ static void flush_ftrace_bundle(struct worker_state *w, int cpu)
 	if (buf->cnt == 0)
 		return;
 
-	TracePacket pb = {
-		PB_TRUST_SEQ_ID(PB_SEQ_ID_THREADS),
-		PB_ONEOF(data, TracePacket_ftrace_events) = { .ftrace_events = {
-			PB_INIT(cpu) = cpu,
-			.event = PB_FTRACE_EVENTS(buf),
-		}},
-	};
-	emit_trace_packet(&w->stream, &pb);
+	w->stream.bytes_written += wpb_emit_ftrace_bundle_packet(w->wpb_writer, cpu, buf->events, buf->cnt);
 
 	ftrace_buffer_reset(buf);
 }
@@ -1539,7 +1570,7 @@ static struct ftrace_cpu_bundle *ftrace_get_bundle(struct worker_state *w, int c
 	return &w->ftrace_bundles[cpu];
 }
 
-static FtraceEvent *add_ftrace_event(struct worker_state *w, int cpu, u64 ts, u32 pid)
+static struct wpb_ftrace_event *add_ftrace_event(struct worker_state *w, int cpu, u64 ts, u32 pid)
 {
 	struct ftrace_cpu_bundle *bundle = ftrace_get_bundle(w, cpu);
 	struct ftrace_event_buffer *buf = &bundle->buffer;
@@ -1547,13 +1578,9 @@ static FtraceEvent *add_ftrace_event(struct worker_state *w, int cpu, u64 ts, u3
 	if (buf->cnt >= MAX_FTRACE_EVENTS_PER_BUNDLE)
 		flush_ftrace_bundle(w, cpu);
 
-	FtraceEvent *ev = ftrace_buffer_add(buf);
-	if (!ev)
-		return NULL;
+	struct wpb_ftrace_event *ev = ftrace_buffer_add(buf);
 
-	ev->has_timestamp = true;
 	ev->timestamp = ts - env.sess_start_ts;
-	ev->has_pid = true;
 	ev->pid = pid;
 
 	return ev;
@@ -1777,32 +1804,27 @@ skip_next_task:
 		goto skip_sched_view;
 
 	if (s->trace_prev || s->trace_next) {
-		FtraceEvent *fev = add_ftrace_event(w, e->cpu, e->ts, task_tid(&task));
+		struct wpb_ftrace_event *fev = add_ftrace_event(w, e->cpu, e->ts, task_tid(&task));
 
-		fev->which_event = perfetto_protos_FtraceEvent_sched_switch_tag;
-		fev->event.sched_switch = (SchedSwitchFtraceEvent) {
-			.prev_comm = task.pid ? PB_STRING(task.comm) : PB_NONE,
-			PB_INIT(prev_pid) = task_tid(&task),
-			PB_INIT(prev_prio) = e->swtch.prev_prio,
-			PB_INIT(prev_state) = e->swtch.prev_task_state,
-			.next_comm = next.pid ? PB_STRING(next.comm) : PB_NONE,
-			PB_INIT(next_pid) = task_tid(&next),
-			PB_INIT(next_prio) = e->swtch.next_prio,
-		};
+		fev->kind = WPB_FTRACE_SCHED_SWITCH;
+		fev->prev_comm = task.pid ? wpb_str_from_cstr(0, task.comm) : wpb_no_str();
+		fev->prev_pid = task_tid(&task);
+		fev->prev_prio = e->swtch.prev_prio;
+		fev->prev_state = e->swtch.prev_task_state;
+		fev->next_comm = next.pid ? wpb_str_from_cstr(0, next.comm) : wpb_no_str();
+		fev->next_pid = task_tid(&next);
+		fev->next_prio = e->swtch.next_prio;
 	}
 
 	if (s->trace_waker) {
-		FtraceEvent *fev = add_ftrace_event(w, e->swtch.waker_cpu, e->swtch.waking_ts,
-						    task_tid(&task));
-		fev->which_event = e->swtch.waking_flags == WF_WOKEN_NEW
-			? perfetto_protos_FtraceEvent_sched_wakeup_new_tag
-			: perfetto_protos_FtraceEvent_sched_waking_tag;
-		fev->event.sched_waking = (SchedWakingFtraceEvent) {
-			.comm = PB_STRING(next.comm),
-			PB_INIT(pid) = task_tid(&next),
-			PB_INIT(prio) = e->swtch.next_prio,
-			PB_INIT(target_cpu) = e->cpu,
-		};
+		struct wpb_ftrace_event *fev = add_ftrace_event(w, e->swtch.waker_cpu, e->swtch.waking_ts,
+								task_tid(&task));
+		fev->kind = e->swtch.waking_flags == WF_WOKEN_NEW
+			? WPB_FTRACE_SCHED_WAKEUP_NEW : WPB_FTRACE_SCHED_WAKING;
+		fev->comm = wpb_str_from_cstr(0, next.comm);
+		fev->event_pid = task_tid(&next);
+		fev->prio = e->swtch.next_prio;
+		fev->target_cpu = e->cpu;
 	}
 
 skip_sched_view:

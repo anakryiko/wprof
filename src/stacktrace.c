@@ -25,6 +25,17 @@
 
 #define debugf(...) if (DEBUG_SYMBOLIZATION) dprintf(1, ##__VA_ARGS__)
 
+static ssize_t wpb_emit_interned_data_packet(struct wpb_writer *writer, const struct wpb_interned_data *data)
+{
+	ssize_t bytes_written = wpb_emit_interned_data(writer, data);
+
+	if (bytes_written < 0) {
+		eprintf("Failed to encode InternedData through Rust protobuf encoder: %zd\n", bytes_written);
+		exit(1);
+	}
+	return bytes_written;
+}
+
 struct symb_state {
 	struct stack_frame_index *sframe_idx;
 	size_t sframe_cap, sframe_cnt;
@@ -1400,17 +1411,60 @@ int generate_stack_traces(struct worker_state *w)
 	}
 
 	ssize_t pb_sz_before = file_size(w->trace);
-	TracePacket ev_pb = {
-		PB_INIT(timestamp) = 0,
-		PB_TRUST_SEQ_ID(PB_SEQ_ID_THREADS),
-		PB_INIT(interned_data) = {
-			.function_names = PB_STR_IIDS(&strace_iids.func_names),
-			.frames = PB_FRAMES(&strace_iids.frames),
-			.callstacks = PB_CALLSTACKS(&strace_iids.callstacks),
-			.mappings = PB_MAPPINGS(&strace_iids.mappings),
-		},
+	struct wpb_intern *func_names = calloc(strace_iids.func_names.cnt, sizeof(*func_names));
+	for (int i = 0; i < strace_iids.func_names.cnt; i++) {
+		func_names[i] = (struct wpb_intern) {
+			.iid = strace_iids.func_names.iids[i],
+			.s = strace_iids.func_names.strs[i],
+			.len = strlen(strace_iids.func_names.strs[i]),
+		};
+	}
+
+	struct wpb_mapping *mappings = calloc(strace_iids.mappings.cnt, sizeof(*mappings));
+	for (int i = 0; i < strace_iids.mappings.cnt; i++) {
+		mappings[i] = (struct wpb_mapping) {
+			.iid = strace_iids.mappings.mappings[i].iid,
+			.start = strace_iids.mappings.mappings[i].start,
+			.end = strace_iids.mappings.mappings[i].end,
+			.start_offset = strace_iids.mappings.mappings[i].start_offset,
+		};
+	}
+
+	struct wpb_frame *frames = calloc(strace_iids.frames.cnt, sizeof(*frames));
+	for (int i = 0; i < strace_iids.frames.cnt; i++) {
+		frames[i] = (struct wpb_frame) {
+			.iid = strace_iids.frames.frames[i].iid,
+			.function_name_id = strace_iids.frames.frames[i].function_name_id,
+			.mapping_id = strace_iids.frames.frames[i].mapping_id,
+			.rel_pc = strace_iids.frames.frames[i].rel_pc,
+		};
+	}
+
+	struct wpb_callstack *callstacks = calloc(strace_iids.callstacks.cnt, sizeof(*callstacks));
+	for (int i = 0; i < strace_iids.callstacks.cnt; i++) {
+		callstacks[i] = (struct wpb_callstack) {
+			.iid = strace_iids.callstacks.callstacks[i].iid,
+			.frame_ids = strace_iids.callstacks.callstacks[i].frame_ids,
+			.frame_cnt = strace_iids.callstacks.callstacks[i].frame_cnt,
+		};
+	}
+
+	struct wpb_interned_data data = {
+		.ts = 0,
+		.trusted_packet_sequence_id = WPB_SEQ_ID_THREADS,
+		.function_names = { .entries = func_names, .cnt = strace_iids.func_names.cnt },
+		.mappings = mappings,
+		.mapping_cnt = strace_iids.mappings.cnt,
+		.frames = frames,
+		.frame_cnt = strace_iids.frames.cnt,
+		.callstacks = callstacks,
+		.callstack_cnt = strace_iids.callstacks.cnt,
 	};
-	enc_trace_packet(&w->stream, &ev_pb);
+	w->stream.bytes_written += wpb_emit_interned_data_packet(w->wpb_writer, &data);
+	free(func_names);
+	free(mappings);
+	free(frames);
+	free(callstacks);
 	ssize_t pb_sz_after = file_size(w->trace);
 	wprintf("Emitted %.3lfMB of stack traces data.\n", (pb_sz_after - pb_sz_before) / 1024.0 / 1024.0);
 	return 0;

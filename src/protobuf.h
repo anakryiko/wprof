@@ -8,6 +8,7 @@
 #include "pb_common.h"
 #include "pb_encode.h"
 #include "perfetto_trace.pb.h"
+#include "wpb.h"
 
 typedef u32 pb_iid;
 
@@ -15,11 +16,6 @@ typedef perfetto_protos_TracePacket TracePacket;
 typedef perfetto_protos_TrackEvent TrackEvent;
 typedef perfetto_protos_DebugAnnotation DebugAnnotation;
 typedef perfetto_protos_InternedString InternedString;
-typedef perfetto_protos_FtraceEvent FtraceEvent;
-typedef perfetto_protos_FtraceEventBundle FtraceEventBundle;
-typedef perfetto_protos_SchedSwitchFtraceEvent SchedSwitchFtraceEvent;
-typedef perfetto_protos_SchedWakingFtraceEvent SchedWakingFtraceEvent;
-typedef perfetto_protos_SchedWakeupNewFtraceEvent SchedWakeupNewFtraceEvent;
 
 /* from include/linux/interrupt.h */
 enum irq_vec {
@@ -392,11 +388,6 @@ struct pb_str_iid {
 	const char *s;
 };
 
-struct pb_str_iid_range {
-	int start_id;
-	int end_id;
-};
-
 struct pb_str_iids {
 	int cnt, cap;
 	int *iids;
@@ -404,12 +395,9 @@ struct pb_str_iids {
 };
 
 bool enc_str_iid(pb_ostream_t *stream, const pb_field_t *field, void * const *arg);
-bool enc_str_iid_range(pb_ostream_t *stream, const pb_field_t *field, void * const *arg);
 bool enc_str_iids(pb_ostream_t *stream, const pb_field_t *field, void * const *arg);
 
 #define PB_STR_IID(iid, str) ((pb_callback_t){{.encode=enc_str_iid}, (void *)&((struct pb_str_iid){ iid, str })})
-#define PB_STR_IID_RANGE(start_id, end_id) ((pb_callback_t){{.encode=enc_str_iid_range},	\
-					    (void *)&((struct pb_str_iid_range){ start_id, end_id })})
 #define PB_STR_IIDS(p) ((pb_callback_t){{.encode=enc_str_iids}, (void *)(p)})
 
 struct pb_mapping {
@@ -469,19 +457,10 @@ void append_mapping_iid(struct pb_mapping_iids *iids, int iid, u64 start, u64 en
 void append_frame_iid(struct pb_frame_iids *iids, int iid, int mapping_iid, int fname_iid, u64 rel_pc);
 void append_callstack_frame_iid(struct pb_callstack_iids *iids, int iid, int frame_iid);
 
-struct pb_clock {
-	uint32_t clock_id;
-	uint64_t timestamp;
-};
-
-bool enc_clock(pb_ostream_t *stream, const pb_field_t *field, void * const *arg);
-
-#define PB_CLOCK(s) ((pb_callback_t){{.encode=enc_clock}, (void *)(s)})
-
 void enc_trace_packet(pb_ostream_t *stream, TracePacket *msg);
 
 struct wprof_data_hdr;
-int init_pb_trace(pb_ostream_t *stream, struct wprof_data_hdr *hdr);
+int init_pb_trace(pb_ostream_t *stream, struct wpb_writer *writer, struct wprof_data_hdr *hdr);
 
 struct hashmap;
 
@@ -504,7 +483,7 @@ pb_iid str_iid_for(struct str_iid_domain *d, const char *s, bool *new_iid, const
 #define MAX_FTRACE_EVENTS_PER_BUNDLE 1024
 
 struct ftrace_event_buffer {
-	FtraceEvent *events;
+	struct wpb_ftrace_event *events;
 	int cnt;
 	int cap;
 };
@@ -516,9 +495,6 @@ struct ftrace_cpu_bundle {
 void ftrace_buffer_init(struct ftrace_event_buffer *buf);
 void ftrace_buffer_reset(struct ftrace_event_buffer *buf);
 void ftrace_buffer_free(struct ftrace_event_buffer *buf);
-FtraceEvent *ftrace_buffer_add(struct ftrace_event_buffer *buf);
-
-bool enc_ftrace_events(pb_ostream_t *stream, const pb_field_t *field, void * const *arg);
-#define PB_FTRACE_EVENTS(buf) ((pb_callback_t){{.encode=enc_ftrace_events}, (void *)(buf)})
+struct wpb_ftrace_event *ftrace_buffer_add(struct ftrace_event_buffer *buf);
 
 #endif /* __PROTOBUF_H_ */
