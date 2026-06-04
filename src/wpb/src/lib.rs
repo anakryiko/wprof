@@ -310,15 +310,13 @@ fn fill_interned_data(data: &mut InternedData, interns: &[WpbIntern]) -> Result<
         } else {
             unsafe { slice::from_raw_parts(intern.s as *const u8, intern.len) }
         };
-        let s = String::from_utf8_lossy(bytes).into_owned();
-
         data.event_names.push(EventName {
             iid: Some(intern.iid),
-            name: Some(s.clone()),
+            name: Some(bytes.to_vec()),
         });
         data.debug_annotation_names.push(DebugAnnotationName {
             iid: Some(intern.iid),
-            name: Some(s),
+            name: Some(bytes.to_vec()),
         });
         data.debug_annotation_string_values.push(InternedString {
             iid: Some(intern.iid),
