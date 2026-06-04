@@ -29,6 +29,65 @@ int wpb_stream_write(void *ctx, const uint8_t *buf, size_t count)
 	return fwrite(buf, 1, count, f) == count ? 0 : -EIO;
 }
 
+static struct wpb_str wpb_cstr(const char *s)
+{
+	if (!s)
+		return (struct wpb_str){};
+	return (struct wpb_str){ .s = s, .len = strlen(s) };
+}
+
+static struct wpb_str wpb_strn(const char *s, size_t len)
+{
+	return (struct wpb_str){ .s = s, .len = len };
+}
+
+static ssize_t wpb_emit_clock_snapshot_packet(struct wpb_writer *writer, uint64_t realtime_ts)
+{
+	ssize_t bytes_written = wpb_emit_clock_snapshot(writer, realtime_ts);
+
+	if (bytes_written < 0) {
+		eprintf("Failed to encode ClockSnapshot through Rust protobuf encoder: %zd\n", bytes_written);
+		exit(1);
+	}
+	return bytes_written;
+}
+
+static ssize_t wpb_emit_system_info_packet(struct wpb_writer *writer, const struct wpb_str *hostname,
+					   const struct wpb_str *kernel, const struct wpb_str *arch,
+					   uint32_t num_cpus)
+{
+	ssize_t bytes_written = wpb_emit_system_info(writer, hostname, kernel, arch, num_cpus);
+
+	if (bytes_written < 0) {
+		eprintf("Failed to encode SystemInfo through Rust protobuf encoder: %zd\n", bytes_written);
+		exit(1);
+	}
+	return bytes_written;
+}
+
+static ssize_t wpb_emit_trace_attributes_packet(struct wpb_writer *writer, const struct wpb_attr *attrs,
+						size_t attr_cnt)
+{
+	ssize_t bytes_written = wpb_emit_trace_attributes(writer, attrs, attr_cnt);
+
+	if (bytes_written < 0) {
+		eprintf("Failed to encode TraceAttributes through Rust protobuf encoder: %zd\n", bytes_written);
+		exit(1);
+	}
+	return bytes_written;
+}
+
+static ssize_t wpb_emit_trace_start_packet(struct wpb_writer *writer, const struct wpb_interned_data *data)
+{
+	ssize_t bytes_written = wpb_emit_trace_start(writer, data);
+
+	if (bytes_written < 0) {
+		eprintf("Failed to encode trace start through Rust protobuf encoder: %zd\n", bytes_written);
+		exit(1);
+	}
+	return bytes_written;
+}
+
 static const char *softirq_str_map[] = {
 	[HI_SOFTIRQ] = "hi",
 	[TIMER_SOFTIRQ] = "timer",
@@ -628,25 +687,6 @@ bool enc_str_iid(pb_ostream_t *stream, const pb_field_t *field, void * const *ar
 	return true;
 }
 
-bool enc_str_iid_range(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
-{
-	const struct pb_str_iid_range *intern_set = *arg;
-
-	for (int iid = intern_set->start_id; iid < intern_set->end_id; iid++) {
-		InternedString pb = {
-			PB_INIT(iid) = iid,
-			.str = PB_STRING(pb_static_str(iid)),
-		};
-
-		if (!pb_encode_tag_for_field(stream, field))
-			return false;
-		if (!pb_encode_submessage(stream, perfetto_protos_InternedString_fields, &pb))
-			return false;
-	}
-
-	return true;
-}
-
 bool enc_str_iids(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
 {
 	const struct pb_str_iids *iids = *arg;
@@ -827,26 +867,6 @@ void enc_trace_packet(pb_ostream_t *stream, TracePacket *msg)
 	}
 }
 
-bool enc_clock(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
-{
-	const struct pb_clock **clocks = *arg;
-
-	while (*clocks) {
-		const struct pb_clock *clock = *clocks;
-		perfetto_protos_ClockSnapshot_Clock pb = {
-			PB_INIT(clock_id) = clock->clock_id,
-			PB_INIT(timestamp) = clock->timestamp,
-		};
-
-		if (!pb_encode_tag_for_field(stream, field))
-			return false;
-		if (!pb_encode_submessage(stream, perfetto_protos_ClockSnapshot_Clock_fields, &pb))
-			return false;
-		clocks++;
-	}
-	return true;
-}
-
 /*
  * Trace timestamps are emitted relative to the session start (see emit.c),
  * i.e. the trace timeline starts at 0 in the default BOOTTIME domain. Pair
@@ -854,24 +874,9 @@ bool enc_clock(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
  * render absolute timestamps. env.sess_start_ts already accounts for a
  * --replay-start offset, so the mapping stays correct for replay sub-windows.
  */
-static void emit_clock_snapshot(pb_ostream_t *stream)
+static void emit_clock_snapshot(pb_ostream_t *stream, struct wpb_writer *writer)
 {
-	struct pb_clock boot_clock = {
-		.clock_id = perfetto_protos_ClockSnapshot_Clock_BuiltinClocks_BOOTTIME,
-		.timestamp = 0,
-	};
-	struct pb_clock real_clock = {
-		.clock_id = perfetto_protos_ClockSnapshot_Clock_BuiltinClocks_REALTIME,
-		.timestamp = ktime_to_realtime_ns(env.sess_start_ts),
-	};
-	struct pb_clock *clocks[] = { &boot_clock, &real_clock, NULL };
-	TracePacket pb = {
-		PB_TRUST_SEQ_ID(PB_SEQ_ID_THREADS),
-		PB_ONEOF(data, TracePacket_clock_snapshot) = { .clock_snapshot = {
-			.clocks = PB_CLOCK(clocks),
-		}},
-	};
-	enc_trace_packet(stream, &pb);
+	stream->bytes_written += wpb_emit_clock_snapshot_packet(writer, ktime_to_realtime_ns(env.sess_start_ts));
 }
 
 /*
@@ -894,44 +899,31 @@ static const char *meta_lookup(struct wprof_data_hdr *hdr, const char *key)
 }
 
 /*
- * Encode a single TraceAttributes.Attribute with a (possibly non-terminated)
- * key slice and a NUL-terminated string value.
- */
-struct pb_strn { const char *p; size_t len; };
-
-static bool enc_strn(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
-{
-	const struct pb_strn *s = *arg;
-
-	return pb_encode_tag_for_field(stream, field) &&
-	       pb_encode_string(stream, (const void *)s->p, s->len);
-}
-
-static bool enc_one_attr(pb_ostream_t *stream, const pb_field_t *field,
-			 const char *key, size_t key_len, const char *val)
-{
-	struct pb_strn keyn = { key, key_len };
-	perfetto_protos_TraceAttributes_Attribute a = {
-		.key = { {.encode = enc_strn}, &keyn },
-		PB_ONEOF(value, TraceAttributes_Attribute_string_value) = {
-			.string_value = PB_STRING(val),
-		},
-	};
-
-	return pb_encode_tag_for_field(stream, field) &&
-	       pb_encode_submessage(stream, perfetto_protos_TraceAttributes_Attribute_fields, &a);
-}
-
-/*
  * Emit user-supplied metadata (-M pairs) plus the human-readable capture time
  * as Perfetto trace attributes. These surface in the UI Overview and the
  * trace_processor `metadata` table. hostname, kernel and arch are skipped
  * here as they are emitted via SystemInfo (system_name / system_release /
  * system_machine) instead.
  */
-static bool enc_trace_attributes(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
+static void emit_metadata(pb_ostream_t *stream, struct wpb_writer *writer, struct wprof_data_hdr *hdr)
 {
-	struct wprof_data_hdr *hdr = *arg;
+	const char *kernel = meta_lookup(hdr, "kernel");
+	const char *hostname = meta_lookup(hdr, "hostname");
+	const char *arch = meta_lookup(hdr, "arch");
+	struct wpb_str hostname_str = wpb_cstr(hostname);
+	struct wpb_str kernel_str = wpb_cstr(kernel);
+	struct wpb_str arch_str = wpb_cstr(arch);
+	uint32_t num_cpus = env.stats ? env.stats->cpu_cnt : 0;
+
+	/*
+	 * Perfetto's Utsname has no hostname/nodename field, so stash the
+	 * hostname in `sysname` (normally the OS name) to surface it as
+	 * system_name in the UI Overview; `machine` carries the architecture.
+	 */
+	stream->bytes_written += wpb_emit_system_info_packet(writer, &hostname_str, &kernel_str, &arch_str, num_cpus);
+
+	struct wpb_attr *attrs = calloc(hdr->extra_cnt + 1, sizeof(*attrs));
+	size_t attr_cnt = 0;
 
 	for (u64 i = 0; i < hdr->extra_cnt; i++) {
 		struct wprof_extra_param *e = wevent_extra_param(hdr, i);
@@ -945,55 +937,35 @@ static bool enc_trace_attributes(pb_ostream_t *stream, const pb_field_t *field, 
 		    (key_len == 6 && strncmp(kv, "kernel", 6) == 0) ||
 		    (key_len == 4 && strncmp(kv, "arch", 4) == 0))
 			continue;
-		if (!enc_one_attr(stream, field, kv, key_len, val))
-			return false;
+		attrs[attr_cnt++] = (struct wpb_attr) {
+			.key = wpb_strn(kv, key_len),
+			.val = wpb_cstr(val),
+		};
 	}
 
 	const char *ts = fmt_timestamp_ns(ktime_to_realtime_ns(env.sess_start_ts));
-	if (!enc_one_attr(stream, field, "capture_time", strlen("capture_time"), ts))
-		return false;
+	attrs[attr_cnt++] = (struct wpb_attr) {
+		.key = wpb_cstr("capture_time"),
+		.val = wpb_cstr(ts),
+	};
 
-	return true;
+	stream->bytes_written += wpb_emit_trace_attributes_packet(writer, attrs, attr_cnt);
+	free(attrs);
 }
 
-static void emit_metadata(pb_ostream_t *stream, struct wprof_data_hdr *hdr)
+static void wpb_fill_static_interns(struct wpb_intern *interns, int start_id, int end_id)
 {
-	const char *kernel = meta_lookup(hdr, "kernel");
-	const char *hostname = meta_lookup(hdr, "hostname");
-	const char *arch = meta_lookup(hdr, "arch");
-
-	/*
-	 * Perfetto's Utsname has no hostname/nodename field, so stash the
-	 * hostname in `sysname` (normally the OS name) to surface it as
-	 * system_name in the UI Overview; `machine` carries the architecture.
-	 */
-	perfetto_protos_SystemInfo si = {
-		PB_INIT(utsname) = {
-			.sysname = hostname ? PB_STRING(hostname) : PB_NONE,
-			.release = kernel ? PB_STRING(kernel) : PB_NONE,
-			.machine = arch ? PB_STRING(arch) : PB_NONE,
-		},
-	};
-	if (env.stats) {
-		si.has_num_cpus = true;
-		si.num_cpus = env.stats->cpu_cnt;
+	for (int id = start_id; id < end_id; id++) {
+		const char *s = pb_static_str(id);
+		interns[id - start_id] = (struct wpb_intern) {
+			.iid = id,
+			.s = s,
+			.len = strlen(s),
+		};
 	}
-	TracePacket si_pb = {
-		PB_TRUST_SEQ_ID(PB_SEQ_ID_THREADS),
-		PB_ONEOF(data, TracePacket_system_info) = { .system_info = si },
-	};
-	enc_trace_packet(stream, &si_pb);
-
-	TracePacket ta_pb = {
-		PB_TRUST_SEQ_ID(PB_SEQ_ID_THREADS),
-		PB_ONEOF(data, TracePacket_trace_attributes) = { .trace_attributes = {
-			.attribute = { {.encode = enc_trace_attributes}, hdr },
-		}},
-	};
-	enc_trace_packet(stream, &ta_pb);
 }
 
-int init_pb_trace(pb_ostream_t *stream, struct wprof_data_hdr *hdr)
+int init_pb_trace(pb_ostream_t *stream, struct wpb_writer *writer, struct wprof_data_hdr *hdr)
 {
 	if (!pb_field_iter_begin(&trace_pkt_it, perfetto_protos_Trace_fields, NULL)) {
 		eprintf("Failed to start Trace fields iterator!\n");
@@ -1004,26 +976,27 @@ int init_pb_trace(pb_ostream_t *stream, struct wprof_data_hdr *hdr)
 		return -1;
 	}
 
-	emit_clock_snapshot(stream);
-	emit_metadata(stream, hdr);
+	emit_clock_snapshot(stream, writer);
+	emit_metadata(stream, writer, hdr);
 
 	/* emit fake instant event to establish strict zero timestamp */
-	TracePacket ev_pb = {
-		PB_INIT(timestamp) = 0,
-		PB_TRUST_SEQ_ID(PB_SEQ_ID_THREADS),
-		PB_INIT(sequence_flags) = perfetto_protos_TracePacket_SequenceFlags_SEQ_INCREMENTAL_STATE_CLEARED,
-		PB_ONEOF(data, TracePacket_track_event) = { .track_event = {
-			PB_INIT(type) = perfetto_protos_TrackEvent_Type_TYPE_INSTANT,
-			PB_ONEOF(name_field, TrackEvent_name) = { .name = PB_STRING("START") },
-		}},
-		PB_INIT(interned_data) = {
-			.event_categories = PB_STR_IID_RANGE(CAT_START_IID, CAT_END_IID),
-			.event_names = PB_STR_IID_RANGE(NAME_START_IID, NAME_END_IID),
-			.debug_annotation_names = PB_STR_IID_RANGE(ANNK_START_IID, ANNK_END_IID),
-			.debug_annotation_string_values = PB_STR_IID_RANGE(ANNV_START_IID, ANNV_END_IID),
-		},
+	struct wpb_intern cats[CAT_END_IID - CAT_START_IID];
+	struct wpb_intern names[NAME_END_IID - NAME_START_IID];
+	struct wpb_intern ann_names[ANNK_END_IID - ANNK_START_IID];
+	struct wpb_intern ann_values[ANNV_END_IID - ANNV_START_IID];
+
+	wpb_fill_static_interns(cats, CAT_START_IID, CAT_END_IID);
+	wpb_fill_static_interns(names, NAME_START_IID, NAME_END_IID);
+	wpb_fill_static_interns(ann_names, ANNK_START_IID, ANNK_END_IID);
+	wpb_fill_static_interns(ann_values, ANNV_START_IID, ANNV_END_IID);
+
+	struct wpb_interned_data start_data = {
+		.event_categories = { .entries = cats, .cnt = ARRAY_SIZE(cats) },
+		.event_names = { .entries = names, .cnt = ARRAY_SIZE(names) },
+		.debug_annotation_names = { .entries = ann_names, .cnt = ARRAY_SIZE(ann_names) },
+		.debug_annotation_string_values = { .entries = ann_values, .cnt = ARRAY_SIZE(ann_values) },
 	};
-	enc_trace_packet(stream, &ev_pb);
+	stream->bytes_written += wpb_emit_trace_start_packet(writer, &start_data);
 
 	if (env.pb_debug_interns) {
 		struct { const char *name; int start, end; } ranges[] = {
@@ -1094,7 +1067,7 @@ void ftrace_buffer_free(struct ftrace_event_buffer *buf)
 	buf->cap = 0;
 }
 
-FtraceEvent *ftrace_buffer_add(struct ftrace_event_buffer *buf)
+struct wpb_ftrace_event *ftrace_buffer_add(struct ftrace_event_buffer *buf)
 {
 	if (buf->cnt >= buf->cap) {
 		int new_cap = buf->cnt < 64 ? 64 : buf->cnt * 4 / 3;
@@ -1103,19 +1076,6 @@ FtraceEvent *ftrace_buffer_add(struct ftrace_event_buffer *buf)
 		buf->events = realloc(buf->events, new_cap * sizeof(*buf->events));
 		buf->cap = new_cap;
 	}
-	memset(&buf->events[buf->cnt], 0, sizeof(FtraceEvent));
+	memset(&buf->events[buf->cnt], 0, sizeof(*buf->events));
 	return &buf->events[buf->cnt++];
-}
-
-bool enc_ftrace_events(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
-{
-	const struct ftrace_event_buffer *buf = *arg;
-
-	for (int i = 0; i < buf->cnt; i++) {
-		if (!pb_encode_tag_for_field(stream, field))
-			return false;
-		if (!pb_encode_submessage(stream, perfetto_protos_FtraceEvent_fields, &buf->events[i]))
-			return false;
-	}
-	return true;
 }

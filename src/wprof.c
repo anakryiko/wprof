@@ -1936,7 +1936,7 @@ skip_data_collection:
 		}
 
 		if (!env.json_path) {
-			if (init_pb_trace(&w->stream, w->dump_hdr)) {
+			if (init_pb_trace(&w->stream, w->wpb_writer, w->dump_hdr)) {
 				err = -1;
 				eprintf("Failed to init protobuf!\n");
 				goto cleanup;

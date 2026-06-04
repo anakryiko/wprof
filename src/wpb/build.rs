@@ -47,8 +47,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     force_bytes_fields(
         &mut fds,
         &[
+            ("EventCategory", "name"),
             ("EventName", "name"),
             ("DebugAnnotationName", "name"),
+            ("ProcessDescriptor", "process_name"),
+            ("ThreadDescriptor", "thread_name"),
+            ("TrackDescriptor", "name"),
+            ("TrackDescriptor", "static_name"),
+            ("TrackDescriptor", "atrace_name"),
+            ("SchedSwitchFtraceEvent", "prev_comm"),
+            ("SchedSwitchFtraceEvent", "next_comm"),
+            ("SchedWakingFtraceEvent", "comm"),
+            ("SchedWakeupNewFtraceEvent", "comm"),
         ],
     );
 
