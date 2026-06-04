@@ -1284,11 +1284,13 @@ static void emit_timer(struct worker_state *w, const struct wevent *e)
 
 	emit_track_descrs(w, &task);
 
-	int tr_id = (env.requested_stack_traces & ST_TIMER) ? e->timer.timer_stack_id : 0;
-
-	/* use stitched native+Python callstack when available */
-	if (e->timer.pystack_id > 0)
-		tr_id = e->timer.pystack_id;
+	int tr_id = 0;
+	if (env.requested_stack_traces & ST_TIMER) {
+		tr_id = e->timer.timer_stack_id;
+		/* use stitched native+Python callstack when available */
+		if (e->timer.pystack_id > 0)
+			tr_id = e->timer.pystack_id;
+	}
 
 	if (env.emit_timer_ticks || tr_id > 0) {
 		u64 track_uuid = ensure_timer_thread_track(&task);
@@ -3446,9 +3448,10 @@ static void emit_cuda_api(struct worker_state *w, const struct wevent *e)
 	}
 
 	pb_iid name_iid = emit_intern_str(w, name);
+	int stack_id = (env.requested_stack_traces & ST_CUDA) ? e->cuda_api.cuda_stack_id : 0;
 
 	emit_slice_begin(track_uuid, clamp_ts(e->ts), iid_str(name_iid, name), IID_CAT_CUDA_API) {
-		emit_callstack(w, e->cuda_api.cuda_stack_id);
+		emit_callstack(w, stack_id);
 
 		emit_flow_id(((u64)task.pid << 32) | e->cuda_api.corr_id);
 	}
@@ -3460,7 +3463,7 @@ static void emit_cuda_api(struct worker_state *w, const struct wevent *e)
 		if (pf->exists) {
 			u64 pf_track = trackid_pytrace_thread(task.tid);
 			emit_slice_begin(pf_track, clamp_ts(e->ts), iid_str(name_iid, name), IID_CAT_CUDA_API) {
-				emit_callstack(w, e->cuda_api.cuda_stack_id);
+				emit_callstack(w, stack_id);
 				emit_flow_id(((u64)task.pid << 32) | e->cuda_api.corr_id);
 			}
 			emit_slice_end(pf_track, clamp_ts(e->cuda_api.end_ts), iid_str(name_iid, name), IID_CAT_CUDA_API);
@@ -3490,7 +3493,7 @@ static void emit_cuda_api_json(struct worker_state *w, const struct wevent *e)
 		json_kv_int(j, "numa", e->numa_node);
 	json_kv_str(j, "name", name);
 	json_kv_int(j, "corr_id", e->cuda_api.corr_id);
-	if (env.requested_stack_traces && e->cuda_api.cuda_stack_id > 0)
+	if ((env.requested_stack_traces & ST_CUDA) && e->cuda_api.cuda_stack_id > 0)
 		json_kv_int(j, "stack_id", e->cuda_api.cuda_stack_id);
 	json_obj_end(j);
 }
