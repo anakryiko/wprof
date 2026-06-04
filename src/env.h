@@ -5,6 +5,7 @@
 
 #include "utils.h"
 #include "protobuf.h"
+#include "wpb.h"
 #include "wprof.h"
 #include "data.h"
 #include "cuda.h"
@@ -260,6 +261,7 @@ struct worker_state {
 
 	FILE *trace;
 	pb_ostream_t stream;
+	struct wpb_writer *wpb_writer;
 
 	FILE *dump;
 	char *dump_path;

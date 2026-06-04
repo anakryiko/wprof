@@ -21,6 +21,14 @@ bool file_stream_cb(pb_ostream_t *stream, const uint8_t *buf, size_t count)
 	return fwrite(buf, 1, count, f) == count;
 }
 
+int wpb_stream_write(void *ctx, const uint8_t *buf, size_t count)
+{
+	pb_ostream_t *stream = ctx;
+	FILE *f = stream->state;
+
+	return fwrite(buf, 1, count, f) == count ? 0 : -EIO;
+}
+
 static const char *softirq_str_map[] = {
 	[HI_SOFTIRQ] = "hi",
 	[TIMER_SOFTIRQ] = "timer",

@@ -210,6 +210,7 @@ static inline bool track_equal_fn(long k1, long k2, void *ctx)
 
 static struct hashmap *tracks;
 static u64 dyn_track_next_id = 1;
+static __thread struct wpb_writer *cur_wpb_writer;
 
 static inline struct track_key track_key(enum dyn_track_kind kind, u32 id1, u64 id2)
 {
@@ -317,6 +318,7 @@ int init_emit(struct worker_state *w)
 		return -ENOMEM;
 
 	cur_stream = &w->stream;
+	cur_wpb_writer = w->wpb_writer;
 
 	return 0;
 }
@@ -394,8 +396,172 @@ static void emit_str_iid(pb_iid iid, const char *key)
 
 struct emit_rec { bool done; };
 
+static __thread struct wpb_intern *wpb_interns;
+static __thread int wpb_intern_cap;
+
+static struct wpb_str wpb_no_str(void)
+{
+	return (struct wpb_str){};
+}
+
+static struct wpb_str wpb_str_from_cstr(u64 iid, const char *s)
+{
+	if (iid && !env.pb_disable_interns)
+		return (struct wpb_str){ .iid = iid };
+	if (!s)
+		return wpb_no_str();
+	return (struct wpb_str){ .s = s, .len = strlen(s) };
+}
+
+static struct wpb_str wpb_str_from_callback(const pb_callback_t *cb)
+{
+	if (!cb->funcs.encode)
+		return wpb_no_str();
+	return wpb_str_from_cstr(0, cb->arg);
+}
+
+static struct wpb_str wpb_track_event_name(const TrackEvent *te)
+{
+	switch (te->which_name_field) {
+	case perfetto_protos_TrackEvent_name_iid_tag:
+		return (struct wpb_str){ .iid = te->name_field.name_iid };
+	case perfetto_protos_TrackEvent_name_tag:
+		return wpb_str_from_callback(&te->name_field.name);
+	default:
+		return wpb_no_str();
+	}
+}
+
+static struct wpb_str wpb_track_event_category(const TrackEvent *te)
+{
+	if (te->category_iids.funcs.encode)
+		return (struct wpb_str){ .iid = (uintptr_t)te->category_iids.arg };
+	return wpb_str_from_callback(&te->categories);
+}
+
+static void wpb_convert_ann_val(const struct pb_ann_val *src, struct wpb_annot *dst)
+{
+	switch (src->kind) {
+	case PB_ANN_BOOL:
+		dst->kind = WPB_ANN_BOOL;
+		dst->val.b = src->val_bool;
+		return;
+	case PB_ANN_UINT:
+		dst->kind = WPB_ANN_UINT;
+		dst->val.u = src->val_uint;
+		return;
+	case PB_ANN_INT:
+		dst->kind = WPB_ANN_INT;
+		dst->val.i = src->val_int;
+		return;
+	case PB_ANN_DOUBLE:
+		dst->kind = WPB_ANN_DOUBLE;
+		dst->val.d = src->val_double;
+		return;
+	case PB_ANN_PTR:
+		dst->kind = WPB_ANN_PTR;
+		dst->val.ptr = (uintptr_t)src->val_ptr;
+		return;
+	case PB_ANN_STR:
+		dst->kind = WPB_ANN_STR;
+		dst->val.s = wpb_str_from_cstr(0, src->val_str);
+		return;
+	case PB_ANN_STR_IID:
+		dst->kind = WPB_ANN_STR_IID;
+		dst->val.s = (struct wpb_str){ .iid = src->val_str_iid };
+		return;
+	default:
+		BUG("unsupported annotation value kind %d\n", src->kind);
+	}
+}
+
+static void wpb_convert_annotations(struct wpb_annot *dst, const struct pb_anns *src)
+{
+	for (int i = 0; i < src->cnt; i++) {
+		const struct pb_ann *ann = src->ann_ptrs[i];
+
+		if (ann->dict)
+			BUG("unsupported annotation dict in Rust protobuf encoder\n");
+		if (ann->arr)
+			BUG("unsupported annotation array in Rust protobuf encoder\n");
+		if (!ann->val)
+			BUG("annotation without scalar value in Rust protobuf encoder\n");
+
+		dst[i].name = wpb_str_from_cstr(ann->name_iid, ann->name);
+		wpb_convert_ann_val(ann->val, &dst[i]);
+	}
+}
+
+static struct wpb_intern *wpb_get_interns(int cnt)
+{
+	if (cnt <= wpb_intern_cap)
+		return wpb_interns;
+
+	int new_cap = wpb_intern_cap ?: 16;
+	while (new_cap < cnt)
+		new_cap *= 2;
+
+	wpb_interns = realloc(wpb_interns, new_cap * sizeof(*wpb_interns));
+	wpb_intern_cap = new_cap;
+	return wpb_interns;
+}
+
+static void wpb_convert_interns(struct wpb_intern *dst, const struct pb_str_iids *src)
+{
+	for (int i = 0; i < src->cnt; i++) {
+		const char *s = src->strs[i];
+
+		dst[i].iid = src->iids[i];
+		dst[i].s = s;
+		dst[i].len = strlen(s);
+	}
+}
+
+static bool emit_trace_packet_rust(pb_ostream_t *stream, TracePacket *pb)
+{
+	if (pb->which_data != perfetto_protos_TracePacket_track_event_tag)
+		return false;
+	if (pb->has_interned_data)
+		BUG("TrackEvent already has interned_data before Rust protobuf encoding\n");
+
+	const TrackEvent *te = &pb->data.track_event;
+	struct wpb_annot annots[MAX_ANN_CNT];
+	struct wpb_intern *interns = wpb_get_interns(em.str_iids.cnt);
+
+	wpb_convert_annotations(annots, &em.anns);
+	wpb_convert_interns(interns, &em.str_iids);
+
+	struct wpb_track_event ev = {
+		.ts = pb->has_timestamp ? pb->timestamp : 0,
+		.trusted_packet_sequence_id = pb->which_optional_trusted_packet_sequence_id
+			? pb->optional_trusted_packet_sequence_id.trusted_packet_sequence_id : 0,
+		.sequence_flags = pb->has_sequence_flags ? pb->sequence_flags : 0,
+		.track_uuid = te->has_track_uuid ? te->track_uuid : 0,
+		.event_type = te->has_type ? te->type : 0,
+		.name = wpb_track_event_name(te),
+		.category = wpb_track_event_category(te),
+		.annots = annots,
+		.annot_cnt = em.anns.cnt,
+		.flow_ids = (const uint64_t *)em.flow_ids.ids,
+		.flow_cnt = em.flow_ids.cnt,
+		.interns = interns,
+		.intern_cnt = em.str_iids.cnt,
+		.callstack_iid = em.callstack_iid,
+	};
+	ssize_t bytes_written = wpb_emit_track_event(cur_wpb_writer, &ev);
+	if (bytes_written < 0) {
+		eprintf("Failed to encode TrackEvent through Rust protobuf encoder: %zd\n", bytes_written);
+		exit(1);
+	}
+	stream->bytes_written += bytes_written;
+	return true;
+}
+
 static void emit_trace_packet(pb_ostream_t *stream, TracePacket *pb)
 {
+	if (emit_trace_packet_rust(stream, pb))
+		goto reset_state;
+
 	if (em.str_iids.cnt > 0) {
 		if (pb->has_interned_data && pb->interned_data.event_names.funcs.encode) {
 			BUG("interned_data.event_names is already set!\n");
@@ -423,6 +589,7 @@ static void emit_trace_packet(pb_ostream_t *stream, TracePacket *pb)
 
 	enc_trace_packet(stream, pb);
 
+reset_state:
 	reset_str_iids(&em.str_iids);
 	ids_reset(&em.flow_ids);
 	em.callstack_iid = 0;

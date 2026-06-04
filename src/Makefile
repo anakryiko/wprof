@@ -30,6 +30,8 @@ LIBBLAZESYM_INC := $(abspath $(LIBBLAZESYM_SRC)/capi/include)
 LIBBLAZESYM_OBJ := $(abspath $(OUTPUT)/libblazesym_c.a)
 LIBDEMANGLE_SRC := $(abspath demangle/)
 LIBDEMANGLE_OBJ := $(abspath $(OUTPUT)/libdemangle_c.a)
+LIBWPB_SRC := $(abspath wpb/)
+LIBWPB_OBJ := $(abspath $(OUTPUT)/libwpb_c.a)
 STROBELIGHT_LIBS_SRC := $(abspath ../strobelight-libs)
 ARCH ?= $(shell uname -m | sed 's/x86_64/x86/' \
 			 | sed 's/arm.*/arm/' \
@@ -135,6 +137,17 @@ $(LIBDEMANGLE_SRC)/target/release/libdemangle_c.a::
 $(LIBDEMANGLE_OBJ): $(LIBDEMANGLE_SRC)/target/release/libdemangle_c.a | $(OUTPUT)
 	$(Q)cp $< $@
 
+# Build protobuf encoder shim
+LIBWPB_DEPS := $(wildcard $(LIBWPB_SRC)/src/*.rs $(LIBWPB_SRC)/*.rs)	\
+	       $(LIBWPB_SRC)/Cargo.toml $(LIBWPB_SRC)/Cargo.lock
+
+$(LIBWPB_SRC)/target/release/libwpb_c.a: $(LIBWPB_DEPS) perfetto_trace.proto
+	$(call msg,LIB,$@)
+	$(Q)cd $(LIBWPB_SRC) && $(CARGO) build --release -q
+
+$(LIBWPB_OBJ): $(LIBWPB_SRC)/target/release/libwpb_c.a | $(OUTPUT)
+	$(Q)cp $< $@
+
 # Build BPF code
 $(OUTPUT)/%.bpf.o: %.bpf.c $(LIBBPF_OBJ) $(wildcard %.h) $(VMLINUX) | $(OUTPUT) $(BPFTOOL)
 	$(call msg,BPF,$@)
@@ -190,7 +203,7 @@ WPROF_HDRS := wprof.h utils.h env.h protobuf.h data.h emit.h stacktrace.h topolo
 	      wprof_types.h demangle.h merge.h wevent.h persist.h				\
 	      pystacks.h pyoffsets.h pydisc.h pysym.h pyline.h pytrace.h pytrace_data.h		\
 	      utrace_cfg.h utrace.h strs.h blobset.h ksyms.h bpf_utils.h hashmap.h	\
-	      pb.h pb_common.h pb_encode.h perfetto_trace.pb.h
+	      pb.h pb_common.h pb_encode.h perfetto_trace.pb.h wpb.h
 WPROF_OBJS := $(patsubst %.c,$(OUTPUT)/%.o,$(WPROF_SRCS))
 
 WPROFINJ_SRCS := inj_lib.c inj_strset.c inj_hashmap.c inj_cupti.c inj_pytrace.c inj_torch_profiler.c
@@ -229,7 +242,7 @@ $(OUTPUT)/json_schema_embed.o: ../JSON_SCHEMA.md
 wprof: $(WPROF_HDRS) $(WPROF_OBJS)								\
 		$(OUTPUT)/libwprofinj_embed.o							\
 		$(OUTPUT)/json_schema_embed.o							\
-		$(LIBBPF_OBJ) $(LIBBLAZESYM_OBJ) $(LIBDEMANGLE_OBJ) | $(OUTPUT)
+		$(LIBBPF_OBJ) $(LIBBLAZESYM_OBJ) $(LIBDEMANGLE_OBJ) $(LIBWPB_OBJ) | $(OUTPUT)
 	$(call msg,BINARY,$@)
 	$(Q)$(CC) $(ALL_CFLAGS) $(filter %.c %.a %.o,$^) $(ALL_LDFLAGS) $(if $(STATIC),--static) -lelf -lz -lzstd -o $@
 

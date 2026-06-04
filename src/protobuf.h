@@ -278,6 +278,7 @@ enum pb_static_iid {
 const char *pb_static_str(enum pb_static_iid);
 
 bool file_stream_cb(pb_ostream_t *stream, const uint8_t *buf, size_t count);
+int wpb_stream_write(void *ctx, const uint8_t *buf, size_t count);
 
 struct pb_str {
 	int iid;
