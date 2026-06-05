@@ -119,8 +119,8 @@ static const struct argp_option opts[] = {
 
 	{ "data", 'D', "FILE", 0, "Data dump path (defaults to 'wprof.data' in current directory)" },
 	{ "trace", 'T', "FILE", 0, "Emit Perfetto trace to specified file (use '-' for stdout)" },
-	{ "json-trace", 'J', "FILE", 0, "Emit JSON trace to specified file (use '-' for stdout; see --json-schema)" },
-	{ "json-schema", OPT_JSON_SCHEMA, NULL, 0, "Print JSON output schema and exit" },
+	{ "json-trace", 'J', "FILE", 0, "Emit JSON trace for programmatic analysis (use '-' for stdout; see --json-schema)" },
+	{ "json-schema", OPT_JSON_SCHEMA, NULL, 0, "Print JSON output data model/schema and exit" },
 
 	{ "record", OPT_RECORD, NULL, 0, "Record mode (default, mutually exclusive with --replay)" },
 	{ "seal-output", OPT_SEAL_OUTPUT, NULL, OPTION_HIDDEN, "Prevent subsequent file-output options" },

@@ -39,6 +39,15 @@ details.
 $ ./wprof -R -d500 -T trace-500ms.pb
 ```
 
+For programmatic analysis, emit NDJSON instead of parsing the Perfetto trace,
+and inspect the data model with `--json-schema`:
+
+```
+$ ./wprof -R -I -D wprof.data          # inspect captured data
+$ ./wprof -R -D wprof.data -J trace.json  # JSON output (use -J - for stdout)
+$ ./wprof --json-schema               # print the JSON data model and exit
+```
+
 ## User-defined tracing (utrace)
 
 wprof supports user-defined probes for capturing custom events alongside

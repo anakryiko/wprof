@@ -64,6 +64,29 @@ cd blazesym
 cargo test --workspace
 ```
 
+## Analyzing captured data
+
+For programmatic analysis, do not parse the Perfetto `.pb` directly. Prefer
+replay-mode summaries and JSON output:
+
+- Start with `wprof -R -I -D capture.data` to inspect duration, enabled
+  features, event counts, stack counts, and metadata.
+- Read `wprof --json-schema` before consuming JSON. JSON mode emits NDJSON:
+  one compact JSON object per line, not a single JSON array.
+- The NDJSON has three sections in order: 1 header line; then, when stack
+  traces are enabled, `stack_cnt` callstack lines (each with an `id`); then the
+  event lines. Events reference stacks by `stack_id`/`offcpu_stack_id`/
+  `waker_stack_id`, so index the callstack lines first to resolve them.
+- Emit JSON with `wprof -R -D capture.data -J out.json`, or `-J -` for stdout.
+- For large captures, narrow first with `--replay-start`, `--replay-end`,
+  PID/name filters, or request filters before emitting JSON.
+- Use `--no-stacks` when stack contents are not needed.
+- For request analysis, prefer `--req-list` with `--req-filter`,
+  `--req-sort`, `--req-top-n`, or `--req-bottom-n`.
+
+wprof splits capture from analysis: capture once (produces `wprof.data`), then
+re-run analysis cheaply in replay mode (`-R`) against the same data.
+
 ## Architecture
 
 ### Core Components
