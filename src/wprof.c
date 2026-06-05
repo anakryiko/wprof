@@ -1458,7 +1458,12 @@ int main(int argc, char **argv)
 				wprintf("    %-*s%.3lfMB (%u unique stacks)\n", w - 4, "Stack traces:", dump_hdr->stacks_sz / MB, shdr->stack_cnt);
 				wprintf("        %-*s%.3lfMB (%u entries)\n", w - 8, "Call stacks:", shdr->stack_cnt * sizeof(struct wstack_trace) / MB, shdr->stack_cnt);
 				wprintf("        %-*s%.3lfMB (%u entries)\n", w - 8, "Frames:", shdr->frame_cnt * sizeof(struct wstack_frame) / MB, shdr->frame_cnt);
-				wprintf("        %-*s%.3lfMB\n", w - 8, "Strings:", shdr->strs_sz / MB);
+				u64 stack_str_cnt = 0;
+				for (const char *s = wstack_str(dump_hdr, 0), *end = s + shdr->strs_sz; s < end; s++) {
+					if (*s == '\0')
+						stack_str_cnt++;
+				}
+				wprintf("        %-*s%.3lfMB (%llu unique strings)\n", w - 8, "Strings:", shdr->strs_sz / MB, stack_str_cnt);
 			}
 			if (dump_hdr->pmu_def_real_cnt + dump_hdr->pmu_def_deriv_cnt)
 				wprintf("    %-*s%.3lfMB (%llu entries)\n", w - 4, "PMU data:", dump_hdr->pmu_vals_sz / MB, dump_hdr->pmu_val_cnt);
