@@ -336,7 +336,7 @@ impl WpbWriter {
         match desc.kind {
             WPB_TRACK_DESCRIPTOR_GENERIC => {
                 td.static_or_dynamic_name =
-                    read_bytes_vec(&desc.name).map(track_descriptor::StaticOrDynamicName::Name);
+                    read_string(&desc.name).map(track_descriptor::StaticOrDynamicName::Name);
                 td.disallow_merging_with_system_tracks =
                     (desc.emit_disallow_merging_with_system_tracks != 0)
                         .then_some(desc.disallow_merging_with_system_tracks != 0);
@@ -348,7 +348,7 @@ impl WpbWriter {
             WPB_TRACK_DESCRIPTOR_PROCESS => {
                 td.process = Some(ProcessDescriptor {
                     pid: Some(desc.process_pid),
-                    process_name: read_bytes_vec(&desc.process_name),
+                    process_name: read_string(&desc.process_name),
                     ..ProcessDescriptor::default()
                 });
                 td.sibling_order_rank = Some(desc.sibling_order_rank);
@@ -357,7 +357,7 @@ impl WpbWriter {
                 td.thread = Some(ThreadDescriptor {
                     tid: Some(desc.thread_tid),
                     pid: Some(desc.thread_pid),
-                    thread_name: read_bytes_vec(&desc.thread_name),
+                    thread_name: read_string(&desc.thread_name),
                     ..ThreadDescriptor::default()
                 });
                 td.sibling_order_rank = Some(desc.sibling_order_rank);
@@ -382,18 +382,18 @@ impl WpbWriter {
             let event_data = match event.kind {
                 WPB_FTRACE_SCHED_SWITCH => {
                     ftrace_event::Event::SchedSwitch(SchedSwitchFtraceEvent {
-                        prev_comm: read_bytes_vec(&event.prev_comm),
+                        prev_comm: read_string(&event.prev_comm),
                         prev_pid: Some(event.prev_pid),
                         prev_prio: Some(event.prev_prio),
                         prev_state: Some(event.prev_state),
-                        next_comm: read_bytes_vec(&event.next_comm),
+                        next_comm: read_string(&event.next_comm),
                         next_pid: Some(event.next_pid),
                         next_prio: Some(event.next_prio),
                     })
                 }
                 WPB_FTRACE_SCHED_WAKING => {
                     ftrace_event::Event::SchedWaking(SchedWakingFtraceEvent {
-                        comm: read_bytes_vec(&event.comm),
+                        comm: read_string(&event.comm),
                         pid: Some(event.event_pid),
                         prio: Some(event.prio),
                         target_cpu: Some(event.target_cpu),
@@ -402,7 +402,7 @@ impl WpbWriter {
                 }
                 WPB_FTRACE_SCHED_WAKEUP_NEW => {
                     ftrace_event::Event::SchedWakeupNew(SchedWakeupNewFtraceEvent {
-                        comm: read_bytes_vec(&event.comm),
+                        comm: read_string(&event.comm),
                         pid: Some(event.event_pid),
                         prio: Some(event.prio),
                         target_cpu: Some(event.target_cpu),
@@ -563,10 +563,6 @@ fn read_optional_string(s: Option<&WpbStr>) -> Option<String> {
     s.and_then(read_string)
 }
 
-fn read_bytes_vec(s: &WpbStr) -> Option<Vec<u8>> {
-    read_bytes(s).map(|bytes| bytes.to_vec())
-}
-
 fn base_packet(seq_id: u32) -> TracePacket {
     let mut packet = TracePacket::default();
     set_trusted_sequence_id(&mut packet, seq_id);
@@ -608,7 +604,7 @@ fn fill_event_categories(dst: &mut Vec<EventCategory>, src: &[WpbIntern]) {
         let bytes = intern_bytes(intern);
         dst.push(EventCategory {
             iid: Some(intern.iid),
-            name: Some(bytes.to_vec()),
+            name: Some(String::from_utf8_lossy(bytes).into_owned()),
         });
     }
 }
@@ -619,7 +615,7 @@ fn fill_event_names(dst: &mut Vec<EventName>, src: &[WpbIntern]) {
         let bytes = intern_bytes(intern);
         dst.push(EventName {
             iid: Some(intern.iid),
-            name: Some(bytes.to_vec()),
+            name: Some(String::from_utf8_lossy(bytes).into_owned()),
         });
     }
 }
@@ -630,7 +626,7 @@ fn fill_debug_annotation_names(dst: &mut Vec<DebugAnnotationName>, src: &[WpbInt
         let bytes = intern_bytes(intern);
         dst.push(DebugAnnotationName {
             iid: Some(intern.iid),
-            name: Some(bytes.to_vec()),
+            name: Some(String::from_utf8_lossy(bytes).into_owned()),
         });
     }
 }
