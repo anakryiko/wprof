@@ -25,17 +25,6 @@
 
 #define debugf(...) if (DEBUG_SYMBOLIZATION) dprintf(1, ##__VA_ARGS__)
 
-static ssize_t wpb_emit_interned_data_packet(struct wpb_writer *writer, const struct wpb_interned_data *data)
-{
-	ssize_t bytes_written = wpb_emit_interned_data(writer, data);
-
-	if (bytes_written < 0) {
-		eprintf("Failed to encode InternedData through Rust protobuf encoder: %zd\n", bytes_written);
-		exit(1);
-	}
-	return bytes_written;
-}
-
 struct symb_state {
 	struct stack_frame_index *sframe_idx;
 	size_t sframe_cap, sframe_cnt;
@@ -1460,7 +1449,7 @@ int generate_stack_traces(struct worker_state *w)
 		.callstacks = callstacks,
 		.callstack_cnt = strace_iids.callstacks.cnt,
 	};
-	w->stream.bytes_written += wpb_emit_interned_data_packet(w->wpb_writer, &data);
+	wpb_emit_interned_data(w->wpb_writer, &data);
 	free(func_names);
 	free(mappings);
 	free(frames);

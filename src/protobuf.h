@@ -267,11 +267,6 @@ enum pb_static_iid {
 
 const char *pb_static_str(enum pb_static_iid);
 
-struct trace_stream {
-	FILE *file;
-	size_t bytes_written;
-};
-
 int wpb_stream_write(void *ctx, const uint8_t *buf, size_t count);
 
 struct pb_str {
@@ -380,7 +375,7 @@ void append_frame_iid(struct pb_frame_iids *iids, int iid, int mapping_iid, int 
 void append_callstack_frame_iid(struct pb_callstack_iids *iids, int iid, int frame_iid);
 
 struct wprof_data_hdr;
-int init_pb_trace(struct trace_stream *stream, struct wpb_writer *writer, struct wprof_data_hdr *hdr);
+int init_pb_trace(struct wpb_writer *writer, struct wprof_data_hdr *hdr);
 
 struct hashmap;
 
