@@ -32,6 +32,8 @@ LIBDEMANGLE_SRC := $(abspath demangle/)
 LIBDEMANGLE_OBJ := $(abspath $(OUTPUT)/libdemangle_c.a)
 LIBWPB_SRC := $(abspath wpb/)
 LIBWPB_OBJ := $(abspath $(OUTPUT)/libwpb_c.a)
+LIBWRUST_SRC := $(abspath wrust/)
+LIBWRUST_OBJ := $(abspath $(OUTPUT)/libwrust_c.a)
 STROBELIGHT_LIBS_SRC := $(abspath ../strobelight-libs)
 ARCH ?= $(shell uname -m | sed 's/x86_64/x86/' \
 			 | sed 's/arm.*/arm/' \
@@ -148,6 +150,17 @@ $(LIBWPB_SRC)/target/release/libwpb_c.a: $(LIBWPB_DEPS) perfetto_trace.proto
 $(LIBWPB_OBJ): $(LIBWPB_SRC)/target/release/libwpb_c.a | $(OUTPUT)
 	$(Q)cp $< $@
 
+# Build common Rust interop lib (data structures, helpers)
+LIBWRUST_DEPS := $(wildcard $(LIBWRUST_SRC)/src/*.rs $(LIBWRUST_SRC)/*.rs)	\
+		 $(LIBWRUST_SRC)/Cargo.toml
+
+$(LIBWRUST_SRC)/target/release/libwrust_c.a: $(LIBWRUST_DEPS)
+	$(call msg,LIB,$@)
+	$(Q)cd $(LIBWRUST_SRC) && $(CARGO) build --release -q
+
+$(LIBWRUST_OBJ): $(LIBWRUST_SRC)/target/release/libwrust_c.a | $(OUTPUT)
+	$(Q)cp $< $@
+
 # Build BPF code
 $(OUTPUT)/%.bpf.o: %.bpf.c $(LIBBPF_OBJ) $(wildcard %.h) $(VMLINUX) | $(OUTPUT) $(BPFTOOL)
 	$(call msg,BPF,$@)
@@ -202,7 +215,7 @@ WPROF_HDRS := wprof.h utils.h env.h protobuf.h data.h emit.h stacktrace.h topolo
 	      wprof_types.h demangle.h merge.h wevent.h persist.h				\
 	      pystacks.h pyoffsets.h pydisc.h pysym.h pyline.h pytrace.h pytrace_data.h		\
 	      utrace_cfg.h utrace.h strs.h blobset.h ksyms.h bpf_utils.h hashmap.h	\
-	      wpb.h
+	      wpb.h wrust.h
 WPROF_OBJS := $(patsubst %.c,$(OUTPUT)/%.o,$(WPROF_SRCS))
 
 WPROFINJ_SRCS := inj_lib.c inj_strset.c inj_hashmap.c inj_cupti.c inj_pytrace.c inj_torch_profiler.c
@@ -241,7 +254,7 @@ $(OUTPUT)/json_schema_embed.o: ../JSON_SCHEMA.md
 wprof: $(WPROF_HDRS) $(WPROF_OBJS)								\
 		$(OUTPUT)/libwprofinj_embed.o							\
 		$(OUTPUT)/json_schema_embed.o							\
-		$(LIBBPF_OBJ) $(LIBBLAZESYM_OBJ) $(LIBDEMANGLE_OBJ) $(LIBWPB_OBJ) | $(OUTPUT)
+		$(LIBBPF_OBJ) $(LIBBLAZESYM_OBJ) $(LIBDEMANGLE_OBJ) $(LIBWPB_OBJ) $(LIBWRUST_OBJ) | $(OUTPUT)
 	$(call msg,BINARY,$@)
 	$(Q)$(CC) $(ALL_CFLAGS) $(filter %.c %.a %.o,$^) $(ALL_LDFLAGS) $(if $(STATIC),--static) -lelf -lz -lzstd -o $@
 
@@ -253,7 +266,7 @@ clean:
 .PHONY: clean-all
 clean-all: clean
 	$(call msg,CLEAN-ALL)
-	$(Q)rm -rf $(OUTPUT) $(LIBBLAZESYM_SRC)/target
+	$(Q)rm -rf $(OUTPUT) $(LIBBLAZESYM_SRC)/target $(LIBWRUST_SRC)/target
 
 # delete failed targets
 .DELETE_ON_ERROR:

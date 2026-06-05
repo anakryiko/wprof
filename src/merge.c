@@ -32,6 +32,7 @@
 #include "../libbpf/src/strset.h"
 #include "../libbpf/src/hashmap.h"
 #include "blobset.h"
+#include "wrust.h"
 
 static void init_data_header(struct wprof_data_hdr *hdr)
 {
@@ -813,45 +814,35 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 		}
 	}
 
-	/* Merge and convert events in timestamp order */
+	/*
+	 * Merge and convert events in timestamp order. Pick the next event with
+	 * a min priority queue over each stream's head, keyed by (timestamp,
+	 * stream index); the stream-index tie-break keeps the lowest-index
+	 * stream on equal timestamps, matching the original linear scan.
+	 */
 	struct wevent wevent_buf;
-	while (true) {
-		int widx = -1;
-		u64 ts = 0;
 
-		for (int i = 0; i < env.ringbuf_cnt; i++) {
-			const struct bpf_event_record *r = wmerges[i].next_rec;
-			if (!r)
-				continue;
-			/* find event with smallest timestamp */
-			if (widx < 0 || (s64)(r->e->ts - ts) < 0) {
-				widx = i;
-				ts = r->e->ts;
-			}
-		}
-		for (int i = 0; i < env.cuda_cnt; i++) {
-			const struct wcuda_event *r = wcudas[i].next_rec;
-			if (!r)
-				continue;
-			/* find event with smallest timestamp */
-			if (widx < 0 || (s64)(r->ts - ts) < 0) {
-				widx = env.ringbuf_cnt + i;
-				ts = r->ts;
-			}
-		}
-		for (int i = 0; i < wpytrace_cnt; i++) {
-			const struct wpytrace_event *r = wpytraces[i].next_rec;
-			if (!r)
-				continue;
-			/* timestamps already converted to ns in-place */
-			if (widx < 0 || (s64)(r->ts - ts) < 0) {
-				widx = env.ringbuf_cnt + env.cuda_cnt + i;
-				ts = r->ts;
-			}
-		}
+	int stream_cnt = env.ringbuf_cnt + env.cuda_cnt + wpytrace_cnt;
+	struct wpq *pq = wpq_new(stream_cnt);
 
-		if (widx < 0) /* we are done */
-			break;
+	for (int i = 0; i < env.ringbuf_cnt; i++) {
+		if (wmerges[i].next_rec)
+			wpq_push(pq, wmerges[i].next_rec->e->ts, i);
+	}
+	for (int i = 0; i < env.cuda_cnt; i++) {
+		if (wcudas[i].next_rec)
+			wpq_push(pq, wcudas[i].next_rec->ts, env.ringbuf_cnt + i);
+	}
+	for (int i = 0; i < wpytrace_cnt; i++) {
+		if (wpytraces[i].next_rec)
+			wpq_push(pq, wpytraces[i].next_rec->ts, env.ringbuf_cnt + env.cuda_cnt + i);
+	}
+
+	while (!wpq_empty(pq)) {
+		uint64_t top_ts;
+		uint32_t top_widx;
+		wpq_peek(pq, &top_ts, &top_widx);
+		int widx = top_widx;
 
 		int wevent_sz;
 		if (widx < env.ringbuf_cnt) {
@@ -866,6 +857,11 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 
 			wmerge->rec_idx++;
 			wmerge->next_rec = wmerge->rec_idx < wmerge->rec_cnt ? &wmerge->recs[wmerge->rec_idx] : NULL;
+
+			if (wmerge->next_rec)
+				wpq_replace_min(pq, wmerge->next_rec->e->ts, widx);
+			else
+				wpq_pop(pq);
 
 			/*
 			 * Some events (e.g., EV_CUDA_CALL) are "ephemeral": they are collected
@@ -893,6 +889,11 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 
 			wcuda->rec_idx++;
 			wcuda->next_rec = wcuda->rec_idx < wcuda->rec_cnt ? wcuda->recs[wcuda->rec_idx] : NULL;
+
+			if (wcuda->next_rec)
+				wpq_replace_min(pq, wcuda->next_rec->ts, widx);
+			else
+				wpq_pop(pq);
 		} else {
 			int pidx = widx - env.ringbuf_cnt - env.cuda_cnt;
 
@@ -911,6 +912,11 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 
 			wpf->rec_idx++;
 			wpf->next_rec = wpf->rec_idx < wpf->rec_cnt ? wpf->recs[wpf->rec_idx] : NULL;
+
+			if (wpf->next_rec)
+				wpq_replace_min(pq, wpf->next_rec->ts, widx);
+			else
+				wpq_pop(pq);
 
 			if (wevent_sz == 0)
 				continue;
@@ -939,6 +945,8 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 			return err;
 		}
 	}
+
+	wpq_free(pq);
 
 	/* Cleanup BPF ringbuf dumps */
 	for (int i = 0; i < env.ringbuf_cnt; i++) {
