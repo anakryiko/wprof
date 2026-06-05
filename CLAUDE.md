@@ -102,6 +102,7 @@ The build process automatically handles:
 - **libbpf**: Built from source in `../libbpf/src`
 - **bpftool**: Built from source for BPF skeleton generation
 - **blazesym**: Rust library built via Cargo, produces `libblazesym_c.a`
+- **libwrust**: In-tree common Rust interop library (`src/wrust/`), built via Cargo to `libwrust_c.a`; exposes Rust standard-library data structures and helpers to C over a stable C ABI (header `src/wrust.h`)
 - **BPF compilation**: Uses Clang with `-target bpf` for kernel programs
 - **Skeleton generation**: `bpftool gen skeleton` creates `wprof.skel.h` for BPF program loading
 
@@ -113,6 +114,7 @@ The build process automatically handles:
 - Ring buffer batching for efficient event delivery
 - Task and CPU state tracking via BPF maps
 - NUMA topology awareness for scheduling analysis
+- **Rust ↔ C interop goes in libwrust**: when C needs a Rust standard-library data structure or helper (e.g. the merge phase's priority queue), add it as a new module under `src/wrust/` and expose it via `#[no_mangle] extern "C"` functions with a matching section in `src/wrust.h` — don't spin up a separate single-purpose crate for it. (Domain-specific Rust libs like blazesym, the `wpb` protobuf shim, and `demangle` remain their own crates.)
 
 ### Coding Style
 
