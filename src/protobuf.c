@@ -17,9 +17,9 @@
 
 int wpb_stream_write(void *ctx, const uint8_t *buf, size_t count)
 {
-	struct trace_stream *stream = ctx;
+	FILE *file = ctx;
 
-	return fwrite(buf, 1, count, stream->file) == count ? 0 : -EIO;
+	return fwrite(buf, 1, count, file) == count ? 0 : -EIO;
 }
 
 static struct wpb_str wpb_cstr(const char *s)
@@ -32,53 +32,6 @@ static struct wpb_str wpb_cstr(const char *s)
 static struct wpb_str wpb_strn(const char *s, size_t len)
 {
 	return (struct wpb_str){ .s = s, .len = len };
-}
-
-static ssize_t wpb_emit_clock_snapshot_packet(struct wpb_writer *writer, uint64_t realtime_ts)
-{
-	ssize_t bytes_written = wpb_emit_clock_snapshot(writer, realtime_ts);
-
-	if (bytes_written < 0) {
-		eprintf("Failed to encode ClockSnapshot through Rust protobuf encoder: %zd\n", bytes_written);
-		exit(1);
-	}
-	return bytes_written;
-}
-
-static ssize_t wpb_emit_system_info_packet(struct wpb_writer *writer, const struct wpb_str *hostname,
-					   const struct wpb_str *kernel, const struct wpb_str *arch,
-					   uint32_t num_cpus)
-{
-	ssize_t bytes_written = wpb_emit_system_info(writer, hostname, kernel, arch, num_cpus);
-
-	if (bytes_written < 0) {
-		eprintf("Failed to encode SystemInfo through Rust protobuf encoder: %zd\n", bytes_written);
-		exit(1);
-	}
-	return bytes_written;
-}
-
-static ssize_t wpb_emit_trace_attributes_packet(struct wpb_writer *writer, const struct wpb_attr *attrs,
-						size_t attr_cnt)
-{
-	ssize_t bytes_written = wpb_emit_trace_attributes(writer, attrs, attr_cnt);
-
-	if (bytes_written < 0) {
-		eprintf("Failed to encode TraceAttributes through Rust protobuf encoder: %zd\n", bytes_written);
-		exit(1);
-	}
-	return bytes_written;
-}
-
-static ssize_t wpb_emit_trace_start_packet(struct wpb_writer *writer, const struct wpb_interned_data *data)
-{
-	ssize_t bytes_written = wpb_emit_trace_start(writer, data);
-
-	if (bytes_written < 0) {
-		eprintf("Failed to encode trace start through Rust protobuf encoder: %zd\n", bytes_written);
-		exit(1);
-	}
-	return bytes_written;
 }
 
 static const char *softirq_str_map[] = {
@@ -585,9 +538,9 @@ void append_callstack_frame_iid(struct pb_callstack_iids *iids, int iid, int fra
  * render absolute timestamps. env.sess_start_ts already accounts for a
  * --replay-start offset, so the mapping stays correct for replay sub-windows.
  */
-static void emit_clock_snapshot(struct trace_stream *stream, struct wpb_writer *writer)
+static void emit_clock_snapshot(struct wpb_writer *writer)
 {
-	stream->bytes_written += wpb_emit_clock_snapshot_packet(writer, ktime_to_realtime_ns(env.sess_start_ts));
+	wpb_emit_clock_snapshot(writer, ktime_to_realtime_ns(env.sess_start_ts));
 }
 
 /*
@@ -616,7 +569,7 @@ static const char *meta_lookup(struct wprof_data_hdr *hdr, const char *key)
  * here as they are emitted via SystemInfo (system_name / system_release /
  * system_machine) instead.
  */
-static void emit_metadata(struct trace_stream *stream, struct wpb_writer *writer, struct wprof_data_hdr *hdr)
+static void emit_metadata(struct wpb_writer *writer, struct wprof_data_hdr *hdr)
 {
 	const char *kernel = meta_lookup(hdr, "kernel");
 	const char *hostname = meta_lookup(hdr, "hostname");
@@ -631,7 +584,7 @@ static void emit_metadata(struct trace_stream *stream, struct wpb_writer *writer
 	 * hostname in `sysname` (normally the OS name) to surface it as
 	 * system_name in the UI Overview; `machine` carries the architecture.
 	 */
-	stream->bytes_written += wpb_emit_system_info_packet(writer, &hostname_str, &kernel_str, &arch_str, num_cpus);
+	wpb_emit_system_info(writer, &hostname_str, &kernel_str, &arch_str, num_cpus);
 
 	struct wpb_attr *attrs = calloc(hdr->extra_cnt + 1, sizeof(*attrs));
 	size_t attr_cnt = 0;
@@ -660,7 +613,7 @@ static void emit_metadata(struct trace_stream *stream, struct wpb_writer *writer
 		.val = wpb_cstr(ts),
 	};
 
-	stream->bytes_written += wpb_emit_trace_attributes_packet(writer, attrs, attr_cnt);
+	wpb_emit_trace_attributes(writer, attrs, attr_cnt);
 	free(attrs);
 }
 
@@ -676,10 +629,10 @@ static void wpb_fill_static_interns(struct wpb_intern *interns, int start_id, in
 	}
 }
 
-int init_pb_trace(struct trace_stream *stream, struct wpb_writer *writer, struct wprof_data_hdr *hdr)
+int init_pb_trace(struct wpb_writer *writer, struct wprof_data_hdr *hdr)
 {
-	emit_clock_snapshot(stream, writer);
-	emit_metadata(stream, writer, hdr);
+	emit_clock_snapshot(writer);
+	emit_metadata(writer, hdr);
 
 	/* emit fake instant event to establish strict zero timestamp */
 	struct wpb_intern cats[CAT_END_IID - CAT_START_IID];
@@ -698,7 +651,7 @@ int init_pb_trace(struct trace_stream *stream, struct wpb_writer *writer, struct
 		.debug_annotation_names = { .entries = ann_names, .cnt = ARRAY_SIZE(ann_names) },
 		.debug_annotation_string_values = { .entries = ann_values, .cnt = ARRAY_SIZE(ann_values) },
 	};
-	stream->bytes_written += wpb_emit_trace_start_packet(writer, &start_data);
+	wpb_emit_trace_start(writer, &start_data);
 
 	if (env.pb_debug_interns) {
 		struct { const char *name; int start, end; } ranges[] = {

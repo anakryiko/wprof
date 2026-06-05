@@ -67,7 +67,6 @@ struct task_state {
 
 static struct hashmap *tasks;
 static struct hashmap *emitted_descrs;
-static __thread struct trace_stream *cur_stream;
 
 static inline u64 clamp_ts(u64 ts)
 {
@@ -317,7 +316,6 @@ int init_emit(struct worker_state *w)
 	if (!emitted_descrs)
 		return -ENOMEM;
 
-	cur_stream = &w->stream;
 	cur_wpb_writer = w->wpb_writer;
 
 	return 0;
@@ -496,18 +494,7 @@ static void reset_pending_emit_state(void)
 	em.callstack_iid = 0;
 }
 
-static ssize_t wpb_emit_track_event_packet(const struct wpb_track_event *ev)
-{
-	ssize_t bytes_written = wpb_emit_track_event(cur_wpb_writer, ev);
-
-	if (bytes_written < 0) {
-		eprintf("Failed to encode TrackEvent through Rust protobuf encoder: %zd\n", bytes_written);
-		exit(1);
-	}
-	return bytes_written;
-}
-
-static ssize_t wpb_emit_track_descriptor_packet(struct wpb_track_descriptor *desc)
+static void wpb_emit_track_descriptor_with_interns(struct wpb_track_descriptor *desc)
 {
 	struct wpb_intern *interns = wpb_get_interns(em.str_iids.cnt);
 
@@ -516,36 +503,8 @@ static ssize_t wpb_emit_track_descriptor_packet(struct wpb_track_descriptor *des
 		.entries = interns,
 		.cnt = em.str_iids.cnt,
 	};
-	ssize_t bytes_written = wpb_emit_track_descriptor(cur_wpb_writer, desc);
-	if (bytes_written < 0) {
-		eprintf("Failed to encode TrackDescriptor through Rust protobuf encoder: %zd\n", bytes_written);
-		exit(1);
-	}
+	wpb_emit_track_descriptor(cur_wpb_writer, desc);
 	reset_pending_emit_state();
-	return bytes_written;
-}
-
-static ssize_t wpb_emit_interned_data_packet(const struct wpb_interned_data *data)
-{
-	ssize_t bytes_written = wpb_emit_interned_data(cur_wpb_writer, data);
-
-	if (bytes_written < 0) {
-		eprintf("Failed to encode InternedData through Rust protobuf encoder: %zd\n", bytes_written);
-		exit(1);
-	}
-	return bytes_written;
-}
-
-static ssize_t wpb_emit_ftrace_bundle_packet(struct wpb_writer *writer, uint32_t cpu,
-					     const struct wpb_ftrace_event *events, size_t event_cnt)
-{
-	ssize_t bytes_written = wpb_emit_ftrace_bundle(writer, cpu, events, event_cnt);
-
-	if (bytes_written < 0) {
-		eprintf("Failed to encode FtraceEventBundle through Rust protobuf encoder: %zd\n", bytes_written);
-		exit(1);
-	}
-	return bytes_written;
 }
 
 static void emit_cleanup(struct emit_rec *r)
@@ -564,7 +523,7 @@ static void emit_cleanup(struct emit_rec *r)
 	em.ev.intern_cnt = em.str_iids.cnt;
 	em.ev.callstack_iid = em.callstack_iid;
 
-	cur_stream->bytes_written += wpb_emit_track_event_packet(&em.ev);
+	wpb_emit_track_event(cur_wpb_writer, &em.ev);
 	reset_pending_emit_state();
 }
 
@@ -897,7 +856,7 @@ static bool kind_track_emitted[] = {
 	[TASK_KTHREAD] = false,
 };
 
-static void emit_kind_track_descr(struct trace_stream *stream, enum task_kind k)
+static void emit_kind_track_descr(enum task_kind k)
 {
 	u64 track_uuid = kind_track_uuid(k);
 	const char *track_name = kind_track_name(k);
@@ -914,10 +873,10 @@ static void emit_kind_track_descr(struct trace_stream *stream, enum task_kind k)
 		.sibling_order_rank = track_rank,
 		/* sibling_merge_behavior left as default (mergeable) */
 	};
-	stream->bytes_written += wpb_emit_track_descriptor_packet(&desc);
+	wpb_emit_track_descriptor_with_interns(&desc);
 }
 
-static void emit_track_descr_impl(struct trace_stream *stream, __u64 track_uuid, __u64 parent_track_uuid,
+static void emit_track_descr_impl(__u64 track_uuid, __u64 parent_track_uuid,
 				  const char *name, int rank,
 				  enum track_child_order child_order, enum track_merge_behavior merge)
 {
@@ -964,20 +923,20 @@ static void emit_track_descr_impl(struct trace_stream *stream, __u64 track_uuid,
 		.emit_disallow_merging_with_system_tracks = 1,
 		.disallow_merging_with_system_tracks = 0,
 	};
-	stream->bytes_written += wpb_emit_track_descriptor_packet(&desc);
+	wpb_emit_track_descriptor_with_interns(&desc);
 }
 
-static void emit_track_descr(struct trace_stream *stream, __u64 track_uuid, __u64 parent_track_uuid, const char *name, int rank)
+static void emit_track_descr(__u64 track_uuid, __u64 parent_track_uuid, const char *name, int rank)
 {
-	emit_track_descr_impl(stream, track_uuid, parent_track_uuid, name, rank, CHILD_ORDER_CHRONO, MERGE_DEFAULT);
+	emit_track_descr_impl(track_uuid, parent_track_uuid, name, rank, CHILD_ORDER_CHRONO, MERGE_DEFAULT);
 }
 
-static void emit_track_descr_explicit(struct trace_stream *stream, __u64 track_uuid, __u64 parent_track_uuid, const char *name, int rank)
+static void emit_track_descr_explicit(__u64 track_uuid, __u64 parent_track_uuid, const char *name, int rank)
 {
-	emit_track_descr_impl(stream, track_uuid, parent_track_uuid, name, rank, CHILD_ORDER_EXPLICIT, MERGE_DEFAULT);
+	emit_track_descr_impl(track_uuid, parent_track_uuid, name, rank, CHILD_ORDER_EXPLICIT, MERGE_DEFAULT);
 }
 
-static void emit_process_track_descr(struct trace_stream *stream, const struct wprof_task *t)
+static void emit_process_track_descr(const struct wprof_task *t)
 {
 	const char *pcomm;
 
@@ -992,10 +951,10 @@ static void emit_process_track_descr(struct trace_stream *stream, const struct w
 		.sibling_order_rank = track_process_rank(t),
 		/* sibling_merge_behavior left as default (mergeable) */
 	};
-	stream->bytes_written += wpb_emit_track_descriptor_packet(&desc);
+	wpb_emit_track_descriptor_with_interns(&desc);
 }
 
-static void emit_thread_track_descr(struct trace_stream *stream, const struct wprof_task *t, const char *comm)
+static void emit_thread_track_descr(const struct wprof_task *t, const char *comm)
 {
 	struct wpb_track_descriptor desc = {
 		.trusted_packet_sequence_id = WPB_SEQ_ID_THREADS,
@@ -1008,7 +967,7 @@ static void emit_thread_track_descr(struct trace_stream *stream, const struct wp
 		.sibling_order_rank = track_thread_rank(t),
 		/* sibling_merge_behavior left as default (mergeable) */
 	};
-	stream->bytes_written += wpb_emit_track_descriptor_packet(&desc);
+	wpb_emit_track_descriptor_with_interns(&desc);
 }
 
 static pb_iid emit_intern_str(struct worker_state *w, const char *s)
@@ -1023,7 +982,7 @@ static pb_iid emit_intern_str(struct worker_state *w, const char *s)
 	return iid;
 }
 
-static void emit_pmu_intern_names(struct worker_state *w, struct trace_stream *stream)
+static void emit_pmu_intern_names(struct worker_state *w)
 {
 	if (env.pmu_real_cnt + env.pmu_deriv_cnt == 0)
 		return;
@@ -1054,7 +1013,7 @@ static void emit_pmu_intern_names(struct worker_state *w, struct trace_stream *s
 		.debug_annotation_names = { .entries = interns, .cnt = iids.cnt },
 		.debug_annotation_string_values = { .entries = interns, .cnt = iids.cnt },
 	};
-	stream->bytes_written += wpb_emit_interned_data_packet(&data);
+	wpb_emit_interned_data(cur_wpb_writer, &data);
 
 	free(iids.iids);
 	free(iids.strs);
@@ -1165,19 +1124,19 @@ static void emit_track_descrs(struct worker_state *w, const struct wprof_task *t
 	if (tkind == TASK_NORMAL) {
 		if (!track_descr_emitted(TDK_PROCESS, t->pid)) {
 			track_descr_mark_emitted(TDK_PROCESS, t->pid);
-			emit_process_track_descr(&w->stream, t);
+			emit_process_track_descr(t);
 		}
 	} else if (!kind_track_emitted[tkind]) {
-		emit_kind_track_descr(&w->stream, tkind);
+		emit_kind_track_descr(tkind);
 		kind_track_emitted[tkind] = true;
 	}
 
 	int tdk = tkind == TASK_IDLE ? TDK_THREAD_IDLE : TDK_THREAD;
 	if (!track_descr_emitted(tdk, t->tid)) {
 		track_descr_mark_emitted(tdk, t->tid);
-		emit_thread_track_descr(&w->stream, t, t->comm);
+		emit_thread_track_descr(t, t->comm);
 		/* EXPLICIT ordering: children sorted by sibling_order_rank (= DTK kind) */
-		emit_track_descr_explicit(&w->stream, trackid_thread(t), trackid_thread_meta(t), t->comm, TK_THREAD);
+		emit_track_descr_explicit(trackid_thread(t), trackid_thread_meta(t), t->comm, TK_THREAD);
 	}
 }
 
@@ -1270,7 +1229,7 @@ static u64 ensure_timer_thread_track(const struct wprof_task *t)
 	struct track_state *s = track_state_get_or_add(DTK_TIMER, t->tid, 0);
 
 	if (!s->exists) {
-		emit_track_descr_impl(cur_stream, s->track_id, trackid_thread(t),
+		emit_track_descr_impl(s->track_id, trackid_thread(t),
 				      "TIMER", s->kind, CHILD_ORDER_CHRONO, MERGE_NONE);
 		s->exists = true;
 	}
@@ -1291,7 +1250,7 @@ static void emit_embed_callstack(struct worker_state *w, const struct wprof_task
 	struct track_state *s = track_state_get_or_add(DTK_TIMER_CALLSTACK, t->tid, 0);
 
 	if (!s->exists) {
-		emit_track_descr_impl(cur_stream, s->track_id, trackid_thread(t),
+		emit_track_descr_impl(s->track_id, trackid_thread(t),
 				      "TIMER CALLSTACKS", s->kind, CHILD_ORDER_CHRONO, MERGE_NONE);
 		s->exists = true;
 	}
@@ -1458,7 +1417,7 @@ static void flush_ftrace_bundle(struct worker_state *w, int cpu)
 	if (buf->cnt == 0)
 		return;
 
-	w->stream.bytes_written += wpb_emit_ftrace_bundle_packet(w->wpb_writer, cpu, buf->events, buf->cnt);
+	wpb_emit_ftrace_bundle(w->wpb_writer, cpu, buf->events, buf->cnt);
 
 	ftrace_buffer_reset(buf);
 }
@@ -2013,8 +1972,8 @@ static void emit_task_rename(struct worker_state *w, const struct wevent *e)
 		emit_kv_str(IID_ANNK_NEW_NAME, new_comm);
 	}
 
-	emit_thread_track_descr(&w->stream, &task, new_comm);
-	emit_track_descr(&w->stream, track, trackid_thread_meta(&task), new_comm, TK_THREAD);
+	emit_thread_track_descr(&task, new_comm);
+	emit_track_descr(track, trackid_thread_meta(&task), new_comm, TK_THREAD);
 }
 
 static void emit_task_rename_json(struct worker_state *w, const struct wevent *e)
@@ -2651,7 +2610,7 @@ static u64 ensure_process_reqs_track(const struct wprof_task *t)
 	struct track_state *s = track_state_get_or_add(DTK_PROC_REQS, t->pid, 0);
 
 	if (!s->exists) {
-		emit_track_descr(cur_stream, s->track_id, TRACK_UUID_REQUESTS,
+		emit_track_descr(s->track_id, TRACK_UUID_REQUESTS,
 				 sfmt("%s %u", t->pcomm, t->pid), 0);
 		s->exists = true;
 	}
@@ -2663,7 +2622,7 @@ static u64 ensure_req_track(const struct wprof_task *t, u64 req_id, const char *
 	struct track_state *s = track_state_get_or_add(DTK_REQ, t->pid, req_id);
 
 	if (!s->exists) {
-		emit_track_descr(cur_stream, s->track_id, trackid_process_reqs(t),
+		emit_track_descr(s->track_id, trackid_process_reqs(t),
 				 sfmt("REQ:%s (%llu)", req_name, req_id), 0);
 		s->exists = true;
 	}
@@ -2675,7 +2634,7 @@ static u64 ensure_req_thread_track(const struct wprof_task *t, u64 req_id, const
 	struct track_state *s = track_state_get_or_add(DTK_REQ_THREAD, t->tid, req_id);
 
 	if (!s->exists) {
-		emit_track_descr(cur_stream, s->track_id, trackid_req(req_id, t),
+		emit_track_descr(s->track_id, trackid_req(req_id, t),
 				 sfmt("%s %u", t->comm, t->tid), 0);
 		s->exists = true;
 	}
@@ -2687,7 +2646,7 @@ static u64 ensure_thread_req_track(const struct wprof_task *t)
 	struct track_state *s = track_state_get_or_add(DTK_REQ_THREAD_EMBED, t->tid, 0);
 
 	if (!s->exists) {
-		emit_track_descr_impl(cur_stream, s->track_id, trackid_thread(t),
+		emit_track_descr_impl(s->track_id, trackid_thread(t),
 				      "REQUESTS", s->kind, CHILD_ORDER_CHRONO, MERGE_NONE);
 		s->exists = true;
 	}
@@ -3038,7 +2997,7 @@ static u64 ensure_cuda_proc_track(int pid, const char *proc_name)
 	struct track_state *s = track_state_get_or_add(DTK_CUDA_PROC, pid, 0);
 
 	if (!s->exists) {
-		emit_track_descr(cur_stream, s->track_id, TRACK_UUID_CUDA,
+		emit_track_descr(s->track_id, TRACK_UUID_CUDA,
 				 sfmt("%s %d (CUDA)", proc_name, pid), 0);
 		s->exists = true;
 	}
@@ -3050,7 +3009,7 @@ static u64 ensure_cuda_proc_gpu_track(int pid, u32 gpu_id)
 	struct track_state *s = track_state_get_or_add(DTK_CUDA_PROC_GPU, pid, gpu_id);
 
 	if (!s->exists) {
-		emit_track_descr(cur_stream, s->track_id, TRACK_UUID_CUDA,
+		emit_track_descr(s->track_id, TRACK_UUID_CUDA,
 				 sfmt("GPU #%u", gpu_id), gpu_id + 1);
 		s->exists = true;
 	}
@@ -3063,7 +3022,7 @@ static u64 ensure_cuda_proc_stream_track(int pid, u32 gpu_id, u32 stream_id, con
 
 	if (!s->exists) {
 		struct track_state *gpu = track_state_find(DTK_CUDA_PROC_GPU, pid, gpu_id);
-		emit_track_descr(cur_stream, s->track_id, gpu->track_id,
+		emit_track_descr(s->track_id, gpu->track_id,
 				 sfmt("Stream #%u (%s %d)", stream_id, proc_name, pid), 0);
 		s->exists = true;
 	}
@@ -3075,7 +3034,7 @@ static u64 ensure_cuda_api_track(int tid, const char *comm)
 	struct track_state *s = track_state_get_or_add(DTK_THREAD_CUDA, tid, 0);
 
 	if (!s->exists) {
-		emit_track_descr_impl(cur_stream, s->track_id, TRACK_UUID(TK_THREAD, tid),
+		emit_track_descr_impl(s->track_id, TRACK_UUID(TK_THREAD, tid),
 				      "CUDA", s->kind, CHILD_ORDER_CHRONO, MERGE_NONE);
 		s->exists = true;
 	}
@@ -3628,7 +3587,7 @@ static u64 ensure_pytrace_thread_track(int tid, const char *comm)
 	u64 track_uuid = trackid_pytrace_thread(tid);
 
 	if (!s->exists) {
-		emit_track_descr_impl(cur_stream, track_uuid,
+		emit_track_descr_impl(track_uuid,
 				      TRACK_UUID(TK_THREAD, tid),
 				      comm, s->kind,
 				      CHILD_ORDER_CHRONO, MERGE_NONE);
@@ -3797,7 +3756,7 @@ static u64 ensure_utrace_thread_track(const struct wprof_task *t, u32 utrace_id)
 			name = utrace_probe_name(cfg);
 		}
 
-		emit_track_descr(cur_stream, s->track_id, trackid_thread(t), name, s->kind + utrace_id);
+		emit_track_descr(s->track_id, trackid_thread(t), name, s->kind + utrace_id);
 		s->exists = true;
 	}
 	return s->track_id;
@@ -4238,12 +4197,12 @@ int emit_trace(struct worker_state *w)
 		if (env.requested_stack_traces)
 			emit_stacks_json(w);
 	} else {
-		emit_pmu_intern_names(w, cur_stream);
+		emit_pmu_intern_names(w);
 
 		if (env.capture_requests)
-			emit_track_descr(cur_stream, TRACK_UUID_REQUESTS, 0, "REQUESTS", 1000);
+			emit_track_descr(TRACK_UUID_REQUESTS, 0, "REQUESTS", 1000);
 		if (env.capture_cuda)
-			emit_track_descr_explicit(cur_stream, TRACK_UUID_CUDA, 0, "CUDA", 2000);
+			emit_track_descr_explicit(TRACK_UUID_CUDA, 0, "CUDA", 2000);
 
 		if (env.requested_stack_traces) {
 			struct wstack_hdr *shdr = wstack_hdr(w->dump_hdr);

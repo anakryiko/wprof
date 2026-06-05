@@ -1925,8 +1925,7 @@ skip_data_collection:
 		}
 
 		if (!env.json_path) {
-			w->stream = (struct trace_stream){ .file = w->trace };
-			w->wpb_writer = wpb_writer_new(wpb_stream_write, &w->stream);
+			w->wpb_writer = wpb_writer_new(wpb_stream_write, w->trace);
 		}
 
 		err = init_emit(w);
@@ -1936,7 +1935,7 @@ skip_data_collection:
 		}
 
 		if (!env.json_path) {
-			if (init_pb_trace(&w->stream, w->wpb_writer, w->dump_hdr)) {
+			if (init_pb_trace(w->wpb_writer, w->dump_hdr)) {
 				err = -1;
 				eprintf("Failed to init protobuf!\n");
 				goto cleanup;

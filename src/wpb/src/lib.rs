@@ -195,7 +195,7 @@ impl WpbWriter {
         }
     }
 
-    fn emit_track_event(&mut self, ev: &WpbTrackEvent) -> Result<usize, c_int> {
+    fn emit_track_event(&mut self, ev: &WpbTrackEvent) -> Result<(), c_int> {
         let annots = checked_slice(ev.annots, ev.annot_cnt);
         let flow_ids = checked_slice(ev.flow_ids, ev.flow_cnt);
         let interns = checked_slice(ev.interns, ev.intern_cnt);
@@ -238,11 +238,11 @@ impl WpbWriter {
         res
     }
 
-    fn emit_packet(&mut self, packet: &TracePacket) -> Result<usize, c_int> {
+    fn emit_packet(&mut self, packet: &TracePacket) -> Result<(), c_int> {
         encode_and_write_packet(packet, &mut self.buf, self.write, self.ctx)
     }
 
-    fn emit_clock_snapshot(&mut self, realtime_ts: u64) -> Result<usize, c_int> {
+    fn emit_clock_snapshot(&mut self, realtime_ts: u64) -> Result<(), c_int> {
         let mut packet = base_packet(WPB_SEQ_ID_THREADS);
         packet.data = Some(trace_packet::Data::ClockSnapshot(ClockSnapshot {
             clocks: vec![
@@ -268,7 +268,7 @@ impl WpbWriter {
         kernel: Option<&WpbStr>,
         arch: Option<&WpbStr>,
         num_cpus: u32,
-    ) -> Result<usize, c_int> {
+    ) -> Result<(), c_int> {
         let mut packet = base_packet(WPB_SEQ_ID_THREADS);
         packet.data = Some(trace_packet::Data::SystemInfo(SystemInfo {
             utsname: Some(Utsname {
@@ -283,7 +283,7 @@ impl WpbWriter {
         self.emit_packet(&packet)
     }
 
-    fn emit_trace_attributes(&mut self, attrs: &[WpbAttr]) -> Result<usize, c_int> {
+    fn emit_trace_attributes(&mut self, attrs: &[WpbAttr]) -> Result<(), c_int> {
         let mut pb_attrs = Vec::with_capacity(attrs.len());
         for attr in attrs {
             pb_attrs.push(trace_attributes::Attribute {
@@ -299,7 +299,7 @@ impl WpbWriter {
         self.emit_packet(&packet)
     }
 
-    fn emit_interned_data(&mut self, src: &WpbInternedData) -> Result<usize, c_int> {
+    fn emit_interned_data(&mut self, src: &WpbInternedData) -> Result<(), c_int> {
         let mut interned_data = InternedData::default();
         fill_packet_interned_data(&mut interned_data, src);
 
@@ -309,7 +309,7 @@ impl WpbWriter {
         self.emit_packet(&packet)
     }
 
-    fn emit_trace_start(&mut self, src: &WpbInternedData) -> Result<usize, c_int> {
+    fn emit_trace_start(&mut self, src: &WpbInternedData) -> Result<(), c_int> {
         let mut interned_data = InternedData::default();
         fill_packet_interned_data(&mut interned_data, src);
 
@@ -325,7 +325,7 @@ impl WpbWriter {
         self.emit_packet(&packet)
     }
 
-    fn emit_track_descriptor(&mut self, desc: &WpbTrackDescriptor) -> Result<usize, c_int> {
+    fn emit_track_descriptor(&mut self, desc: &WpbTrackDescriptor) -> Result<(), c_int> {
         let mut td = TrackDescriptor {
             uuid: Some(desc.uuid),
             parent_uuid: (desc.parent_uuid != 0).then_some(desc.parent_uuid),
@@ -376,7 +376,7 @@ impl WpbWriter {
         self.emit_packet(&packet)
     }
 
-    fn emit_ftrace_bundle(&mut self, cpu: u32, events: &[WpbFtraceEvent]) -> Result<usize, c_int> {
+    fn emit_ftrace_bundle(&mut self, cpu: u32, events: &[WpbFtraceEvent]) -> Result<(), c_int> {
         let mut pb_events = Vec::with_capacity(events.len());
         for event in events {
             let event_data = match event.kind {
@@ -445,7 +445,7 @@ fn encode_and_write_packet(
     buf: &mut Vec<u8>,
     write: WriteFn,
     ctx: *mut c_void,
-) -> Result<usize, c_int> {
+) -> Result<(), c_int> {
     let packet_len = packet.encoded_len();
 
     buf.clear();
@@ -458,7 +458,7 @@ fn encode_and_write_packet(
 
     let ret = unsafe { write(ctx, buf.as_ptr(), buf.len()) };
     if ret == 0 {
-        Ok(buf.len())
+        Ok(())
     } else if ret < 0 {
         Err(ret)
     } else {
@@ -479,6 +479,11 @@ fn checked_slice<'a, T>(ptr: *const T, len: usize) -> &'a [T] {
 fn wpb_bug(msg: &str) -> ! {
     eprintln!("wprof protobuf encoder BUG: {msg}");
     std::process::abort();
+}
+
+fn wpb_emit_failed(packet: &str, err: c_int) -> ! {
+    eprintln!("Failed to encode {packet} through Rust protobuf encoder: {err}");
+    std::process::exit(1);
 }
 
 fn encoded_varint_len(mut val: u64) -> usize {
@@ -738,14 +743,13 @@ pub unsafe extern "C" fn wpb_writer_free(writer: *mut WpbWriter) {
 pub unsafe extern "C" fn wpb_emit_track_event(
     writer: *mut WpbWriter,
     ev: *const WpbTrackEvent,
-) -> isize {
+) {
     if writer.is_null() || ev.is_null() {
-        return (-EINVAL) as isize;
+        wpb_emit_failed("TrackEvent", -EINVAL);
     }
 
-    match (*writer).emit_track_event(&*ev) {
-        Ok(n) => n as isize,
-        Err(err) => err as isize,
+    if let Err(err) = (*writer).emit_track_event(&*ev) {
+        wpb_emit_failed("TrackEvent", err);
     }
 }
 
@@ -753,14 +757,13 @@ pub unsafe extern "C" fn wpb_emit_track_event(
 pub unsafe extern "C" fn wpb_emit_clock_snapshot(
     writer: *mut WpbWriter,
     realtime_ts: u64,
-) -> isize {
+) {
     if writer.is_null() {
-        return (-EINVAL) as isize;
+        wpb_emit_failed("ClockSnapshot", -EINVAL);
     }
 
-    match (*writer).emit_clock_snapshot(realtime_ts) {
-        Ok(n) => n as isize,
-        Err(err) => err as isize,
+    if let Err(err) = (*writer).emit_clock_snapshot(realtime_ts) {
+        wpb_emit_failed("ClockSnapshot", err);
     }
 }
 
@@ -771,14 +774,13 @@ pub unsafe extern "C" fn wpb_emit_system_info(
     kernel: *const WpbStr,
     arch: *const WpbStr,
     num_cpus: u32,
-) -> isize {
+) {
     if writer.is_null() {
-        return (-EINVAL) as isize;
+        wpb_emit_failed("SystemInfo", -EINVAL);
     }
 
-    match (*writer).emit_system_info(hostname.as_ref(), kernel.as_ref(), arch.as_ref(), num_cpus) {
-        Ok(n) => n as isize,
-        Err(err) => err as isize,
+    if let Err(err) = (*writer).emit_system_info(hostname.as_ref(), kernel.as_ref(), arch.as_ref(), num_cpus) {
+        wpb_emit_failed("SystemInfo", err);
     }
 }
 
@@ -787,16 +789,15 @@ pub unsafe extern "C" fn wpb_emit_trace_attributes(
     writer: *mut WpbWriter,
     attrs: *const WpbAttr,
     attr_cnt: usize,
-) -> isize {
+) {
     if writer.is_null() {
-        return (-EINVAL) as isize;
+        wpb_emit_failed("TraceAttributes", -EINVAL);
     }
 
     let attrs = checked_slice(attrs, attr_cnt);
 
-    match (*writer).emit_trace_attributes(attrs) {
-        Ok(n) => n as isize,
-        Err(err) => err as isize,
+    if let Err(err) = (*writer).emit_trace_attributes(attrs) {
+        wpb_emit_failed("TraceAttributes", err);
     }
 }
 
@@ -804,14 +805,13 @@ pub unsafe extern "C" fn wpb_emit_trace_attributes(
 pub unsafe extern "C" fn wpb_emit_interned_data(
     writer: *mut WpbWriter,
     data: *const WpbInternedData,
-) -> isize {
+) {
     if writer.is_null() || data.is_null() {
-        return (-EINVAL) as isize;
+        wpb_emit_failed("InternedData", -EINVAL);
     }
 
-    match (*writer).emit_interned_data(&*data) {
-        Ok(n) => n as isize,
-        Err(err) => err as isize,
+    if let Err(err) = (*writer).emit_interned_data(&*data) {
+        wpb_emit_failed("InternedData", err);
     }
 }
 
@@ -819,14 +819,13 @@ pub unsafe extern "C" fn wpb_emit_interned_data(
 pub unsafe extern "C" fn wpb_emit_trace_start(
     writer: *mut WpbWriter,
     data: *const WpbInternedData,
-) -> isize {
+) {
     if writer.is_null() || data.is_null() {
-        return (-EINVAL) as isize;
+        wpb_emit_failed("trace start", -EINVAL);
     }
 
-    match (*writer).emit_trace_start(&*data) {
-        Ok(n) => n as isize,
-        Err(err) => err as isize,
+    if let Err(err) = (*writer).emit_trace_start(&*data) {
+        wpb_emit_failed("trace start", err);
     }
 }
 
@@ -834,14 +833,13 @@ pub unsafe extern "C" fn wpb_emit_trace_start(
 pub unsafe extern "C" fn wpb_emit_track_descriptor(
     writer: *mut WpbWriter,
     desc: *const WpbTrackDescriptor,
-) -> isize {
+) {
     if writer.is_null() || desc.is_null() {
-        return (-EINVAL) as isize;
+        wpb_emit_failed("TrackDescriptor", -EINVAL);
     }
 
-    match (*writer).emit_track_descriptor(&*desc) {
-        Ok(n) => n as isize,
-        Err(err) => err as isize,
+    if let Err(err) = (*writer).emit_track_descriptor(&*desc) {
+        wpb_emit_failed("TrackDescriptor", err);
     }
 }
 
@@ -851,15 +849,14 @@ pub unsafe extern "C" fn wpb_emit_ftrace_bundle(
     cpu: u32,
     events: *const WpbFtraceEvent,
     event_cnt: usize,
-) -> isize {
+) {
     if writer.is_null() {
-        return (-EINVAL) as isize;
+        wpb_emit_failed("FtraceEventBundle", -EINVAL);
     }
 
     let events = checked_slice(events, event_cnt);
 
-    match (*writer).emit_ftrace_bundle(cpu, events) {
-        Ok(n) => n as isize,
-        Err(err) => err as isize,
+    if let Err(err) = (*writer).emit_ftrace_bundle(cpu, events) {
+        wpb_emit_failed("FtraceEventBundle", err);
     }
 }

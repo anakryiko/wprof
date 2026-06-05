@@ -260,7 +260,6 @@ struct worker_state {
 	struct str_iid_domain name_iids;
 
 	FILE *trace;
-	struct trace_stream stream;
 	struct wpb_writer *wpb_writer;
 
 	FILE *dump;
