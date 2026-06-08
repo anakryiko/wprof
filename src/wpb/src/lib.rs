@@ -6,6 +6,7 @@ use std::ptr;
 use std::slice;
 
 use prost::Message;
+use rustc_hash::FxHashMap;
 
 include!(concat!(env!("OUT_DIR"), "/perfetto.protos.rs"));
 
@@ -174,6 +175,20 @@ pub struct WpbFtraceEvent {
     target_cpu: i32,
 }
 
+/// Reusable scratch buffers for emit_ftrace_bundle, kept on the writer so they
+/// are allocated once and reused for every flushed bundle rather than per call.
+#[derive(Default)]
+struct FtraceScratch {
+    pb_events: Vec<FtraceEvent>,
+    intern_table: Vec<String>,
+    intern_map: FxHashMap<String, u32>,
+    sw_timestamp: Vec<u64>,
+    sw_prev_state: Vec<i64>,
+    sw_next_pid: Vec<i32>,
+    sw_next_prio: Vec<i32>,
+    sw_next_comm_index: Vec<u32>,
+}
+
 pub struct WpbWriter {
     write: WriteFn,
     ctx: *mut c_void,
@@ -181,6 +196,7 @@ pub struct WpbWriter {
     track_event: Option<Box<TrackEvent>>,
     interned_data: Option<InternedData>,
     buf: Vec<u8>,
+    ftrace: FtraceScratch,
 }
 
 impl WpbWriter {
@@ -192,6 +208,7 @@ impl WpbWriter {
             track_event: Some(Box::new(TrackEvent::default())),
             interned_data: Some(InternedData::default()),
             buf: Vec::with_capacity(4096),
+            ftrace: FtraceScratch::default(),
         }
     }
 
@@ -377,56 +394,123 @@ impl WpbWriter {
     }
 
     fn emit_ftrace_bundle(&mut self, cpu: u32, events: &[WpbFtraceEvent]) -> Result<(), c_int> {
-        let mut pb_events = Vec::with_capacity(events.len());
+        use std::mem::take;
+
+        // Per-bundle interned comm table; *_comm_index reference it by 0-based index.
+        fn intern(table: &mut Vec<String>, map: &mut FxHashMap<String, u32>, comm: Option<String>) -> u32 {
+            let comm = comm.unwrap_or_default();
+            if let Some(&i) = map.get(&comm) {
+                return i;
+            }
+            let i = table.len() as u32;
+            table.push(comm.clone());
+            map.insert(comm, i);
+            i
+        }
+
+        // Reuse buffers across bundles: take the scratch off the writer, clear
+        // (keeps capacity), refill, then reclaim them after encoding.
+        let mut scr = take(&mut self.ftrace);
+        scr.pb_events.clear();
+        scr.intern_table.clear();
+        scr.intern_map.clear();
+        scr.sw_timestamp.clear();
+        scr.sw_prev_state.clear();
+        scr.sw_next_pid.clear();
+        scr.sw_next_prio.clear();
+        scr.sw_next_comm_index.clear();
+
+        // sched_switch is encoded compactly (structure-of-arrays + interned
+        // next_comm + delta timestamps). sched_waking / sched_wakeup_new stay as
+        // verbose FtraceEvents in the same bundle.
+        let mut prev_ts: u64 = 0;
         for event in events {
-            let event_data = match event.kind {
+            match event.kind {
                 WPB_FTRACE_SCHED_SWITCH => {
-                    ftrace_event::Event::SchedSwitch(SchedSwitchFtraceEvent {
-                        prev_comm: read_string(&event.prev_comm),
-                        prev_pid: Some(event.prev_pid),
-                        prev_prio: Some(event.prev_prio),
-                        prev_state: Some(event.prev_state),
-                        next_comm: read_string(&event.next_comm),
-                        next_pid: Some(event.next_pid),
-                        next_prio: Some(event.next_prio),
-                    })
+                    // Switches are produced in timestamp order (emitted at e->ts
+                    // into the e->cpu bundle), so deltas are non-negative.
+                    let ts = event.timestamp;
+                    debug_assert!(ts >= prev_ts, "sched_switch timestamps not ordered within bundle");
+                    let delta = if scr.sw_timestamp.is_empty() { ts } else { ts - prev_ts };
+                    prev_ts = ts;
+                    scr.sw_timestamp.push(delta);
+                    scr.sw_prev_state.push(event.prev_state);
+                    scr.sw_next_pid.push(event.next_pid);
+                    scr.sw_next_prio.push(event.next_prio);
+                    let idx = intern(&mut scr.intern_table, &mut scr.intern_map,
+                                     read_string(&event.next_comm));
+                    scr.sw_next_comm_index.push(idx);
                 }
                 WPB_FTRACE_SCHED_WAKING => {
-                    ftrace_event::Event::SchedWaking(SchedWakingFtraceEvent {
-                        comm: read_string(&event.comm),
-                        pid: Some(event.event_pid),
-                        prio: Some(event.prio),
-                        target_cpu: Some(event.target_cpu),
-                        ..SchedWakingFtraceEvent::default()
-                    })
+                    scr.pb_events.push(FtraceEvent {
+                        timestamp: Some(event.timestamp),
+                        pid: Some(event.pid),
+                        event: Some(ftrace_event::Event::SchedWaking(SchedWakingFtraceEvent {
+                            comm: read_string(&event.comm),
+                            pid: Some(event.event_pid),
+                            prio: Some(event.prio),
+                            target_cpu: Some(event.target_cpu),
+                            ..SchedWakingFtraceEvent::default()
+                        })),
+                        ..FtraceEvent::default()
+                    });
                 }
                 WPB_FTRACE_SCHED_WAKEUP_NEW => {
-                    ftrace_event::Event::SchedWakeupNew(SchedWakeupNewFtraceEvent {
-                        comm: read_string(&event.comm),
-                        pid: Some(event.event_pid),
-                        prio: Some(event.prio),
-                        target_cpu: Some(event.target_cpu),
-                        ..SchedWakeupNewFtraceEvent::default()
-                    })
+                    scr.pb_events.push(FtraceEvent {
+                        timestamp: Some(event.timestamp),
+                        pid: Some(event.pid),
+                        event: Some(ftrace_event::Event::SchedWakeupNew(SchedWakeupNewFtraceEvent {
+                            comm: read_string(&event.comm),
+                            pid: Some(event.event_pid),
+                            prio: Some(event.prio),
+                            target_cpu: Some(event.target_cpu),
+                            ..SchedWakeupNewFtraceEvent::default()
+                        })),
+                        ..FtraceEvent::default()
+                    });
                 }
                 _ => wpb_bug("unsupported ftrace event kind"),
-            };
-
-            pb_events.push(FtraceEvent {
-                timestamp: Some(event.timestamp),
-                pid: Some(event.pid),
-                event: Some(event_data),
-                ..FtraceEvent::default()
-            });
+            }
         }
+
+        // Move buffers into the packet for encoding (reclaimed afterwards).
+        let compact_sched = if scr.sw_timestamp.is_empty() {
+            None
+        } else {
+            Some(ftrace_event_bundle::CompactSched {
+                intern_table: take(&mut scr.intern_table),
+                switch_timestamp: take(&mut scr.sw_timestamp),
+                switch_prev_state: take(&mut scr.sw_prev_state),
+                switch_next_pid: take(&mut scr.sw_next_pid),
+                switch_next_prio: take(&mut scr.sw_next_prio),
+                switch_next_comm_index: take(&mut scr.sw_next_comm_index),
+                ..ftrace_event_bundle::CompactSched::default()
+            })
+        };
 
         let mut packet = base_packet(WPB_SEQ_ID_THREADS);
         packet.data = Some(trace_packet::Data::FtraceEvents(FtraceEventBundle {
             cpu: Some(cpu),
-            event: pb_events,
+            event: take(&mut scr.pb_events),
+            compact_sched,
             ..FtraceEventBundle::default()
         }));
-        self.emit_packet(&packet)
+        let res = self.emit_packet(&packet);
+
+        // Reclaim buffers (capacity intact) back into the scratch for next time.
+        if let Some(trace_packet::Data::FtraceEvents(b)) = &mut packet.data {
+            scr.pb_events = take(&mut b.event);
+            if let Some(cs) = &mut b.compact_sched {
+                scr.intern_table = take(&mut cs.intern_table);
+                scr.sw_timestamp = take(&mut cs.switch_timestamp);
+                scr.sw_prev_state = take(&mut cs.switch_prev_state);
+                scr.sw_next_pid = take(&mut cs.switch_next_pid);
+                scr.sw_next_prio = take(&mut cs.switch_next_prio);
+                scr.sw_next_comm_index = take(&mut cs.switch_next_comm_index);
+            }
+        }
+        self.ftrace = scr;
+        res
     }
 
     fn restore_packet_state(&mut self) {
