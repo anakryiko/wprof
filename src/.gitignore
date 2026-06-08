@@ -19,3 +19,6 @@
 /demangle/target
 /wpb/target
 /wrust/target
+
+# local investigation/scratch dirs (never commit)
+/.investigate-*
