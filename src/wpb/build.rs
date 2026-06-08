@@ -69,7 +69,7 @@ const KEEP_FIELDS: &[(&str, &[&str])] = &[
         "FtraceEvent",
         &["timestamp", "pid", "sched_switch", "sched_waking", "sched_wakeup_new"],
     ),
-    ("FtraceEventBundle", &["cpu", "event"]),
+    ("FtraceEventBundle", &["cpu", "event", "compact_sched"]),
 ];
 
 /// Top-level message(s) wprof actually constructs. Everything else is kept only

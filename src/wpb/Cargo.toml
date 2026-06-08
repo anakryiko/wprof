@@ -9,6 +9,7 @@ crate-type = ["staticlib"]
 
 [dependencies]
 prost = "0.14"
+rustc-hash = "2"
 
 [build-dependencies]
 prost-build = "0.14"
