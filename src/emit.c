@@ -45,6 +45,28 @@ enum track_merge_behavior {
 	MERGE_BY_KEY,
 };
 
+/*
+ * Deferred-emit state for one PyTorch RecordFunction slice. RecordFunction
+ * slices share the Python (pytrace) thread track, but their C++ lifetimes do
+ * not nest with the Python frames that create/destroy them: a
+ * `with record_function()` is born deep inside __enter__ and dies deep inside
+ * __exit__, so a naive begin/end straddles the surrounding pytrace frames and
+ * Perfetto closes it early. We therefore defer each RF and re-anchor its
+ * begin/end to the pytrace depth it actually brackets (see emit_pytorch_event).
+ */
+enum uscope_state {
+	USCOPE_PENDING_ENTRY_EMIT,	/* begin not emitted yet (still re-parentable) */
+	USCOPE_PENDING_EXIT_EVENT,	/* begin emitted, open, awaiting the pytorch exit */
+	USCOPE_PENDING_EXIT_EMIT,	/* exit seen, end deferred until depth restores */
+};
+
+struct uscope_entry {
+	const struct wevent *entry;	/* stable mmap ptr: name + create ts */
+	u64 ts;				/* begin ts: create ts, or last violating-exit ts */
+	int depth;			/* settled pytrace depth it brackets */
+	enum uscope_state state;
+};
+
 struct task_state {
 	int tid, pid;
 	pb_iid name_iid;
@@ -63,6 +85,10 @@ struct task_state {
 	const u64 *oncpu_ctrs;
 	u64 compound_delay_ns; /* scheduling/running delay, including dependency tasks' ones */
 	u64 compound_chain_len; /* length of continuous waker-wakee chain */
+	/* PyTorch RecordFunction deferred-nesting state */
+	int pytrace_depth;
+	struct uscope_entry *uscope;
+	int uscope_cnt, uscope_cap;
 };
 
 static struct hashmap *tasks;
@@ -3596,10 +3622,40 @@ static u64 ensure_pytrace_thread_track(int tid, const char *comm)
 	return track_uuid;
 }
 
+static struct uscope_entry *uscope_push(struct task_state *st)
+{
+	if (st->uscope_cnt == st->uscope_cap) {
+		st->uscope_cap = st->uscope_cap ? st->uscope_cap * 2 : 16;
+		st->uscope = realloc(st->uscope, st->uscope_cap * sizeof(*st->uscope));
+	}
+	return &st->uscope[st->uscope_cnt++];
+}
+
+static void uscope_emit_begin(struct worker_state *w, struct uscope_entry *u)
+{
+	const struct wevent *e = u->entry;
+	struct wprof_data_hdr *hdr = w->dump_hdr;
+	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
+	u64 track_uuid = ensure_pytrace_thread_track(task.tid, task.comm);
+	const char *name = e->rf.name_stroff ? wevent_str(hdr, e->rf.name_stroff) : "?";
+	pb_iid name_iid = emit_intern_str(w, name);
+
+	emit_slice_begin(track_uuid, u->ts, iid_str(name_iid, name), IID_CAT_PYTRACE);
+}
+
+static void uscope_emit_end(struct worker_state *w, const struct uscope_entry *u, u64 ts)
+{
+	struct wprof_task task = wevent_resolve_task(w->dump_hdr, u->entry->task_id);
+	u64 track_uuid = ensure_pytrace_thread_track(task.tid, task.comm);
+
+	emit_slice_end(track_uuid, ts, "", IID_CAT_PYTRACE);
+}
+
 static void emit_pytrace_event(struct worker_state *w, const struct wevent *e)
 {
 	struct wprof_data_hdr *hdr = w->dump_hdr;
 	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
+	struct task_state *st = task_state(w, &task);
 
 	u64 track_uuid = ensure_pytrace_thread_track(task.tid, task.comm);
 
@@ -3612,14 +3668,53 @@ static void emit_pytrace_event(struct worker_state *w, const struct wevent *e)
 	pb_iid name_iid = emit_intern_str(w, display_name);
 
 	if (e->kind == EV_PYTRACE_ENTRY) {
+		/*
+		 * This Python frame is about to nest; first make visible any
+		 * RecordFunctions whose begin we deferred, so the frame lands
+		 * under them (outermost first).
+		 */
+		for (int i = 0; i < st->uscope_cnt; i++) {
+			struct uscope_entry *u = &st->uscope[i];
+			if (u->state == USCOPE_PENDING_ENTRY_EMIT) {
+				uscope_emit_begin(w, u);
+				u->state = USCOPE_PENDING_EXIT_EVENT;
+			}
+		}
 		emit_slice_begin(track_uuid, e->ts, iid_str(name_iid, display_name), IID_CAT_PYTRACE) {
 			if (file)
 				emit_kv_str(IID_ANNK_PYTRACE_FILE, file);
 			if (e->pytrace.lineno)
 				emit_kv_int(IID_ANNK_PYTRACE_LINENO, e->pytrace.lineno);
 		}
+		st->pytrace_depth++;
 	} else {
 		emit_slice_end(track_uuid, e->ts, iid_str(name_iid, display_name), IID_CAT_PYTRACE);
+		st->pytrace_depth--;
+
+		/*
+		 * This exit may un-nest a not-yet-emitted RecordFunction (its
+		 * creating __enter__/op-call frames returning): float such RFs up
+		 * to the restored depth and back-date their start to this exit, so
+		 * they begin where the `with` body actually begins.
+		 */
+		for (int i = 0; i < st->uscope_cnt; i++) {
+			struct uscope_entry *u = &st->uscope[i];
+			if (u->state == USCOPE_PENDING_ENTRY_EMIT && u->depth > st->pytrace_depth) {
+				u->depth = st->pytrace_depth;
+				u->ts = e->ts;
+			}
+		}
+		/*
+		 * Flush RFs whose exit already fired once their bracketed depth is
+		 * restored (innermost first).
+		 */
+		while (st->uscope_cnt > 0) {
+			struct uscope_entry *u = &st->uscope[st->uscope_cnt - 1];
+			if (u->state != USCOPE_PENDING_EXIT_EMIT || u->depth < st->pytrace_depth)
+				break;
+			uscope_emit_end(w, u, e->ts);
+			st->uscope_cnt--;
+		}
 	}
 }
 
@@ -3667,19 +3762,42 @@ static int process_pytrace(struct worker_state *w, const struct wevent *e)
 
 static void emit_pytorch_event(struct worker_state *w, const struct wevent *e)
 {
-	struct wprof_data_hdr *hdr = w->dump_hdr;
-	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
-
-	u64 track_uuid = ensure_pytrace_thread_track(task.tid, task.comm);
-
-	const char *name = e->rf.name_stroff ? wevent_str(hdr, e->rf.name_stroff) : "?";
-	pb_iid name_iid = emit_intern_str(w, name);
-
+	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
+	struct task_state *st = task_state(w, &task);
 
 	if (e->kind == EV_PYTORCH_ENTRY) {
-		emit_slice_begin(track_uuid, e->ts, iid_str(name_iid, name), IID_CAT_PYTRACE);
+		/*
+		 * Defer the begin: a RecordFunction is born deep inside the
+		 * `with record_function()` machinery, but its real scope is the
+		 * body that runs after those frames return. Settle its depth and
+		 * start lazily (see emit_pytrace_event).
+		 */
+		struct uscope_entry *u = uscope_push(st);
+		*u = (struct uscope_entry){
+			.entry = e,
+			.ts = e->ts,
+			.depth = st->pytrace_depth,
+			.state = USCOPE_PENDING_ENTRY_EMIT,
+		};
 	} else {
-		emit_slice_end(track_uuid, e->ts, iid_str(name_iid, name), IID_CAT_PYTRACE);
+		if (st->uscope_cnt == 0)
+			return; /* exit for an RF that entered on another thread */
+
+		struct uscope_entry *u = &st->uscope[st->uscope_cnt - 1];
+		if (u->state == USCOPE_PENDING_ENTRY_EMIT)
+			uscope_emit_begin(w, u); /* leaf RF: begin before end */
+
+		if (st->pytrace_depth <= u->depth) {
+			/* nothing deeper open (RAII op, or depth already restored) */
+			uscope_emit_end(w, u, e->ts);
+			st->uscope_cnt--;
+		} else {
+			/*
+			 * deeper Python frames still open (the __exit__ teardown):
+			 * defer the end until they unwind back to our depth.
+			 */
+			u->state = USCOPE_PENDING_EXIT_EMIT;
+		}
 	}
 }
 
