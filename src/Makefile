@@ -139,22 +139,16 @@ $(LIBDEMANGLE_SRC)/target/release/libdemangle_c.a::
 $(LIBDEMANGLE_OBJ): $(LIBDEMANGLE_SRC)/target/release/libdemangle_c.a | $(OUTPUT)
 	$(Q)cp $< $@
 
-# Build protobuf encoder shim
-LIBWPB_DEPS := $(wildcard $(LIBWPB_SRC)/src/*.rs $(LIBWPB_SRC)/*.rs)	\
-	       $(LIBWPB_SRC)/Cargo.toml $(LIBWPB_SRC)/Cargo.lock
-
-$(LIBWPB_SRC)/target/release/libwpb_c.a: $(LIBWPB_DEPS) perfetto_trace.proto
+# Build protobuf encoder shim (cargo always runs: it tracks sources and rustc)
+$(LIBWPB_SRC)/target/release/libwpb_c.a::
 	$(call msg,LIB,$@)
 	$(Q)cd $(LIBWPB_SRC) && $(CARGO) build --release -q
 
 $(LIBWPB_OBJ): $(LIBWPB_SRC)/target/release/libwpb_c.a | $(OUTPUT)
 	$(Q)cp $< $@
 
-# Build common Rust interop lib (data structures, helpers)
-LIBWRUST_DEPS := $(wildcard $(LIBWRUST_SRC)/src/*.rs $(LIBWRUST_SRC)/*.rs)	\
-		 $(LIBWRUST_SRC)/Cargo.toml
-
-$(LIBWRUST_SRC)/target/release/libwrust_c.a: $(LIBWRUST_DEPS)
+# Build common Rust interop lib (cargo always runs: it tracks sources and rustc)
+$(LIBWRUST_SRC)/target/release/libwrust_c.a::
 	$(call msg,LIB,$@)
 	$(Q)cd $(LIBWRUST_SRC) && $(CARGO) build --release -q
 
@@ -261,12 +255,13 @@ wprof: $(WPROF_HDRS) $(WPROF_OBJS)								\
 .PHONY: clean
 clean:
 	$(call msg,CLEAN)
-	$(Q)rm -rf $(OUTPUT)/*.o $(OUTPUT)/libwprofinj.* wprof
+	$(Q)rm -rf $(OUTPUT)/*.o $(OUTPUT)/libwprofinj.* wprof $(LIBWPB_OBJ) $(LIBWRUST_OBJ) \
+		$(LIBWPB_SRC)/target $(LIBWRUST_SRC)/target
 
 .PHONY: clean-all
 clean-all: clean
 	$(call msg,CLEAN-ALL)
-	$(Q)rm -rf $(OUTPUT) $(LIBBLAZESYM_SRC)/target $(LIBWRUST_SRC)/target
+	$(Q)rm -rf $(OUTPUT) $(LIBBLAZESYM_SRC)/target $(LIBDEMANGLE_SRC)/target
 
 # delete failed targets
 .DELETE_ON_ERROR:
