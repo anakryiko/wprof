@@ -3640,7 +3640,7 @@ static void uscope_emit_begin(struct worker_state *w, struct uscope_entry *u)
 	const char *name = e->rf.name_stroff ? wevent_str(hdr, e->rf.name_stroff) : "?";
 	pb_iid name_iid = emit_intern_str(w, name);
 
-	emit_slice_begin(track_uuid, u->ts, iid_str(name_iid, name), IID_CAT_PYTRACE);
+	emit_slice_begin(track_uuid, u->ts, iid_str(name_iid, name), IID_CAT_PYTORCH);
 }
 
 static void uscope_emit_end(struct worker_state *w, const struct uscope_entry *u, u64 ts)
@@ -3648,7 +3648,7 @@ static void uscope_emit_end(struct worker_state *w, const struct uscope_entry *u
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, u->entry->task_id);
 	u64 track_uuid = ensure_pytrace_thread_track(task.tid, task.comm);
 
-	emit_slice_end(track_uuid, ts, "", IID_CAT_PYTRACE);
+	emit_slice_end(track_uuid, ts, "", IID_CAT_PYTORCH);
 }
 
 static void emit_pytrace_event(struct worker_state *w, const struct wevent *e)
