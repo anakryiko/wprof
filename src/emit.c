@@ -3688,8 +3688,19 @@ static void emit_pytrace_event(struct worker_state *w, const struct wevent *e)
 		}
 		st->pytrace_depth++;
 	} else {
+		if (st->pytrace_depth == 0) {
+			/* synthetic start for a frame that began before the recording session */
+			emit_slice_begin(track_uuid, env.sess_start_ts, iid_str(name_iid, display_name), IID_CAT_PYTRACE) {
+				if (file)
+					emit_kv_str(IID_ANNK_PYTRACE_FILE, file);
+				if (e->pytrace.lineno)
+					emit_kv_int(IID_ANNK_PYTRACE_LINENO, e->pytrace.lineno);
+			}
+		}
+
 		emit_slice_end(track_uuid, e->ts, iid_str(name_iid, display_name), IID_CAT_PYTRACE);
-		st->pytrace_depth--;
+		if (st->pytrace_depth > 0)
+			st->pytrace_depth--;
 
 		/*
 		 * This exit may un-nest a not-yet-emitted RecordFunction (its
@@ -3780,8 +3791,20 @@ static void emit_pytorch_event(struct worker_state *w, const struct wevent *e)
 			.state = USCOPE_PENDING_ENTRY_EMIT,
 		};
 	} else {
-		if (st->uscope_cnt == 0)
-			return; /* exit for an RF that entered on another thread */
+		if (st->uscope_cnt == 0) {
+			/*
+			 * RecordFunction start can fire on a different thread than
+			 * end (async ops); we don't support that yet and assume the
+			 * RF began before the recording session: synthetic start.
+			 */
+			struct uscope_entry *fake = uscope_push(st);
+			*fake = (struct uscope_entry){
+				.entry = e,
+				.ts = env.sess_start_ts,
+				.depth = st->pytrace_depth,
+				.state = USCOPE_PENDING_ENTRY_EMIT,
+			};
+		}
 
 		struct uscope_entry *u = &st->uscope[st->uscope_cnt - 1];
 		if (u->state == USCOPE_PENDING_ENTRY_EMIT)
