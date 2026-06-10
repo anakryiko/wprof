@@ -12,7 +12,7 @@
 
 #include "strobelight/bpf_lib/python/include/structs.h"
 
-int pystacks_read_stacks(struct pt_regs *ctx, struct task_struct *task,
+int pystacks_read_stacks(void *bpf_ctx, struct task_struct *task,
 			 struct pystacks_message *py_msg_buffer);
 
 /* per-CPU scratch buffer for receiving pystacks data */
@@ -567,7 +567,7 @@ static int emit_pystacks(struct pystacks_message *pymsg, int py_sz, struct bpf_d
 	return bpf_dynptr_write(dptr, offset, pymsg, py_sz, 0);
 }
 
-static struct pystacks_message *capture_pystack(struct task_struct *task, int *py_sz)
+static struct pystacks_message *capture_pystack(void *ctx, struct task_struct *task, int *py_sz)
 {
 	int key = 0;
 	struct pystacks_message *pymsg = bpf_map_lookup_elem(&wprof_pymsg_heap, &key);
@@ -576,8 +576,7 @@ static struct pystacks_message *capture_pystack(struct task_struct *task, int *p
 		return NULL;
 	}
 
-	struct pt_regs *regs = (struct pt_regs *)bpf_task_pt_regs(task);
-	*py_sz = pystacks_read_stacks(regs, task, pymsg);
+	*py_sz = pystacks_read_stacks(ctx, task, pymsg);
 	if (*py_sz > 0)
 		(void)inc_stat(pystacks_found);
 	return pymsg;
@@ -620,7 +619,7 @@ int wprof_timer_tick(void *ctx)
 	int py_sz = 0;
 	if (capture_pystacks) {
 		(void)inc_stat(pystacks_attempted);
-		pymsg = capture_pystack(cur, &py_sz);
+		pymsg = capture_pystack(ctx, cur, &py_sz);
 	}
 
 	emit_task_event_dyn(e, dptr, fix_sz, tr_sz + py_sz, EV_TIMER, now_ts, cur) {
@@ -695,7 +694,7 @@ int BPF_PROG(wprof_task_switch,
 	int py_sz = 0;
 	if (capture_pystacks) {
 		(void)inc_stat(pystacks_attempted);
-		pymsg = capture_pystack(prev, &py_sz);
+		pymsg = capture_pystack(ctx, prev, &py_sz);
 	}
 
 	int scx_layer_id = -1;
