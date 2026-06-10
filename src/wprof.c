@@ -143,9 +143,11 @@ const char *extra_param_str(struct wprof_data_hdr *hdr, const struct wprof_extra
 }
 
 static volatile bool exiting;
+static volatile sig_atomic_t session_complete;
 
 static void sig_timer(int sig)
 {
+	session_complete = 1;
 	exiting = true;
 }
 
@@ -1836,6 +1838,19 @@ int main(int argc, char **argv)
 	if (err) {
 		eprintf("Failed during collecting BPF-generated data: %d\n", err);
 		goto cleanup;
+	}
+
+	/*
+	 * If the session was cut short (signal) rather than reaching its planned
+	 * end, clamp the recorded window to now. This is the point past which the
+	 * various data sources (BPF ringbufs, CUDA/pytrace tracee dumps) are torn
+	 * down at staggered times and can no longer be considered mutually
+	 * consistent. The duration timer (sig_timer) marks the planned end, which
+	 * already carries the correct session end.
+	 */
+	if (!session_complete) {
+		env.sess_end_ts = ktime_now_ns();
+		env.duration_ns = env.sess_end_ts - env.sess_start_ts;
 	}
 
 	wprintf("Stopping...\n");
