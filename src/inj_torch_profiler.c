@@ -464,7 +464,7 @@ static int init_torch_data(FILE *dump)
 
 /* ==================== Public API ==================== */
 
-int torch_profiler_setup(int dump_fd, unsigned long *sym_addrs, int sym_addr_cnt)
+int pytorch_session_setup(int pytorch_dump_fd, unsigned long *sym_addrs, int sym_addr_cnt)
 {
 	int err = 0;
 
@@ -491,10 +491,10 @@ int torch_profiler_setup(int dump_fd, unsigned long *sym_addrs, int sym_addr_cnt
 		return -ENOMEM;
 	}
 
-	torch_dump = fdopen(dump_fd, "w");
+	torch_dump = fdopen(pytorch_dump_fd, "w");
 	if (!torch_dump) {
 		err = -errno;
-		elog("Failed to create FILE wrapper around torch dump FD %d: %d\n", dump_fd, err);
+		elog("Failed to create FILE wrapper around torch dump FD %d: %d\n", pytorch_dump_fd, err);
 		goto cleanup;
 	}
 	setvbuf(torch_dump, NULL, _IOFBF, TORCH_DUMP_BUF_SZ);
@@ -521,12 +521,12 @@ cleanup:
 		fclose(torch_dump);
 		torch_dump = NULL;
 	} else {
-		zclose(dump_fd);
+		zclose(pytorch_dump_fd);
 	}
 	return err;
 }
 
-int torch_profiler_teardown(void)
+int pytorch_session_finalize(void)
 {
 	int err = 0;
 

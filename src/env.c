@@ -464,13 +464,13 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		} else if (strcasecmp(arg, "py-trace") == 0) {
 			env.pytrace_discovery = (val == TRUE) ? PYTRACE_DISCOVER_PROC : PYTRACE_DISCOVER_NONE;
 			env.capture_pytrace = val;
-			if (val == FALSE)
-				env.capture_pytorch = FALSE;
 		} else if (strcasecmp(arg, "py-trace=nvidia-smi") == 0 || strcasecmp(arg, "py-trace=nv-smi") == 0) {
-			env.pytrace_discovery = (val == TRUE) ? PYTRACE_DISCOVER_NV_SMI : PYTRACE_DISCOVER_NONE;
+			if (val == FALSE) {
+				eprintf("-f no-py-trace=... feature form doesn't make much sense!\n");
+				return -EINVAL;
+			}
+			env.pytrace_discovery = PYTRACE_DISCOVER_NV_SMI;
 			env.capture_pytrace = val;
-			if (val == FALSE)
-				env.capture_pytorch = FALSE;
 		} else if (strncasecmp(arg, "py-trace=", 9) == 0) {
 			const char *pf_arg = arg + 9;
 			int pid, n;
@@ -492,12 +492,14 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			}
 			env.capture_pytrace = val;
 		} else if (strcasecmp(arg, "py-torch") == 0) {
-			env.pytrace_discovery = (val == TRUE) ? PYTRACE_DISCOVER_PROC : PYTRACE_DISCOVER_NONE;
-			env.capture_pytrace = val;
+			env.pytorch_discovery = (val == TRUE) ? PYTRACE_DISCOVER_PROC : PYTRACE_DISCOVER_NONE;
 			env.capture_pytorch = val;
 		} else if (strcasecmp(arg, "py-torch=nvidia-smi") == 0 || strcasecmp(arg, "py-torch=nv-smi") == 0) {
-			env.pytrace_discovery = (val == TRUE) ? PYTRACE_DISCOVER_NV_SMI : PYTRACE_DISCOVER_NONE;
-			env.capture_pytrace = val;
+			if (val == FALSE) {
+				eprintf("-f no-py-torch=... feature form doesn't make much sense!\n");
+				return -EINVAL;
+			}
+			env.pytorch_discovery = PYTRACE_DISCOVER_NV_SMI;
 			env.capture_pytorch = val;
 		} else if (strncasecmp(arg, "py-torch=", 9) == 0) {
 			const char *pf_arg = arg + 9;
@@ -509,16 +511,15 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			}
 
 			if (sscanf(pf_arg, "%d %n", &pid, &n) == 1 && pf_arg[n] == '\0') {
-				err = append_num(&env.pytrace_pids, &env.pytrace_pid_cnt, pf_arg);
+				err = append_num(&env.pytorch_pids, &env.pytorch_pid_cnt, pf_arg);
 				if (err) {
-					eprintf("Failed to record PID '%s' for Python function + torch tracing!\n", pf_arg);
+					eprintf("Failed to record PID '%s' for PyTorch tracing!\n", pf_arg);
 					return err;
 				}
 			} else {
 				eprintf("Use -fpy-torch, -fpy-torch=nv-smi, or -fpy-torch=<PID>!\n");
 				return -EINVAL;
 			}
-			env.capture_pytrace = val;
 			env.capture_pytorch = val;
 		} else if (strcasecmp(arg, "softirq") == 0) {
 			env.capture_softirq = val;

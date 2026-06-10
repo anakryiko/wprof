@@ -129,7 +129,8 @@ struct inj_msg {
 		struct inj_msg_pytrace_session {
 			long session_timeout_ms;
 			int py_version_minor; /* Python 3.x minor version */
-			bool enable_torch_profiler;
+			bool enable_pytrace;
+			bool enable_pytorch;
 			unsigned long sym_addrs[PYTRACE_SYM_CNT];
 			unsigned long torch_sym_addrs[TORCH_SYM_CNT];
 		} pytrace_session;

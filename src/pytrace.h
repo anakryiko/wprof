@@ -24,10 +24,10 @@ struct pytrace_tracee {
 	int log_fd;
 	char *log_path;
 
-	int dump_fd;
+	int pytrace_dump_fd;
 	char *dump_path;
 
-	int torch_dump_fd;
+	int pytorch_dump_fd;
 	char *torch_dump_path;
 
 	int py_version_minor;	/* detected Python 3.x version */

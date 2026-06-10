@@ -518,9 +518,16 @@ static int handle_msg(struct inj_msg *msg, int *fds, int fd_cnt)
 		vlog("Shutdown completed successfully.\n");
 		return -ESHUTDOWN;
 	case INJ_MSG_PYTRACE_SESSION: {
-		if (fd_cnt < 1 || fd_cnt > 2) {
+		/* FDs arrive in (pytrace, torch) order, each present only if enabled. */
+		int want_fds = 0;
+		if (msg->pytrace_session.enable_pytrace)
+			want_fds += 1;
+		if (msg->pytrace_session.enable_pytorch)
+			want_fds += 1;
+		if (fd_cnt != want_fds || fd_cnt < 1) {
 			err = -EPROTO;
-			elog("Received PYTRACE_SESSION command with unexpected FD count %d!\n", fd_cnt);
+			elog("Received PYTRACE_SESSION command with unexpected FD count %d (want %d)!\n",
+			     fd_cnt, want_fds);
 			return err;
 		}
 
@@ -528,11 +535,12 @@ static int handle_msg(struct inj_msg *msg, int *fds, int fd_cnt)
 		int py_ver_minor = msg->pytrace_session.py_version_minor;
 		vlog("Setting up pytrace session (timeout %ldms, Python 3.%d)...\n", sess_timeout_ms, py_ver_minor);
 
-		int dump_fd = fds[0];
-		int torch_fd = (fd_cnt >= 2 && msg->pytrace_session.enable_torch_profiler) ? fds[1] : -1;
+		int fd_idx = 0;
+		int pytrace_dump_fd = msg->pytrace_session.enable_pytrace ? fds[fd_idx++] : -1;
+		int pytorch_dump_fd = msg->pytrace_session.enable_pytorch ? fds[fd_idx++] : -1;
 		struct pytrace_setup_ctx ctx = {
-			.dump_fd = dump_fd,
-			.torch_fd = torch_fd,
+			.pytrace_dump_fd = pytrace_dump_fd,
+			.pytorch_dump_fd = pytorch_dump_fd,
 			.version_minor = py_ver_minor,
 			.sym_addrs = msg->pytrace_session.sym_addrs,
 			.sym_addr_cnt = ARRAY_SIZE(msg->pytrace_session.sym_addrs),

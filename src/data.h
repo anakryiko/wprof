@@ -130,7 +130,7 @@ enum wprof_stat_id {
 	WSTAT_CUDA_BUF_CNT,
 	WSTAT_CUDA_DATA_SZ,
 
-	/* PyTrace tracee stats (total + pytrace_cnt entries each) */
+	/* PyTrace tracee stats (total + py_cnt entries each) */
 	WSTAT_PYTRACE_NAME,
 	WSTAT_PYTRACE_STATE,
 	WSTAT_PYTRACE_EVENT_CNT,
@@ -171,7 +171,7 @@ struct wprof_stats {
 	u32 rb_cnt;
 	u32 prog_cnt;
 	u32 cuda_cnt;
-	u32 pytrace_cnt;
+	u32 py_cnt;
 	u32 ringbuf_sz;
 	u32 task_state_sz;
 	u32 pmu_cnt;

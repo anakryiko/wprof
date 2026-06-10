@@ -193,8 +193,13 @@ struct env {
 	int pytrace_pid_cnt;
 	enum pytrace_discover_strategy pytrace_discovery;
 
+	/* EXPERIMENTAL (PyTorch RecordFunction tracing) */
+	int *pytorch_pids;
+	int pytorch_pid_cnt;
+	enum pytrace_discover_strategy pytorch_discovery;
+
 	struct pytrace_tracee *pytraces;
-	int pytrace_cnt;
+	int py_cnt;
 	bool pytraces_deactivated;
 	bool pytraces_retracted;
 
