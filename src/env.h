@@ -64,6 +64,32 @@ enum pytrace_discover_strategy {
 	PYTRACE_DISCOVER_NV_SMI,	/* use nvidia-smi to find GPU Python processes */
 };
 
+/* session lifecycle, driven by the single epoll control loop in main() */
+enum sess_state {
+	SESS_STANDBY,	/* waiting until prepare time */
+	SESS_PREP,	/* discovery / injection / BPF setup */
+	SESS_ARMED,	/* waiting until activation (BPF drops events in-kernel) */
+	SESS_RECORDING,	/* collecting until session end */
+	SESS_DONE,	/* leave loop -> post-processing */
+};
+
+/* epoll event tags, stored in epoll_event.data.u32 to identify the ready fd */
+enum epoll_tag { CTL_PREP_TIMER, CTL_ACTIVATE_TIMER, CTL_END_TIMER, CTL_SIGNAL };
+
+struct sess_ctl {
+	int epoll_fd;
+	int prep_tfd;
+	int activate_tfd;
+	int sess_end_tfd;
+	int sig_efd;
+	enum sess_state state;
+	bool session_activated;
+	bool session_complete;
+	u64 prepare_target_ts;
+	u64 activate_target_ts;
+	u64 sess_end_target_ts;
+};
+
 struct wprof_bpf;
 struct req_list_cfg;
 struct ksyms;
@@ -137,6 +163,8 @@ struct env {
 	u64 actual_start_ts;
 	u64 sess_start_ts;
 	u64 sess_end_ts;
+
+	struct sess_ctl sess_ctl;	/* session control loop state */
 
 	char *data_path;
 	char *trace_path;
