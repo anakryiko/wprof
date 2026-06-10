@@ -105,7 +105,7 @@ int py_find_binary(int pid, struct py_binary_info *bi)
 	snprintf(exe_path, sizeof(exe_path), "/proc/%d/exe", pid);
 
 	if (stat(exe_path, &st)) {
-		vprintf("Failed to retrive file status for %s\n", exe_path);
+		dprintf(1, "Failed to retrieve file status for %s\n", exe_path);
 		return -errno;
 	}
 	/* Scan executable VMAs for Python binary. */
