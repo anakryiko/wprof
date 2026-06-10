@@ -324,7 +324,7 @@ int pytrace_session_setup(struct pytrace_setup_ctx *ctx)
 	}
 
 	/*
-	 * Validation and torch setup come before any pytrace allocations,
+	 * Validation and pytorch setup come before any pytrace allocations,
 	 * so failures here can return directly without cleanup.
 	 */
 	if (!py_is_initialized()) {
@@ -332,12 +332,21 @@ int pytrace_session_setup(struct pytrace_setup_ctx *ctx)
 		return -ENOENT;
 	}
 
-	if (ctx->torch_fd >= 0) {
-		err = torch_profiler_setup(ctx->torch_fd, ctx->torch_sym_addrs, ctx->torch_sym_addr_cnt);
+	if (ctx->pytorch_dump_fd >= 0) {
+		err = pytorch_session_setup(ctx->pytorch_dump_fd, ctx->torch_sym_addrs, ctx->torch_sym_addr_cnt);
 		if (err) {
-			vlog("Torch profiler setup failed: %d\n", err);
+			vlog("PyTorch tracing setup failed: %d\n", err);
 			return err;
 		}
+	}
+
+	/*
+	 * PyTorch-only session (py-torch without py-trace): no pytrace dump fd, so
+	 * skip Python function tracing (dump + CPython hook) below.
+	 */
+	if (ctx->pytrace_dump_fd < 0) {
+		vlog("pytrace: Python function tracing disabled (PyTorch-only session)\n");
+		return 0;
 	}
 
 	/* Set up dump file */
@@ -347,10 +356,10 @@ int pytrace_session_setup(struct pytrace_setup_ctx *ctx)
 		return -ENOMEM;
 	}
 
-	pytrace_dump = fdopen(ctx->dump_fd, "w");
+	pytrace_dump = fdopen(ctx->pytrace_dump_fd, "w");
 	if (!pytrace_dump) {
 		err = -errno;
-		elog("Failed to create FILE wrapper around pytrace dump FD %d: %d\n", ctx->dump_fd, err);
+		elog("Failed to create FILE wrapper around pytrace dump FD %d: %d\n", ctx->pytrace_dump_fd, err);
 		goto cleanup;
 	}
 	setvbuf(pytrace_dump, NULL, _IOFBF, PYTRACE_DUMP_BUF_SZ);
@@ -413,6 +422,8 @@ int pytrace_session_setup(struct pytrace_setup_ctx *ctx)
 	return 0;
 
 cleanup:
+	/* pytorch may have been set up before this failure; unwind it. */
+	pytorch_session_finalize();
 	pytrace_active = false;
 	if (pytrace_code_cache) {
 		hashmap__free(pytrace_code_cache);
@@ -424,7 +435,7 @@ cleanup:
 		fclose(pytrace_dump);
 		pytrace_dump = NULL;
 	} else {
-		zclose(ctx->dump_fd);
+		zclose(ctx->pytrace_dump_fd);
 	}
 	return err;
 }
@@ -459,15 +470,12 @@ static void pytrace_uninstall_profiler(void)
 	py_gilstate_release(gstate);
 }
 
-int pytrace_session_finalize(void)
+static int pytrace_session_teardown(void)
 {
 	int err = 0;
 
 	if (!pytrace_dump)
 		return 0;
-
-	/* Uninstall torch profiler first (doesn't need GIL) */
-	torch_profiler_teardown();
 
 	/* Uninstall profiler */
 	pytrace_active = false;
@@ -582,4 +590,11 @@ int pytrace_session_finalize(void)
 	pytrace_dump_strs = NULL;
 
 	return 0;
+}
+
+int pytrace_session_finalize(void)
+{
+	/* Finalize pytorch first (doesn't need GIL) */
+	pytorch_session_finalize();
+	return pytrace_session_teardown();
 }

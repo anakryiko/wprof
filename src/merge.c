@@ -227,7 +227,7 @@ static void collect_extras(struct persist_state *ps, struct wprof_extra_param **
 }
 
 static int stat_elem_cnt(enum wprof_stat_id id, int rb_cnt, int cpu_cnt,
-			 int prog_cnt, int cuda_cnt, int pytrace_cnt, int pmu_cnt)
+			 int prog_cnt, int cuda_cnt, int py_cnt, int pmu_cnt)
 {
 	switch (id) {
 	case WSTAT_INVALID:
@@ -281,7 +281,7 @@ static int stat_elem_cnt(enum wprof_stat_id id, int rb_cnt, int cpu_cnt,
 	case WSTAT_PYTRACE_STATE:
 	case WSTAT_PYTRACE_EVENT_CNT:
 	case WSTAT_PYTRACE_CODE_CACHE_CNT:
-		return 1 + pytrace_cnt;
+		return 1 + py_cnt;
 	/* per-PMU (real counters only); index 0 is global/unused */
 	case WSTAT_PMU_ACTIVE_FRAC:
 		return 1 + pmu_cnt;
@@ -296,7 +296,7 @@ static struct wprof_stats *prepare_stats(struct persist_state *ps, struct worker
 	int rb_cnt = env.ringbuf_cnt;
 	int cpu_cnt = env.num_cpus;
 	int cuda_cnt = env.cuda_cnt;
-	int pytrace_cnt = env.pytrace_cnt;
+	int py_cnt = env.py_cnt;
 	int pmu_cnt = env.pmu_real_cnt;
 	int prog_cnt = 0;
 
@@ -313,7 +313,7 @@ static struct wprof_stats *prepare_stats(struct persist_state *ps, struct worker
 	int offs[__WSTAT_CNT + 1];
 	offs[0] = 0;
 	for (int i = 1; i <= __WSTAT_CNT; i++)
-		offs[i] = offs[i - 1] + stat_elem_cnt(i - 1, rb_cnt, cpu_cnt, prog_cnt, cuda_cnt, pytrace_cnt, pmu_cnt);
+		offs[i] = offs[i - 1] + stat_elem_cnt(i - 1, rb_cnt, cpu_cnt, prog_cnt, cuda_cnt, py_cnt, pmu_cnt);
 
 	u32 sz = sizeof(struct wprof_stats) + offs[__WSTAT_CNT] * sizeof(u64);
 	struct wprof_stats *s = calloc(1, sz);
@@ -323,7 +323,7 @@ static struct wprof_stats *prepare_stats(struct persist_state *ps, struct worker
 	s->rb_cnt = rb_cnt;
 	s->prog_cnt = prog_cnt;
 	s->cuda_cnt = cuda_cnt;
-	s->pytrace_cnt = pytrace_cnt;
+	s->py_cnt = py_cnt;
 	s->pmu_cnt = pmu_cnt;
 	s->ringbuf_sz = env.ringbuf_sz;
 	s->task_state_sz = env.task_state_sz;
@@ -484,7 +484,7 @@ skip_bpf_stats:
 	u64 *pytrace_event_cnt = wstats(s, WSTAT_PYTRACE_EVENT_CNT, NULL);
 	u64 *pytrace_code_cache_cnt = wstats(s, WSTAT_PYTRACE_CODE_CACHE_CNT, NULL);
 
-	for (int i = 0; i < pytrace_cnt; i++) {
+	for (int i = 0; i < py_cnt; i++) {
 		struct pytrace_tracee *py = &env.pytraces[i];
 
 		/* per-tracee */
@@ -743,10 +743,10 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 	 * and fill in both when the torch dump exists.
 	 */
 	int wpytrace_cnt = 0;
-	int wpytrace_cap = env.pytrace_cnt * 2;
+	int wpytrace_cap = env.py_cnt * 2;
 	struct wpytrace_state *wpytraces = calloc(wpytrace_cap, sizeof(*wpytraces));
 
-	for (int i = 0; i < env.pytrace_cnt; i++) {
+	for (int i = 0; i < env.py_cnt; i++) {
 		struct pytrace_tracee *pf = &env.pytraces[i];
 
 		if (pf->state == TRACEE_INACTIVE) {
@@ -761,7 +761,7 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 		}
 
 		/* Load pytrace dump and optionally torch dump into wpytraces[] */
-		int dump_fds[] = { pf->dump_fd, pf->torch_dump_fd };
+		int dump_fds[] = { pf->pytrace_dump_fd, pf->pytorch_dump_fd };
 		const char *dump_paths[] = { pf->dump_path, pf->torch_dump_path };
 		const char *dump_labels[] = { "pytrace", "torch" };
 
@@ -1002,7 +1002,7 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 		wpf->dump_hdr = NULL;
 		wpf->dump_sz = 0;
 	}
-	for (int i = 0; i < env.pytrace_cnt; i++) {
+	for (int i = 0; i < env.py_cnt; i++) {
 		struct pytrace_tracee *pf = &env.pytraces[i];
 
 		if (!env.keep_workdir && pf->dump_path)
@@ -1015,8 +1015,8 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 		free(pf->torch_dump_path);
 		pf->torch_dump_path = NULL;
 
-		zclose(pf->dump_fd);
-		zclose(pf->torch_dump_fd);
+		zclose(pf->pytrace_dump_fd);
+		zclose(pf->pytorch_dump_fd);
 	}
 	free(wpytraces);
 

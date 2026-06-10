@@ -310,17 +310,17 @@ skip_rusage:
 		}
 	}
 
-	for (int i = 0; i < s->pytrace_cnt; i++) {
+	for (int i = 0; i < s->py_cnt; i++) {
 		u64 state = wstat(s, WSTAT_PYTRACE_STATE, 1 + i);
 		const char *name = wevent_str(env.data_hdr, wstat(s, WSTAT_PYTRACE_NAME, 1 + i));
 
 		if (state != TRACEE_INACTIVE && state != TRACEE_SHUTDOWN_TIMEOUT) {
-			eprintf("!!! PyTrace tracee #%d (%s) encountered problem. Last state: %s\n",
+			eprintf("!!! Python tracee #%d (%s) encountered problem. Last state: %s\n",
 				i, name, cuda_tracee_state_str(state));
 			continue;
 		}
 		if (env.verbose || env.emit_stats) {
-			eprintf("PyTrace tracee #%d (%s): %llu events, %llu code objects cached.\n",
+			eprintf("Python tracee #%d (%s): %llu events, %llu code objects cached.\n",
 				i, name,
 				wstat(s, WSTAT_PYTRACE_EVENT_CNT, 1 + i),
 				wstat(s, WSTAT_PYTRACE_CODE_CACHE_CNT, 1 + i));
@@ -611,10 +611,12 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 			bpf_program__set_autoload(skel->progs.wprof_cuda_call, true);
 	}
 
-	if (env.pytrace_pid_cnt > 0 || env.pytrace_discovery) {
+	if ((env.capture_pytrace == TRUE || env.capture_pytorch == TRUE) &&
+	    (env.pytrace_pid_cnt > 0 || env.pytorch_pid_cnt > 0 ||
+	     env.pytrace_discovery || env.pytorch_discovery)) {
 		err = pytrace_trace_setup(workdir_fd);
 		if (err) {
-			eprintf("pytrace trace setup failed: %d\n", err);
+			eprintf("Python trace setup failed: %d\n", err);
 			return err;
 		}
 	}
@@ -1776,12 +1778,12 @@ int main(int argc, char **argv)
 		}
 	}
 
-	if (env.pytrace_cnt > 0) {
-		wprintf("Preparing pytrace tracees...\n");
+	if (env.py_cnt > 0) {
+		wprintf("Preparing Python tracees...\n");
 		err = pytrace_trace_prepare(workdir_fd,
 					   env.duration_ns / 1000000 + LIBWPROFINJ_SESSION_TIMEOUT_MS);
 		if (err) {
-			eprintf("Failed to prepare pytrace tracing sessions: %d\n", err);
+			eprintf("Failed to prepare Python tracing sessions: %d\n", err);
 			goto cleanup;
 		}
 	}
@@ -1812,11 +1814,11 @@ int main(int argc, char **argv)
 		}
 	}
 
-	if (env.pytrace_cnt > 0) {
-		wprintf("Activating pytrace tracees...\n");
+	if (env.py_cnt > 0) {
+		wprintf("Activating Python tracees...\n");
 		err = pytrace_trace_activate(env.sess_start_ts, env.sess_end_ts);
 		if (err) {
-			eprintf("Failed to activate pytrace tracing sessions: %d\n", err);
+			eprintf("Failed to activate Python tracing sessions: %d\n", err);
 			goto cleanup;
 		}
 	}
@@ -1849,7 +1851,7 @@ int main(int argc, char **argv)
 			cuda_trace_retract();
 	}
 
-	if (env.pytrace_cnt > 0)
+	if (env.py_cnt > 0)
 		pytrace_trace_deactivate();
 
 	wprintf("Draining...\n");
@@ -1870,8 +1872,10 @@ int main(int argc, char **argv)
 		env.capture_cuda = false;
 	}
 
-	if (env.pytrace_cnt == 0)
+	if (env.py_cnt == 0) {
 		env.capture_pytrace = false;
+		env.capture_pytorch = false;
+	}
 
 	err = wprof_persist_data(workdir_name, workers);
 	if (err) {
@@ -1885,7 +1889,7 @@ int main(int argc, char **argv)
 	if (env.requested_stack_traces && env.cuda_cnt > 0)
 		cuda_trace_retract();
 
-	if (env.pytrace_cnt > 0)
+	if (env.py_cnt > 0)
 		pytrace_trace_retract();
 
 	{
@@ -1966,7 +1970,7 @@ skip_data_collection:
 cleanup:
 	if (env.cuda_cnt > 0)
 		cuda_trace_teardown();
-	if (env.pytrace_cnt > 0)
+	if (env.py_cnt > 0)
 		pytrace_trace_teardown();
 	cleanup_workers(workers, worker_cnt);
 	detach_bpf(&bpf_state, num_cpus);
