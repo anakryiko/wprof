@@ -114,7 +114,8 @@ static const struct argp_option opts[] = {
 	{ "stats", OPT_STATS, NULL, 0, "Print various wprof stats (BPF, resource usage, etc.)" },
 	{ "debug", OPT_DEBUG, "FEAT", 0, "Debug features (pb-debug-interns, pb-disable-interns, keep-workdir, raw-stacks)"},
 	{ "log", OPT_LOG, "LOG", 0, "Debug logging subset selector (libbpf, usdt, topology, inject, tracee, pytrace)"},
-	{ "dur-ms", 'd', "DURATION", 0, "Limit running duration to given number of ms (default: 1000ms)" },
+	{ "dur", 'd', "DURATION", 0, "Limit running duration; accepts time units s/ms/us/ns/m/h, bare number is ms (default: 1000ms)" },
+	{ "dur-ms", 0, 0, OPTION_ALIAS },
 	{ "timer-freq", OPT_TIMER_FREQ, "HZ", 0, "On-CPU timer interrupt frequency (default: 100Hz, i.e., every 10ms)" },
 
 	{ "data", 'D', "FILE", 0, "Data dump path (defaults to 'wprof.data' in current directory)" },
@@ -269,14 +270,12 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		env.symbolize_frugally = true;
 		break;
 	case 'd': {
-		char *end = NULL;
-		errno = 0;
-		env.duration_ns = strtol(arg, &end, 0); /* parse as ms */
-		if (errno || !end || *end != '\0' || end == arg || env.duration_ns <= 0) {
+		s64 dur = parse_time_units(arg); /* bare number = ms */
+		if (dur <= 0) {
 			fprintf(stderr, "Invalid running duration: %s\n", arg);
 			argp_usage(state);
 		}
-		env.duration_ns *= 1000000;
+		env.duration_ns = dur;
 		break;
 	}
 	case 'D':

@@ -395,6 +395,10 @@ s64 parse_time_units(const char *arg)
 	char unit[5];
 
 	if ((ret = sscanf(arg, "%lf%2s %n", &s, unit, &n)) == 2 && n == len) {
+		if (strcmp(unit, "h") == 0)
+			return (u64)(s * 3600000000000ULL);
+		if (strcmp(unit, "m") == 0)
+			return (u64)(s * 60000000000ULL);
 		if (strcmp(unit, "s") == 0)
 			return (u64)(s * 1000000000ULL);
 		if (strcmp(unit, "ms") == 0)
