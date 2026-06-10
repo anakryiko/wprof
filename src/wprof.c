@@ -26,6 +26,9 @@
 #include <time.h>
 #include <sys/time.h>
 #include <sys/signal.h>
+#include <sys/timerfd.h>
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
 #include <pthread.h>
 #include <limits.h>
 #include <linux/fs.h>
@@ -143,17 +146,14 @@ const char *extra_param_str(struct wprof_data_hdr *hdr, const struct wprof_extra
 }
 
 static volatile bool exiting;
-static volatile sig_atomic_t session_complete;
-
-static void sig_timer(int sig)
-{
-	session_complete = 1;
-	exiting = true;
-}
 
 static void sig_term(int sig)
 {
 	exiting = true;
+	if (env.sess_ctl.sig_efd >= 0) {
+		u64 v = 1;
+		(void)write(env.sess_ctl.sig_efd, &v, sizeof(v));
+	}
 	signal(SIGINT, SIG_DFL);
 	signal(SIGTERM, SIG_DFL);
 }
@@ -1064,11 +1064,8 @@ static int attach_bpf(struct bpf_state *st, struct worker_state *workers, int nu
 	return 0;
 }
 
-static int run_bpf(struct bpf_state *st)
+static int wait_bpf(struct bpf_state *st)
 {
-	st->skel->bss->session_start_ts = env.sess_start_ts;
-	st->skel->bss->session_end_ts = env.sess_end_ts;
-
 	for (int i = 0; i < env.ringbuf_cnt; i++) {
 		int err = pthread_join(st->rb_threads[i], NULL);
 		if (err) {
@@ -1217,17 +1214,126 @@ static void cleanup_workers(struct worker_state *workers, int worker_cnt)
 }
 
 
+static int arm_timer_abs(int tfd, u64 abs_ktime_ns)
+{
+	struct itimerspec its = {
+		.it_value = {
+			.tv_sec  = abs_ktime_ns / 1000000000ULL,
+			.tv_nsec = abs_ktime_ns % 1000000000ULL,
+		},
+	};
+	return timerfd_settime(tfd, TFD_TIMER_ABSTIME, &its, NULL);
+}
+
+static void drain_fd(int fd)
+{
+	u64 v;
+	(void)read(fd, &v, sizeof(v));
+}
+
+static int ctl_epoll_add(int epoll_fd, int fd, u32 tag)
+{
+	struct epoll_event ev = { .events = EPOLLIN, .data = { .u32 = tag } };
+	return epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &ev);
+}
+
+/* SESS_PREP: discovery, BPF load/attach, and tracee injection. */
+static int do_prepare(struct bpf_state *bpf, struct worker_state *workers, int num_cpus, int workdir_fd)
+{
+	int err;
+
+	err = setup_bpf(bpf, workers, num_cpus, workdir_fd);
+	if (err) {
+		eprintf("Failed to setup BPF parts: %d\n", err);
+		return err;
+	}
+
+	err = attach_bpf(bpf, workers, num_cpus);
+	if (err) {
+		eprintf("Failed to attach BPF parts: %d\n", err);
+		return err;
+	}
+
+	if (env.cuda_cnt > 0) {
+		wprintf("Preparing CUDA tracees...\n");
+		/* give extra time for auto-timeout within tracee */
+		err = cuda_trace_prepare(workdir_fd,
+					 env.duration_ns / 1000000 + LIBWPROFINJ_SESSION_TIMEOUT_MS);
+		if (err) {
+			eprintf("Failed to prepare CUDA tracing sessions: %d\n", err);
+			return err;
+		}
+	}
+
+	if (env.py_cnt > 0) {
+		wprintf("Preparing Python tracees...\n");
+		err = pytrace_trace_prepare(workdir_fd,
+					    env.duration_ns / 1000000 + LIBWPROFINJ_SESSION_TIMEOUT_MS);
+		if (err) {
+			eprintf("Failed to prepare Python tracing sessions: %d\n", err);
+			return err;
+		}
+	}
+
+	return 0;
+}
+
+/* SESS_ARMED -> SESS_RECORDING: stamp t=0, open the session window, activate tracees. */
+static int do_activate(struct bpf_state *bpf)
+{
+	int err;
+
+	wprintf("Running...\n");
+
+	env.ktime_start_ns = ktime_now_ns();
+	env.realtime_start_ns = ktime_to_realtime_ns(env.ktime_start_ns);
+	env.sess_start_ts = env.ktime_start_ns;
+	env.sess_end_ts = env.ktime_start_ns + env.duration_ns;
+
+	bpf->skel->bss->session_start_ts = env.sess_start_ts;
+	bpf->skel->bss->session_end_ts = env.sess_end_ts;
+
+	if (env.cuda_cnt > 0) {
+		wprintf("Activating CUDA tracees...\n");
+		err = cuda_trace_activate(env.sess_start_ts, env.sess_end_ts);
+		if (err) {
+			eprintf("Failed to activate CUDA tracing sessions: %d\n", err);
+			return err;
+		}
+
+		if (env.requested_stack_traces & ST_CUDA) {
+			wprintf("Attaching CUDA USDTs...\n");
+			err = cuda_trace_attach_usdts(bpf, bpf->skel->progs.wprof_cuda_call);
+			if (err) {
+				eprintf("Failed to attach CUDA tracking USDTs: %d\n", err);
+				return err;
+			}
+		}
+	}
+
+	if (env.py_cnt > 0) {
+		wprintf("Activating Python tracees...\n");
+		err = pytrace_trace_activate(env.sess_start_ts, env.sess_end_ts);
+		if (err) {
+			eprintf("Failed to activate Python tracing sessions: %d\n", err);
+			return err;
+		}
+	}
+
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
 	struct bpf_state bpf_state = {};
 	int num_cpus = 0, err = 0;
-	struct itimerval timer_ival = {};
 	int worker_cnt = 0;
 	struct worker_state *workers = NULL;
 	char workdir_name[PATH_MAX] = {};
 	int workdir_fd = -1;
 
 	env.actual_start_ts = ktime_now_ns();
+	env.sess_ctl.sig_efd = -1; /* so an early SIGINT (before the eventfd exists) is a no-op */
 
 	/* Parse command line arguments */
 	setenv("ARGP_HELP_FMT", "opt-doc-col=35,rmargin=150", 0); /* widen default --help output */
@@ -1757,86 +1863,103 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	err = setup_bpf(&bpf_state, workers, num_cpus, workdir_fd);
-	if (err) {
-		eprintf("Failed to setup BPF parts: %d\n", err);
+	/*
+	 * Session control loop: a single epoll multiplexes the various
+	 * asynchronous sources of control-state transitions (the timerfds and the
+	 * signal eventfd) into one place.
+	 */
+	env.sess_ctl.state = SESS_STANDBY;
+
+	env.sess_ctl.epoll_fd = epoll_create1(EPOLL_CLOEXEC);
+	if (env.sess_ctl.epoll_fd < 0) {
+		err = -errno;
+		eprintf("Failed to create session control epoll: %d\n", err);
 		goto cleanup;
 	}
 
-	err = attach_bpf(&bpf_state, workers, num_cpus);
-	if (err) {
-		eprintf("Failed to attach BPF parts: %d\n", err);
+	env.sess_ctl.prep_tfd     = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+	env.sess_ctl.activate_tfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+	env.sess_ctl.sess_end_tfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+	if (env.sess_ctl.prep_tfd < 0 || env.sess_ctl.activate_tfd < 0 || env.sess_ctl.sess_end_tfd < 0) {
+		err = -errno;
+		eprintf("Failed to create session timerfds: %d\n", err);
 		goto cleanup;
 	}
 
-	if (env.cuda_cnt > 0) {
-		wprintf("Preparing CUDA tracees...\n");
-		/* give 2 seconds extra time for auto-timeout within tracee */
-		err = cuda_trace_prepare(workdir_fd,
-					 env.duration_ns / 1000000 + LIBWPROFINJ_SESSION_TIMEOUT_MS);
-		if (err) {
-			eprintf("Failed to active CUDA tracing sessions: %d\n", err);
-			goto cleanup;
-		}
+	env.sess_ctl.sig_efd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+	if (env.sess_ctl.sig_efd < 0) {
+		err = -errno;
+		eprintf("Failed to create session signal eventfd: %d\n", err);
+		goto cleanup;
 	}
 
-	if (env.py_cnt > 0) {
-		wprintf("Preparing Python tracees...\n");
-		err = pytrace_trace_prepare(workdir_fd,
-					   env.duration_ns / 1000000 + LIBWPROFINJ_SESSION_TIMEOUT_MS);
-		if (err) {
-			eprintf("Failed to prepare Python tracing sessions: %d\n", err);
-			goto cleanup;
-		}
+	if (ctl_epoll_add(env.sess_ctl.epoll_fd, env.sess_ctl.prep_tfd, CTL_PREP_TIMER) ||
+	    ctl_epoll_add(env.sess_ctl.epoll_fd, env.sess_ctl.activate_tfd, CTL_ACTIVATE_TIMER) ||
+	    ctl_epoll_add(env.sess_ctl.epoll_fd, env.sess_ctl.sess_end_tfd, CTL_END_TIMER) ||
+	    ctl_epoll_add(env.sess_ctl.epoll_fd, env.sess_ctl.sig_efd, CTL_SIGNAL)) {
+		err = -errno;
+		eprintf("Failed to register session control fds: %d\n", err);
+		goto cleanup;
 	}
 
-	wprintf("Running...\n");
+	arm_timer_abs(env.sess_ctl.prep_tfd, ktime_now_ns());
 
-	env.ktime_start_ns = ktime_now_ns();
-	env.realtime_start_ns = ktime_to_realtime_ns(env.ktime_start_ns);
-	/* env.duration_ns is already properly set */
-	env.sess_start_ts = env.ktime_start_ns;
-	env.sess_end_ts = env.ktime_start_ns + env.duration_ns;
+	while (env.sess_ctl.state != SESS_DONE) {
+		struct epoll_event evs[8];
+		int n = epoll_wait(env.sess_ctl.epoll_fd, evs, ARRAY_SIZE(evs), -1);
 
-	if (env.cuda_cnt > 0) {
-		wprintf("Activating CUDA tracees...\n");
-		err = cuda_trace_activate(env.sess_start_ts, env.sess_end_ts);
-		if (err) {
-			eprintf("Failed to active CUDA tracing sessions: %d\n", err);
+		if (n < 0) {
+			if (errno == EINTR)
+				continue;
+			err = -errno;
+			eprintf("Session control epoll_wait() failed: %d\n", err);
 			goto cleanup;
 		}
 
-		if (env.requested_stack_traces & ST_CUDA) {
-			wprintf("Attaching CUDA USDTs...\n");
-			err = cuda_trace_attach_usdts(&bpf_state, bpf_state.skel->progs.wprof_cuda_call);
-			if (err) {
-				eprintf("Failed to attach CUDA tracking USDTs: %d\n", err);
-				return err;
+		for (int i = 0; i < n && env.sess_ctl.state != SESS_DONE; i++) {
+			switch (evs[i].data.u32) {
+			case CTL_SIGNAL:
+				drain_fd(env.sess_ctl.sig_efd);
+				env.sess_ctl.state = SESS_DONE;
+				break;
+			case CTL_PREP_TIMER:
+				drain_fd(env.sess_ctl.prep_tfd);
+				env.sess_ctl.state = SESS_PREP;
+				err = do_prepare(&bpf_state, workers, num_cpus, workdir_fd);
+				if (err)
+					goto cleanup;
+				env.sess_ctl.state = SESS_ARMED;
+				arm_timer_abs(env.sess_ctl.activate_tfd, ktime_now_ns());
+				break;
+			case CTL_ACTIVATE_TIMER:
+				drain_fd(env.sess_ctl.activate_tfd);
+				err = do_activate(&bpf_state);
+				if (err)
+					goto cleanup;
+				env.sess_ctl.session_activated = true;
+				env.sess_ctl.sess_end_target_ts = env.sess_end_ts;
+				env.sess_ctl.state = SESS_RECORDING;
+				arm_timer_abs(env.sess_ctl.sess_end_tfd, env.sess_ctl.sess_end_target_ts);
+				break;
+			case CTL_END_TIMER:
+				drain_fd(env.sess_ctl.sess_end_tfd);
+				env.sess_ctl.session_complete = true;
+				env.sess_ctl.state = SESS_DONE;
+				break;
 			}
 		}
 	}
 
-	if (env.py_cnt > 0) {
-		wprintf("Activating Python tracees...\n");
-		err = pytrace_trace_activate(env.sess_start_ts, env.sess_end_ts);
-		if (err) {
-			eprintf("Failed to activate Python tracing sessions: %d\n", err);
-			goto cleanup;
-		}
-	}
-
-	signal(SIGALRM, sig_timer);
-	timer_ival.it_value.tv_sec = env.duration_ns / 1000000000;
-	timer_ival.it_value.tv_usec = env.duration_ns / 1000 % 1000000;
-	err = setitimer(ITIMER_REAL, &timer_ival, NULL);
-	if (err < 0) {
-		eprintf("Failed to setup run duration timeout timer: %d\n", err);
+	exiting = true; /* tell ringbuf worker threads to stop */
+	err = wait_bpf(&bpf_state); /* join ringbuf worker threads */
+	if (err) {
+		eprintf("Failed during collecting BPF-generated data: %d\n", err);
 		goto cleanup;
 	}
 
-	err = run_bpf(&bpf_state);
-	if (err) {
-		eprintf("Failed during collecting BPF-generated data: %d\n", err);
+	if (!env.sess_ctl.session_activated) {
+		/* interrupted before recording started: unclean exit, nothing to persist */
+		err = -EINTR;
 		goto cleanup;
 	}
 
@@ -1845,10 +1968,10 @@ int main(int argc, char **argv)
 	 * end, clamp the recorded window to now. This is the point past which the
 	 * various data sources (BPF ringbufs, CUDA/pytrace tracee dumps) are torn
 	 * down at staggered times and can no longer be considered mutually
-	 * consistent. The duration timer (sig_timer) marks the planned end, which
-	 * already carries the correct session end.
+	 * consistent. When the session-end timerfd fires it signals the planned
+	 * end, which already carries the correct session end.
 	 */
-	if (!session_complete) {
+	if (!env.sess_ctl.session_complete) {
 		env.sess_end_ts = ktime_now_ns();
 		env.duration_ns = env.sess_end_ts - env.sess_start_ts;
 	}
