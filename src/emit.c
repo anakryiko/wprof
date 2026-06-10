@@ -1582,7 +1582,7 @@ skip_waker_task:
 		emit_perf_counters(s->prev_oncpu_ctrs, s->pmu_vals, false /* !diffs */);
 
 		if (s->prev_renamed)
-			emit_kv_str(IID_ANNK_RENAMED_TO, task.comm);
+			emit_kv_str(IID_ANNK_RENAMED_TO, iid_str(emit_intern_str(w, task.comm), task.comm));
 
 		if (env.requested_stack_traces & ST_OFFCPU) {
 			/* use stitched native+Python callstack when available */
@@ -1940,7 +1940,8 @@ static void emit_exec(struct worker_state *w, const struct wevent *e)
 		if (env.emit_numa)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
 
-		emit_kv_str(IID_ANNK_FILENAME, wevent_str(hdr, e->exec.filename_stroff));
+		const char *fname = wevent_str(hdr, e->exec.filename_stroff);
+		emit_kv_str(IID_ANNK_FILENAME, iid_str(emit_intern_str(w, fname), fname));
 		if (task.tid != e->exec.old_tid)
 			emit_kv_int(IID_ANNK_TID_CHANGED_FROM, e->exec.old_tid);
 	}
@@ -1994,8 +1995,8 @@ static void emit_task_rename(struct worker_state *w, const struct wevent *e)
 		if (env.emit_numa)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
 
-		emit_kv_str(IID_ANNK_OLD_NAME, task.comm);
-		emit_kv_str(IID_ANNK_NEW_NAME, new_comm);
+		emit_kv_str(IID_ANNK_OLD_NAME, iid_str(emit_intern_str(w, task.comm), task.comm));
+		emit_kv_str(IID_ANNK_NEW_NAME, iid_str(emit_intern_str(w, new_comm), new_comm));
 	}
 
 	emit_thread_track_descr(&task, new_comm);
@@ -2229,7 +2230,8 @@ static void emit_hardirq_exit(struct worker_state *w, const struct wevent *e)
 		if (env.emit_numa)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
 		emit_kv_int(IID_ANNK_IRQ, e->hardirq.irq);
-		emit_kv_str(IID_ANNK_ACTION, wevent_str(hdr, e->hardirq.name_stroff));
+		const char *action = wevent_str(hdr, e->hardirq.name_stroff);
+		emit_kv_str(IID_ANNK_ACTION, iid_str(emit_intern_str(w, action), action));
 	}
 	emit_slice_end(trackid_thread(&task),
 		       e->ts, IID_NAME_HARDIRQ, IID_CAT_HARDIRQ) {
@@ -2371,7 +2373,7 @@ static void emit_wq_end(struct worker_state *w, const struct wevent *e)
 		emit_kv_int(IID_ANNK_CPU, e->cpu);
 		if (env.emit_numa)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
-		emit_kv_str(IID_ANNK_ACTION, desc);
+		emit_kv_str(IID_ANNK_ACTION, iid_str(emit_intern_str(w, desc), desc));
 	}
 	emit_slice_end(trackid_thread(&task),
 		       e->ts,
@@ -3663,6 +3665,7 @@ static void emit_pytrace_event(struct worker_state *w, const struct wevent *e)
 	const char *file = e->pytrace.file_name_stroff ? wevent_str(hdr, e->pytrace.file_name_stroff) : NULL;
 	const char *base = file ? strrchr(file, '/') : NULL;
 	base = base ? base + 1 : file;
+	pb_iid file_iid = file ? emit_intern_str(w, file) : 0;
 
 	const char *display_name = base ? sfmt("%s (%s:%u)", func_name, base, e->pytrace.lineno) : func_name;
 	pb_iid name_iid = emit_intern_str(w, display_name);
@@ -3682,7 +3685,7 @@ static void emit_pytrace_event(struct worker_state *w, const struct wevent *e)
 		}
 		emit_slice_begin(track_uuid, e->ts, iid_str(name_iid, display_name), IID_CAT_PYTRACE) {
 			if (file)
-				emit_kv_str(IID_ANNK_PYTRACE_FILE, file);
+				emit_kv_str(IID_ANNK_PYTRACE_FILE, iid_str(file_iid, file));
 			if (e->pytrace.lineno)
 				emit_kv_int(IID_ANNK_PYTRACE_LINENO, e->pytrace.lineno);
 		}
@@ -3692,7 +3695,7 @@ static void emit_pytrace_event(struct worker_state *w, const struct wevent *e)
 			/* synthetic start for a frame that began before the recording session */
 			emit_slice_begin(track_uuid, env.sess_start_ts, iid_str(name_iid, display_name), IID_CAT_PYTRACE) {
 				if (file)
-					emit_kv_str(IID_ANNK_PYTRACE_FILE, file);
+					emit_kv_str(IID_ANNK_PYTRACE_FILE, iid_str(file_iid, file));
 				if (e->pytrace.lineno)
 					emit_kv_int(IID_ANNK_PYTRACE_LINENO, e->pytrace.lineno);
 			}
