@@ -638,7 +638,7 @@ int wprof_timer_tick(void *ctx)
 	return 0;
 }
 
-SEC("tp_btf/sched_switch")
+SEC("?tp_btf/sched_switch")
 int BPF_PROG(wprof_task_switch,
 	     bool preempt,
 	     struct task_struct *prev,
@@ -743,7 +743,7 @@ int BPF_PROG(wprof_task_switch,
 	return 0;
 }
 
-SEC("tp_btf/sched_waking")
+SEC("?tp_btf/sched_waking")
 int BPF_PROG(wprof_task_waking, struct task_struct *p)
 {
 	u64 now_ts = bpf_ktime_get_ns();
@@ -793,7 +793,7 @@ skip_emit:
 	return 0;
 }
 
-SEC("tp_btf/sched_wakeup_new")
+SEC("?tp_btf/sched_wakeup_new")
 int BPF_PROG(wprof_task_wakeup_new, struct task_struct *p)
 {
 	u64 now_ts = bpf_ktime_get_ns();

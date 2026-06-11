@@ -89,6 +89,10 @@ const struct capture_feature capture_features[] = {
 	 offsetof(struct env, capture_softirq), CFG_CAPTURE_SOFTIRQ},
 	{"hardirqs", "Hardirqs:", "capture_hardirq", DEFAULT_CAPTURE_HARDIRQ,
 	 offsetof(struct env, capture_hardirq), CFG_CAPTURE_HARDIRQ},
+	{"context switches", "Context switches:", "capture_sched", DEFAULT_CAPTURE_SCHED,
+	 offsetof(struct env, capture_sched), CFG_NO_SCHED, true},
+	{"wakeups", "Wakeups:", "capture_wakeup", DEFAULT_CAPTURE_WAKEUP,
+	 offsetof(struct env, capture_wakeup), CFG_NO_WAKEUP, true},
 };
 
 const int capture_feature_cnt = ARRAY_SIZE(capture_features);
@@ -582,6 +586,14 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 	if (env.capture_hardirq) {
 		bpf_program__set_autoload(skel->progs.wprof_hardirq_entry, true);
 		bpf_program__set_autoload(skel->progs.wprof_hardirq_exit, true);
+	}
+
+	if (env.capture_sched)
+		bpf_program__set_autoload(skel->progs.wprof_task_switch, true);
+
+	if (env.capture_wakeup) {
+		bpf_program__set_autoload(skel->progs.wprof_task_waking, true);
+		bpf_program__set_autoload(skel->progs.wprof_task_wakeup_new, true);
 	}
 
 	if (env.req_pid_cnt > 0 || env.req_path_cnt > 0 || env.req_global_discovery) {
@@ -1493,7 +1505,7 @@ int main(int argc, char **argv)
 
 			for (int i = 0; i < ARRAY_SIZE(capture_features); i++) {
 				const struct capture_feature *f = &capture_features[i];
-				wprintf("%-*s%s\n", w, f->header, (cfg->capture_features & f->cfg_bit) ? "YES" : "NO");
+				wprintf("%-*s%s\n", w, f->header, cfg_has_feat(cfg->capture_features, f) ? "YES" : "NO");
 			}
 
 			if (dump_hdr->extra_cnt > 0) {
@@ -1648,7 +1660,7 @@ int main(int argc, char **argv)
 		for (int i = 0; i < ARRAY_SIZE(capture_features); i++) {
 			const struct capture_feature *f = &capture_features[i];
 			enum tristate *flag = (void *)&env + f->env_flag_off;
-			bool cfg_flag = !!(cfg->capture_features & f->cfg_bit);
+			bool cfg_flag = cfg_has_feat(cfg->capture_features, f);
 
 			if (*flag == UNSET)
 				*flag = cfg_flag;
@@ -1795,8 +1807,46 @@ int main(int argc, char **argv)
 	env.timer_period_ns = 1000000000ULL / env.timer_freq_hz;
 	if (env.duration_ns == 0)
 		env.duration_ns = DEFAULT_DURATION_MS * 1000000ULL;
+
+	/*
+	 * Resolve --feature sched / wakeup and their dependencies. Off-CPU stacks,
+	 * scx attribution, and the wakee side of a wakeup are all rendered off the
+	 * context switch, so they constrain what is possible under -f no-sched.
+	 * sched is resolved first because the rest keys off it.
+	 */
+	if (env.capture_sched == UNSET)
+		env.capture_sched = DEFAULT_CAPTURE_SCHED;
 	if (env.requested_stack_traces == ST_UNSET)
 		env.requested_stack_traces = DEFAULT_REQUESTED_STACK_TRACES;
+	/*
+	 * wakeup tracking defaults on with sched and off under -f no-sched, but
+	 * -Swaker forces it on (the waker stack is rendered standalone). An explicit
+	 * -f wakeup without -Swaker under -f no-sched has nothing to render -> error.
+	 */
+	if (env.capture_wakeup == UNSET)
+		env.capture_wakeup = env.capture_sched || (env.requested_stack_traces & ST_WAKER);
+
+	if (!env.capture_sched && env.capture_scx == TRUE) {
+		eprintf("-f scx requires context-switch tracking; drop -f no-sched!\n");
+		err = -EINVAL;
+		goto cleanup;
+	}
+	if (!env.capture_sched && (env.requested_stack_traces & ST_OFFCPU)) {
+		eprintf("-Soffcpu requires context-switch tracking; drop -f no-sched!\n");
+		err = -EINVAL;
+		goto cleanup;
+	}
+	if (!env.capture_wakeup && (env.requested_stack_traces & ST_WAKER)) {
+		eprintf("-Swaker requires wakeup tracking; drop -f no-wakeup!\n");
+		err = -EINVAL;
+		goto cleanup;
+	}
+	if (env.capture_wakeup && !env.capture_sched && !(env.requested_stack_traces & ST_WAKER)) {
+		eprintf("-Swaker is required when -f wakeup is requested explicitly!\n");
+		err = -EINVAL;
+		goto cleanup;
+	}
+
 	for (int i = 0; i < ARRAY_SIZE(capture_features); i++) {
 		const struct capture_feature *f = &capture_features[i];
 		enum tristate *flag = (void *)&env + f->env_flag_off;
