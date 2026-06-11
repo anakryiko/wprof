@@ -25,6 +25,7 @@ enum cfg_feature_bit {
 	CFG_CAPTURE_HARDIRQ	= 0x200,
 	CFG_NO_SCHED		= 0x400, /* inverted (set = disabled) for backwards compat */
 	CFG_NO_WAKEUP		= 0x800, /* inverted (set = disabled) for backwards compat */
+	CFG_NO_TASK_LIFE	= 0x1000, /* inverted (set = disabled) for backwards compat */
 	CFG_NO_WQ		= 0x2000, /* inverted (set = disabled) for backwards compat */
 };
 

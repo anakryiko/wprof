@@ -33,6 +33,7 @@
 #define DEFAULT_CAPTURE_HARDIRQ TRUE
 #define DEFAULT_CAPTURE_SCHED TRUE
 #define DEFAULT_CAPTURE_WAKEUP TRUE
+#define DEFAULT_CAPTURE_TASK_LIFE TRUE
 #define DEFAULT_CAPTURE_WQ FALSE
 
 #define DEFAULT_EMIT_NUMA FALSE
@@ -137,6 +138,7 @@ struct env {
 	enum tristate capture_hardirq;
 	enum tristate capture_sched;	/* context-switch on/off-CPU slices */
 	enum tristate capture_wakeup;	/* waker/wakee tracking */
+	enum tristate capture_task_life;	/* task lifetime events (fork/exec/exit/rename) */
 	enum tristate capture_wq;	/* kernel workqueue execution */
 
 	/* trace visualization features */
