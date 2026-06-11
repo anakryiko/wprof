@@ -109,6 +109,12 @@ struct env {
 	u64 realtime_start_ns;
 	u64 duration_ns;
 
+	/* time-delayed activation (--prepare / --activate) */
+	struct timespec_spec prepare_spec;
+	struct timespec_spec activate_spec;
+	char *prepare_spec_str;		/* raw CLI spec, persisted via WEXTRA */
+	char *activate_spec_str;	/* raw CLI spec, persisted via WEXTRA */
+
 	/* for replay only, mutually exclusive with duration_ns */
 	s64 replay_start_offset_ns;
 	s64 replay_end_offset_ns;

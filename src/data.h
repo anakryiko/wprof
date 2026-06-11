@@ -68,6 +68,8 @@ enum wprof_extra_param_kind {
 	WEXTRA_EMIT_REQ_SPLIT		= 23,
 	WEXTRA_EMIT_REQ_EMBED		= 24,
 	WEXTRA_EMIT_EMBED_STACKS	= 25,
+	WEXTRA_PREPARE_SPEC		= 26,
+	WEXTRA_ACTIVATE_SPEC		= 27,
 };
 
 struct wprof_extra_param {

@@ -203,6 +203,11 @@ static void collect_extras(struct persist_state *ps, struct wprof_extra_param **
 			add_extra(extras, cnt, WEXTRA_PMU, persist_stroff(ps, env.pmu_derivs[i].spec));
 	}
 
+	if (env.prepare_spec_str)
+		add_extra(extras, cnt, WEXTRA_PREPARE_SPEC, persist_stroff(ps, env.prepare_spec_str));
+	if (env.activate_spec_str)
+		add_extra(extras, cnt, WEXTRA_ACTIVATE_SPEC, persist_stroff(ps, env.activate_spec_str));
+
 	/* persist emit (-e) options that differ from default, storing the on/off value */
 	for (int i = 0; i < emit_feature_cnt; i++) {
 		const struct emit_feature *f = &emit_features[i];
