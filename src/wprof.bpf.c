@@ -1144,7 +1144,7 @@ static int handle_workqueue(u64 now_ts, struct task_struct *task, struct work_st
 	return 0;
 }
 
-SEC("tp_btf/workqueue_execute_start")
+SEC("?tp_btf/workqueue_execute_start")
 int BPF_PROG(wprof_wq_exec_start, struct work_struct *work)
 {
 	u64 now_ts = bpf_ktime_get_ns();
@@ -1156,7 +1156,7 @@ int BPF_PROG(wprof_wq_exec_start, struct work_struct *work)
 	return handle_workqueue(now_ts, task, work, true /*start*/);
 }
 
-SEC("tp_btf/workqueue_execute_end")
+SEC("?tp_btf/workqueue_execute_end")
 int BPF_PROG(wprof_wq_exec_end, struct work_struct *work /* , work_func_t function */)
 {
 	u64 now_ts = bpf_ktime_get_ns();
