@@ -93,6 +93,8 @@ const struct capture_feature capture_features[] = {
 	 offsetof(struct env, capture_sched), CFG_NO_SCHED, true},
 	{"wakeups", "Wakeups:", "capture_wakeup", DEFAULT_CAPTURE_WAKEUP,
 	 offsetof(struct env, capture_wakeup), CFG_NO_WAKEUP, true},
+	{"workqueues", "Workqueues:", "capture_wq", DEFAULT_CAPTURE_WQ,
+	 offsetof(struct env, capture_wq), CFG_NO_WQ, true},
 };
 
 const int capture_feature_cnt = ARRAY_SIZE(capture_features);
@@ -594,6 +596,11 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 	if (env.capture_wakeup) {
 		bpf_program__set_autoload(skel->progs.wprof_task_waking, true);
 		bpf_program__set_autoload(skel->progs.wprof_task_wakeup_new, true);
+	}
+
+	if (env.capture_wq) {
+		bpf_program__set_autoload(skel->progs.wprof_wq_exec_start, true);
+		bpf_program__set_autoload(skel->progs.wprof_wq_exec_end, true);
 	}
 
 	if (env.req_pid_cnt > 0 || env.req_path_cnt > 0 || env.req_global_discovery) {

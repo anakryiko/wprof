@@ -60,6 +60,7 @@ struct env env = {
 	.capture_hardirq = UNSET,
 	.capture_sched = UNSET,
 	.capture_wakeup = UNSET,
+	.capture_wq = UNSET,
 	.emit_sched_view = UNSET,
 	.emit_numa = UNSET,
 	.emit_tidpid = UNSET,
@@ -159,7 +160,7 @@ static const struct argp_option opts[] = {
 	{ "feature", 'f', "FEAT", 0,
 	  "Data capture feature selector. Supported: ipi, req[=PATH|PID], scx, cuda[=nv-smi|all|PID], "
 	  "py-stacks[=nv-smi|PID], py-trace[=nv-smi|PID], py-torch[=nv-smi|PID], "
-	  "softirq, hardirq, irq, sched (on by default), wakeup (on by default). "
+	  "softirq, hardirq, irq, wq, sched (on by default), wakeup (on by default). "
 	  "All features can be prefixed with 'no-' to disable them explicitly." },
 
 	/* trace emitting options */
@@ -553,6 +554,8 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			env.capture_sched = val;
 		} else if (strcasecmp(arg, "wakeup") == 0) {
 			env.capture_wakeup = val;
+		} else if (strcasecmp(arg, "wq") == 0) {
+			env.capture_wq = val;
 		} else {
 			fprintf(stderr, "Unrecognized data feature '%s!\n", arg);
 			return -EINVAL;
