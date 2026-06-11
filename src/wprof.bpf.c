@@ -129,6 +129,7 @@ const volatile u64 rb_submit_threshold_bytes;
 const volatile enum stack_trace_kind requested_stack_traces = ST_ALL;
 const volatile bool capture_scx = true;
 const volatile bool capture_scx_layer_id = false;
+const volatile bool capture_task_life = true;
 
 bool capture_pystacks = false;
 
@@ -859,7 +860,7 @@ int BPF_PROG(wprof_task_wakeup, struct task_struct *p)
 }
 */
 
-SEC("tp_btf/task_rename")
+SEC("?tp_btf/task_rename")
 int BPF_PROG(wprof_task_rename, struct task_struct *task, const char *comm)
 {
 	u64 now_ts = bpf_ktime_get_ns();
@@ -879,7 +880,7 @@ int BPF_PROG(wprof_task_rename, struct task_struct *task, const char *comm)
 }
 
 
-SEC("tp_btf/sched_process_fork")
+SEC("?tp_btf/sched_process_fork")
 int BPF_PROG(wprof_task_fork, struct task_struct *parent, struct task_struct *child)
 {
 	u64 now_ts = bpf_ktime_get_ns();
@@ -895,7 +896,7 @@ int BPF_PROG(wprof_task_fork, struct task_struct *parent, struct task_struct *ch
 	return 0;
 }
 
-SEC("tp_btf/sched_process_exec")
+SEC("?tp_btf/sched_process_exec")
 int BPF_PROG(wprof_task_exec, struct task_struct *p, int old_pid, struct linux_binprm *bprm)
 {
 	u64 now_ts = bpf_ktime_get_ns();
@@ -912,8 +913,22 @@ int BPF_PROG(wprof_task_exec, struct task_struct *p, int old_pid, struct linux_b
 	return 0;
 }
 
-SEC("tp_btf/sched_process_exit")
+SEC("?tp_btf/sched_process_exit")
 int BPF_PROG(wprof_task_exit, struct task_struct *p)
+{
+	u64 now_ts = bpf_ktime_get_ns();
+	struct wprof_event *e;
+
+	if (!should_trace_task(p, now_ts))
+		return 0;
+
+	emit_task_event(e, EV_SZ(task), 0, EV_TASK_EXIT, now_ts, p);
+
+	return 0;
+}
+
+SEC("tp_btf/sched_process_free")
+int BPF_PROG(wprof_task_free, struct task_struct *p)
 {
 	u64 now_ts = bpf_ktime_get_ns();
 	struct task_state *s;
@@ -925,24 +940,14 @@ int BPF_PROG(wprof_task_exit, struct task_struct *p)
 	if (!s)
 		return 0;
 
-	struct wprof_event *e;
-	emit_task_event(e, EV_SZ(task), 0, EV_TASK_EXIT, now_ts, p);
+	/* always free the task_state entry; only emit the event when enabled */
+	if (capture_task_life) {
+		struct wprof_event *e;
+
+		emit_task_event(e, EV_SZ(task), 0, EV_TASK_FREE, now_ts, p);
+	}
 
 	task_state_delete(p->pid);
-
-	return 0;
-}
-
-SEC("tp_btf/sched_process_free")
-int BPF_PROG(wprof_task_free, struct task_struct *p)
-{
-	u64 now_ts = bpf_ktime_get_ns();
-	struct wprof_event *e;
-
-	if (!should_trace_task(p, now_ts))
-		return 0;
-
-	emit_task_event(e, EV_SZ(task), 0, EV_TASK_FREE, now_ts, p);
 
 	return 0;
 }

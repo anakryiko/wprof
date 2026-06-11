@@ -93,6 +93,8 @@ const struct capture_feature capture_features[] = {
 	 offsetof(struct env, capture_sched), CFG_NO_SCHED, true},
 	{"wakeups", "Wakeups:", "capture_wakeup", DEFAULT_CAPTURE_WAKEUP,
 	 offsetof(struct env, capture_wakeup), CFG_NO_WAKEUP, true},
+	{"task lifetime", "Task lifetime:", "capture_task_life", DEFAULT_CAPTURE_TASK_LIFE,
+	 offsetof(struct env, capture_task_life), CFG_NO_TASK_LIFE, true},
 	{"workqueues", "Workqueues:", "capture_wq", DEFAULT_CAPTURE_WQ,
 	 offsetof(struct env, capture_wq), CFG_NO_WQ, true},
 };
@@ -598,6 +600,17 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 		bpf_program__set_autoload(skel->progs.wprof_task_wakeup_new, true);
 	}
 
+	/*
+	 * Task lifetime events. wprof_task_free stays always-loaded because it also
+	 * frees the per-task task_states entry; it only emits its event when enabled.
+	 */
+	if (env.capture_task_life) {
+		bpf_program__set_autoload(skel->progs.wprof_task_rename, true);
+		bpf_program__set_autoload(skel->progs.wprof_task_fork, true);
+		bpf_program__set_autoload(skel->progs.wprof_task_exec, true);
+		bpf_program__set_autoload(skel->progs.wprof_task_exit, true);
+	}
+
 	if (env.capture_wq) {
 		bpf_program__set_autoload(skel->progs.wprof_wq_exec_start, true);
 		bpf_program__set_autoload(skel->progs.wprof_wq_exec_end, true);
@@ -731,6 +744,7 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 	bpf_map__set_autocreate(skel->maps.scx_task_ctxs, skel->rodata->capture_scx_layer_id);
 
 	skel->rodata->capture_scx = env.capture_scx == TRUE;
+	skel->rodata->capture_task_life = env.capture_task_life == TRUE;
 
 	skel->rodata->rb_cnt = env.ringbuf_cnt;
 	bpf_map__set_max_entries(skel->maps.rbs, env.ringbuf_cnt);
