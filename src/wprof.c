@@ -140,6 +140,8 @@ const char *extra_param_str(struct wprof_data_hdr *hdr, const struct wprof_extra
 	case WEXTRA_EMIT_REQ_SPLIT:		return e->value ? "-e req-split" : "-e no-req-split";
 	case WEXTRA_EMIT_REQ_EMBED:		return e->value ? "-e req-embed" : "-e no-req-embed";
 	case WEXTRA_EMIT_EMBED_STACKS:		return e->value ? "-e embed-stacks" : "-e no-embed-stacks";
+	case WEXTRA_PREPARE_SPEC:		return sfmt("--prepare %s", wevent_str(hdr, e->stroff));
+	case WEXTRA_ACTIVATE_SPEC:		return sfmt("--activate %s", wevent_str(hdr, e->stroff));
 	default:
 		BUG("unknown extra param kind %d\n", e->kind);
 	}
@@ -549,8 +551,6 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 		eprintf("Failed to get online CPU numbers: %d\n", err);
 		return -EINVAL;
 	}
-
-	calibrate_ktime();
 
 	env.skel = st->skel = skel = wprof_bpf__open();
 	if (!skel) {
@@ -1241,6 +1241,14 @@ static int ctl_epoll_add(int epoll_fd, int fd, u32 tag)
 static int do_prepare(struct bpf_state *bpf, struct worker_state *workers, int num_cpus, int workdir_fd)
 {
 	int err;
+	/*
+	 * Injected agents auto-retract if wprof dies without tearing them down.
+	 * Size that timeout to cover the whole window from now to the planned
+	 * session end (the wait for activation plus the run duration), with margin.
+	 */
+	u64 activate_at = env.sess_ctl.activate_target_ts ?: ktime_now_ns();
+	long sess_timeout_ms = (s64)(activate_at + env.duration_ns - ktime_now_ns()) / 1000000 +
+			       LIBWPROFINJ_SESSION_TIMEOUT_MS;
 
 	err = setup_bpf(bpf, workers, num_cpus, workdir_fd);
 	if (err) {
@@ -1256,9 +1264,7 @@ static int do_prepare(struct bpf_state *bpf, struct worker_state *workers, int n
 
 	if (env.cuda_cnt > 0) {
 		wprintf("Preparing CUDA tracees...\n");
-		/* give extra time for auto-timeout within tracee */
-		err = cuda_trace_prepare(workdir_fd,
-					 env.duration_ns / 1000000 + LIBWPROFINJ_SESSION_TIMEOUT_MS);
+		err = cuda_trace_prepare(workdir_fd, sess_timeout_ms);
 		if (err) {
 			eprintf("Failed to prepare CUDA tracing sessions: %d\n", err);
 			return err;
@@ -1267,8 +1273,7 @@ static int do_prepare(struct bpf_state *bpf, struct worker_state *workers, int n
 
 	if (env.py_cnt > 0) {
 		wprintf("Preparing Python tracees...\n");
-		err = pytrace_trace_prepare(workdir_fd,
-					    env.duration_ns / 1000000 + LIBWPROFINJ_SESSION_TIMEOUT_MS);
+		err = pytrace_trace_prepare(workdir_fd, sess_timeout_ms);
 		if (err) {
 			eprintf("Failed to prepare Python tracing sessions: %d\n", err);
 			return err;
@@ -1333,6 +1338,7 @@ int main(int argc, char **argv)
 	int workdir_fd = -1;
 
 	env.actual_start_ts = ktime_now_ns();
+	calibrate_ktime(); /* establish the ktime<->realtime mapping up front, so it is always available */
 	env.sess_ctl.sig_efd = -1; /* so an early SIGINT (before the eventfd exists) is a no-op */
 
 	/* Parse command line arguments */
@@ -1902,7 +1908,37 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	arm_timer_abs(env.sess_ctl.prep_tfd, ktime_now_ns());
+	/*
+	 * Resolve --prepare/--activate wall-clock specs into absolute ktime
+	 * targets; a zero target means "immediately" (prepare at startup, activate
+	 * as soon as prepare finishes).
+	 */
+	if (env.prepare_spec.kind) {
+		env.sess_ctl.prepare_target_ts = resolve_timespec(&env.prepare_spec, env.actual_start_ts);
+		if (ts_before(env.sess_ctl.prepare_target_ts, ktime_now_ns())) {
+			eprintf("Preparation time (--prepare) is in the past!\n");
+			err = -EINVAL;
+			goto cleanup;
+		}
+	}
+	if (env.activate_spec.kind) {
+		env.sess_ctl.activate_target_ts = resolve_timespec(&env.activate_spec, env.actual_start_ts);
+		if (ts_before(env.sess_ctl.activate_target_ts, ktime_now_ns())) {
+			eprintf("Activation time (--activate) is in the past!\n");
+			err = -EINVAL;
+			goto cleanup;
+		}
+	}
+	if (env.sess_ctl.prepare_target_ts && env.sess_ctl.activate_target_ts &&
+	    ts_before(env.sess_ctl.activate_target_ts, env.sess_ctl.prepare_target_ts)) {
+		eprintf("Activation time (--activate) is before preparation time (--prepare)!\n");
+		err = -EINVAL;
+		goto cleanup;
+	}
+
+	arm_timer_abs(env.sess_ctl.prep_tfd, env.sess_ctl.prepare_target_ts ?: ktime_now_ns());
+	if (env.prepare_spec.kind)
+		wprintf("Pending preparation trigger...\n");
 
 	while (env.sess_ctl.state != SESS_DONE) {
 		struct epoll_event evs[8];
@@ -1929,7 +1965,15 @@ int main(int argc, char **argv)
 				if (err)
 					goto cleanup;
 				env.sess_ctl.state = SESS_ARMED;
-				arm_timer_abs(env.sess_ctl.activate_tfd, ktime_now_ns());
+				if (env.sess_ctl.activate_target_ts &&
+				    ts_before(env.sess_ctl.activate_target_ts, ktime_now_ns())) {
+					eprintf("Activation time (--activate) already passed during preparation!\n");
+					err = -EINVAL;
+					goto cleanup;
+				}
+				arm_timer_abs(env.sess_ctl.activate_tfd, env.sess_ctl.activate_target_ts ?: ktime_now_ns());
+				if (env.activate_spec.kind)
+					wprintf("Pending activation trigger...\n");
 				break;
 			case CTL_ACTIVATE_TIMER:
 				drain_fd(env.sess_ctl.activate_tfd);

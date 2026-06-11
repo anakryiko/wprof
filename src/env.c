@@ -87,6 +87,8 @@ enum {
 	OPT_PMU_COUNTER = 1016,
 	OPT_NO_PMU = 1017,
 	OPT_JSON_SCHEMA = 1018,
+	OPT_PREPARE = 1019,
+	OPT_ACTIVATE = 1020,
 
 	OPT_ALLOW_TID = 2000,
 	OPT_DENY_TID = 2001,
@@ -116,6 +118,8 @@ static const struct argp_option opts[] = {
 	{ "log", OPT_LOG, "LOG", 0, "Debug logging subset selector (libbpf, usdt, topology, inject, tracee, pytrace)"},
 	{ "dur", 'd', "DURATION", 0, "Limit running duration; accepts time units s/ms/us/ns/m/h, bare number is ms (default: 1000ms)" },
 	{ "dur-ms", 0, 0, OPTION_ALIAS },
+	{ "prepare", OPT_PREPARE, "WHEN", 0, "Delayed tracing setup, syntax: @now, @<ISO time>, +<dur>, /<dur> (align to next period). Default: at startup" },
+	{ "activate", OPT_ACTIVATE, "WHEN", 0, "Delayed data capture activation; same syntax as --prepare. Default: immediately after prepare" },
 	{ "timer-freq", OPT_TIMER_FREQ, "HZ", 0, "On-CPU timer interrupt frequency (default: 100Hz, i.e., every 10ms)" },
 
 	{ "data", 'D', "FILE", 0, "Data dump path (defaults to 'wprof.data' in current directory)" },
@@ -278,6 +282,20 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		env.duration_ns = dur;
 		break;
 	}
+	case OPT_PREPARE:
+		if (parse_timespec(arg, &env.prepare_spec)) {
+			fprintf(stderr, "Invalid --prepare time spec: %s\n", arg);
+			argp_usage(state);
+		}
+		env.prepare_spec_str = strdup(arg);
+		break;
+	case OPT_ACTIVATE:
+		if (parse_timespec(arg, &env.activate_spec)) {
+			fprintf(stderr, "Invalid --activate time spec: %s\n", arg);
+			argp_usage(state);
+		}
+		env.activate_spec_str = strdup(arg);
+		break;
 	case 'D':
 		if (env.output_sealed) {
 			fprintf(stderr, "Output file options are disabled by --seal-output\n");

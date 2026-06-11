@@ -209,9 +209,48 @@ static inline u64 ktime_now_ns()
 	return timespec_to_ns(&t);
 }
 
+/* wraparound-safe comparison of two monotonic (ktime) timestamps */
+static inline int ts_cmp(u64 a, u64 b)
+{
+	s64 d = (s64)(a - b);
+
+	return (d > 0) - (d < 0);
+}
+
+static inline bool ts_before(u64 a, u64 b)
+{
+	return ts_cmp(a, b) < 0;
+}
+
+static inline bool ts_after(u64 a, u64 b)
+{
+	return ts_cmp(a, b) > 0;
+}
+
 void calibrate_ktime(void);
 void set_ktime_off(u64 ktime_ns, u64 realtime_ns);
 u64 ktime_to_realtime_ns(u64 ts_ns);
+u64 realtime_to_ktime_ns(u64 ts_ns);
+
+/*
+ * A --prepare/--activate time spec, parsed from the CLI and later resolved to an
+ * absolute ktime (CLOCK_MONOTONIC) instant via resolve_timespec().
+ */
+enum timespec_kind {
+	TS_UNSET = 0,	/* option not given */
+	TS_NOW,		/* @now */
+	TS_ABS,		/* @<ISO time>: val = wall-clock (realtime) ns */
+	TS_REL,		/* +<dur>: val = ns offset from wprof start */
+	TS_ALIGN,	/* /<dur>: val = period ns, align to next epoch boundary */
+};
+
+struct timespec_spec {
+	enum timespec_kind kind;
+	u64 val;
+};
+
+int parse_timespec(const char *arg, struct timespec_spec *out);
+u64 resolve_timespec(const struct timespec_spec *spec, u64 start_ktime_ns);
 
 /* ARGS PARSING HELPERS */
 int append_str(char ***strs, int *cnt, const char *str);

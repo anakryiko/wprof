@@ -449,6 +449,95 @@ u64 ktime_to_realtime_ns(u64 ts_ns)
 	return ktime_off + ts_ns;
 }
 
+u64 realtime_to_ktime_ns(u64 ts_ns)
+{
+	return ts_ns - ktime_off;
+}
+
+int parse_timespec(const char *arg, struct timespec_spec *out)
+{
+	if (strcmp(arg, "@now") == 0) {
+		*out = (struct timespec_spec){ .kind = TS_NOW };
+		return 0;
+	}
+
+	if (arg[0] == '@') {
+		/* absolute local wall-clock time, in (a subset of) ISO 8601 forms */
+		static const char *fmts[] = {
+			"%Y-%m-%dT%H:%M:%S",
+			"%Y-%m-%d %H:%M:%S",
+			"%Y-%m-%dT%H:%M",
+			"%Y-%m-%d %H:%M",
+			"%Y-%m-%d",
+			"%H:%M:%S",
+			"%H:%M",
+		};
+		time_t now = time(NULL);
+
+		for (size_t i = 0; i < ARRAY_SIZE(fmts); i++) {
+			struct tm tm;
+			char *end;
+
+			/*
+			 * default to today at midnight; strptime overlays parsed fields,
+			 * so date-only specs stay at 00:00 and time-only specs use today
+			 */
+			localtime_r(&now, &tm);
+			tm.tm_hour = tm.tm_min = tm.tm_sec = 0;
+			tm.tm_isdst = -1; /* let libc resolve DST for the local time */
+
+			end = strptime(arg + 1, fmts[i], &tm);
+			if (end && *end == '\0') {
+				time_t t = mktime(&tm);
+
+				if (t == (time_t)-1)
+					return -EINVAL;
+				*out = (struct timespec_spec){ .kind = TS_ABS, .val = (u64)t * 1000000000ULL };
+				return 0;
+			}
+		}
+		return -EINVAL;
+	}
+
+	if (arg[0] == '+') {
+		s64 ns = parse_time_units(arg + 1);
+		if (ns < 0)
+			return -EINVAL;
+		*out = (struct timespec_spec){ .kind = TS_REL, .val = (u64)ns };
+		return 0;
+	}
+
+	if (arg[0] == '/') {
+		s64 ns = parse_time_units(arg + 1);
+		if (ns <= 0) /* alignment period must be positive */
+			return -EINVAL;
+		*out = (struct timespec_spec){ .kind = TS_ALIGN, .val = (u64)ns };
+		return 0;
+	}
+
+	return -EINVAL;
+}
+
+u64 resolve_timespec(const struct timespec_spec *spec, u64 start_ktime_ns)
+{
+	switch (spec->kind) {
+	case TS_NOW:
+		return ktime_now_ns();
+	case TS_REL:
+		return start_ktime_ns + spec->val;
+	case TS_ABS:
+		return realtime_to_ktime_ns(spec->val);
+	case TS_ALIGN: {
+		u64 now_rt = ktime_to_realtime_ns(ktime_now_ns());
+		u64 aligned_rt = (now_rt + spec->val - 1) / spec->val * spec->val;
+		return realtime_to_ktime_ns(aligned_rt);
+	}
+	case TS_UNSET:
+	default:
+		return 0;
+	}
+}
+
 __printf(2, 3)
 void log_printf(int verbosity, const char *fmt, ...)
 {
