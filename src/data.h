@@ -23,6 +23,8 @@ enum cfg_feature_bit {
 	CFG_CAPTURE_UTRACE	= 0x080,
 	CFG_CAPTURE_SOFTIRQ	= 0x100,
 	CFG_CAPTURE_HARDIRQ	= 0x200,
+	CFG_NO_SCHED		= 0x400, /* inverted (set = disabled) for backwards compat */
+	CFG_NO_WAKEUP		= 0x800, /* inverted (set = disabled) for backwards compat */
 };
 
 struct wprof_data_cfg {

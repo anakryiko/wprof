@@ -1183,8 +1183,10 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 	for (int i = 0; i < capture_feature_cnt; i++) {
 		const struct capture_feature *f = &capture_features[i];
 		enum tristate *flag = (void *)&env + f->env_flag_off;
+		/* inverted features set the bit when DISABLED (see cfg_feature_captured) */
+		bool set_bit = f->inverted ? (*flag != TRUE) : (*flag == TRUE);
 
-		if (*flag == TRUE)
+		if (set_bit)
 			hdr.cfg.capture_features |= f->cfg_bit;
 		else
 			hdr.cfg.capture_features &= ~f->cfg_bit;

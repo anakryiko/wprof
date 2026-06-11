@@ -2185,12 +2185,35 @@ static int process_wakeup_new(struct worker_state *w, const struct wevent *e)
 static void emit_waking(struct worker_state *w, const struct wevent *e)
 {
 	struct wprof_data_hdr *hdr = w->dump_hdr;
-	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
+	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);	/* the waker */
+	struct wprof_task wakee = wevent_resolve_task(hdr, e->waking.wakee_task_id);
 
 	emit_track_descrs(w, &task);
+	if (should_trace_task(&wakee))
+		emit_track_descrs(w, &wakee);
 
-	struct wprof_task wakee = wevent_resolve_task(hdr, e->waking.wakee_task_id);
-	emit_track_descrs(w, &wakee);
+	/*
+	 * With context switches the WAKER->WAKEE pair is rendered at the wakee's
+	 * switch (see EV_SWITCH), which consumes the waker stack stashed by
+	 * process_waking(). Under -f no-sched that switch never comes, so render a
+	 * standalone WAKER instant on the waker's track here instead.
+	 */
+	if (env.capture_sched)
+		return;
+
+	int tr_id = (env.requested_stack_traces & ST_WAKER) ? e->waking.waker_stack_id : 0;
+
+	emit_instant(trackid_thread(&task), e->ts, IID_NAME_WAKER, IID_CAT_WAKER) {
+		emit_kv_int(IID_ANNK_CPU, e->cpu);
+		if (env.emit_numa)
+			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
+		emit_kv_str(IID_ANNK_WAKEE, iid_str(emit_intern_str(w, wakee.comm), wakee.comm));
+		if (env.emit_tidpid) {
+			emit_kv_int(IID_ANNK_WAKEE_TID, task_tid(&wakee));
+			emit_kv_int(IID_ANNK_WAKEE_PID, wakee.pid);
+		}
+		emit_callstack(w, tr_id);
+	}
 }
 
 static int process_waking(struct worker_state *w, const struct wevent *e)
@@ -2205,9 +2228,13 @@ static int process_waking(struct worker_state *w, const struct wevent *e)
 	if (tr_id <= 0)
 		return 0;
 
-	struct wprof_task wakee = wevent_resolve_task(hdr, e->waking.wakee_task_id);
-	struct task_state *wakee_st = task_state(w, &wakee);
-	wakee_st->waker_callstack_id = tr_id;
+	/* with context switches, stash the waker stack for the wakee's switch to render */
+	if (env.capture_sched) {
+		struct wprof_task wakee = wevent_resolve_task(hdr, e->waking.wakee_task_id);
+		struct task_state *wakee_st = task_state(w, &wakee);
+
+		wakee_st->waker_callstack_id = tr_id;
+	}
 
 	if (!env.json_path)
 		emit_waking(w, e);
@@ -4224,7 +4251,7 @@ static void emit_header_json(struct worker_state *w)
 	json_kv_int(j, "timer_freq_hz", cfg->timer_freq_hz);
 	for (int i = 0; i < capture_feature_cnt; i++) {
 		const struct capture_feature *f = &capture_features[i];
-		json_kv_bool(j, f->json_key, !!(cfg->capture_features & f->cfg_bit));
+		json_kv_bool(j, f->json_key, cfg_has_feat(cfg->capture_features, f));
 	}
 
 	json_subarr_start(j, "stacks");

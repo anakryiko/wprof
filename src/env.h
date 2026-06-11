@@ -31,6 +31,8 @@
 #define DEFAULT_CAPTURE_UTRACE FALSE
 #define DEFAULT_CAPTURE_SOFTIRQ TRUE
 #define DEFAULT_CAPTURE_HARDIRQ TRUE
+#define DEFAULT_CAPTURE_SCHED TRUE
+#define DEFAULT_CAPTURE_WAKEUP TRUE
 
 #define DEFAULT_EMIT_NUMA FALSE
 #define DEFAULT_EMIT_TIDPID FALSE
@@ -132,6 +134,8 @@ struct env {
 	enum tristate capture_utrace;
 	enum tristate capture_softirq;
 	enum tristate capture_hardirq;
+	enum tristate capture_sched;	/* context-switch on/off-CPU slices */
+	enum tristate capture_wakeup;	/* waker/wakee tracking */
 
 	/* trace visualization features */
 	enum tristate emit_sched_view;
@@ -274,10 +278,19 @@ struct capture_feature {
 	enum tristate default_val;
 	size_t env_flag_off;
 	u64 cfg_bit;
+	bool inverted;	/* cfg_bit is set when the feature is DISABLED (default-on features) */
 };
 
 extern const struct capture_feature capture_features[];
 extern const int capture_feature_cnt;
+
+/* whether feature f is recorded as captured in cfg bits, honoring inverted bits */
+static inline bool cfg_has_feat(u64 cfg_bits, const struct capture_feature *f)
+{
+	bool bit = !!(cfg_bits & f->cfg_bit);
+
+	return f->inverted ? !bit : bit;
+}
 
 /*
  * Table of trace emit (-e) options: the WEXTRA_EMIT_* kind they persist as,
