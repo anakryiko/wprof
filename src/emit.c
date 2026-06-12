@@ -1480,6 +1480,7 @@ static struct wpb_ftrace_event *add_ftrace_event(struct worker_state *w, int cpu
 /* EV_SWITCH */
 struct switch_ctx {
 	bool trace_waker, trace_prev, trace_next;
+	bool has_waking;
 	int waker_callstack_id;
 
 	struct task_state *prev_st;
@@ -1606,7 +1607,7 @@ skip_prev_task:
 
 	emit_track_descrs(w, &next);
 
-	if (!e->swtch.waking_ts)
+	if (!s->has_waking)
 		goto skip_waking;
 
 	if (is_ts_in_range(e->swtch.waking_ts)/* && e->swtch.waker_cpu != e->cpu*/) {
@@ -1645,7 +1646,7 @@ skip_waking:
 		if (s->next_offcpu_dur_ns)
 			emit_kv_float(IID_ANNK_OFFCPU_DUR_US, "%.3lf", s->next_offcpu_dur_ns / 1000.0);
 
-		if (e->swtch.waking_ts) {
+		if (s->has_waking) {
 			emit_kv_str(IID_ANNK_WAKER,
 				    iid_str(emit_intern_str(w, waker.comm), waker.comm));
 			if (env.emit_tidpid) {
@@ -1677,7 +1678,7 @@ skip_waking:
 			emit_kv_int(IID_ANNK_SCX_DSQ_ID, e->swtch.next_task_scx_dsq_id);
 		}
 
-		if (e->swtch.waking_ts && is_ts_in_range(e->swtch.waking_ts))
+		if (s->has_waking && is_ts_in_range(e->swtch.waking_ts))
 			emit_flow_id(e->swtch.waking_ts);
 	}
 
@@ -1741,7 +1742,7 @@ static void emit_switch_json(struct worker_state *w, const struct wevent *e, str
 	json_kv_str(j, "prev_state", s->prev_preempted ? "preempted" : "blocked");
 	json_kv_int(j, "prev_prio", e->swtch.prev_prio);
 	json_kv_int(j, "next_prio", e->swtch.next_prio);
-	if (e->swtch.waking_ts) {
+	if (s->has_waking) {
 		json_kv_ts(j, "waking_ts", e->swtch.waking_ts - env.sess_start_ts);
 		json_kv_str(j, "waking_reason", wreason_str(e->swtch.waking_flags));
 		json_task(j, "waker", &waker);
@@ -1773,10 +1774,22 @@ static int process_switch(struct worker_state *w, const struct wevent *e)
 	struct wprof_task next = wevent_resolve_task(hdr, e->swtch.next_task_id);
 	struct wprof_task waker = wevent_resolve_task(hdr, e->swtch.waker_task_id);
 
-	bool has_waking = e->swtch.waking_ts != 0 && is_ts_in_range(e->swtch.waking_ts);
+	bool has_waking = e->swtch.waking_ts != 0;
+
+	/*
+	 * WAKER/WAKEE info is recorded by the sched_waking hook, so it is gated by
+	 * -f wakeup. Preemption (WF_PREEMPTED, recorded by the switch itself) is part
+	 * of context-switch tracking and is left untouched.
+	 */
+	bool waking_is_wakeup = e->swtch.waking_flags == WF_WOKEN ||
+				e->swtch.waking_flags == WF_WOKEN_NEW;
+	if (!env.capture_wakeup && waking_is_wakeup)
+		has_waking = false;
 
 	struct switch_ctx s = {
-		.trace_waker = has_waking && should_trace_task(&waker),
+		.has_waking = has_waking,
+		.trace_waker = has_waking && is_ts_in_range(e->swtch.waking_ts) &&
+			       should_trace_task(&waker),
 		.trace_prev = should_trace_task(&task),
 		.trace_next = should_trace_task(&next),
 	};
@@ -1817,7 +1830,7 @@ static int process_switch(struct worker_state *w, const struct wevent *e)
 		s.next_offcpu_dur_ns = s.next_st->offcpu_ts ? e->ts - s.next_st->offcpu_ts : e->ts - env.sess_start_ts;
 		s.next_st->offcpu_ts = 0;
 
-		if (e->swtch.waking_ts) {
+		if (s.has_waking) {
 			if (e->swtch.waking_flags == WF_PREEMPTED) {
 				/*
 				 * for preemption case, we just accummulate preempted time,
@@ -2039,16 +2052,29 @@ static int process_task_rename(struct worker_state *w, const struct wevent *e)
 {
 	struct wprof_data_hdr *hdr = w->dump_hdr;
 	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
+	struct task_state *st;
 
 	if (!should_trace_task(&task))
 		return 0;
 
+	/* JSON output carries no per-task render state to maintain */
 	if (env.json_path) {
-		emit_task_rename_json(w, e);
+		if (env.capture_task_life)
+			emit_task_rename_json(w, e);
 		return 0;
 	}
 
-	struct task_state *st = task_state(w, &task);
+	if (!env.capture_task_life)
+		goto skip_emit;
+
+	emit_task_rename(w, e);
+
+skip_emit:
+	/*
+	 * Always track the rename so context-switch slices stay correctly named,
+	 * even when the RENAME event itself is suppressed.
+	 */
+	st = task_state(w, &task);
 
 	if (st->rename_ts == 0) {
 		wprof_strlcpy(st->old_comm, task.comm, sizeof(st->old_comm));
@@ -2061,7 +2087,6 @@ static int process_task_rename(struct worker_state *w, const struct wevent *e)
 
 	st->name_iid = emit_intern_str(w, new_comm);
 
-	emit_task_rename(w, e);
 	return 0;
 }
 
@@ -2145,6 +2170,9 @@ static int process_task_free(struct worker_state *w, const struct wevent *e)
 {
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
 
+	if (!env.capture_task_life)
+		goto skip_emit;
+
 	if (!should_trace_task(&task))
 		goto skip_emit;
 
@@ -2154,7 +2182,7 @@ static int process_task_free(struct worker_state *w, const struct wevent *e)
 		emit_task_free(w, e);
 
 skip_emit:
-	/* now we should be done with the task */
+	/* always release the render state, even when the FREE event is suppressed */
 	task_state_delete(&task);
 
 	return 0;
