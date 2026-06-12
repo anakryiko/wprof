@@ -1765,6 +1765,9 @@ static void emit_switch_json(struct worker_state *w, const struct wevent *e, str
 
 static int process_switch(struct worker_state *w, const struct wevent *e)
 {
+	if (!env.capture_sched)
+		return 0;
+
 	struct wprof_data_hdr *hdr = w->dump_hdr;
 	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
 	struct wprof_task next = wevent_resolve_task(hdr, e->swtch.next_task_id);
@@ -1913,6 +1916,9 @@ static void emit_fork_json(struct worker_state *w, const struct wevent *e)
 
 static int process_fork(struct worker_state *w, const struct wevent *e)
 {
+	if (!env.capture_task_life)
+		return 0;
+
 	struct wprof_data_hdr *hdr = w->dump_hdr;
 	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
 	struct wprof_task child = wevent_resolve_task(hdr, e->fork.child_task_id);
@@ -1968,6 +1974,9 @@ static void emit_exec_json(struct worker_state *w, const struct wevent *e)
 
 static int process_exec(struct worker_state *w, const struct wevent *e)
 {
+	if (!env.capture_task_life)
+		return 0;
+
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
 
 	if (!should_trace_task(&task))
@@ -2087,6 +2096,9 @@ static void emit_task_exit_json(struct worker_state *w, const struct wevent *e)
 
 static int process_task_exit(struct worker_state *w, const struct wevent *e)
 {
+	if (!env.capture_task_life)
+		return 0;
+
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
 
 	if (!should_trace_task(&task))
@@ -2162,6 +2174,9 @@ static void emit_wakeup_new(struct worker_state *w, const struct wevent *e)
 
 static int process_wakeup_new(struct worker_state *w, const struct wevent *e)
 {
+	if (!env.capture_wakeup)
+		return 0;
+
 	struct wprof_data_hdr *hdr = w->dump_hdr;
 	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
 
@@ -2218,6 +2233,9 @@ static void emit_waking(struct worker_state *w, const struct wevent *e)
 
 static int process_waking(struct worker_state *w, const struct wevent *e)
 {
+	if (!env.capture_wakeup)
+		return 0;
+
 	struct wprof_data_hdr *hdr = w->dump_hdr;
 	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
 
@@ -2292,7 +2310,7 @@ static void emit_hardirq_exit_json(struct worker_state *w, const struct wevent *
 
 static int process_hardirq_exit(struct worker_state *w, const struct wevent *e)
 {
-	if (env.capture_hardirq != TRUE)
+	if (!env.capture_hardirq)
 		return 0;
 
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
@@ -2367,7 +2385,7 @@ static void emit_softirq_exit_json(struct worker_state *w, const struct wevent *
 
 static int process_softirq_exit(struct worker_state *w, const struct wevent *e)
 {
-	if (env.capture_softirq != TRUE)
+	if (!env.capture_softirq)
 		return 0;
 
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
@@ -2435,6 +2453,9 @@ static void emit_wq_end_json(struct worker_state *w, const struct wevent *e)
 
 static int process_wq_end(struct worker_state *w, const struct wevent *e)
 {
+	if (!env.capture_wq)
+		return 0;
+
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
 
 	if (!should_trace_task(&task))
@@ -2515,6 +2536,9 @@ static void emit_scx_dsq_end_json(struct worker_state *w, const struct wevent *e
 
 static int process_scx_dsq_end(struct worker_state *w, const struct wevent *e)
 {
+	if (!env.capture_scx)
+		return 0;
+
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
 
 	if (!should_trace_task(&task))
@@ -2573,6 +2597,9 @@ static void emit_ipi_send_json(struct worker_state *w, const struct wevent *e)
 
 static int process_ipi_send(struct worker_state *w, const struct wevent *e)
 {
+	if (!env.capture_ipis)
+		return 0;
+
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
 
 	if (!should_trace_task(&task))
@@ -2648,6 +2675,9 @@ static void emit_ipi_exit_json(struct worker_state *w, const struct wevent *e)
 
 static int process_ipi_exit(struct worker_state *w, const struct wevent *e)
 {
+	if (!env.capture_ipis)
+		return 0;
+
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
 
 	if (!should_trace_task(&task))
@@ -2881,7 +2911,7 @@ static void emit_req_event_json(struct worker_state *w, const struct wevent *e)
 
 static int process_req_event(struct worker_state *w, const struct wevent *e)
 {
-	if (env.capture_requests != TRUE)
+	if (!env.capture_requests)
 		return 0;
 
 	struct wprof_data_hdr *hdr = w->dump_hdr;
@@ -3021,7 +3051,7 @@ static void emit_req_task_event_json(struct worker_state *w, const struct wevent
 
 static int process_req_task_event(struct worker_state *w, const struct wevent *e)
 {
-	if (env.capture_requests != TRUE)
+	if (!env.capture_requests)
 		return 0;
 
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
@@ -3235,7 +3265,7 @@ static void emit_cuda_kernel_json(struct worker_state *w, const struct wevent *e
 
 static int process_cuda_kernel(struct worker_state *w, const struct wevent *e)
 {
-	if (env.capture_cuda != TRUE)
+	if (!env.capture_cuda)
 		return 0;
 
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
@@ -3323,7 +3353,7 @@ static void emit_cuda_memcpy_json(struct worker_state *w, const struct wevent *e
 
 static int process_cuda_memcpy(struct worker_state *w, const struct wevent *e)
 {
-	if (env.capture_cuda != TRUE)
+	if (!env.capture_cuda)
 		return 0;
 
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
@@ -3400,7 +3430,7 @@ static void emit_cuda_memset_json(struct worker_state *w, const struct wevent *e
 
 static int process_cuda_memset(struct worker_state *w, const struct wevent *e)
 {
-	if (env.capture_cuda != TRUE)
+	if (!env.capture_cuda)
 		return 0;
 
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
@@ -3495,7 +3525,7 @@ static void emit_cuda_sync_json(struct worker_state *w, const struct wevent *e)
 
 static int process_cuda_sync(struct worker_state *w, const struct wevent *e)
 {
-	if (env.capture_cuda != TRUE)
+	if (!env.capture_cuda)
 		return 0;
 
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
@@ -3609,7 +3639,7 @@ static void emit_cuda_api_json(struct worker_state *w, const struct wevent *e)
 
 static int process_cuda_api(struct worker_state *w, const struct wevent *e)
 {
-	if (env.capture_cuda != TRUE)
+	if (!env.capture_cuda)
 		return 0;
 
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
@@ -3783,7 +3813,7 @@ static void emit_pytrace_event_json(struct worker_state *w, const struct wevent 
 
 static int process_pytrace(struct worker_state *w, const struct wevent *e)
 {
-	if (env.capture_pytrace != TRUE)
+	if (!env.capture_pytrace)
 		return 0;
 
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
@@ -3872,7 +3902,7 @@ static void emit_pytorch_event_json(struct worker_state *w, const struct wevent 
 
 static int process_pytorch(struct worker_state *w, const struct wevent *e)
 {
-	if (env.capture_pytorch != TRUE)
+	if (!env.capture_pytorch)
 		return 0;
 
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
@@ -4183,7 +4213,7 @@ static void emit_utrace_json(struct worker_state *w, const struct wevent *e)
 
 static int process_utrace(struct worker_state *w, const struct wevent *e)
 {
-	if (env.capture_utrace != TRUE)
+	if (!env.capture_utrace)
 		return 0;
 
 	if (!is_ts_in_range(e->ts))
@@ -4203,6 +4233,14 @@ static int process_utrace(struct worker_state *w, const struct wevent *e)
 	return 0;
 }
 
+/*
+ * Event dispatch table. Each handler must early-return when its capture
+ * feature (env.capture_*) is disabled, so that replaying a dump with
+ * -f no-<feature> drops those events from both the Perfetto and JSON output.
+ * The capture flags are resolved to a definite on/off before emit in the
+ * record and replay paths alike. When adding a new event/feature, don't
+ * forget this gate.
+ */
 static handle_event_fn emit_fns[] = {
 	[EV_TIMER] = process_timer,
 	[EV_SWITCH] = process_switch,
