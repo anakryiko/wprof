@@ -743,7 +743,9 @@ void finalize_cupti_activities(void)
 		char tmp;
 		/* XXX: add timeout? what if no CUDA API call happens ever again? */
 		int pipe_fd = cupti_fini_pipe_fds[0];
-		(void)read(pipe_fd, &tmp, 1);
+		ssize_t r;
+		/* retry on EINTR so a signal doesn't make us skip waiting for finalization */
+		do { r = read(pipe_fd, &tmp, 1); } while (r < 0 && errno == EINTR);
 
 		atomic_store(&cupti_fini_pipe_fds[0], -1);
 		close(pipe_fd);

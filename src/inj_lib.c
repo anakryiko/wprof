@@ -609,6 +609,8 @@ event_loop:
 	struct epoll_event evs[8];
 	int n = epoll_wait(epoll_fd, evs, ARRAY_SIZE(evs), -1);
 	if (n < 0) {
+		if (errno == EINTR)
+			goto event_loop; /* interrupted by a signal, not an error; retry */
 		err = -errno;
 		elog("epoll_wait() failed: %d\n", err);
 		goto cleanup;
