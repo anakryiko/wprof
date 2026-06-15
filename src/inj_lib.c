@@ -216,6 +216,7 @@ static int epoll_del(int epoll_fd, int fd)
 }
 
 static bool pytrace_session_active;
+static bool session_ended;
 
 #define CUDA_DUMP_BUF_SZ (256 * 1024)
 static FILE *cuda_dump;
@@ -369,28 +370,37 @@ int cuda_dump_finalize(void)
 
 static int handle_session_end(void)
 {
-	int err = 0;
+	int err = 0, ret;
+
+	/*
+	 * Exit and timer events are racing each other (plus tracer death,
+	 * SHUTDOWN, and the worker cleanup label all funnel here), so finalize
+	 * just once.
+	 */
+	if (session_ended)
+		return 0;
+	session_ended = true;
 
 	finalize_cupti_activities();
 
-	/* exit and timer events are racing each other, we finalize just once */
 	if (cuda_dump) {
-		err = cuda_dump_finalize();
-		if (err) {
-			elog("Failed to finalize CUDA data dump: %d\n", err);
-			return err;
+		ret = cuda_dump_finalize();
+		if (ret) {
+			/* keep going: pytrace finalize below unsubscribes RecordFunction */
+			elog("Failed to finalize CUDA data dump: %d\n", ret);
+			err = err ?: ret;
 		}
 	}
 
 	if (pytrace_session_active) {
-		err = pytrace_session_finalize();
-		if (err) {
-			elog("Failed to finalize pytrace data dump: %d\n", err);
-			return err;
+		ret = pytrace_session_finalize();
+		if (ret) {
+			elog("Failed to finalize pytrace data dump: %d\n", ret);
+			err = err ?: ret;
 		}
 	}
 
-	return 0;
+	return err;
 }
 
 static int setup_session_timer(int *timer_fd_out, long timeout_ms, enum epoll_kind kind)
@@ -721,6 +731,15 @@ event_loop:
 	goto event_loop;
 
 cleanup:
+	/*
+	 * Tear down any active session before the fds and run_ctx go away, no
+	 * matter which error path landed us here. This unsubscribes the
+	 * RecordFunction callback and uninstalls the Python profiler so they can
+	 * never fire against freed state; the permanent trampoline is kept.
+	 * Idempotent via session_ended, so paths that already finalized are no-ops.
+	 */
+	(void)handle_session_end();
+
 	vlog("Worker thread exiting...\n");
 
 	zclose(exit_fd);
