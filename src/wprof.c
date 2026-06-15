@@ -1486,6 +1486,20 @@ int main(int argc, char **argv)
 			}
 		}
 
+		/*
+		 * Restore captured feature flags into env from the recorded config so
+		 * replay reflects what was captured. Needed by both --replay-info (the
+		 * per-tracee stats summary) and full replay; the full-replay path below
+		 * additionally validates explicitly-requested features against the dump.
+		 */
+		for (int i = 0; i < ARRAY_SIZE(capture_features); i++) {
+			const struct capture_feature *f = &capture_features[i];
+			enum tristate *flag = (void *)&env + f->env_flag_off;
+
+			if (*flag == UNSET)
+				*flag = cfg_has_feat(cfg->capture_features, f);
+		}
+
 		if (env.replay_info) {
 			const int w = 26;
 			const double MB = 1024.0 * 1024.0;
@@ -1683,14 +1697,11 @@ int main(int argc, char **argv)
 		env.timer_freq_hz = cfg->timer_freq_hz;
 		env.timer_period_ns = 1000000000ULL / env.timer_freq_hz;
 
-		/* validate data capture config compatibility */
+		/* validate data capture config compatibility (flags already restored above) */
 		for (int i = 0; i < ARRAY_SIZE(capture_features); i++) {
 			const struct capture_feature *f = &capture_features[i];
 			enum tristate *flag = (void *)&env + f->env_flag_off;
 			bool cfg_flag = cfg_has_feat(cfg->capture_features, f);
-
-			if (*flag == UNSET)
-				*flag = cfg_flag;
 
 			if (*flag == TRUE && !cfg_flag) {
 				eprintf("replay: %s requested, but not recorded in data dump!\n", f->name);
