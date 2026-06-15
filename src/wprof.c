@@ -332,10 +332,16 @@ skip_rusage:
 			continue;
 		}
 		if (env.verbose || env.emit_stats) {
-			eprintf("Python tracee #%d (%s): %llu events, %llu code objects cached.\n",
-				i, name,
-				wstat(s, WSTAT_PYTRACE_EVENT_CNT, 1 + i),
-				wstat(s, WSTAT_PYTRACE_CODE_CACHE_CNT, 1 + i));
+			if (env.capture_pytorch == TRUE) {
+				eprintf("PyTorch tracee #%d (%s): %llu events.\n",
+					i, name, wstat(s, WSTAT_PYTORCH_EVENT_CNT, 1 + i));
+			}
+			if (env.capture_pytrace == TRUE) {
+				eprintf("PyTrace tracee #%d (%s): %llu events, %llu code objects cached.\n",
+					i, name,
+					wstat(s, WSTAT_PYTRACE_EVENT_CNT, 1 + i),
+					wstat(s, WSTAT_PYTRACE_CODE_CACHE_CNT, 1 + i));
+			}
 		}
 	}
 

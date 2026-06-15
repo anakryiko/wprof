@@ -495,10 +495,15 @@ void pytrace_trace_deactivate(void)
 				i, pytrace_str(pf));
 			pf->state = TRACEE_SHUTDOWN_TIMEOUT;
 		} else {
-			vprintf("Python tracee #%d (%s) shut down cleanly"
-				" (%ld events, %ld code objects cached).\n",
-				i, pytrace_str(pf),
-				pf->ctx->pytrace_event_cnt, pf->ctx->pytrace_code_cache_cnt);
+			if (pf->pytorch_dump_fd >= 0) {
+				vprintf("PyTorch tracee #%d (%s) shut down cleanly: %ld events.\n",
+					i, pytrace_str(pf), pf->ctx->pytorch_event_cnt);
+			}
+			if (pf->pytrace_dump_fd >= 0) {
+				vprintf("PyTrace tracee #%d (%s) shut down cleanly: %ld events, %ld code objects cached.\n",
+					i, pytrace_str(pf),
+					pf->ctx->pytrace_event_cnt, pf->ctx->pytrace_code_cache_cnt);
+			}
 			pf->state = TRACEE_INACTIVE;
 		}
 

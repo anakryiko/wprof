@@ -150,6 +150,14 @@ enum wprof_stat_id {
 	 */
 	WSTAT_PMU_ACTIVE_FRAC,
 
+	/*
+	 * Appended out of the PyTrace group above on purpose: the stats blob is
+	 * indexed by stat id, so keeping existing ids stable lets older captures
+	 * still be read (wstats() returns 0 for ids beyond a file's stat_cnt).
+	 * Per-tracee, like the other PyTrace stats: total + py_cnt entries.
+	 */
+	WSTAT_PYTORCH_EVENT_CNT,
+
 	__WSTAT_CNT,
 };
 

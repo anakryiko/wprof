@@ -96,6 +96,9 @@ struct inj_run_ctx {
 	/* pytrace stats */
 	long pytrace_event_cnt;		/* captured events */
 	long pytrace_code_cache_cnt;	/* unique code objects cached */
+
+	/* pytorch (RecordFunction) stats */
+	long pytorch_event_cnt;		/* captured events */
 };
 
 enum inj_msg_kind {
