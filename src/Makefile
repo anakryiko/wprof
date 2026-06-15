@@ -122,11 +122,17 @@ $(BPFTOOL): | $(BPFTOOL_OUTPUT)
 			BPF_DIR=$(LIBBPF_SRC) OUTPUT=$(BPFTOOL_OUTPUT_ABS)/	\
 			-C $(BPFTOOL_SRC) bootstrap
 
-# Build blazesym
+# Build blazesym. Enable xz (.gnu_debugdata/MiniDebugInfo) + zstd decompression
+# without patching the submodule; LZMA_API_STATIC bundles liblzma from source so
+# the binary stays self-contained.
 $(LIBBLAZESYM_SRC)/target/$(if $(BLAZESYM_DEBUG),debug,release)/libblazesym_c.a::
 	$(call msg,LIB,$@)
 	$(Q) [ -d ../blazesym/src ] || git submodule update --init --recursive
-	$(Q)cd $(LIBBLAZESYM_SRC) && $(CARGO) build --package=blazesym-c -q $(if $(BLAZESYM_DEBUG),,--release)
+	$(Q)cd $(LIBBLAZESYM_SRC) &&						\
+	    LZMA_API_STATIC=1 $(CARGO) build -q					\
+		--package=blazesym-c 						\
+		--features blazesym/xz,blazesym/zstd				\
+		$(if $(BLAZESYM_DEBUG),,--release)
 
 $(LIBBLAZESYM_OBJ): $(LIBBLAZESYM_SRC)/target/$(if $(BLAZESYM_DEBUG),debug,release)/libblazesym_c.a | $(OUTPUT)
 	$(Q)cp $(LIBBLAZESYM_SRC)/target/$(if $(BLAZESYM_DEBUG),debug,release)/libblazesym_c.a $@
