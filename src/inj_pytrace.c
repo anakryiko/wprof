@@ -353,7 +353,8 @@ int pytrace_session_setup(struct pytrace_setup_ctx *ctx)
 	pytrace_dump_strs = strset__new(PYTRACE_DUMP_MAX_STRS_SZ, "", 1);
 	if (!pytrace_dump_strs) {
 		elog("Failed to create pytrace string set\n");
-		return -ENOMEM;
+		err = -ENOMEM;
+		goto cleanup; /* unwind a pytorch subscription that may already be live */
 	}
 
 	pytrace_dump = fdopen(ctx->pytrace_dump_fd, "w");
