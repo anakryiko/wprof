@@ -535,6 +535,7 @@ int pytorch_session_finalize(void)
 
 	rf_unregister();
 	torch_active = false;
+	run_ctx->pytorch_event_cnt = torch_event_cnt;
 	pthread_mutex_destroy(&torch_lock);
 
 	fflush(torch_dump);

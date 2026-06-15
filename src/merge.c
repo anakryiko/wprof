@@ -286,6 +286,7 @@ static int stat_elem_cnt(enum wprof_stat_id id, int rb_cnt, int cpu_cnt,
 	case WSTAT_PYTRACE_STATE:
 	case WSTAT_PYTRACE_EVENT_CNT:
 	case WSTAT_PYTRACE_CODE_CACHE_CNT:
+	case WSTAT_PYTORCH_EVENT_CNT:
 		return 1 + py_cnt;
 	/* per-PMU (real counters only); index 0 is global/unused */
 	case WSTAT_PMU_ACTIVE_FRAC:
@@ -488,6 +489,7 @@ skip_bpf_stats:
 	u64 *pytrace_state = wstats(s, WSTAT_PYTRACE_STATE, NULL);
 	u64 *pytrace_event_cnt = wstats(s, WSTAT_PYTRACE_EVENT_CNT, NULL);
 	u64 *pytrace_code_cache_cnt = wstats(s, WSTAT_PYTRACE_CODE_CACHE_CNT, NULL);
+	u64 *pytorch_event_cnt = wstats(s, WSTAT_PYTORCH_EVENT_CNT, NULL);
 
 	for (int i = 0; i < py_cnt; i++) {
 		struct pytrace_tracee *py = &env.pytraces[i];
@@ -501,10 +503,12 @@ skip_bpf_stats:
 
 		pytrace_event_cnt[1 + i] = py->ctx->pytrace_event_cnt;
 		pytrace_code_cache_cnt[1 + i] = py->ctx->pytrace_code_cache_cnt;
+		pytorch_event_cnt[1 + i] = py->ctx->pytorch_event_cnt;
 
 		/* global */
 		pytrace_event_cnt[0] += py->ctx->pytrace_event_cnt;
 		pytrace_code_cache_cnt[0] += py->ctx->pytrace_code_cache_cnt;
+		pytorch_event_cnt[0] += py->ctx->pytorch_event_cnt;
 	}
 
 	double *pmu_active_frac = (double *)wstats(s, WSTAT_PMU_ACTIVE_FRAC, NULL);
