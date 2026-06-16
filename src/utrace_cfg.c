@@ -101,16 +101,109 @@ static const struct {
 	{ "raw_tp:",  UTRACE_RAW_TRACEPOINT },
 };
 
-/* parse "IDX[:TYPE][->NAME]" argument definition without "arg:" prefix */
+static int arg_map_cmp(const void *a, const void *b)
+{
+	const struct utrace_arg_map *x = a, *y = b;
+
+	if (x->key < y->key)
+		return -1;
+	if (x->key > y->key)
+		return 1;
+	return 0;
+}
+
+/* parse "K=V, K=V, ..." int->string map entries (K is int or 0xHEX), sorted by key */
+static int parse_arg_map(struct sview orig, struct sview def, struct utrace_param *p)
+{
+	struct utrace_arg_map *map = NULL;
+	int cnt = 0;
+
+	if (sv_is_empty(sv_trim(def)))
+		return utrace_err(orig, def, "empty map()\n");
+
+	while (!sv_is_empty(def)) {
+		struct sview rest, val;
+		struct sview ent = sv_trim(sv_split_top(def, ",", &rest));
+
+		def = sv_is_empty(rest) ? sv_empty() : sv_consume_left(rest, 1);
+		if (sv_is_empty(ent))
+			continue;
+
+		struct sview key = sv_trim(sv_split(ent, "=", &val));
+		if (sv_is_empty(val))
+			return utrace_err(orig, ent, "map entry must be KEY=LABEL\n");
+		val = sv_trim(sv_consume_left(val, 1));	/* skip '=' */
+		if (sv_is_empty(val))
+			return utrace_err(orig, ent, "empty map label\n");
+
+		long k;
+		if (!sv_as_long(key, &k))
+			return utrace_err(orig, key, "invalid map key (want int or 0xHEX)\n");
+
+		map = realloc(map, (cnt + 1) * sizeof(*map));
+		map[cnt].key = (unsigned long long)k;
+		map[cnt].label = sv_strdup(val);
+		cnt++;
+	}
+
+	qsort(map, cnt, sizeof(*map), arg_map_cmp);
+
+	for (int i = 1; i < cnt; i++) {
+		if (map[i].key == map[i - 1].key)
+			return utrace_err(orig, def, "duplicate map key %lld\n", (long long)map[i].key);
+	}
+
+	p->arg.map = map;
+	p->arg.map_cnt = cnt;
+	return 0;
+}
+
+/*
+ * Apply one render modifier to an arg. Modifiers are generic "name" or
+ * "name(args)" tokens (see parse_arg_param); each interprets its own args.
+ */
+static int parse_arg_modifier(struct sview orig, struct sview mod, struct utrace_param *p)
+{
+	struct sview inner;
+	struct sview name = sv_trim(sv_split(mod, "(", &inner));
+	bool has_inner = !sv_is_empty(inner);
+
+	if (has_inner) {
+		inner = sv_consume_left(inner, 1);	/* skip '(' */
+		if (inner.len == 0 || inner.s[inner.len - 1] != ')')
+			return utrace_err(orig, mod, "unterminated '(' in modifier\n");
+		inner.len--;				/* drop ')' */
+	}
+
+	if (sv_eq(name, "x") || sv_eq(name, "hex")) {
+		if (has_inner)
+			return utrace_err(orig, mod, "'%.*s' takes no arguments\n", name.len, name.s);
+		p->arg.hex = true;
+		return 0;
+	}
+	if (sv_eq(name, "map")) {
+		if (!has_inner)
+			return utrace_err(orig, mod, "'map' requires (KEY=LABEL,...)\n");
+		return parse_arg_map(orig, sv_trim(inner), p);
+	}
+	return utrace_err(orig, name, "unknown arg modifier '%.*s'\n", name.len, name.s);
+}
+
+/* parse "IDX[:TYPE][->NAME][/MOD...]" arg definition without "arg:" prefix */
 static int parse_arg_param(struct sview orig, struct sview def, struct utrace_param *p)
 {
-	struct sview name, arg, arg_type;
+	struct sview name, arg, arg_type, mods;
 	enum utrace_arg_type atype = UTRACE_ARG_UNKNOWN;
 	long idx;
 
 	def = sv_trim(def);
 	if (sv_is_empty(def))
 		return utrace_err(orig, def, "empty arg definition\n");
+
+	struct sview argdef = def;	/* full arg spec, for error highlighting */
+
+	/* peel trailing "/MOD" render modifiers (paren-aware, so map(a,b) is intact) */
+	def = sv_split_top(def, "/", &mods);
 
 	/* split off optional "->name" suffix */
 	def = sv_split(def, "->", &name);
@@ -145,6 +238,39 @@ static int parse_arg_param(struct sview orig, struct sview def, struct utrace_pa
 	p->arg.arg_idx = idx;
 	p->arg.arg_type = atype;
 	p->arg.name = sv_is_empty(name) ? NULL : sv_strdup(name);
+
+	/* render modifiers: "/name" or "/name(args)", e.g. /x, /map(0=a,1=b) */
+	while (!sv_is_empty(mods)) {
+		struct sview rest;
+		struct sview mod = sv_trim(sv_split_top(sv_consume_left(mods, 1), "/", &rest));
+
+		mods = rest;
+		if (sv_is_empty(mod))
+			continue;
+
+		int err = parse_arg_modifier(orig, mod, p);
+		if (err)
+			return err;
+	}
+
+	/*
+	 * /x supports integer and ptr args; /map supports integer args only.
+	 * Validate explicit types here; inferred (UNKNOWN) types are checked after
+	 * type resolution in augment_cfg_args().
+	 */
+	if (atype != UTRACE_ARG_UNKNOWN) {
+		if (p->arg.hex && !utrace_arg_is_int(atype) && atype != UTRACE_ARG_PTR) {
+			return utrace_err(orig, argdef,
+					  "/x supports integer (u8..s64) and ptr args, not '%s'\n",
+					  arg_type_str(atype));
+		}
+		if (p->arg.map_cnt && !utrace_arg_is_int(atype)) {
+			return utrace_err(orig, argdef,
+					  "/map supports integer (u8..s64) args, not '%s'\n",
+					  arg_type_str(atype));
+		}
+	}
+
 	return 0;
 }
 
@@ -156,7 +282,7 @@ static int parse_params(struct sview orig, struct sview def, struct utrace_param
 
 	while (!sv_is_empty(def)) {
 		struct sview rest;
-		struct sview param = sv_split(def, ",", &rest);
+		struct sview param = sv_split_top(def, ",", &rest);
 
 		def = sv_consume_left(rest, 1);
 
@@ -431,7 +557,7 @@ void utrace_compile_fmt(const char *fmt, const struct utrace_param *params, int 
 				segs = realloc(segs, (seg_cnt + 1) * sizeof(*segs));
 				segs[seg_cnt].type = UTRACE_FMT_SEG_ARG;
 				segs[seg_cnt].arg.arg_idx = arg_idx;
-				segs[seg_cnt].arg.type = p->arg.arg_type;
+				segs[seg_cnt].arg.param = p;
 				seg_cnt++;
 				matched = true;
 				break;
@@ -789,6 +915,16 @@ static void format_probe(const struct utrace_cfg *cfg, struct sbuf *sb)
 					sbuf_appendf(sb, ":%s", arg_type_str(p->arg.arg_type));
 				if (p->arg.name)
 					sbuf_appendf(sb, "->%s", p->arg.name);
+				if (p->arg.hex)
+					sbuf_appendf(sb, "/x");
+				if (p->arg.map_cnt) {
+					sbuf_appendf(sb, "/map(");
+					for (int m = 0; m < p->arg.map_cnt; m++) {
+						sbuf_appendf(sb, "%s%lld=%s", m ? "," : "",
+							     (long long)p->arg.map[m].key, p->arg.map[m].label);
+					}
+					sbuf_appendf(sb, ")");
+				}
 				break;
 			default:
 				break;

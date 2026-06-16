@@ -26,6 +26,9 @@ wprof -U 'usdt:myapp:request_start (arg:0:s32, arg:1:str, path:./myapp, pid:1234
 # raw tracepoint with name template
 wprof -U 'raw_tp:sys_enter (arg:id) | name:"syscall #{id}" |'
 
+# decode an integer arg: map syscall numbers (x86-64) to names
+wprof -U 'raw_tp:sys_enter (arg:id->syscall/map(0=read,1=write,257=openat)) | name:"{syscall}" |'
+
 # function span (entry + exit as a Perfetto slice)
 wprof -U 'uspan:do_work (arg:0->task_id, arg:ret->result, pid:1234, path:./worker)'
 
@@ -85,7 +88,7 @@ key-value pairs in JSON output, and can be used in `name:` templates
 to dynamically label events and spans.
 
 ```
-arg:<index-or-name>[:<type>][->display_name]
+arg:<index-or-name>[:<type>][->display_name][/modifier...]
 ```
 
 **By index:** `arg:0`, `arg:1`, ..., `arg:ret`
@@ -120,6 +123,42 @@ tracepoints) or from ELF USDT note metadata (for USDTs). Falls back to
 - Return probes (`uret:`, `kret:`, `bpfret:`) only support `arg:ret`
 - `arg:ret` is only valid on return and span probes
 - `arg:*` cannot be combined with other arg specs
+
+### Render modifiers
+
+Integer argument values can be reformatted for display with `/`-separated
+modifiers appended to the arg spec (after the optional `->display_name`).
+A modifier is either a bare name or `name(args)`:
+
+| Modifier        | Effect                                                     |
+|-----------------|----------------------------------------------------------|
+| `/x` (`/hex`)   | Render the integer as `0x...` hex instead of decimal      |
+| `/map(K=V,...)` | Map specific values to string labels                     |
+
+For `/map`, each `K` is a key (decimal or `0x` hex) and `V` a label; the
+label runs to the next `,` or the closing `)`. Modifiers **stack**: a value
+is looked up in `/map` first, and on a miss falls back to the numeric format
+(`/x` hex if present, otherwise decimal). They apply everywhere the value is
+shown — `name:` templates, Perfetto annotations, and JSON output.
+
+```
+arg:id->nr/x                              # value shown as 0x...
+arg:id->nr/map(0=read,1=write,257=openat) # mapped, else decimal
+arg:id->nr/x/map(202=futex)               # mapped label, else hex
+```
+
+Example — label every syscall by number via the `sys_enter` raw tracepoint:
+
+```bash
+wprof -U 'raw_tp:sys_enter (arg:id->syscall/map(0=read,1=write,16=ioctl,202=futex,257=openat)) | name:"{syscall}" |'
+```
+
+The syscall numbers above are x86-64 specific (they differ by architecture).
+
+**Supported types:** `/x` applies to integer (`u8`..`s64`) and `ptr` args
+(`ptr` already prints as hex, so `/x` is a no-op there); `/map` applies to
+integer args only. Using a modifier on an unsupported type (e.g. `str`) is a
+parse-time error — or, for args whose type is inferred, an error at setup.
 
 ### Stack trace capture
 
@@ -233,7 +272,9 @@ With `-J`, utrace events appear as:
 Event types: `utrace_instant`, `utrace_entry`, `utrace_exit`.
 
 Argument values are formatted by type: integers as decimal, pointers as
-`"0x..."` hex strings, strings as JSON strings.
+`"0x..."` hex strings, strings as JSON strings. The `/x` and `/map(...)`
+render modifiers (see **Render modifiers**) apply here too — hex values and
+mapped labels are emitted as JSON strings.
 
 ## Type inference
 

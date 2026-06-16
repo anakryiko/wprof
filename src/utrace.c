@@ -791,6 +791,18 @@ static int augment_cfg_args(struct utrace_cfg *cfg, const struct btf *btf)
 
 		if (p->arg.arg_type == UTRACE_ARG_UNKNOWN)
 			p->arg.arg_type = UTRACE_ARG_U64;
+
+		if (p->arg.hex && !utrace_arg_is_int(p->arg.arg_type) &&
+		    p->arg.arg_type != UTRACE_ARG_PTR) {
+			eprintf("utrace: /x supports integer (u8..s64) and ptr args, but '%s' is neither\n",
+				p->arg.name ?: "(unnamed)");
+			return -EINVAL;
+		}
+		if (p->arg.map_cnt && !utrace_arg_is_int(p->arg.arg_type)) {
+			eprintf("utrace: /map supports integer (u8..s64) args, but '%s' is not\n",
+				p->arg.name ?: "(unnamed)");
+			return -EINVAL;
+		}
 	}
 
 	qsort(cfg->params, cfg->param_cnt, sizeof(*cfg->params), cmp_params);

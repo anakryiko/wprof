@@ -4009,6 +4009,31 @@ static s64 read_int_blob(struct wprof_data_hdr *hdr, u32 bloboff, enum utrace_ar
 }
 
 /*
+ * Render a utrace arg value into buf, honoring /x and /map; returns the number
+ * of characters written (snprintf semantics). A mapped value renders as its
+ * label, /x (and ptr) as 0x-hex, strings verbatim, everything else as decimal.
+ * `ref` is the per-arg blob (or string) offset.
+ */
+static int utrace_format_arg(char *buf, size_t buf_sz, struct wprof_data_hdr *hdr, u32 ref,
+			     const struct utrace_param *p)
+{
+	if (p->arg.arg_type == UTRACE_ARG_STR)
+		return snprintf(buf, buf_sz, "%s", wevent_str(hdr, ref));
+
+	s64 val = read_int_blob(hdr, ref, p->arg.arg_type);
+
+	if (p->arg.map_cnt) {
+		const char *label = utrace_arg_map_lookup(p->arg.map, p->arg.map_cnt, (unsigned long long)val);
+		if (label)
+			return snprintf(buf, buf_sz, "%s", label);
+	}
+	if (p->arg.hex || p->arg.arg_type == UTRACE_ARG_PTR)
+		return snprintf(buf, buf_sz, "0x%llx", (unsigned long long)val);
+
+	return snprintf(buf, buf_sz, "%lld", (long long)val);
+}
+
+/*
  * Format a utrace event name using cfg->settings.name_fmt, substituting
  * {arg_name} placeholders with actual argument values. Only entry-side args
  * (non-ret) are available for substitution. Returns length written (like snprintf).
@@ -4029,15 +4054,8 @@ static int format_utrace_name(char *buf, size_t buf_sz, struct wprof_data_hdr *h
 		if (seg->type == UTRACE_FMT_SEG_LIT) {
 			n = snprintf(buf + pos, buf_sz - pos, "%.*s", seg->lit.len, seg->lit.s);
 		} else {
-			if (seg->arg.type == UTRACE_ARG_STR) {
-				n = snprintf(buf + pos, buf_sz - pos, "%s", wevent_str(hdr, arg_refs[seg->arg.arg_idx]));
-			} else if (seg->arg.type == UTRACE_ARG_PTR) {
-				u64 val = read_int_blob(hdr, arg_refs[seg->arg.arg_idx], seg->arg.type);
-				n = snprintf(buf + pos, buf_sz - pos, "0x%llx", (unsigned long long)val);
-			} else {
-				s64 val = read_int_blob(hdr, arg_refs[seg->arg.arg_idx], seg->arg.type);
-				n = snprintf(buf + pos, buf_sz - pos, "%lld", (long long)val);
-			}
+			n = utrace_format_arg(buf + pos, buf_sz - pos, hdr, arg_refs[seg->arg.arg_idx],
+					      seg->arg.param);
 		}
 		if (n > 0)
 			pos += n < (int)(buf_sz - pos) ? n : buf_sz - pos - 1;
@@ -4073,15 +4091,14 @@ static void emit_utrace_args(struct worker_state *w, const struct wevent *e,
 		/* annotation keys are stored by pointer and encoded later, so intern them */
 		struct pb_str name = iid_str(emit_intern_str(w, name_str), name_str);
 
-		if (p->arg.arg_type == UTRACE_ARG_STR) {
-			emit_kv_str(name, wevent_str(hdr, arg_refs[arg_idx]));
-		} else if (p->arg.arg_type == UTRACE_ARG_PTR) {
-			u64 val = read_int_blob(hdr, arg_refs[arg_idx], p->arg.arg_type);
-			emit_kv_str(name, sfmt("0x%llx", (unsigned long long)val));
-		} else {
-			s64 val = read_int_blob(hdr, arg_refs[arg_idx], p->arg.arg_type);
-			emit_kv_int(name, val);
-		}
+		char vbuf[256];
+
+		utrace_format_arg(vbuf, sizeof(vbuf), hdr, arg_refs[arg_idx], p);
+		/*
+		 * val_str is read later in emit_cleanup, after we return, so vbuf would
+		 * be dead by then; sfmt's thread-local ring keeps it alive past this frame
+		 */
+		emit_kv_str(name, sfmt("%s", vbuf));
 		arg_idx++;
 	}
 }
@@ -4220,13 +4237,17 @@ static void emit_utrace_json(struct worker_state *w, const struct wevent *e)
 					name = sfmt("arg%d", p->arg.arg_idx);
 			}
 
-			if (p->arg.arg_type == UTRACE_ARG_STR) {
-				json_kv_str(j, name, wevent_str(hdr, arg_refs[arg_idx]));
-			} else if (p->arg.arg_type == UTRACE_ARG_PTR) {
-				u64 val = read_int_blob(hdr, arg_refs[arg_idx], p->arg.arg_type);
-				json_kv_str(j, name, sfmt("0x%llx", (unsigned long long)val));
-			} else {
+			/*
+			 * Plain integers keep native JSON numeric typing; only /x,
+			 * /map, ptr and str render as (string) text via the formatter.
+			 */
+			if (!p->arg.hex && !p->arg.map_cnt && utrace_arg_is_int(p->arg.arg_type)) {
 				json_kv_int(j, name, read_int_blob(hdr, arg_refs[arg_idx], p->arg.arg_type));
+			} else {
+				char vbuf[256];
+
+				utrace_format_arg(vbuf, sizeof(vbuf), hdr, arg_refs[arg_idx], p);
+				json_kv_str(j, name, vbuf);
 			}
 			arg_idx++;
 		}
