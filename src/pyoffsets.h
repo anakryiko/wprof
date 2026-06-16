@@ -23,6 +23,7 @@
 	.PyTypeObject_name = _D,		\
 	.PyThreadState_frame = _D,		\
 	.PyThreadState_cframe = _D,		\
+	.PyThreadState_current_frame = _D,	\
 	.PyThreadState_thread = _D,		\
 	.PyThreadState_interp = _D,		\
 	.PyInterpreterState_modules = _D,	\
@@ -55,6 +56,7 @@
 	.PyVarObject_size = _D,			\
 	.PyFrameObject_owner = _D,		\
 	.PyGenObject_iframe = _D,		\
+	.PyDebugOffsets_free_threaded = _D,	\
 	.PyVersion_major = 0,			\
 	.PyVersion_minor = 0,			\
 	.PyVersion_micro = 0
@@ -177,9 +179,9 @@ static inline void pyoffsets_v3_12(OffsetConfig *c)
 /*
  * CPython 3.13 offsets.
  * Removes _PyCFrame indirection: current_frame is directly on PyThreadState
- * at offset 72. We store this in PyThreadState_cframe and leave
- * _PyCFrame_current_frame at sentinel (no second dereference).
- * code_adaptive offset shifts to 200.
+ * at offset 72. We store this in PyThreadState_current_frame so the unwinder
+ * reads it with a single dereference (and leave PyThreadState_cframe /
+ * _PyCFrame_current_frame at sentinel). code_adaptive offset shifts to 200.
  */
 static inline void pyoffsets_v3_13(OffsetConfig *c)
 {
@@ -191,7 +193,7 @@ static inline void pyoffsets_v3_13(OffsetConfig *c)
 		.PyTupleObject_item = 24,
 		.PyBytesObject_data = 32,
 		.String_data = 40,
-		.PyThreadState_cframe = 72,
+		.PyThreadState_current_frame = 72,
 		.PyThreadState_thread = 152,
 		.PyThreadState_interp = 16,
 		.PyInterpreterFrame_code = 0,
