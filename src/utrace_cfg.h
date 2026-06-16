@@ -78,16 +78,25 @@ struct tp_field {
 	bool is_string;		/* char[] array */
 };
 
+/* int -> string render mapping for an arg (sorted by key, looked up at emit) */
+struct utrace_arg_map {
+	unsigned long long key;
+	char *label;
+};
+
 struct utrace_param {
 	enum utrace_param_type type;
 	union {
 		struct {
 			int arg_idx;			/* 0-based arg index, or UTRACE_ARG_RET */
-			enum utrace_arg_type arg_type; 	/* defaults to UTRACE_ARG_U64 if omitted */
+			enum utrace_arg_type arg_type;	/* defaults to UTRACE_ARG_U64 if omitted */
 			char *name;			/* annotation name, NULL = auto "arg<N>" / "ret" */
 			char *ref_name;			/* name-based arg reference, resolved to arg_idx during augmentation */
 			int tp_byte_off;		/* TP: byte offset into event struct */
 			bool tp_data_loc;		/* TP: __data_loc encoded string field */
+			bool hex;			/* render integer value as 0x%x */
+			struct utrace_arg_map *map;	/* optional int->string map, sorted by key */
+			int map_cnt;
 		} arg;
 		struct {
 			char *path;
@@ -113,7 +122,7 @@ struct utrace_fmt_seg {
 		} lit;
 		struct {
 			int arg_idx;                /* positional index into entry-side arg_refs[] */
-			enum utrace_arg_type type;  /* cached arg type for formatting */
+			const struct utrace_param *param; /* the matched arg's full spec */
 		} arg;
 	};
 };
@@ -207,6 +216,43 @@ static inline bool cfg_is_span(const struct utrace_cfg *cfg)
 		}, **___p = ___legs, *leg = *___p;				\
 		leg;								\
 		leg = *++___p)
+
+/* integer arg types (u8..s64) — the ones /x and /map operate on */
+static inline bool utrace_arg_is_int(enum utrace_arg_type t)
+{
+	switch (t) {
+	case UTRACE_ARG_U8:
+	case UTRACE_ARG_U16:
+	case UTRACE_ARG_U32:
+	case UTRACE_ARG_U64:
+	case UTRACE_ARG_S8:
+	case UTRACE_ARG_S16:
+	case UTRACE_ARG_S32:
+	case UTRACE_ARG_S64:
+		return true;
+	default:
+		return false;
+	}
+}
+
+/* binary-search an arg value in a key-sorted map; returns label or NULL */
+static inline const char *utrace_arg_map_lookup(const struct utrace_arg_map *map, int cnt,
+						unsigned long long key)
+{
+	int lo = 0, hi = cnt - 1;
+
+	while (lo <= hi) {
+		int mid = lo + (hi - lo) / 2;
+
+		if (map[mid].key < key)
+			lo = mid + 1;
+		else if (map[mid].key > key)
+			hi = mid - 1;
+		else
+			return map[mid].label;
+	}
+	return NULL;
+}
 
 void utrace_compile_fmt(const char *fmt, const struct utrace_param *params, int param_cnt,
 			struct utrace_fmt_seg **out_segs, int *out_seg_cnt);

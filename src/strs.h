@@ -89,6 +89,32 @@ static inline struct sview sv_split(struct sview v, const char *delim, struct sv
 	return sv(v.s, pos);
 }
 
+/*
+ * Like sv_split, but only matches delim at the top level — occurrences inside
+ * (...) are skipped (paren depth tracked), so e.g. map(0=a,1=b) survives a ","
+ * split. Like sv_split, *right starts at the delimiter, empty if none found.
+ */
+static inline struct sview sv_split_top(struct sview v, const char *delim, struct sview *right)
+{
+	int dlen = strlen(delim);
+	int depth = 0;
+
+	for (int i = 0; i < v.len; i++) {
+		char c = v.s[i];
+
+		if (c == '(')
+			depth++;
+		else if (c == ')' && depth > 0)
+			depth--;
+		else if (depth == 0 && i + dlen <= v.len && strncmp(v.s + i, delim, dlen) == 0) {
+			*right = sv(v.s + i, v.len - i);
+			return sv(v.s, i);
+		}
+	}
+	*right = sv_empty();
+	return v;
+}
+
 static inline struct sview sv_consume_left(struct sview v, int n)
 {
 	if (n > v.len)
