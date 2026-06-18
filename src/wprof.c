@@ -213,6 +213,22 @@ static void print_stats(const struct wprof_stats *s, int exit_code)
 	wprintf("BPF program stats:\n");
 
 	int num_cpus = s->cpu_cnt;
+	u64 total_run_cnt = wstat(s, WSTAT_PROG_RUN_CNT, 0);
+	u64 total_run_ns = wstat(s, WSTAT_PROG_RUN_TIME_NS, 0);
+
+	/*
+	 * Per-program run_cnt/run_time come from the kernel's BPF stats subsystem
+	 * (BPF_STATS_RUN_TIME), which wprof only enables when capturing with
+	 * --stats. A zero total means it was off at capture time -- no real
+	 * capture runs zero BPF programs -- so say so instead of printing a table
+	 * of misleading zeros (e.g. when replaying a dump captured without --stats
+	 * via --replay-info --stats).
+	 */
+	if (total_run_cnt == 0) {
+		wprintf("\tNot captured. Re-run with --stats to collect BPF stats.\n");
+		goto skip_prog_stats;
+	}
+
 	for (int i = 0; i < s->prog_cnt; i++) {
 		u64 name_off = wstat(s, WSTAT_PROG_NAME, 1 + i);
 		u64 run_cnt = wstat(s, WSTAT_PROG_RUN_CNT, 1 + i);
@@ -228,8 +244,6 @@ static void print_stats(const struct wprof_stats *s, int exit_code)
 			run_time_ns / 1000000.0 / num_cpus / dur_s);
 	}
 
-	u64 total_run_cnt = wstat(s, WSTAT_PROG_RUN_CNT, 0);
-	u64 total_run_ns = wstat(s, WSTAT_PROG_RUN_TIME_NS, 0);
 	wprintf("\t%-24s %8llu (%6.0lf/CPU/s) runs for total of %.3lfms (%.3lfms/CPU/s).\n",
 		"TOTAL:", total_run_cnt,
 		total_run_cnt / num_cpus / dur_s,
