@@ -1801,6 +1801,9 @@ int main(int argc, char **argv)
 			case WEXTRA_METADATA:
 			case WEXTRA_STATS:
 			case WEXTRA_PMU:
+			case WEXTRA_PREPARE_SPEC:
+			case WEXTRA_ACTIVATE_SPEC:
+				/* capture-time only; informational at replay (see cmdline reconstruction) */
 				break;
 			default:
 				eprintf("Unrecognized extra param kind %d in data file, skipping\n", ep->kind);
