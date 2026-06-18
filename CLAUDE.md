@@ -138,6 +138,7 @@ The build process automatically handles:
 - Task and CPU state tracking via BPF maps
 - NUMA topology awareness for scheduling analysis
 - **Rust ↔ C interop goes in libwrust**: when C needs a Rust standard-library data structure or helper (e.g. the merge phase's priority queue), add it as a new module under `src/wrust/` and expose it via `#[no_mangle] extern "C"` functions with a matching section in `src/wrust.h` — don't spin up a separate single-purpose crate for it. (Domain-specific Rust libs like blazesym, the `wpb` protobuf shim, and `demangle` remain their own crates.)
+- **Adding a `WEXTRA_*` extra-param kind** (`enum wprof_extra_param_kind` in `src/data.h`): the enum is append-only (never reorder/reuse), and a new kind must be wired into *three* places or replay breaks. (1) `merge.c` to persist it; (2) the replay-time restore switch in `wprof.c` (the `env.replay` extra-param loop) — give it a real case if it affects replay, or add it to the no-op `break` group (METADATA/STATS/PMU/`*_SPEC`) if it's capture-time-only, else replay warns `Unrecognized extra param kind N`; (3) `extra_param_str()` in `wprof.c`, which `BUG()`s on unknown kinds, so the kind shows up in the reconstructed command line. Capture-time-only specs (e.g. `--prepare`/`--activate`) still need (2) as a no-op even though they do nothing at replay.
 
 ### Coding Style
 

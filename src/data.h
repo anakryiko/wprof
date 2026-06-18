@@ -44,6 +44,12 @@ struct wprof_data_cfg {
 /*
  * Persisted in data dumps, so values are explicit and stable: never renumber
  * existing entries; to retire one, drop it and leave its value as a hole.
+ *
+ * A new kind must be handled in two switches in wprof.c, or replay breaks: the
+ * `if (env.replay)` restore loop — a real case if it affects replay, else a
+ * no-op `break` like METADATA/STATS/PMU, otherwise replay warns "Unrecognized
+ * extra param kind N"; and extra_param_str() (BUG()s on unknown kinds) so it
+ * renders in the reconstructed command line.
  */
 enum wprof_extra_param_kind {
 	WEXTRA_INVALID			= 0,
