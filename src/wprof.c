@@ -1489,7 +1489,7 @@ int main(int argc, char **argv)
 			goto cleanup;
 		}
 		struct wprof_data_hdr *dump_hdr = worker->dump_hdr;
-		const struct wprof_data_cfg *cfg = &dump_hdr->cfg;
+		const struct wprof_data_cfg *cfg = wprof_cfg(dump_hdr);
 		env.data_hdr = dump_hdr;
 
 		for (u64 i = 0; i < dump_hdr->extra_cnt; i++) {
@@ -1666,7 +1666,7 @@ int main(int argc, char **argv)
 			wprintf("    %-*s%.3lfMB (%llu entries)\n", w - 4, "Thread info:", dump_hdr->threads_sz / MB, dump_hdr->thread_cnt);
 
 			u64 str_cnt = 0;
-			for (const char *s = (void *)dump_hdr + sizeof(*dump_hdr) + dump_hdr->strs_off,
+			for (const char *s = (void *)dump_hdr + dump_hdr->hdr_sz + dump_hdr->strs_off,
 					*end = s + dump_hdr->strs_sz;
 			     s < end; s++) {
 				if (*s == '\0')

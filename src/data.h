@@ -8,9 +8,38 @@
 #include "wevent.h"
 #include "pmu.h"
 
-#define WPROF_DATA_MAJOR 2
-#define WPROF_DATA_MINOR 2
-#define WPROF_DATA_FLAG_INCOMPLETE 0xffffffffffffffffULL
+/* On-disk format version (hdr.version_major / hdr.version_minor). */
+enum wprof_data_version {
+	WPROF_DATA_MAJOR = 2,
+	WPROF_DATA_MINOR = 2,
+};
+
+/*
+ * TODO(next major bump, breaking): clean up back-compat scaffolding once we're
+ * free to drop pre-existing files:
+ *   - Make config always a section and retire WDF_CFG_SECTION + the embedded-cfg
+ *     legacy path in wprof_cfg()/wprof_cfg_sz() (always read from the section).
+ *   - Widen struct wprof_extra_param with an extra u64 so extra params can carry
+ *     a numeric argument (parameterization/extensibility) alongside the current
+ *     stroff/bloboff/value union.
+ */
+
+/* Flags stored in hdr.flags. */
+enum wprof_data_flag {
+	/*
+	 * All-ones sentinel written while a dump is being produced and cleared on
+	 * finalize; a file still carrying it is truncated/incomplete. Special-cased
+	 * (compared for equality, not tested as a bit) and distinct from the bit
+	 * flags below, which are only meaningful once the file is complete.
+	 */
+	WDF_INCOMPLETE = 0xffffffffffffffffULL,
+
+	/*
+	 * Config is stored in its own size-described section, not embedded in the
+	 * header; see wprof_cfg(). Absent on older files (cfg embedded inline).
+	 */
+	WDF_CFG_SECTION = 0x1,
+};
 
 enum cfg_feature_bit {
 	CFG_CAPTURE_IPIS	= 0x001,
@@ -254,7 +283,14 @@ struct wprof_data_hdr {
 	/* Extra parameters section (persisted filters, etc.) */
 	u64 extras_off, extras_sz, extra_cnt;
 
-	struct wprof_data_cfg cfg;
+	/*
+	 * Config section (WPROF_DATA_FLAG_CFG_SECTION). Replaces the formerly
+	 * embedded `struct wprof_data_cfg cfg;` that lived at this exact offset,
+	 * so older files (flag clear) still have their cfg here inline; the bytes
+	 * are reinterpreted via wprof_cfg(). cfg_off MUST stay the first field
+	 * after the extras triple for that legacy aliasing to hold.
+	 */
+	u64 cfg_off, cfg_sz;
 } __attribute__((aligned(8)));
 
 struct wstack_hdr {
@@ -380,6 +416,21 @@ static inline struct wprof_extra_param *wevent_extra_param(struct wprof_data_hdr
 {
 	struct wprof_extra_param *extras = (void *)hdr + hdr->hdr_sz + hdr->extras_off;
 	return &extras[idx];
+}
+
+static inline struct wprof_data_cfg *wprof_cfg(struct wprof_data_hdr *hdr)
+{
+	if (hdr->flags & WDF_CFG_SECTION)
+		return (void *)hdr + hdr->hdr_sz + hdr->cfg_off;
+	return (void *)hdr + offsetof(struct wprof_data_hdr, cfg_off);
+}
+
+static inline u64 wprof_cfg_sz(struct wprof_data_hdr *hdr)
+{
+	if (hdr->flags & WDF_CFG_SECTION)
+		return hdr->cfg_sz;
+	/* legacy: embedded cfg runs from its offset to the end of the header */
+	return hdr->hdr_sz - offsetof(struct wprof_data_hdr, cfg_off);
 }
 
 static inline void wevent_pmu_to_event(struct wprof_data_hdr *hdr, u32 idx, struct pmu_event *ev)

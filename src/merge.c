@@ -57,7 +57,7 @@ int wprof_init_data(FILE *dump)
 
 	struct wprof_data_hdr hdr;
 	init_data_header(&hdr);
-	hdr.flags = WPROF_DATA_FLAG_INCOMPLETE;
+	hdr.flags = WDF_INCOMPLETE;
 
 	if (fwrite(&hdr, sizeof(hdr), 1, dump) != 1) {
 		err = -errno;
@@ -91,7 +91,7 @@ int wprof_load_data_dump(struct worker_state *w)
 	}
 	w->dump_hdr = w->dump_mem;
 
-	if (w->dump_hdr->flags == WPROF_DATA_FLAG_INCOMPLETE) {
+	if (w->dump_hdr->flags == WDF_INCOMPLETE) {
 		eprintf("wprof data file is incomplete!\n");
 		return -EINVAL;
 	}
@@ -1048,6 +1048,30 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 	}
 	free(extras);
 
+	/* Write config section */
+	struct wprof_data_cfg cfg = {
+		.ktime_start_ns = env.ktime_start_ns,
+		.realtime_start_ns = env.realtime_start_ns,
+		.duration_ns = env.duration_ns,
+		.captured_stack_traces = env.requested_stack_traces,
+		.timer_freq_hz = env.timer_freq_hz,
+	};
+	for (int i = 0; i < capture_feature_cnt; i++) {
+		const struct capture_feature *f = &capture_features[i];
+		enum tristate *flag = (void *)&env + f->env_flag_off;
+		/* inverted features set the bit when DISABLED (see cfg_feature_captured) */
+		if (f->inverted ? (*flag != TRUE) : (*flag == TRUE))
+			cfg.capture_features |= f->cfg_bit;
+	}
+	file_pad(data_dump, 8);
+	off_t cfg_off = ftell(data_dump) - sizeof(struct wprof_data_hdr);
+	size_t cfg_sz = sizeof(cfg);
+	if (fwrite(&cfg, sizeof(cfg), 1, data_dump) != 1) {
+		err = -errno;
+		eprintf("Failed to fwrite() config section: %d\n", err);
+		return err;
+	}
+
 	/* Write thread table section */
 	file_pad(data_dump, 8);
 	long threads_off = ftell(data_dump) - sizeof(struct wprof_data_hdr);
@@ -1169,25 +1193,9 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 	struct wprof_data_hdr hdr;
 	init_data_header(&hdr);
 
-	hdr.cfg.ktime_start_ns = env.ktime_start_ns;
-	hdr.cfg.realtime_start_ns = env.realtime_start_ns;
-	hdr.cfg.duration_ns = env.duration_ns;
-
-	hdr.cfg.captured_stack_traces = env.requested_stack_traces;
-
-	for (int i = 0; i < capture_feature_cnt; i++) {
-		const struct capture_feature *f = &capture_features[i];
-		enum tristate *flag = (void *)&env + f->env_flag_off;
-		/* inverted features set the bit when DISABLED (see cfg_feature_captured) */
-		bool set_bit = f->inverted ? (*flag != TRUE) : (*flag == TRUE);
-
-		if (set_bit)
-			hdr.cfg.capture_features |= f->cfg_bit;
-		else
-			hdr.cfg.capture_features &= ~f->cfg_bit;
-	}
-
-	hdr.cfg.timer_freq_hz = env.timer_freq_hz;
+	hdr.flags |= WDF_CFG_SECTION;
+	hdr.cfg_off = cfg_off;
+	hdr.cfg_sz = cfg_sz;
 
 	hdr.events_off = 0;
 	hdr.events_sz = events_sz;
