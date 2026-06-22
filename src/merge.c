@@ -942,7 +942,6 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 			tsidx[tsidx_cnt++] = (struct wprof_tsidx_ent){
 				.ts = wevent_buf.ts,
 				.off = events_sz,
-				.idx = event_cnt,
 			};
 			tsidx_next_ts = wevent_buf.ts + WPROF_TSIDX_PERIOD_NS;
 		}
