@@ -1676,6 +1676,11 @@ int main(int argc, char **argv)
 			if (dump_hdr->blobs_sz)
 				wprintf("    %-*s%.3lfMB\n", w - 4, "Blobs:", dump_hdr->blobs_sz / MB);
 
+			if (wdata_has_tsidx(dump_hdr))
+				wprintf("    %-*s%.3lfMB (%llu entries)\n", w - 4, "Time index:", dump_hdr->tsidx_sz / MB, dump_hdr->tsidx_cnt);
+			if (env.stats)
+				wprintf("    %-*s%u bytes\n", w - 4, "Stats:", env.stats->sz);
+
 			wprintf("    %-*s%.3lfMB (%llu records)\n", w - 4, "Events:", ev_sz / MB, ev_cnt);
 			for (int i = 0; i < __EV_KIND_MAX; i++) {
 				if (kind_cnt[i] == 0)
@@ -1698,8 +1703,6 @@ int main(int argc, char **argv)
 			}
 			if (dump_hdr->pmu_def_real_cnt + dump_hdr->pmu_def_deriv_cnt)
 				wprintf("    %-*s%.3lfMB (%llu entries)\n", w - 4, "PMU data:", dump_hdr->pmu_vals_sz / MB, dump_hdr->pmu_val_cnt);
-			if (env.stats)
-				wprintf("    %-*s%u bytes\n", w - 4, "Stats:", env.stats->sz);
 
 			/*
 			 * If --stats is not set, we'll still print all the drops and recursion

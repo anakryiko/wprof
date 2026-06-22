@@ -118,7 +118,7 @@ enum {
 static const struct argp_option opts[] = {
 	{ "verbose", 'v', NULL, 0, "Verbose output" },
 	{ "stats", OPT_STATS, NULL, 0, "Print various wprof stats (BPF, resource usage, etc.)" },
-	{ "debug", OPT_DEBUG, "FEAT", 0, "Debug features (pb-debug-interns, pb-disable-interns, keep-workdir, raw-stacks)"},
+	{ "debug", OPT_DEBUG, "FEAT", 0, "Debug features (pb-debug-interns, pb-disable-interns, keep-workdir, raw-stacks, no-tsidx)"},
 	{ "log", OPT_LOG, "LOG", 0, "Debug logging subset selector (libbpf, usdt, topology, inject, tracee, pytrace)"},
 	{ "dur", 'd', "DURATION", 0, "Limit running duration; accepts time units s/ms/us/ns/m/h, bare number is ms (default: 1000ms)" },
 	{ "dur-ms", 0, 0, OPTION_ALIAS },
@@ -251,6 +251,8 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			env.keep_workdir = true;
 		} else if (strcasecmp(arg, "raw-stacks") == 0) {
 			env.raw_stacks = true;
+		} else if (strcasecmp(arg, "no-tsidx") == 0) {
+			env.no_tsidx = true;
 		} else {
 			eprintf("Unrecognized debug feature '%s'!\n", arg);
 			argp_usage(state);

@@ -189,6 +189,7 @@ struct env {
 	bool pb_disable_interns;
 	bool keep_workdir;
 	bool raw_stacks;
+	bool no_tsidx;		/* replay: ignore the timestamp index, force full walk */
 
 	/* FILTERING */
 	char **allow_pnames, **deny_pnames;
