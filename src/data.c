@@ -65,6 +65,43 @@ const char *event_kind_str(enum event_kind kind)
 	return "UNKNOWN";
 }
 
+struct wprof_tsidx_ent *wdata_tsidx_lookup(struct wprof_data_hdr *hdr, u64 start_ts)
+{
+	struct wprof_tsidx_ent *idx;
+	int l, r, m;
+
+	if (env.no_tsidx || !wdata_has_tsidx(hdr) || hdr->tsidx_cnt == 0)
+		return NULL;
+
+	idx = wdata_tsidx_ent(hdr, 0);
+
+	/*
+	 * No checkpoint at/before start_ts -> scan from the first event. Each
+	 * checkpoint is the first event of its timestamp and checkpoint ts values
+	 * strictly increase, so ts <= start_ts safely lands on (or just before)
+	 * the window without risk of skipping equal-ts events.
+	 */
+	if (ts_after(idx[0].ts, start_ts))
+		return NULL;
+
+	/*
+	 * Loop invariant: idx[l].ts <= start_ts, which idx[0] satisfies (checked
+	 * above). Find the rightmost such entry; tie-break to the right so we
+	 * converge (see find_linfo() in the kernel's bpf/log.c).
+	 */
+	l = 0;
+	r = hdr->tsidx_cnt - 1;
+	while (l < r) {
+		m = l + (r - l + 1) / 2;
+		if (ts_before_or_at(idx[m].ts, start_ts))
+			l = m;
+		else
+			r = m - 1;
+	}
+
+	return &idx[l];
+}
+
 int process_events(struct worker_state *w, handle_event_fn *handlers, size_t handler_cnt)
 {
 	struct wevent_record *rec;

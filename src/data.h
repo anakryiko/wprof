@@ -41,6 +41,9 @@ enum wprof_data_flag {
 	WDF_CFG_SECTION = 0x1,
 };
 
+/* Sparse timestamp index: one checkpoint per this much event-time (see merge.c). */
+#define WPROF_TSIDX_PERIOD_NS (50 * 1000000ULL)
+
 enum cfg_feature_bit {
 	CFG_CAPTURE_IPIS	= 0x001,
 	CFG_CAPTURE_REQUESTS	= 0x002,
@@ -291,6 +294,26 @@ struct wprof_data_hdr {
 	 * after the extras triple for that legacy aliasing to hold.
 	 */
 	u64 cfg_off, cfg_sz;
+
+	/*
+	 * Sparse timestamp index section. Written alongside the config section, so
+	 * it is only valid when WDF_CFG_SECTION is set — on older files these bytes
+	 * are part of the embedded cfg. Gate access on wdata_has_tsidx().
+	 */
+	u64 tsidx_off, tsidx_sz, tsidx_cnt;
+} __attribute__((aligned(8)));
+
+/*
+ * Sparse timestamp index entry. Each one is a checkpoint into the time-sorted
+ * events section: the first event at/after some WPROF_TSIDX_PERIOD_NS boundary,
+ * recording its timestamp, byte offset, and absolute index. Replay binary
+ * searches these to jump near a --replay-start offset; it treats them as an
+ * opaque sorted array and does not assume the period.
+ */
+struct wprof_tsidx_ent {
+	u64 ts;		/* event timestamp at this checkpoint */
+	u64 off;	/* byte offset of the event within the events section */
+	u64 idx;	/* absolute event index (restores rec->idx after a seek) */
 } __attribute__((aligned(8)));
 
 struct wstack_hdr {
@@ -329,6 +352,14 @@ struct wstack_trace {
 struct worker_state;
 typedef int (*handle_event_fn)(struct worker_state *w, const struct wevent *e);
 int process_events(struct worker_state *w, handle_event_fn *handlers, size_t handler_cnt);
+
+/*
+ * Find the timestamp-index checkpoint to seek to for a given window start: the
+ * rightmost entry with ts <= start_ts. Returns NULL to mean "start from the
+ * first event" — when there is no usable index (no tsidx section, or disabled
+ * via --debug no-tsidx) or no checkpoint is at/before start_ts.
+ */
+struct wprof_tsidx_ent *wdata_tsidx_lookup(struct wprof_data_hdr *hdr, u64 start_ts);
 
 const char *event_kind_str(enum event_kind kind);
 
@@ -433,6 +464,23 @@ static inline u64 wprof_cfg_sz(struct wprof_data_hdr *hdr)
 	return hdr->hdr_sz - offsetof(struct wprof_data_hdr, cfg_off);
 }
 
+/*
+ * True if this file's format carries a timestamp index section, which is
+ * written together with the config section. Older files (WDF_CFG_SECTION clear)
+ * don't — their bytes there belong to the embedded cfg. The section may be
+ * empty; wdata_tsidx_lookup() handles that.
+ */
+static inline bool wdata_has_tsidx(const struct wprof_data_hdr *hdr)
+{
+	return hdr->flags & WDF_CFG_SECTION;
+}
+
+static inline struct wprof_tsidx_ent *wdata_tsidx_ent(struct wprof_data_hdr *hdr, u32 idx)
+{
+	struct wprof_tsidx_ent *ents = (void *)hdr + hdr->hdr_sz + hdr->tsidx_off;
+	return &ents[idx];
+}
+
 static inline void wevent_pmu_to_event(struct wprof_data_hdr *hdr, u32 idx, struct pmu_event *ev)
 {
 	struct wevent_pmu_def *def = wevent_pmu_def(hdr, idx);
@@ -506,15 +554,19 @@ struct wevent_iter {
  * Iterate persisted events within the time window [start_ts, end_ts); pass the
  * full session range to walk every event. Events are globally time-sorted, so
  * iteration stops as soon as end_ts is reached instead of scanning to the end
- * of the events section.
+ * of the events section. When a timestamp index is present, iteration also
+ * starts near start_ts (skipping the prefix) instead of from the first event.
  */
 static inline struct wevent_iter wevent_iter_new(void *data, u64 start_ts, u64 end_ts)
 {
 	struct wprof_data_hdr *hdr = data;
+	void *ev_base = data + hdr->hdr_sz + hdr->events_off;
+	struct wprof_tsidx_ent *ts_chkpoint = wdata_tsidx_lookup(hdr, start_ts);
 
 	return (struct wevent_iter) {
-		.next = data + hdr->hdr_sz + hdr->events_off,
-		.last = data + hdr->hdr_sz + hdr->events_off + hdr->events_sz,
+		.next = ts_chkpoint ? ev_base + ts_chkpoint->off : ev_base,
+		.last = ev_base + hdr->events_sz,
+		.next_idx = ts_chkpoint ? ts_chkpoint->idx : 0,
 		.start_ts = start_ts,
 		.end_ts = end_ts,
 	};

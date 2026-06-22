@@ -631,6 +631,11 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 	/* Prepare per-ringbuf event streams */
 	u64 events_sz = 0;
 	u64 event_cnt = 0;
+
+	/* Sparse timestamp index, built as events stream out in sorted order */
+	struct wprof_tsidx_ent *tsidx = NULL;
+	u64 tsidx_cnt = 0, tsidx_cap = 0;
+	u64 tsidx_next_ts = env.ktime_start_ns;
 	struct wmerge_state {
 		struct bpf_event_record *recs;
 		const struct bpf_event_record *next_rec;
@@ -922,6 +927,26 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 				continue;
 		}
 
+		/*
+		 * Checkpoint the first event at/after each WPROF_TSIDX_PERIOD_NS
+		 * boundary; events_sz/event_cnt are this event's offset and index
+		 * (still pre-increment). Anchoring to real events avoids empty
+		 * checkpoints across idle gaps; seeding tsidx_next_ts to the session
+		 * start makes the first event checkpoint 0 (offset 0, index 0).
+		 */
+		if (ts_after_or_at(wevent_buf.ts, tsidx_next_ts)) {
+			if (tsidx_cnt == tsidx_cap) {
+				tsidx_cap = tsidx_cap ? tsidx_cap * 4 / 3 : 64;
+				tsidx = realloc(tsidx, tsidx_cap * sizeof(*tsidx));
+			}
+			tsidx[tsidx_cnt++] = (struct wprof_tsidx_ent){
+				.ts = wevent_buf.ts,
+				.off = events_sz,
+				.idx = event_cnt,
+			};
+			tsidx_next_ts = wevent_buf.ts + WPROF_TSIDX_PERIOD_NS;
+		}
+
 		event_cnt += 1;
 		events_sz += wevent_sz;
 
@@ -1071,6 +1096,17 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 		eprintf("Failed to fwrite() config section: %d\n", err);
 		return err;
 	}
+
+	/* Write timestamp index section */
+	file_pad(data_dump, 8);
+	off_t tsidx_off = ftell(data_dump) - sizeof(struct wprof_data_hdr);
+	size_t tsidx_sz = tsidx_cnt * sizeof(struct wprof_tsidx_ent);
+	if (tsidx_cnt > 0 && fwrite(tsidx, sizeof(struct wprof_tsidx_ent), tsidx_cnt, data_dump) != tsidx_cnt) {
+		err = -errno;
+		eprintf("Failed to fwrite() timestamp index section: %d\n", err);
+		return err;
+	}
+	free(tsidx);
 
 	/* Write thread table section */
 	file_pad(data_dump, 8);
@@ -1226,6 +1262,10 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 	hdr.extras_off = extras_off;
 	hdr.extras_sz = extras_sz;
 	hdr.extra_cnt = extra_cnt;
+
+	hdr.tsidx_off = tsidx_off;
+	hdr.tsidx_sz = tsidx_sz;
+	hdr.tsidx_cnt = tsidx_cnt;
 
 	err = fseek(data_dump, 0, SEEK_SET);
 	if (err) {
