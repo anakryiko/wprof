@@ -475,7 +475,7 @@ static inline struct wevent_record *wevent_iter_next(struct wevent_iter *it)
 		struct wevent *e = it->next;
 
 		/* events are time-sorted: at/after end_ts means we're done */
-		if ((s64)(e->ts - it->end_ts) >= 0) {
+		if (ts_after_or_at(e->ts, it->end_ts)) {
 			it->next = it->last;
 			return NULL;
 		}
@@ -487,7 +487,7 @@ static inline struct wevent_record *wevent_iter_next(struct wevent_iter *it)
 		it->next_idx += 1;
 
 		/* skip events before the window start */
-		if ((s64)(e->ts - it->start_ts) < 0)
+		if (ts_before(e->ts, it->start_ts))
 			continue;
 
 		return &it->rec;

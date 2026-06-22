@@ -266,9 +266,9 @@ extern struct env env;
 
 static inline bool is_ts_in_range(u64 ts)
 {
-	if ((long long)(ts - env.sess_start_ts) < 0)
+	if (ts_before(ts, env.sess_start_ts))
 		return false;
-	if ((long long)(ts - env.sess_end_ts) >= 0)
+	if (ts_after_or_at(ts, env.sess_end_ts))
 		return false;
 	return true;
 }

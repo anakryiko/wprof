@@ -168,9 +168,9 @@ static bool rec_within_session(u64 rec_start_ts, u64 rec_end_ts, u64 sess_start_
 {
 	if (sess_start_ts == 0)
 		return false;
-	if ((long)(rec_end_ts - sess_start_ts) < 0)
+	if (ts_before(rec_end_ts, sess_start_ts))
 		return false;
-	if ((long)(rec_start_ts - sess_end_ts) > 0)
+	if (ts_after(rec_start_ts, sess_end_ts))
 		return false;
 	return true;
 }

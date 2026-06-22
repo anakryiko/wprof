@@ -118,10 +118,7 @@ static int bpf_event_cmp(const void *a, const void *b)
 	const struct bpf_event_record *x = a;
 	const struct bpf_event_record *y = b;
 
-	if (x->e->ts == y->e->ts)
-		return 0;
-
-	return (s64)(x->e->ts - y->e->ts) < 0 ? -1 : 1;
+	return ts_cmp(x->e->ts, y->e->ts);
 }
 
 static int wcuda_event_cmp(const void *a, const void *b)
@@ -129,10 +126,7 @@ static int wcuda_event_cmp(const void *a, const void *b)
 	const struct wcuda_event *x = *(const struct wcuda_event **)a;
 	const struct wcuda_event *y = *(const struct wcuda_event **)b;
 
-	if (x->ts == y->ts)
-		return 0;
-
-	return (s64)(x->ts - y->ts) < 0 ? -1 : 1;
+	return ts_cmp(x->ts, y->ts);
 }
 
 static int wpytrace_event_cmp(const void *a, const void *b)
@@ -140,10 +134,7 @@ static int wpytrace_event_cmp(const void *a, const void *b)
 	const struct wpytrace_event *x = *(const struct wpytrace_event **)a;
 	const struct wpytrace_event *y = *(const struct wpytrace_event **)b;
 
-	if (x->ts == y->ts)
-		return 0;
-
-	return (s64)(x->ts - y->ts) < 0 ? -1 : 1;
+	return ts_cmp(x->ts, y->ts);
 }
 
 /* arg is the kind-specific union payload: a stroff, bloboff, or on/off value. */

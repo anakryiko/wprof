@@ -182,7 +182,7 @@ static int handle_rb_event(void *ctx, void *data, size_t size)
 	if (exiting)
 		return -EINTR;
 
-	if (env.sess_end_ts && (long long)(e->ts - env.sess_end_ts) >= 0) {
+	if (env.sess_end_ts && ts_after_or_at(e->ts, env.sess_end_ts)) {
 		w->rb_ignored_cnt++;
 		w->rb_ignored_sz += size;
 		return 0;
