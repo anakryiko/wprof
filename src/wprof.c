@@ -1576,8 +1576,6 @@ int main(int argc, char **argv)
 					wprintf("    --stacks cuda\n");
 				if (cfg->captured_stack_traces & ST_UTRACE)
 					wprintf("    --stacks utrace\n");
-			} else {
-				wprintf("%-*s%s\n", w, "Stack traces:", "NONE");
 			}
 			if (dump_hdr->pmu_def_real_cnt + dump_hdr->pmu_def_deriv_cnt) {
 				wprintf("%-*s\n", w, "PMU counters:");
@@ -1589,13 +1587,15 @@ int main(int argc, char **argv)
 					struct wevent_pmu_def *def = wevent_pmu_def(dump_hdr, dump_hdr->pmu_def_real_cnt + i);
 					wprintf("    %s (derived)\n", wevent_str(dump_hdr, def->name_stroff));
 				}
-			} else {
-				wprintf("%-*s%s\n", w, "PMU counters:", "NONE");
 			}
 
+			/* only show features whose captured state differs from the default */
 			for (int i = 0; i < ARRAY_SIZE(capture_features); i++) {
 				const struct capture_feature *f = &capture_features[i];
-				wprintf("%-*s%s\n", w, f->header, cfg_has_feat(cfg->capture_features, f) ? "YES" : "NO");
+				bool captured = cfg_has_feat(cfg->capture_features, f);
+
+				if (captured != (f->default_val == TRUE))
+					wprintf("%-*s%s\n", w, f->header, captured ? "YES" : "NO");
 			}
 
 			if (dump_hdr->extra_cnt > 0) {
