@@ -209,23 +209,6 @@ static inline u64 ktime_now_ns()
 	return timespec_to_ns(&t);
 }
 
-/* wraparound-safe comparison of two monotonic (ktime) timestamps */
-static inline int ts_cmp(u64 a, u64 b)
-{
-	s64 d = (s64)(a - b);
-
-	return (d > 0) - (d < 0);
-}
-
-static inline bool ts_before(u64 a, u64 b)
-{
-	return ts_cmp(a, b) < 0;
-}
-
-static inline bool ts_after(u64 a, u64 b)
-{
-	return ts_cmp(a, b) > 0;
-}
 
 void calibrate_ktime(void);
 void set_ktime_off(u64 ktime_ns, u64 realtime_ns);

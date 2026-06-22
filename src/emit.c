@@ -96,9 +96,9 @@ static struct hashmap *emitted_descrs;
 
 static inline u64 clamp_ts(u64 ts)
 {
-	if ((long)(ts - env.sess_start_ts) < 0)
+	if (ts_before(ts, env.sess_start_ts))
 		return env.sess_start_ts;
-	if ((long)(ts - env.sess_end_ts) > 0)
+	if (ts_after(ts, env.sess_end_ts))
 		return env.sess_end_ts;
 	return ts;
 }
@@ -2811,7 +2811,7 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e)
 	switch (e->req.req_event) {
 	case REQ_BEGIN: {
 		struct track_state *rs = track_state_get_or_add(DTK_REQ, task.pid, req_id);
-		if (!rs->req.start_ts || (long)(e->ts - rs->req.start_ts) < 0)
+		if (!rs->req.start_ts || ts_before(e->ts, rs->req.start_ts))
 			rs->req.start_ts = e->ts;
 
 		emit_slice_begin(req_track_uuid, rs->req.start_ts, iid_str(req_name_iid, req_name), IID_CAT_REQUEST) {
@@ -3000,7 +3000,7 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e)
 	switch (e->req_task.req_task_event) {
 	case REQ_TASK_ENQUEUE: {
 		struct track_state *rs = track_state_get_or_add(DTK_REQ, task.pid, req_id);
-		if (!rs->req.start_ts || (long)(e->ts - rs->req.start_ts) < 0)
+		if (!rs->req.start_ts || ts_before(e->ts, rs->req.start_ts))
 			rs->req.start_ts = e->ts;
 
 		if (env.emit_req_embed) {
@@ -3156,9 +3156,9 @@ static u64 ensure_cuda_api_track(int tid, const char *comm)
 
 static bool is_time_range_in_session(u64 start_ts, u64 end_ts)
 {
-	if ((long)(end_ts - env.sess_start_ts) < 0)
+	if (ts_before(end_ts, env.sess_start_ts))
 		return false;
-	if ((long)(start_ts - env.sess_end_ts) > 0)
+	if (ts_after(start_ts, env.sess_end_ts))
 		return false;
 	return true;
 }

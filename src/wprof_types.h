@@ -17,4 +17,32 @@ typedef signed short s16;
 typedef unsigned char u8;
 typedef signed char s8;
 
+/* wraparound-safe comparison of two monotonic (ktime) timestamps */
+static inline int ts_cmp(u64 a, u64 b)
+{
+	s64 d = (s64)(a - b);
+
+	return (d > 0) - (d < 0);
+}
+
+static inline bool ts_before(u64 a, u64 b)
+{
+	return ts_cmp(a, b) < 0;
+}
+
+static inline bool ts_after(u64 a, u64 b)
+{
+	return ts_cmp(a, b) > 0;
+}
+
+static inline bool ts_before_or_at(u64 a, u64 b)
+{
+	return ts_cmp(a, b) <= 0;
+}
+
+static inline bool ts_after_or_at(u64 a, u64 b)
+{
+	return ts_cmp(a, b) >= 0;
+}
+
 #endif /* __WPROF_TYPES_H_ */
