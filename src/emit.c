@@ -4332,7 +4332,7 @@ static void emit_header_json(struct worker_state *w)
 {
 	struct json_state *j = &js;
 	struct wprof_data_hdr *hdr = w->dump_hdr;
-	struct wprof_data_cfg *cfg = &hdr->cfg;
+	struct wprof_data_cfg *cfg = wprof_cfg(hdr);
 
 	struct wstack_hdr *shdr = wstack_hdr(hdr);
 	int stack_cnt = shdr ? shdr->stack_cnt - 1 : 0; /* exclude the dummy zero-entry */
