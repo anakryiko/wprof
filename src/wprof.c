@@ -1514,20 +1514,56 @@ int main(int argc, char **argv)
 				*flag = cfg_has_feat(cfg->capture_features, f);
 		}
 
+		/* handle all the ways to specify time range */
+		if (env.duration_ns != 0 && (env.replay_start_offset_ns != 0 || env.replay_end_offset_ns != 0)) {
+			eprintf("Time range start/end offsets and duration are mutually exlusive!\n");
+			err = -EINVAL;
+			goto cleanup;
+		}
+		/* if unspecified explicitly, derive time range from duration parameter */
+		if (env.duration_ns != 0) {
+			env.replay_start_offset_ns = 0;
+			env.replay_end_offset_ns = env.duration_ns;
+		}
+		/* if unspecified explicitly, derive replay end from recorded duration */
+		if (env.replay_start_offset_ns != 0 && env.replay_end_offset_ns == 0)
+			env.replay_end_offset_ns = cfg->duration_ns;
+		/* if neither duration nor time range is provided, use recorded time range */
+		if (env.replay_start_offset_ns == 0 && env.replay_end_offset_ns == 0) {
+			env.replay_start_offset_ns = 0;
+			env.replay_end_offset_ns = cfg->duration_ns;
+		}
+		/* validate requested time range */
+		if (env.replay_end_offset_ns <= env.replay_start_offset_ns) {
+			eprintf("replay: invalid time range specified: [%.3lfms, %.3lfms)!\n",
+				env.replay_start_offset_ns / 1000000.0, env.replay_end_offset_ns / 1000000.0);
+			err = -EINVAL;
+			goto cleanup;
+		}
+		if (env.replay_end_offset_ns > cfg->duration_ns) {
+			eprintf("replay: requested time range [%.3lfms, %.3lfms) is larger than recorded time range [0ms, %.3lfms)!\n",
+				env.replay_start_offset_ns / 1000000.0, env.replay_end_offset_ns / 1000000.0,
+				cfg->duration_ns / 1000000.0);
+			err = -EINVAL;
+			goto cleanup;
+		}
+
+		/* setup original (replayed) time markers */
+		env.sess_start_ts = cfg->ktime_start_ns + env.replay_start_offset_ns;
+		env.sess_end_ts = cfg->ktime_start_ns + env.replay_end_offset_ns;
+		set_ktime_off(cfg->ktime_start_ns, cfg->realtime_start_ns);
+		env.duration_ns = env.replay_end_offset_ns - env.replay_start_offset_ns;
+
 		if (env.replay_info) {
 			const int w = 26;
 			const double MB = 1024.0 * 1024.0;
 			const double S = 1000000000.0;
 			const double ms = 1000000.0;
 
-			env.replay_start_offset_ns = 0;
-			env.replay_end_offset_ns = cfg->duration_ns;
-			env.duration_ns = cfg->duration_ns;
-
 			wprintf("Replay info:\n");
 			wprintf("============\n");
-			wprintf("%-*s%s\n", w, "Timestamp:", fmt_timestamp_ns(cfg->realtime_start_ns));
-			wprintf("%-*s%.3lfs (%.3lfms)\n", w, "Duration:", cfg->duration_ns / S, cfg->duration_ns / ms);
+			wprintf("%-*s%s\n", w, "Timestamp:", fmt_timestamp_ns(cfg->realtime_start_ns + env.replay_start_offset_ns));
+			wprintf("%-*s%.3lfs (%.3lfms)\n", w, "Duration:", env.duration_ns / S, env.duration_ns / ms);
 			wprintf("%-*s%u.%u\n", w, "Data version:", dump_hdr->version_major, dump_hdr->version_minor);
 			if (cfg->captured_stack_traces) {
 				wprintf("%-*s\n", w, "Stack traces:");
@@ -1609,12 +1645,22 @@ int main(int argc, char **argv)
 
 			u64 kind_cnt[__EV_KIND_MAX] = {};
 			u64 kind_sz[__EV_KIND_MAX] = {};
+			u64 unknown_cnt = 0, unknown_sz = 0;
+			u64 ev_cnt = 0, ev_sz = 0;
 			struct wevent_record *rec;
-			wevent_for_each_event(rec, dump_hdr) {
-				if (rec->e->kind) {
-					kind_cnt[rec->e->kind]++;
-					kind_sz[rec->e->kind] += rec->e->sz;
+			wevent_for_each_event(rec, dump_hdr, env.sess_start_ts, env.sess_end_ts) {
+				u32 kind = rec->e->kind;
+
+				if (kind < __EV_KIND_MAX) {
+					kind_cnt[kind]++;
+					kind_sz[kind] += rec->e->sz;
+				} else {
+					/* kind unknown to this build (e.g. newer data file) */
+					unknown_cnt++;
+					unknown_sz += rec->e->sz;
 				}
+				ev_cnt++;
+				ev_sz += rec->e->sz;
 			}
 			wprintf("%-*s%.3lfMB total\n", w, "Data:", worker->dump_sz / MB);
 			wprintf("    %-*s%.3lfMB (%llu entries)\n", w - 4, "Thread info:", dump_hdr->threads_sz / MB, dump_hdr->thread_cnt);
@@ -1630,12 +1676,14 @@ int main(int argc, char **argv)
 			if (dump_hdr->blobs_sz)
 				wprintf("    %-*s%.3lfMB\n", w - 4, "Blobs:", dump_hdr->blobs_sz / MB);
 
-			wprintf("    %-*s%.3lfMB (%llu records)\n", w - 4, "Events:", dump_hdr->events_sz / MB, dump_hdr->event_cnt);
+			wprintf("    %-*s%.3lfMB (%llu records)\n", w - 4, "Events:", ev_sz / MB, ev_cnt);
 			for (int i = 0; i < __EV_KIND_MAX; i++) {
 				if (kind_cnt[i] == 0)
 					continue;
 				wprintf("        %-*s%.3lfMB (%llu records)\n", w - 8, wevent_kind_name(i), kind_sz[i] / MB, kind_cnt[i]);
 			}
+			if (unknown_cnt)
+				wprintf("        %-*s%.3lfMB (%llu records)\n", w - 8, "UNKNOWN", unknown_sz / MB, unknown_cnt);
 			if (cfg->captured_stack_traces) {
 				const struct wstack_hdr *shdr = wstack_hdr(dump_hdr);
 				wprintf("    %-*s%.3lfMB (%u unique stacks)\n", w - 4, "Stack traces:", dump_hdr->stacks_sz / MB, shdr->stack_cnt);
@@ -1667,46 +1715,6 @@ int main(int argc, char **argv)
 			err = -EINVAL;
 			goto cleanup;
 		}
-
-		/* handle all the ways to specify time range */
-		if (env.duration_ns != 0 && (env.replay_start_offset_ns != 0 || env.replay_end_offset_ns != 0)) {
-			eprintf("Time range start/end offsets and duration are mutually exlusive!\n");
-			err = -EINVAL;
-			goto cleanup;
-		}
-		/* if unspecified explicitly, derive time range from duration parameter */
-		if (env.duration_ns != 0) {
-			env.replay_start_offset_ns = 0;
-			env.replay_end_offset_ns = env.duration_ns;
-		}
-		/* if unspecified explicitly, derive replay end from recorded duration */
-		if (env.replay_start_offset_ns != 0 && env.replay_end_offset_ns == 0)
-			env.replay_end_offset_ns = cfg->duration_ns;
-		/* if neither duration nor time range is provided, use recorded time range */
-		if (env.replay_start_offset_ns == 0 && env.replay_end_offset_ns == 0) {
-			env.replay_start_offset_ns = 0;
-			env.replay_end_offset_ns = cfg->duration_ns;
-		}
-		/* validate requested time range */
-		if (env.replay_end_offset_ns <= env.replay_start_offset_ns) {
-			eprintf("replay: invalid time range specified: [%.3lfms, %.3lfms)!\n",
-				env.replay_start_offset_ns / 1000000.0, env.replay_end_offset_ns / 1000000.0);
-			err = -EINVAL;
-			goto cleanup;
-		}
-		if (env.replay_end_offset_ns > cfg->duration_ns) {
-			eprintf("replay: requested time range [%.3lfms, %.3lfms) is larger than recorded time range [0ms, %.3lfms)!\n",
-				env.replay_start_offset_ns / 1000000.0, env.replay_end_offset_ns / 1000000.0,
-				cfg->duration_ns / 1000000.0);
-			err = -EINVAL;
-			goto cleanup;
-		}
-
-		/* setup original (replayed) time markers */
-		env.sess_start_ts = cfg->ktime_start_ns + env.replay_start_offset_ns;
-		env.sess_end_ts = cfg->ktime_start_ns + env.replay_end_offset_ns;
-		set_ktime_off(cfg->ktime_start_ns, cfg->realtime_start_ns);
-		env.duration_ns = env.replay_end_offset_ns - env.replay_start_offset_ns;
 
 		env.timer_freq_hz = cfg->timer_freq_hz;
 		env.timer_period_ns = 1000000000ULL / env.timer_freq_hz;

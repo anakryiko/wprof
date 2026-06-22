@@ -72,11 +72,8 @@ int process_events(struct worker_state *w, handle_event_fn *handlers, size_t han
 	handle_event_fn handler;
 	int err;
 
-	wevent_for_each_event(rec, w->dump_hdr) {
+	wevent_for_each_event(rec, w->dump_hdr, env.sess_start_ts, env.sess_end_ts) {
 		e = rec->e;
-
-		if (!is_ts_in_range(e->ts))
-			continue;
 
 		if (e->kind >= handler_cnt || !(handler = handlers[e->kind]))
 			BUG("unhandled event #%d kind %s (%d)\n",
