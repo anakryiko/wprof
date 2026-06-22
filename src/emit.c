@@ -3744,6 +3744,9 @@ static void emit_pytrace_event(struct worker_state *w, const struct wevent *e)
 	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
 	struct task_state *st = task_state(w, &task);
 
+	/* ensure parent task track exists */
+	emit_track_descrs(w, &task);
+
 	u64 track_uuid = ensure_pytrace_thread_track(task.tid, task.comm);
 
 	const char *func_name = wevent_str(hdr, e->pytrace.func_name_stroff);
@@ -3863,6 +3866,9 @@ static void emit_pytorch_event(struct worker_state *w, const struct wevent *e)
 {
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
 	struct task_state *st = task_state(w, &task);
+
+	/* ensure parent task track exists */
+	emit_track_descrs(w, &task);
 
 	if (e->kind == EV_PYTORCH_ENTRY) {
 		/*
