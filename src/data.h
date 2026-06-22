@@ -306,14 +306,13 @@ struct wprof_data_hdr {
 /*
  * Sparse timestamp index entry. Each one is a checkpoint into the time-sorted
  * events section: the first event at/after some WPROF_TSIDX_PERIOD_NS boundary,
- * recording its timestamp, byte offset, and absolute index. Replay binary
- * searches these to jump near a --replay-start offset; it treats them as an
- * opaque sorted array and does not assume the period.
+ * recording its timestamp and byte offset. Replay binary searches these to jump
+ * near a --replay-start offset; it treats them as an opaque sorted array and
+ * does not assume the period.
  */
 struct wprof_tsidx_ent {
 	u64 ts;		/* event timestamp at this checkpoint */
 	u64 off;	/* byte offset of the event within the events section */
-	u64 idx;	/* absolute event index (restores rec->idx after a seek) */
 } __attribute__((aligned(8)));
 
 struct wstack_hdr {
@@ -538,13 +537,11 @@ static inline struct bpf_event_record *bpf_event_iter_next(struct bpf_event_iter
 
 struct wevent_record {
 	struct wevent *e;
-	int idx;
 };
 
 struct wevent_iter {
 	void *next;
 	void *last;
-	int next_idx;
 	u64 start_ts;	/* skip events before this ts */
 	u64 end_ts;	/* stop at the first event at/after this ts */
 	struct wevent_record rec;
@@ -566,7 +563,6 @@ static inline struct wevent_iter wevent_iter_new(void *data, u64 start_ts, u64 e
 	return (struct wevent_iter) {
 		.next = ts_chkpoint ? ev_base + ts_chkpoint->off : ev_base,
 		.last = ev_base + hdr->events_sz,
-		.next_idx = ts_chkpoint ? ts_chkpoint->idx : 0,
 		.start_ts = start_ts,
 		.end_ts = end_ts,
 	};
@@ -584,10 +580,8 @@ static inline struct wevent_record *wevent_iter_next(struct wevent_iter *it)
 		}
 
 		it->rec.e = e;
-		it->rec.idx = it->next_idx;
 
 		it->next += e->sz;
-		it->next_idx += 1;
 
 		/* skip events before the window start */
 		if (ts_before(e->ts, it->start_ts))

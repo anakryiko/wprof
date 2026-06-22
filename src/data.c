@@ -113,14 +113,14 @@ int process_events(struct worker_state *w, handle_event_fn *handlers, size_t han
 		e = rec->e;
 
 		if (e->kind >= handler_cnt || !(handler = handlers[e->kind]))
-			BUG("unhandled event #%d kind %s (%d)\n",
-			    rec->idx, event_kind_str(e->kind), e->kind);
+			BUG("unhandled event at offset %zu kind %s (%d)\n",
+			    (void *)e - (void *)w->dump_hdr, event_kind_str(e->kind), e->kind);
 
 		err = handler(w, rec->e);
 		if (err) {
-			eprintf("Failed to process event #%d (kind %s %d, offset %zu): %d\n",
-				rec->idx, event_kind_str(rec->e->kind), rec->e->kind,
-				(void *)rec->e - (void *)w->dump_hdr, err);
+			eprintf("Failed to process event at offset %zu (kind %s %d): %d\n",
+				(void *)rec->e - (void *)w->dump_hdr,
+				event_kind_str(rec->e->kind), rec->e->kind, err);
 			return err; /* YEAH, I know about all the clean up, whatever */
 		}
 	}
