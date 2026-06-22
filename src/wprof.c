@@ -1558,12 +1558,11 @@ int main(int argc, char **argv)
 			const int w = 26;
 			const double MB = 1024.0 * 1024.0;
 			const double S = 1000000000.0;
-			const double ms = 1000000.0;
 
 			wprintf("Replay info:\n");
 			wprintf("============\n");
 			wprintf("%-*s%s\n", w, "Timestamp:", fmt_timestamp_ns(cfg->realtime_start_ns + env.replay_start_offset_ns));
-			wprintf("%-*s%.3lfs (%.3lfms)\n", w, "Duration:", env.duration_ns / S, env.duration_ns / ms);
+			wprintf("%-*s%.3lfs\n", w, "Duration:", env.duration_ns / S);
 			wprintf("%-*s%u.%u\n", w, "Data version:", dump_hdr->version_major, dump_hdr->version_minor);
 			if (cfg->captured_stack_traces) {
 				wprintf("%-*s\n", w, "Stack traces:");
