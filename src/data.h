@@ -446,35 +446,58 @@ struct wevent_iter {
 	void *next;
 	void *last;
 	int next_idx;
+	u64 start_ts;	/* skip events before this ts */
+	u64 end_ts;	/* stop at the first event at/after this ts */
 	struct wevent_record rec;
 };
 
-static inline struct wevent_iter wevent_iter_new(void *data)
+/*
+ * Iterate persisted events within the time window [start_ts, end_ts); pass the
+ * full session range to walk every event. Events are globally time-sorted, so
+ * iteration stops as soon as end_ts is reached instead of scanning to the end
+ * of the events section.
+ */
+static inline struct wevent_iter wevent_iter_new(void *data, u64 start_ts, u64 end_ts)
 {
 	struct wprof_data_hdr *hdr = data;
 
 	return (struct wevent_iter) {
 		.next = data + hdr->hdr_sz + hdr->events_off,
 		.last = data + hdr->hdr_sz + hdr->events_off + hdr->events_sz,
+		.start_ts = start_ts,
+		.end_ts = end_ts,
 	};
 }
 
 static inline struct wevent_record *wevent_iter_next(struct wevent_iter *it)
 {
-	if (it->next >= it->last)
-		return NULL;
+	while (it->next < it->last) {
+		struct wevent *e = it->next;
 
-	it->rec.e = it->next;
-	it->rec.idx = it->next_idx;
+		/* events are time-sorted: at/after end_ts means we're done */
+		if ((s64)(e->ts - it->end_ts) >= 0) {
+			it->next = it->last;
+			return NULL;
+		}
 
-	it->next += it->rec.e->sz;
-	it->next_idx += 1;
+		it->rec.e = e;
+		it->rec.idx = it->next_idx;
 
-	return &it->rec;
+		it->next += e->sz;
+		it->next_idx += 1;
+
+		/* skip events before the window start */
+		if ((s64)(e->ts - it->start_ts) < 0)
+			continue;
+
+		return &it->rec;
+	}
+
+	return NULL;
 }
 
-#define wevent_for_each_event(rec, data) for (					\
-	struct wevent_iter it = wevent_iter_new(data);				\
+#define wevent_for_each_event(rec, data, start_ts, end_ts) for (			\
+	struct wevent_iter it = wevent_iter_new(data, start_ts, end_ts);		\
 	(rec = wevent_iter_next(&it));						\
 )
 
