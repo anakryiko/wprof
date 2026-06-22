@@ -22,3 +22,4 @@
 
 # local investigation/scratch dirs (never commit)
 /.investigate-*
+/ads-scripts
