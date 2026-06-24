@@ -675,6 +675,24 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 		}
 	}
 
+	/*
+	 * Expand `-p nv-smi` / `-P nv-smi` into concrete PIDs from nvidia-smi.
+	 * Done here (record-mode setup) so the resolved PIDs flow through the
+	 * normal allow/deny filter path (BPF maps + persisted WEXTRA filters);
+	 * replay restores those concrete PIDs, so no replay-side handling needed.
+	 */
+	if (env.allow_pids_nv_smi || env.deny_pids_nv_smi) {
+		ensure_nv_smi_pids();
+		for (int i = 0; i < env.nv_smi_pid_cnt; i++) {
+			if (env.allow_pids_nv_smi &&
+			    (err = append_int(&env.allow_pids, &env.allow_pid_cnt, env.nv_smi_pids[i])))
+				return err;
+			if (env.deny_pids_nv_smi &&
+			    (err = append_int(&env.deny_pids, &env.deny_pid_cnt, env.nv_smi_pids[i])))
+				return err;
+		}
+	}
+
 	if (env.capture_scx) {
 		struct btf *vmlinux_btf = load_vmlinux_btf();
 
@@ -1476,6 +1494,12 @@ int main(int argc, char **argv)
 	};
 
 	if (env.replay) {
+		/* nv-smi PID discovery needs a live nvidia-smi; numeric -p/-P still work in replay */
+		if (env.allow_pids_nv_smi || env.deny_pids_nv_smi) {
+			eprintf("-p/-P nv-smi only works in record mode (needs live nvidia-smi)!\n");
+			err = -EINVAL;
+			goto cleanup;
+		}
 		struct worker_state *worker = &workers[0];
 		worker->dump = fopen(env.data_path, "r");
 		if (!worker->dump) {

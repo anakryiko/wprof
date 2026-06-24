@@ -1119,7 +1119,7 @@ out:
 	return err;
 }
 
-static void ensure_nv_smi_pids(void)
+void ensure_nv_smi_pids(void)
 {
 	if (env.nv_smi_discovered)
 		return;
@@ -1129,9 +1129,7 @@ static void ensure_nv_smi_pids(void)
 	int *pidp;
 	wprof_for_each(gpu_pid, pidp) {
 		vprintf("nvidia-smi returned PID %d (%s)\n", *pidp, proc_name(*pidp));
-		env.nv_smi_pids = realloc(env.nv_smi_pids,
-					      (env.nv_smi_pid_cnt + 1) * sizeof(int));
-		env.nv_smi_pids[env.nv_smi_pid_cnt++] = *pidp;
+		append_int(&env.nv_smi_pids, &env.nv_smi_pid_cnt, *pidp);
 	}
 	if (env.nv_smi_pid_cnt == 0)
 		wprintf("nvidia-smi returned no GPU PIDs\n");

@@ -9,4 +9,7 @@ struct bpf_state;
 int utrace_setup(struct wprof_bpf *skel);
 int utrace_attach(struct bpf_state *st, struct wprof_bpf *skel);
 
+/* Discover GPU PIDs via nvidia-smi into env.nv_smi_pids (idempotent). */
+void ensure_nv_smi_pids(void);
+
 #endif /* __UTRACE_H_ */
