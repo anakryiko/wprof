@@ -191,6 +191,7 @@ void wpb_emit_clock_snapshot(struct wpb_writer *writer, uint64_t realtime_ts);
 void wpb_emit_system_info(struct wpb_writer *writer, const struct wpb_str *hostname,
 			  const struct wpb_str *kernel, const struct wpb_str *arch,
 			  uint32_t num_cpus);
+void wpb_emit_trace_uuid(struct wpb_writer *writer, int64_t msb, int64_t lsb);
 void wpb_emit_trace_attributes(struct wpb_writer *writer, const struct wpb_attr *attrs,
 			       size_t attr_cnt);
 void wpb_emit_interned_data(struct wpb_writer *writer, const struct wpb_interned_data *data);

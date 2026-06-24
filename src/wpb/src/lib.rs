@@ -300,6 +300,15 @@ impl WpbWriter {
         self.emit_packet(&packet)
     }
 
+    fn emit_trace_uuid(&mut self, msb: i64, lsb: i64) -> Result<(), c_int> {
+        let mut packet = base_packet(WPB_SEQ_ID_THREADS);
+        packet.data = Some(trace_packet::Data::TraceUuid(TraceUuid {
+            msb: Some(msb),
+            lsb: Some(lsb),
+        }));
+        self.emit_packet(&packet)
+    }
+
     fn emit_trace_attributes(&mut self, attrs: &[WpbAttr]) -> Result<(), c_int> {
         let mut pb_attrs = Vec::with_capacity(attrs.len());
         for attr in attrs {
@@ -865,6 +874,17 @@ pub unsafe extern "C" fn wpb_emit_system_info(
 
     if let Err(err) = (*writer).emit_system_info(hostname.as_ref(), kernel.as_ref(), arch.as_ref(), num_cpus) {
         wpb_emit_failed("SystemInfo", err);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn wpb_emit_trace_uuid(writer: *mut WpbWriter, msb: i64, lsb: i64) {
+    if writer.is_null() {
+        wpb_emit_failed("TraceUuid", -EINVAL);
+    }
+
+    if let Err(err) = (*writer).emit_trace_uuid(msb, lsb) {
+        wpb_emit_failed("TraceUuid", err);
     }
 }
 

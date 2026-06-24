@@ -235,6 +235,10 @@ struct timespec_spec {
 int parse_timespec(const char *arg, struct timespec_spec *out);
 u64 resolve_timespec(const struct timespec_spec *spec, u64 start_ktime_ns);
 
+/* RFC 4122 UUID string: 36 chars (8-4-4-4-12 hex with dashes) + NUL. */
+#define UUID_STR_LEN 37
+void gen_uuid(char out[UUID_STR_LEN]);
+
 /* ARGS PARSING HELPERS */
 int append_str(char ***strs, int *cnt, const char *str);
 int append_str_file(char ***strs, int *cnt, const char *file);

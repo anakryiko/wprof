@@ -13,6 +13,7 @@
 #include <errno.h>
 #include <sys/syscall.h>
 #include <sys/sysinfo.h>
+#include <sys/random.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
 #include <sys/resource.h>
@@ -579,4 +580,18 @@ void log_printf(int verbosity, const char *fmt, ...)
 	fputs(buf, stderr);
 
 	errno = old_errno;
+}
+
+/* Generate a random RFC 4122 version 4 UUID string (36 chars + NUL). */
+void gen_uuid(char out[UUID_STR_LEN])
+{
+	unsigned char b[16];
+
+	getrandom(b, sizeof(b), 0);
+	b[6] = (b[6] & 0x0f) | 0x40;	/* version 4 */
+	b[8] = (b[8] & 0x3f) | 0x80;	/* variant 1 (RFC 4122) */
+	snprintf(out, UUID_STR_LEN,
+		 "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+		 b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+		 b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
 }

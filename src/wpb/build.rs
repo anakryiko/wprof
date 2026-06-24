@@ -20,6 +20,7 @@ const KEEP_FIELDS: &[(&str, &[&str])] = &[
             "clock_snapshot",
             "system_info",
             "trace_attributes",
+            "trace_uuid",
             "ftrace_events",
             "interned_data",
         ],

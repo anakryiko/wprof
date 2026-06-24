@@ -587,6 +587,27 @@ static void emit_metadata(struct wpb_writer *writer, struct wprof_data_hdr *hdr)
 	 */
 	wpb_emit_system_info(writer, &hostname_str, &kernel_str, &arch_str, num_cpus);
 
+	/*
+	 * Surface our capture UUID as Perfetto's trace_uuid so the UI/trace_processor
+	 * "Trace ID" matches our `uuid=` metadata exactly. trace_processor renders the
+	 * UUID as the big-endian 128-bit value (msb<<64 | lsb), so the first 8 string
+	 * bytes map to msb (big-endian) and the last 8 to lsb (big-endian).
+	 */
+	const char *uuid = meta_lookup(hdr, "uuid");
+	if (uuid) {
+		unsigned int u[16];
+		if (sscanf(uuid, "%2x%2x%2x%2x-%2x%2x-%2x%2x-%2x%2x-%2x%2x%2x%2x%2x%2x",
+			   &u[0], &u[1], &u[2], &u[3], &u[4], &u[5], &u[6], &u[7],
+			   &u[8], &u[9], &u[10], &u[11], &u[12], &u[13], &u[14], &u[15]) == 16) {
+			int64_t msb = 0, lsb = 0;
+			for (int i = 0; i < 8; i++)
+				msb = (msb << 8) | (u[i] & 0xff);
+			for (int i = 0; i < 8; i++)
+				lsb = (lsb << 8) | (u[8 + i] & 0xff);
+			wpb_emit_trace_uuid(writer, msb, lsb);
+		}
+	}
+
 	struct wpb_attr *attrs = calloc(hdr->extra_cnt + 1, sizeof(*attrs));
 	size_t attr_cnt = 0;
 

@@ -208,16 +208,21 @@ static void collect_extras(struct persist_state *ps, struct wprof_extra_param **
 			add_extra(extras, cnt, f->kind, *flag == TRUE);
 	}
 
-	{
-		char hostname[256];
-		struct utsname uts;
-		if (gethostname(hostname, sizeof(hostname)) == 0)
-			add_extra(extras, cnt, WEXTRA_METADATA, persist_stroff(ps, sfmt("hostname=%s", hostname)));
-		if (uname(&uts) == 0) {
-			add_extra(extras, cnt, WEXTRA_METADATA, persist_stroff(ps, sfmt("kernel=%s", uts.release)));
-			add_extra(extras, cnt, WEXTRA_METADATA, persist_stroff(ps, sfmt("arch=%s", uts.machine)));
-		}
+	/* Persist built-in and user-provided metadata */
+	char hostname[256], uuid[UUID_STR_LEN];
+	struct utsname uts;
+
+	gen_uuid(uuid);
+	add_extra(extras, cnt, WEXTRA_METADATA, persist_stroff(ps, sfmt("uuid=%s", uuid)));
+
+	if (gethostname(hostname, sizeof(hostname)) == 0)
+		add_extra(extras, cnt, WEXTRA_METADATA, persist_stroff(ps, sfmt("hostname=%s", hostname)));
+
+	if (uname(&uts) == 0) {
+		add_extra(extras, cnt, WEXTRA_METADATA, persist_stroff(ps, sfmt("kernel=%s", uts.release)));
+		add_extra(extras, cnt, WEXTRA_METADATA, persist_stroff(ps, sfmt("arch=%s", uts.machine)));
 	}
+
 	for (int i = 0; i < env.metadata_cnt; i++)
 		add_extra(extras, cnt, WEXTRA_METADATA, persist_stroff(ps, env.metadata[i]));
 }
