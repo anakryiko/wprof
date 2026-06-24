@@ -1119,22 +1119,6 @@ out:
 	return err;
 }
 
-void ensure_nv_smi_pids(void)
-{
-	if (env.nv_smi_discovered)
-		return;
-	env.nv_smi_discovered = true;
-
-	vprintf("Using nvidia-smi to discover GPU PIDs...\n");
-	int *pidp;
-	wprof_for_each(gpu_pid, pidp) {
-		vprintf("nvidia-smi returned PID %d (%s)\n", *pidp, proc_name(*pidp));
-		append_int(&env.nv_smi_pids, &env.nv_smi_pid_cnt, *pidp);
-	}
-	if (env.nv_smi_pid_cnt == 0)
-		wprintf("nvidia-smi returned no GPU PIDs\n");
-}
-
 static bool is_uprobe_family(enum utrace_type type)
 {
 	switch (type) {

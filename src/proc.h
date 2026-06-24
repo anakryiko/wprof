@@ -84,4 +84,11 @@ int gpu_pid_iter_new(struct gpu_pid_iter *it);
 int *gpu_pid_iter_next(struct gpu_pid_iter *it);
 void gpu_pid_iter_destroy(struct gpu_pid_iter *it);
 
+/*
+ * Discover GPU PIDs via nvidia-smi into env.nv_smi_pids[]; idempotent, so all
+ * nv-smi-based discovery (cuda, py-*, utrace, -p/-P) shares a single
+ * nvidia-smi invocation.
+ */
+void ensure_nv_smi_pids(void);
+
 #endif /* __PROC_H__ */
