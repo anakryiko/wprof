@@ -195,7 +195,8 @@ void wpb_emit_trace_uuid(struct wpb_writer *writer, int64_t msb, int64_t lsb);
 void wpb_emit_trace_attributes(struct wpb_writer *writer, const struct wpb_attr *attrs,
 			       size_t attr_cnt);
 void wpb_emit_interned_data(struct wpb_writer *writer, const struct wpb_interned_data *data);
-void wpb_emit_trace_start(struct wpb_writer *writer, const struct wpb_interned_data *data);
+void wpb_emit_trace_start(struct wpb_writer *writer, uint64_t track_uuid,
+			  const struct wpb_interned_data *data);
 void wpb_emit_track_descriptor(struct wpb_writer *writer,
 			       const struct wpb_track_descriptor *desc);
 void wpb_emit_ftrace_bundle(struct wpb_writer *writer, uint32_t cpu,
