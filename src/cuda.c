@@ -176,12 +176,9 @@ int cuda_trace_setup(int workdir_fd)
 		break;
 	}
 	case CUDA_DISCOVER_SMI: {
-		vprintf("Using nvidia-smi to find processes using CUDA...\n");
-
-		int *pidp;
-		wprof_for_each(gpu_pid, pidp) {
-			int pid = *pidp;
-			vprintf("nvidia-smi returned PID %d (%s)\n", pid, proc_name(pid));
+		ensure_nv_smi_pids();
+		for (int i = 0; i < env.nv_smi_pid_cnt; i++) {
+			int pid = env.nv_smi_pids[i];
 
 			bool found = false;
 			for (int j = 0; j < env.cuda_cnt; j++) {

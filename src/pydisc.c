@@ -281,13 +281,9 @@ static void discover_proc(struct wprof_bpf *skel)
 
 static void discover_nv_smi(struct wprof_bpf *skel)
 {
-	vprintf("Using nvidia-smi to find GPU Python processes...\n");
-
-	int *pidp;
-	wprof_for_each(gpu_pid, pidp) {
-		vprintf("nvidia-smi returned PID %d (%s)\n", *pidp, proc_name(*pidp));
-		discover_pid(*pidp, skel, true);
-	}
+	ensure_nv_smi_pids();
+	for (int i = 0; i < env.nv_smi_pid_cnt; i++)
+		discover_pid(env.nv_smi_pids[i], skel, true);
 }
 
 int pydisc_discover(struct wprof_bpf *skel)

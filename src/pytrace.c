@@ -247,11 +247,9 @@ static void pytrace_discover_inject(enum pytrace_discover_strategy discovery, in
 		break;
 	}
 	case PYTRACE_DISCOVER_NV_SMI: {
-		vprintf("Using nvidia-smi to find Python processes using GPU...\n");
-
-		int *pidp;
-		wprof_for_each(gpu_pid, pidp)
-			try_inject_to_python_process(*pidp, workdir_fd);
+		ensure_nv_smi_pids();
+		for (int i = 0; i < env.nv_smi_pid_cnt; i++)
+			try_inject_to_python_process(env.nv_smi_pids[i], workdir_fd);
 		break;
 	}
 	case PYTRACE_DISCOVER_NONE:
