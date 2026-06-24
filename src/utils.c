@@ -86,9 +86,23 @@ cleanup:
 	return err;
 }
 
-int append_num(int **nums, int *cnt, const char *arg)
+int append_int(int **nums, int *cnt, int val)
 {
 	void *tmp;
+
+	tmp = realloc(*nums, (*cnt + 1) * sizeof(**nums));
+	if (!tmp)
+		return -ENOMEM;
+	*nums = tmp;
+
+	(*nums)[*cnt] = val;
+	*cnt = *cnt + 1;
+
+	return 0;
+}
+
+int append_num(int **nums, int *cnt, const char *arg)
+{
 	int pid;
 
 	errno = 0;
@@ -98,15 +112,7 @@ int append_num(int **nums, int *cnt, const char *arg)
 		return -EINVAL;
 	}
 
-	tmp = realloc(*nums, (*cnt + 1) * sizeof(**nums));
-	if (!tmp)
-		return -ENOMEM;
-	*nums = tmp;
-
-	(*nums)[*cnt] = pid;
-	*cnt = *cnt + 1;
-
-	return 0;
+	return append_int(nums, cnt, pid);
 }
 
 ssize_t file_size(FILE *f)

@@ -154,8 +154,8 @@ static const struct argp_option opts[] = {
 	{ "symbolize-frugal", OPT_SYMBOLIZE_FRUGALLY, NULL, 0, "Symbolize frugally (slower, but less memory hungry)" },
 
 	/* allow/deny filters */
-	{ "pid", 'p', "PID", 0, "PID allow filter" },
-	{ "no-pid", 'P', "PID", 0, "PID deny filter" },
+	{ "pid", 'p', "PID", 0, "PID allow filter (numeric PID or nv-smi)" },
+	{ "no-pid", 'P', "PID", 0, "PID deny filter (numeric PID or nv-smi)" },
 	{ "tid", OPT_ALLOW_TID, "TID", 0, "TID allow filter" },
 	{ "no-tid", OPT_DENY_TID, "TID", 0, "TID deny filter" },
 	{ "process-name", 'n', "NAME_GLOB", 0, "Process name allow filter" },
@@ -702,14 +702,22 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	}
 	/* FILTERING */
 	case 'p':
-		err = append_num(&env.allow_pids, &env.allow_pid_cnt, arg);
-		if (err)
-			return err;
+		if (strcasecmp(arg, "nv-smi") == 0 || strcasecmp(arg, "nvidia-smi") == 0) {
+			env.allow_pids_nv_smi = true;
+		} else {
+			err = append_num(&env.allow_pids, &env.allow_pid_cnt, arg);
+			if (err)
+				return err;
+		}
 		break;
 	case 'P':
-		err = append_num(&env.deny_pids, &env.deny_pid_cnt, arg);
-		if (err)
-			return err;
+		if (strcasecmp(arg, "nv-smi") == 0 || strcasecmp(arg, "nvidia-smi") == 0) {
+			env.deny_pids_nv_smi = true;
+		} else {
+			err = append_num(&env.deny_pids, &env.deny_pid_cnt, arg);
+			if (err)
+				return err;
+		}
 		break;
 	case OPT_ALLOW_TID:
 		err = append_num(&env.allow_tids, &env.allow_tid_cnt, arg);

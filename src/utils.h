@@ -249,5 +249,6 @@ void gen_uuid(char out[UUID_STR_LEN]);
 int append_str(char ***strs, int *cnt, const char *str);
 int append_str_file(char ***strs, int *cnt, const char *file);
 int append_num(int **nums, int *cnt, const char *arg);
+int append_int(int **nums, int *cnt, int val);
 
 #endif /* __UTILS_H_ */

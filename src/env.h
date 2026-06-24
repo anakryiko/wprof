@@ -216,6 +216,8 @@ struct env {
 
 	int *allow_pids, *deny_pids;
 	int allow_pid_cnt, deny_pid_cnt;
+	/* -p/-P nv-smi: expand to nvidia-smi GPU PIDs at capture setup (record mode) */
+	bool allow_pids_nv_smi, deny_pids_nv_smi;
 
 	int *allow_tids, *deny_tids;
 	int allow_tid_cnt, deny_tid_cnt;
