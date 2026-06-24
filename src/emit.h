@@ -9,5 +9,6 @@
 
 int init_emit(struct worker_state *w);
 int emit_trace(struct worker_state *w);
+u64 session_track_uuid(void);
 
 #endif /* __EMIT_H_ */

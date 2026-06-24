@@ -335,7 +335,7 @@ impl WpbWriter {
         self.emit_packet(&packet)
     }
 
-    fn emit_trace_start(&mut self, src: &WpbInternedData) -> Result<(), c_int> {
+    fn emit_trace_start(&mut self, track_uuid: u64, src: &WpbInternedData) -> Result<(), c_int> {
         let mut interned_data = InternedData::default();
         fill_packet_interned_data(&mut interned_data, src);
 
@@ -345,6 +345,7 @@ impl WpbWriter {
         packet.interned_data = Some(interned_data);
         packet.data = Some(trace_packet::Data::TrackEvent(Box::new(TrackEvent {
             r#type: Some(WPB_TRACK_EVENT_INSTANT),
+            track_uuid: (track_uuid != 0).then_some(track_uuid),
             name_field: Some(track_event::NameField::Name("START".to_owned())),
             ..TrackEvent::default()
         })));
@@ -922,13 +923,14 @@ pub unsafe extern "C" fn wpb_emit_interned_data(
 #[no_mangle]
 pub unsafe extern "C" fn wpb_emit_trace_start(
     writer: *mut WpbWriter,
+    track_uuid: u64,
     data: *const WpbInternedData,
 ) {
     if writer.is_null() || data.is_null() {
         wpb_emit_failed("trace start", -EINVAL);
     }
 
-    if let Err(err) = (*writer).emit_trace_start(&*data) {
+    if let Err(err) = (*writer).emit_trace_start(track_uuid, &*data) {
         wpb_emit_failed("trace start", err);
     }
 }

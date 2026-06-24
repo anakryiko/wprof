@@ -14,6 +14,7 @@
 #include "env.h"
 #include "utils.h"
 #include "data.h"
+#include "emit.h"
 
 int wpb_stream_write(void *ctx, const uint8_t *buf, size_t count)
 {
@@ -656,7 +657,10 @@ int init_pb_trace(struct wpb_writer *writer, struct wprof_data_hdr *hdr)
 	emit_clock_snapshot(writer);
 	emit_metadata(writer, hdr);
 
-	/* emit fake instant event to establish strict zero timestamp */
+	/*
+	 * Emit fake instant event to establish strict zero timestamp; anchor it on
+	 * the session track so that track sorts to the top of the timeline.
+	 */
 	struct wpb_intern cats[CAT_END_IID - CAT_START_IID];
 	struct wpb_intern names[NAME_END_IID - NAME_START_IID];
 	struct wpb_intern ann_names[ANNK_END_IID - ANNK_START_IID];
@@ -673,7 +677,7 @@ int init_pb_trace(struct wpb_writer *writer, struct wprof_data_hdr *hdr)
 		.debug_annotation_names = { .entries = ann_names, .cnt = ARRAY_SIZE(ann_names) },
 		.debug_annotation_string_values = { .entries = ann_values, .cnt = ARRAY_SIZE(ann_values) },
 	};
-	wpb_emit_trace_start(writer, &start_data);
+	wpb_emit_trace_start(writer, session_track_uuid(), &start_data);
 
 	if (env.pb_debug_interns) {
 		struct { const char *name; int start, end; } ranges[] = {

@@ -119,13 +119,20 @@ enum track_kind {
 	TK_MULT,
 };
 
+/*
+ * Order matters: the TKS_* value of a folder track doubles as its
+ * sibling_order_rank under the session track, so declaration order here is the
+ * top-to-bottom display order of the group folders.
+ */
 enum track_special {
-	TKS_IDLE = 1,
-	TKS_KWORKER = 2,
-	TKS_KTHREAD = 3,
+	TKS_SESSION = 1,
 
-	TKS_REQUESTS = 4,
-	TKS_CUDA = 5,
+	TKS_IDLE = 2,
+	TKS_KWORKER = 3,
+	TKS_KTHREAD = 4,
+
+	TKS_REQUESTS = 5,
+	TKS_CUDA = 6,
 };
 
 #define TRACK_UUID(kind, id) (((u64)(id) * TK_MULT) + (u64)kind)
@@ -135,6 +142,7 @@ enum track_special {
 #define TRACK_UUID_KTHREAD	TRACK_UUID(TK_SPECIAL, TKS_KTHREAD)
 #define TRACK_UUID_REQUESTS	TRACK_UUID(TK_SPECIAL, TKS_REQUESTS)
 #define TRACK_UUID_CUDA		TRACK_UUID(TK_SPECIAL, TKS_CUDA)
+#define TRACK_UUID_SESSION	TRACK_UUID(TK_SPECIAL, TKS_SESSION)
 
 enum dyn_track_kind {
 	__DTK_GAP = TK_MULT - 1,	/* we need to not overlap with enum track_kind */
@@ -960,6 +968,12 @@ static void emit_track_descr(__u64 track_uuid, __u64 parent_track_uuid, const ch
 static void emit_track_descr_explicit(__u64 track_uuid, __u64 parent_track_uuid, const char *name, int rank)
 {
 	emit_track_descr_impl(track_uuid, parent_track_uuid, name, rank, CHILD_ORDER_EXPLICIT, MERGE_DEFAULT);
+}
+
+/* UUID of the session track; init_pb_trace() anchors the START event on it. */
+u64 session_track_uuid(void)
+{
+	return TRACK_UUID_SESSION;
 }
 
 static void emit_process_track_descr(const struct wprof_task *t)
@@ -4463,10 +4477,23 @@ int emit_trace(struct worker_state *w)
 	} else {
 		emit_pmu_intern_names(w);
 
+		/*
+		 * SESSION is a top-level folder grouping the synthetic group tracks
+		 * (REQUESTS, CUDA, ...); child_ordering is EXPLICIT so they sort by their
+		 * TKS_* value. The zero-timestamp START event (see init_pb_trace) is
+		 * anchored on the session track.
+		 *
+		 * The leading space in the name is load-bearing: Perfetto orders root
+		 * tracks lexicographically by name (sibling_order_rank is ignored at the
+		 * root), and a space sorts before every process/thread name, floating the
+		 * session folder to the top. The UI renders the title with white-space:
+		 * nowrap, which collapses the leading space, so it still displays "SESSION".
+		 */
+		emit_track_descr_explicit(TRACK_UUID_SESSION, 0, " SESSION", TKS_SESSION);
 		if (env.capture_requests)
-			emit_track_descr(TRACK_UUID_REQUESTS, 0, "REQUESTS", 1000);
+			emit_track_descr(TRACK_UUID_REQUESTS, TRACK_UUID_SESSION, "REQUESTS", TKS_REQUESTS);
 		if (env.capture_cuda)
-			emit_track_descr_explicit(TRACK_UUID_CUDA, 0, "CUDA", 2000);
+			emit_track_descr_explicit(TRACK_UUID_CUDA, TRACK_UUID_SESSION, "CUDA", TKS_CUDA);
 
 		if (env.requested_stack_traces) {
 			struct wstack_hdr *shdr = wstack_hdr(w->dump_hdr);
