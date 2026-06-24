@@ -126,7 +126,6 @@ static int torch_resolve_symbols(int pid, unsigned long *sym_addrs)
 		}
 	}
 
-	eprintf("Failed to resolve torch symbol for PID: %d\n", pid);
 	return -ENOENT;
 }
 
@@ -178,8 +177,8 @@ static int try_inject_to_python_process(int pid, int workdir_fd)
 		err = torch_resolve_symbols(pid, torch_sym_addrs);
 		dlogf(PYTRACE, 1, "PID %d: torch symbol resolution took %.3lfms\n", pid, (ktime_now_ns() - ts) / 1e6);
 		if (err) {
-			eprintf("Failed to resolve PyTorch symbols for %s, skipping injection\n",
-					pytrace_proc_str(pid, ns_tid_by_host_tid(pid, pid), proc_name(pid)));
+			eprintf("Failed to resolve PyTorch symbols for PID %d (%s), skipping injection...\n",
+					pid, proc_name(pid));
 			return err;
 		}
 	}
