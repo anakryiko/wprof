@@ -112,7 +112,7 @@ enum track_kind {
 
 	TK_IDLE,		/* idle thread event track (by CPU), child of idle thread metadata */
 
-	TK_SPECIAL,		/* special and fake groups (idle, kthread, kworker, requests folder) */
+	TK_SPECIAL,		/* special and fake groups (idle, kernel, requests, cuda, session) */
 
 	TK_DYNAMIC,		/* dynamically allocated track UUIDs (see enum dyn_track_kind) */
 
@@ -128,18 +128,16 @@ enum track_special {
 	TKS_SESSION = 1,
 
 	TKS_IDLE = 2,
-	TKS_KWORKER = 3,
-	TKS_KTHREAD = 4,
+	TKS_KERNEL = 3,
 
-	TKS_REQUESTS = 5,
-	TKS_CUDA = 6,
+	TKS_REQUESTS = 4,
+	TKS_CUDA = 5,
 };
 
 #define TRACK_UUID(kind, id) (((u64)(id) * TK_MULT) + (u64)kind)
 
 #define TRACK_UUID_IDLE		TRACK_UUID(TK_SPECIAL, TKS_IDLE)
-#define TRACK_UUID_KWORKER	TRACK_UUID(TK_SPECIAL, TKS_KWORKER)
-#define TRACK_UUID_KTHREAD	TRACK_UUID(TK_SPECIAL, TKS_KTHREAD)
+#define TRACK_UUID_KERNEL	TRACK_UUID(TK_SPECIAL, TKS_KERNEL)
 #define TRACK_UUID_REQUESTS	TRACK_UUID(TK_SPECIAL, TKS_REQUESTS)
 #define TRACK_UUID_CUDA		TRACK_UUID(TK_SPECIAL, TKS_CUDA)
 #define TRACK_UUID_SESSION	TRACK_UUID(TK_SPECIAL, TKS_SESSION)
@@ -564,22 +562,18 @@ static void emit_cleanup(struct emit_rec *r)
 enum task_kind {
 	TASK_NORMAL,
 	TASK_IDLE,
-	TASK_KWORKER,
-	TASK_KTHREAD,
+	TASK_KERNEL,
 };
 
-#define TRACK_RANK_IDLE		-3
-#define TRACK_RANK_KWORKER	-2
-#define TRACK_RANK_KTHREAD	-1
+#define TRACK_RANK_IDLE		-2
+#define TRACK_RANK_KERNEL	-1
 
 static enum task_kind task_kind(const struct wprof_task *t)
 {
 	if (t->pid == 0)
 		return TASK_IDLE;
-	else if (t->flags & PF_WQ_WORKER)
-		return TASK_KWORKER;
-	else if (t->flags & PF_KTHREAD)
-		return TASK_KTHREAD;
+	else if (t->flags & (PF_KTHREAD | PF_WQ_WORKER))
+		return TASK_KERNEL;
 	else
 		return TASK_NORMAL;
 }
@@ -601,8 +595,7 @@ static int track_tid(const struct wprof_task *t)
 }
 
 #define TRACK_PID_IDLE		2000000000ULL
-#define TRACK_PID_KWORKER	2000000001ULL
-#define TRACK_PID_KTHREAD	2000000002ULL
+#define TRACK_PID_KERNEL	2000000001ULL
 
 static int track_pid(const struct wprof_task *t)
 {
@@ -613,10 +606,8 @@ static int track_pid(const struct wprof_task *t)
 		return t->pid;
 	case TASK_IDLE:
 		return TRACK_PID_IDLE;
-	case TASK_KWORKER:
-		return TRACK_PID_KWORKER;
-	case TASK_KTHREAD:
-		return TRACK_PID_KTHREAD;
+	case TASK_KERNEL:
+		return TRACK_PID_KERNEL;
 	default:
 		BUG("unexpected task kind in track_pid(): %d\n", kind);
 	}
@@ -636,18 +627,15 @@ static int track_process_rank(const struct wprof_task *t)
 		return t->pid + 1000000000ULL;
 	case TASK_IDLE:
 		return TRACK_RANK_IDLE;
-	case TASK_KWORKER:
-		return TRACK_RANK_KWORKER;
-	case TASK_KTHREAD:
-		return TRACK_RANK_KTHREAD;
+	case TASK_KERNEL:
+		return TRACK_RANK_KERNEL;
 	default:
 		BUG("unexpected task kind in track_process_rank(): %d\n", kind);
 	}
 }
 
 #define TRACK_NAME_IDLE "IDLE"
-#define TRACK_NAME_KWORKER "KWORKER"
-#define TRACK_NAME_KTHREAD "KTHREAD"
+#define TRACK_NAME_KERNEL "KERNEL"
 
 static const char *track_pcomm(const struct wprof_task *t)
 {
@@ -658,10 +646,8 @@ static const char *track_pcomm(const struct wprof_task *t)
 		return t->pcomm;
 	case TASK_IDLE:
 		return TRACK_NAME_IDLE;
-	case TASK_KWORKER:
-		return TRACK_NAME_KWORKER;
-	case TASK_KTHREAD:
-		return TRACK_NAME_KTHREAD;
+	case TASK_KERNEL:
+		return TRACK_NAME_KERNEL;
 	default:
 		BUG("unexpected task kind in track_pcomm(): %d\n", kind);
 	}
@@ -673,10 +659,8 @@ static const u64 kind_track_uuid(enum task_kind kind)
 	switch (kind) {
 	case TASK_IDLE:
 		return TRACK_UUID_IDLE;
-	case TASK_KWORKER:
-		return TRACK_UUID_KWORKER;
-	case TASK_KTHREAD:
-		return TRACK_UUID_KTHREAD;
+	case TASK_KERNEL:
+		return TRACK_UUID_KERNEL;
 	default:
 		BUG("unexpected task kind in kind_track_uuid(): %d\n", kind);
 	}
@@ -688,10 +672,8 @@ static const u64 kind_track_pid(enum task_kind kind)
 	switch (kind) {
 	case TASK_IDLE:
 		return TRACK_PID_IDLE;
-	case TASK_KWORKER:
-		return TRACK_PID_KWORKER;
-	case TASK_KTHREAD:
-		return TRACK_PID_KTHREAD;
+	case TASK_KERNEL:
+		return TRACK_PID_KERNEL;
 	default:
 		BUG("unexpected task kind in kind_track_pid(): %d\n", kind);
 	}
@@ -703,10 +685,8 @@ static const char *kind_track_name(enum task_kind kind)
 	switch (kind) {
 	case TASK_IDLE:
 		return TRACK_NAME_IDLE;
-	case TASK_KWORKER:
-		return TRACK_NAME_KWORKER;
-	case TASK_KTHREAD:
-		return TRACK_NAME_KTHREAD;
+	case TASK_KERNEL:
+		return TRACK_NAME_KERNEL;
 	default:
 		BUG("unexpected task kind in kind_track_name(): %d\n", kind);
 	}
@@ -718,10 +698,8 @@ static const int kind_track_rank(enum task_kind kind)
 	switch (kind) {
 	case TASK_IDLE:
 		return TRACK_RANK_IDLE;
-	case TASK_KWORKER:
-		return TRACK_RANK_KWORKER;
-	case TASK_KTHREAD:
-		return TRACK_RANK_KTHREAD;
+	case TASK_KERNEL:
+		return TRACK_RANK_KERNEL;
 	default:
 		BUG("unexpected task kind in kind_track_rank(): %d\n", kind);
 	}
@@ -886,8 +864,7 @@ static struct emit_rec emit_counter_pre(u64 ts, const struct wprof_task *t,
 
 static bool kind_track_emitted[] = {
 	[TASK_IDLE] = false,
-	[TASK_KWORKER] = false,
-	[TASK_KTHREAD] = false,
+	[TASK_KERNEL] = false,
 };
 
 static void emit_kind_track_descr(enum task_kind k)
@@ -903,7 +880,7 @@ static void emit_kind_track_descr(enum task_kind k)
 		.uuid = track_uuid,
 		.process_pid = track_pid,
 		.process_name = wpb_str_from_cstr(0, track_name),
-		.child_ordering = k == TASK_KWORKER ? WPB_TRACK_CHILD_ORDER_LEXICOGRAPHIC : WPB_TRACK_CHILD_ORDER_EXPLICIT,
+		.child_ordering = k == TASK_KERNEL ? WPB_TRACK_CHILD_ORDER_LEXICOGRAPHIC : WPB_TRACK_CHILD_ORDER_EXPLICIT,
 		.sibling_order_rank = track_rank,
 		/* sibling_merge_behavior left as default (mergeable) */
 	};
