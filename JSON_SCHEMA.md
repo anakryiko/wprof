@@ -207,6 +207,33 @@ Periodic timer interrupt capturing what a thread is doing on-CPU.
 }
 ```
 
+#### `pmu_event` — sampled PMU event
+
+Overflow sample of a `-S pmu=<event>` PMU/software event, capturing what a thread
+is doing plus the configured `--pmu` counter values at the sample.
+
+| Field           | Type           | Description                                                      |
+|-----------------|----------------|-----------------------------------------------------------------|
+| `task`          | task           | Thread running when the event overflowed                        |
+| `cpu`           | int            | CPU the sample fired on                                         |
+| `pmu`           | string         | Which sampled event fired (e.g. `cpu-cycles`, `cpu-clock`)      |
+| `sample_period` | int            | *(optional)* Event counts this sample represents                |
+| `stack_id`      | int            | *(optional)* Stack trace ID (present when `pmu` stacks enabled) |
+| `pmus`          | array of float | *(optional)* PMU counter values, parallel to header `pmus`      |
+
+```json
+{
+  "ts": 0.000005148,
+  "t": "pmu_event",
+  "task": {"pid": 0, "comm": "swapper/96"},
+  "cpu": 96,
+  "pmu": "cpu-cycles",
+  "sample_period": 1000000,
+  "stack_id": 20,
+  "pmus": [78.000000]
+}
+```
+
 ---
 
 ### Interrupt events
