@@ -24,6 +24,7 @@
 static const char *event_kind_str_map[] = {
 	/* BPF-produced events */
 	[EV_TIMER] = "TIMER",
+	[EV_PMU_EVENT] = "PMU_EVENT",
 	[EV_SWITCH] = "SWITCH",
 	[EV_WAKEUP_NEW] = "WAKEUP_NEW",
 	//[EV_WAKEUP] = "WAKEUP",

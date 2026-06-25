@@ -150,6 +150,7 @@ const char *extra_param_str(struct wprof_data_hdr *hdr, const struct wprof_extra
 	case WEXTRA_EMIT_EMBED_STACKS:		return e->value ? "-e embed-stacks" : "-e no-embed-stacks";
 	case WEXTRA_PREPARE_SPEC:		return sfmt("--prepare %s", wevent_str(hdr, e->stroff));
 	case WEXTRA_ACTIVATE_SPEC:		return sfmt("--activate %s", wevent_str(hdr, e->stroff));
+	case WEXTRA_PMU_EVENT:			return sfmt("--stacks pmu=%s", wevent_str(hdr, e->stroff));
 	default:
 		BUG("unknown extra param kind %d\n", e->kind);
 	}
@@ -559,6 +560,50 @@ static int setup_perf_counters(struct bpf_state *st, int num_cpus)
 	return 0;
 }
 
+static int setup_pmu_events(struct bpf_state *st, int num_cpus)
+{
+	struct perf_event_attr attr;
+
+	st->pmu_event_fd_cnt = env.pmu_event_cnt * num_cpus;
+	st->pmu_event_fds = calloc(st->pmu_event_fd_cnt, sizeof(int));
+	for (int i = 0; i < st->pmu_event_fd_cnt; i++)
+		st->pmu_event_fds[i] = -1;
+
+	for (int s = 0; s < env.pmu_event_cnt; s++) {
+		const struct pmu_event *ev = &env.pmu_events[s];
+
+		for (int cpu = 0; cpu < num_cpus; cpu++) {
+			/* skip offline/not present CPUs */
+			if (cpu >= st->num_online_cpus || !st->online_mask[cpu])
+				continue;
+
+			memset(&attr, 0, sizeof(attr));
+			attr.size = sizeof(attr);
+			attr.type = ev->perf_type;
+			attr.config = ev->config;
+			attr.config1 = ev->config1;
+			attr.config2 = ev->config2;
+			if (ev->sampling_period) {
+				attr.sample_period = ev->sampling_period;
+				attr.freq = 0;
+			} else {
+				attr.sample_freq = ev->sampling_freq;
+				attr.freq = 1;
+			}
+
+			int pefd = sys_perf_event_open(&attr, -1, cpu, -1, PERF_FLAG_FD_CLOEXEC);
+			if (pefd < 0) {
+				int err = -errno;
+				eprintf("Failed to set up PMU sampling event '%s' on CPU %d: %d\n", ev->name, cpu, err);
+				return err;
+			}
+			st->pmu_event_fds[s * num_cpus + cpu] = pefd;
+		}
+	}
+
+	return 0;
+}
+
 static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num_cpus, int workdir_fd)
 {
 	const char *online_cpus_file = "/sys/devices/system/cpu/online";
@@ -890,6 +935,8 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 
 	if (env.requested_stack_traces & ST_TIMER)
 		bpf_program__set_autoload(st->skel->progs.wprof_timer_tick, true);
+	if (env.pmu_event_cnt > 0)
+		bpf_program__set_autoload(st->skel->progs.wprof_pmu_event, true);
 	skel->rodata->requested_stack_traces = env.requested_stack_traces;
 
 	int cpu_cnt_pow2 = round_pow_of_2(num_cpus);
@@ -995,6 +1042,14 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 		}
 	}
 
+	if (env.pmu_event_cnt > 0) {
+		err = setup_pmu_events(st, num_cpus);
+		if (err) {
+			eprintf("Failed to setup PMU sampling events: %d\n", err);
+			return err;
+		}
+	}
+
 	if (env.capture_pystacks) {
 		err = pystacks_init(skel);
 		if (err) {
@@ -1068,13 +1123,42 @@ static int attach_bpf(struct bpf_state *st, struct worker_state *workers, int nu
 		if (!st->perf_timer_fds || st->perf_timer_fds[cpu] < 0)
 			continue;
 
-		st->links[cpu] = bpf_program__attach_perf_event(st->skel->progs.wprof_timer_tick,
-								st->perf_timer_fds[cpu]);
-		if (!st->links[cpu]) {
+		struct bpf_link *link = bpf_program__attach_perf_event(st->skel->progs.wprof_timer_tick,
+								       st->perf_timer_fds[cpu]);
+		if (!link) {
 			err = -errno;
 			return err;
 		}
-		st->link_cnt++;
+		st->links[st->link_cnt++] = link;
+	}
+
+	/*
+	 * Attach the PMU-event program to each sampled event's per-CPU fds, passing
+	 * the event's pmu-def index (def_idx) as the bpf_cookie so emit can recover
+	 * the event by indexing the def table. Their links go into the shared ->links.
+	 */
+	if (env.pmu_event_cnt > 0 && st->pmu_event_fds) {
+		st->links = realloc(st->links, (st->link_cnt + st->pmu_event_fd_cnt) * sizeof(*st->links));
+
+		for (int pmu_idx = 0; pmu_idx < env.pmu_event_cnt; pmu_idx++) {
+			LIBBPF_OPTS(bpf_perf_event_opts, popts, .bpf_cookie = pmu_idx);
+
+			for (int cpu = 0; cpu < num_cpus; cpu++) {
+				int idx = pmu_idx * num_cpus + cpu;
+				struct bpf_link *link;
+
+				if (st->pmu_event_fds[idx] < 0)
+					continue;
+
+				link = bpf_program__attach_perf_event_opts( st->skel->progs.wprof_pmu_event,
+									   st->pmu_event_fds[idx], &popts);
+				if (!link) {
+					err = -errno;
+					return err;
+				}
+				st->links[st->link_cnt++] = link;
+			}
+		}
 	}
 
 	err = wprof_bpf__attach(st->skel);
@@ -1157,6 +1241,13 @@ static void detach_bpf(struct bpf_state *st, int num_cpus)
 				close(st->perf_timer_fds[i]);
 		}
 		free(st->perf_timer_fds);
+	}
+	if (st->pmu_event_fds) {
+		for (int i = 0; i < st->pmu_event_fd_cnt; i++) {
+			if (st->pmu_event_fds[i] >= 0)
+				close(st->pmu_event_fds[i]);
+		}
+		free(st->pmu_event_fds);
 	}
 	if (st->perf_counter_fds) {
 		/*
@@ -1576,6 +1667,14 @@ int main(int argc, char **argv)
 					wprintf("    --stacks cuda\n");
 				if (cfg->captured_stack_traces & ST_UTRACE)
 					wprintf("    --stacks utrace\n");
+				if (cfg->captured_stack_traces & ST_PMU) {
+					/* one -S pmu= sampled event per stored spec, with its rate */
+					for (u64 i = 0; i < dump_hdr->extra_cnt; i++) {
+						struct wprof_extra_param *e = wevent_extra_param(dump_hdr, i);
+						if (e->kind == WEXTRA_PMU_EVENT)
+							wprintf("    --stacks pmu=%s\n", wevent_str(dump_hdr, e->stroff));
+					}
+				}
 			}
 			if (dump_hdr->pmu_def_real_cnt + dump_hdr->pmu_def_deriv_cnt) {
 				wprintf("%-*s\n", w, "PMU counters:");
@@ -1602,10 +1701,13 @@ int main(int argc, char **argv)
 				bool has_extras = false, has_metadata = false;
 				for (u64 i = 0; i < dump_hdr->extra_cnt; i++) {
 					struct wprof_extra_param *e = wevent_extra_param(dump_hdr, i);
-					if (e->kind == WEXTRA_METADATA)
+					if (e->kind == WEXTRA_METADATA) {
 						has_metadata = true;
-					else if (e->kind != WEXTRA_STATS)
+					} else if (e->kind == WEXTRA_STATS || e->kind != WEXTRA_PMU_EVENT) {
+						/* excluded from extras printing */
+					} else {
 						has_extras = true;
+					}
 				}
 				if (env.stats || (cfg->captured_stack_traces & ST_TIMER)) {
 					wprintf("%-*s\n", w, "Config:");
@@ -1635,7 +1737,8 @@ int main(int argc, char **argv)
 					wprintf("%-*s\n", w, "Extras:");
 					for (u64 i = 0; i < dump_hdr->extra_cnt; i++) {
 						struct wprof_extra_param *e = wevent_extra_param(dump_hdr, i);
-						if (e->kind == WEXTRA_METADATA || e->kind == WEXTRA_STATS)
+						if (e->kind == WEXTRA_METADATA || e->kind == WEXTRA_STATS ||
+						    e->kind == WEXTRA_PMU_EVENT)
 							continue;
 						wprintf("    %s\n", extra_param_str(dump_hdr, e));
 					}
@@ -1827,6 +1930,7 @@ int main(int argc, char **argv)
 			case WEXTRA_PMU:
 			case WEXTRA_PREPARE_SPEC:
 			case WEXTRA_ACTIVATE_SPEC:
+			case WEXTRA_PMU_EVENT:
 				/* capture-time only; informational at replay (see cmdline reconstruction) */
 				break;
 			default:
@@ -1872,6 +1976,21 @@ int main(int argc, char **argv)
 	env.timer_period_ns = 1000000000ULL / env.timer_freq_hz;
 	if (env.duration_ns == 0)
 		env.duration_ns = DEFAULT_DURATION_MS * 1000000ULL;
+
+	/*
+	 * Resolve -S pmu= sampling events (deferred so --pmu can be referenced by name)
+	 * and apply the default rate when none was given. The bpf_cookie is the 0-based
+	 * index here, which emit maps back to env.pmu_events[].
+	 */
+	for (int i = 0; i < env.pmu_event_cnt; i++) {
+		struct pmu_event *s = &env.pmu_events[i];
+
+		err = pmu_event_resolve(s, env.pmu_derivs, env.pmu_deriv_cnt);
+		if (err)
+			goto cleanup;
+		if (s->sampling_freq == 0 && s->sampling_period == 0)
+			s->sampling_freq = DEFAULT_PMU_EVENT_FREQ_HZ;
+	}
 
 	/*
 	 * Resolve --feature sched / wakeup and their dependencies. Off-CPU stacks,

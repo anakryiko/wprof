@@ -191,6 +191,7 @@ static const char *pb_static_strs[] = {
 	[IID_CAT_PYTORCH] = "PYTORCH",
 	[IID_CAT_UTRACE] = "UTRACE",
 	[IID_CAT_TIMER_CALLSTACK] = "TIMER_CALLSTACK",
+	[IID_CAT_PMU_EVENT] = "PMU",
 
 	[IID_NAME_TIMER] = "TIMER",
 	[IID_NAME_EXEC] = "EXEC",
@@ -325,6 +326,7 @@ static const char *pb_static_strs[] = {
 	[IID_ANNK_CUDA_GPU_DELAY_US] = "gpu_delay_us",
 	[IID_ANNK_PYTRACE_FILE] = "file",
 	[IID_ANNK_PYTRACE_LINENO] = "lineno",
+	[IID_ANNK_SAMPLE_PERIOD] = "sample_period",
 
 	[IID_ANNV_SOFTIRQ_ACTION + HI_SOFTIRQ] = "hi",
 	[IID_ANNV_SOFTIRQ_ACTION + TIMER_SOFTIRQ] = "timer",

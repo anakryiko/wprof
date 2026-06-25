@@ -74,6 +74,7 @@ struct env env = {
 	.pmu_real_cnt = -1,
 	.pmu_deriv_cnt = -1,
 	.pmu_unresolved_cnt = -1,
+	.pmu_event_cnt = -1,
 };
 
 enum {
@@ -139,7 +140,8 @@ static const struct argp_option opts[] = {
 	{ "replay-end", OPT_REPLAY_OFFSET_END, "TIME_OFFSET", 0, "Session end time offset (replay mode only). Supported syntax: 2s, 1.03s, 10.5ms, 12us, 101213ns" },
 	{ "replay-info", 'I', NULL, 0, "Print recorded data information" },
 
-	{ "stacks", 'S', "KIND", OPTION_ARG_OPTIONAL, "Capture stack traces (supported kinds: timer, offcpu, waker, cuda, req, utrace, all; default = timer + offcpu)" },
+	{ "stacks", 'S', "KIND", OPTION_ARG_OPTIONAL,
+	  "Capture stack traces. Kinds: timer, offcpu, waker, cuda, req, utrace, pmu=<event>[@<rate>], or all (default = timer + offcpu). Repeatable." },
 	{ "no-stacks", OPT_NO_STACK_TRACES, "KIND", OPTION_ARG_OPTIONAL, "Don't capture or emit stack traces" },
 	{ "symbolize-frugal", OPT_SYMBOLIZE_FRUGALLY, NULL, 0, "Symbolize frugally (slower, but less memory hungry)" },
 
@@ -218,6 +220,8 @@ static enum stack_trace_kind parse_stack_kinds(const char *arg)
 		return ST_REQ;
 	if (strcasecmp(arg, "utrace") == 0)
 		return ST_UTRACE;
+	if (strcasecmp(arg, "pmu") == 0)
+		return ST_PMU;
 
 	if (strcasecmp(arg, "all") == 0)
 		return ST_ALL;
@@ -365,9 +369,26 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	case 'S': {
 		enum stack_trace_kind kinds;
 
-		kinds = parse_stack_kinds(arg);
-		if (kinds < 0)
-			return -EINVAL;
+		if (arg && strncasecmp(arg, "pmu=", 4) == 0) {
+			struct pmu_event ev;
+
+			err = parse_pmu_event_spec(arg + 4, &ev);
+			if (err) {
+				eprintf("Invalid PMU sampling spec: %s\n", arg + 4);
+				argp_usage(state);
+			}
+
+			if (env.pmu_event_cnt < 0)
+				env.pmu_event_cnt = 0;
+
+			env.pmu_events = realloc(env.pmu_events, (env.pmu_event_cnt + 1) * sizeof(*env.pmu_events));
+			env.pmu_events[env.pmu_event_cnt++] = ev;
+			kinds = ST_PMU;
+		} else {
+			kinds = parse_stack_kinds(arg);
+			if (kinds < 0)
+				return -EINVAL;
+		}
 
 		if (env.requested_stack_traces == ST_UNSET)
 			env.requested_stack_traces = 0;
@@ -728,7 +749,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			 */
 			memset(&ev, 0, sizeof(ev));
 			ev.perf_type = PERF_TYPE_UNRESOLVED;
-			ev.stored_idx = -1;
+			ev.def_idx = -1;
 			snprintf(ev.name, sizeof(ev.name), "%s", arg);
 		}
 
@@ -766,7 +787,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			env.pmu_unresolveds = realloc(env.pmu_unresolveds, (env.pmu_unresolved_cnt + 1) * sizeof(*env.pmu_unresolveds));
 			env.pmu_unresolveds[env.pmu_unresolved_cnt++] = ev;
 		} else if (ev.perf_type == PERF_TYPE_DERIVED) {
-			ev.stored_idx = -1;
+			ev.def_idx = -1;
 			env.pmu_derivs = realloc(env.pmu_derivs, (env.pmu_deriv_cnt + 1) * sizeof(*env.pmu_derivs));
 			env.pmu_derivs[env.pmu_deriv_cnt++] = ev;
 		} else {
@@ -774,7 +795,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 				eprintf("Too many real PMU counters requested, only %d are supported!\n", MAX_REAL_PMU_COUNTERS);
 				return -E2BIG;
 			}
-			ev.stored_idx = env.pmu_real_cnt;
+			ev.def_idx = env.pmu_real_cnt;
 			env.pmu_reals = realloc(env.pmu_reals, (env.pmu_real_cnt + 1) * sizeof(*env.pmu_reals));
 			env.pmu_reals[env.pmu_real_cnt++] = ev;
 		}

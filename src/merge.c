@@ -193,6 +193,10 @@ static void collect_extras(struct persist_state *ps, struct wprof_extra_param **
 		if (env.pmu_derivs[i].spec)
 			add_extra(extras, cnt, WEXTRA_PMU, persist_stroff(ps, env.pmu_derivs[i].spec));
 	}
+	for (int i = 0; i < env.pmu_event_cnt; i++) {
+		if (env.pmu_events[i].spec)
+			add_extra(extras, cnt, WEXTRA_PMU_EVENT, persist_stroff(ps, env.pmu_events[i].spec));
+	}
 
 	if (env.prepare_spec_str)
 		add_extra(extras, cnt, WEXTRA_PREPARE_SPEC, persist_stroff(ps, env.prepare_spec_str));
@@ -557,6 +561,8 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 		persist_add_pmu_def(&ps, &env.pmu_reals[i]);
 	for (int i = 0; i < env.pmu_deriv_cnt; i++)
 		persist_add_pmu_def(&ps, &env.pmu_derivs[i]);
+	for (int i = 0; i < env.pmu_event_cnt; i++)
+		persist_add_pmu_def(&ps, &env.pmu_events[i]);
 
 	/* Finalize and mmap() per-ringbuf dumps */
 	for (int i = 0; i < env.ringbuf_cnt; i++) {

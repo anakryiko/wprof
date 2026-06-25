@@ -242,6 +242,15 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 		dst->timer.pystack_id = bpf_event_pystack_id(e);
 		break;
 
+	case EV_PMU_EVENT:
+		fill_wevent_hdr(dst, e, task_id, WEVENT_SZ(pmu_event));
+		dst->pmu_event.pmu_idx = e->pmu_event.pmu_idx;
+		dst->pmu_event.sample_period = e->pmu_event.sample_period;
+		dst->pmu_event.pmu_vals_id = persist_pmu_vals_id(ps, bpf_event_pmu_vals(e));
+		dst->pmu_event.pmu_stack_id = bpf_event_stack_id(e, ST_PMU);
+		dst->pmu_event.pystack_id = bpf_event_pystack_id(e);
+		break;
+
 	case EV_WAKING: {
 		fill_wevent_hdr(dst, e, task_id, WEVENT_SZ(waking));
 
