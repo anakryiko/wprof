@@ -578,7 +578,6 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 			w->dump_mem = NULL;
 			return err;
 		}
-		w->dump_hdr = w->dump_mem;
 	}
 
 	/* Collect and symbolize stack traces, dump to separate file */
@@ -656,8 +655,8 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 		struct worker_state *w = &workers[i];
 		struct wmerge_state *wmerge = &wmerges[i];
 
-		void *data = w->dump_mem + sizeof(struct wprof_data_hdr);
-		size_t data_sz = w->dump_sz - sizeof(struct wprof_data_hdr);
+		void *data = w->dump_mem;
+		size_t data_sz = w->dump_sz;
 
 		/* re-sort events by timestamp, they can be a bit out of order */
 		wmerge->rec_idx = 0;

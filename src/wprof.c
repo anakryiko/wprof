@@ -2115,12 +2115,6 @@ int main(int argc, char **argv)
 			eprintf("Failed to create data dump at '%s': %d\n", dump_path, err);
 			goto cleanup;
 		}
-		err = wprof_init_data(worker->dump);
-		if (err) {
-			eprintf("Failed to initialize ringbuf dump #%d at '%s': %d\n", i, dump_path, err);
-			fclose(worker->dump);
-			return err;
-		}
 	}
 
 	err = pmu_resolve_derived(env.pmu_reals, env.pmu_real_cnt, env.pmu_derivs, env.pmu_deriv_cnt);

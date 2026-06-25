@@ -67,8 +67,8 @@ static int pystacks_write_frames(struct worker_state *workers, int worker_cnt,
 
 	for (int i = 0; i < worker_cnt; i++) {
 		struct worker_state *w = &workers[i];
-		void *data = w->dump_mem + sizeof(struct wprof_data_hdr);
-		size_t data_sz = w->dump_sz - sizeof(struct wprof_data_hdr);
+		void *data = w->dump_mem;
+		size_t data_sz = w->dump_sz;
 
 		const struct bpf_event_record *rec;
 		for_each_bpf_event(rec, data, data_sz) {
@@ -134,8 +134,8 @@ static void pystacks_resolve_native_ids(struct worker_state *workers, int worker
 	size_t psi = 0;
 	for (int i = 0; i < worker_cnt && psi < py_stack_cnt; i++) {
 		struct worker_state *w = &workers[i];
-		void *data = w->dump_mem + sizeof(struct wprof_data_hdr);
-		size_t data_sz = w->dump_sz - sizeof(struct wprof_data_hdr);
+		void *data = w->dump_mem;
+		size_t data_sz = w->dump_sz;
 
 		const struct bpf_event_record *rec;
 		for_each_bpf_event(rec, data, data_sz) {
@@ -742,8 +742,8 @@ skip_ksyms:
 	/* Collect stack traces across all ringbuf dumps */
 	for (int i = 0; i < worker_cnt; i++) {
 		struct worker_state *w = &workers[i];
-		void *data = w->dump_mem + sizeof(struct wprof_data_hdr);
-		size_t data_sz = w->dump_sz - sizeof(struct wprof_data_hdr);
+		void *data = w->dump_mem;
+		size_t data_sz = w->dump_sz;
 
 		const struct bpf_event_record *rec;
 		for_each_bpf_event(rec, data, data_sz) {
