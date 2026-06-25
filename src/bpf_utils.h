@@ -24,6 +24,8 @@ struct bpf_state {
 	int *perf_timer_fds;
 	int *perf_counter_fds;
 	int perf_counter_fd_cnt;
+	int *pmu_event_fds;		/* sampled -S pmu= fds: [spec * num_cpus + cpu] */
+	int pmu_event_fd_cnt;		/* their bpf_links go into the shared ->links array */
 	int *rb_map_fds;
 	int stats_fd;
 	bool *online_mask;

@@ -138,6 +138,7 @@ enum pb_static_iid {
 		IID_CAT_PYTORCH,				/* PYTORCH */
 		IID_CAT_UTRACE,					/* UTRACE */
 		IID_CAT_TIMER_CALLSTACK,			/* TIMER_CALLSTACK */
+		IID_CAT_PMU_EVENT,				/* PMU */
 	CAT_END_IID,
 
 	NAME_START_IID, __NAME_RESET_IID = NAME_START_IID - 1,
@@ -246,6 +247,7 @@ enum pb_static_iid {
 		IID_ANNK_CUDA_GPU_DELAY_US,			/* gpu_delay_us */
 		IID_ANNK_PYTRACE_FILE,				/* file */
 		IID_ANNK_PYTRACE_LINENO,			/* lineno */
+		IID_ANNK_SAMPLE_PERIOD,				/* sample_period */
 	ANNK_END_IID,
 
 	ANNV_START_IID, __ANNV_RESET_IID = ANNV_START_IID - 1,

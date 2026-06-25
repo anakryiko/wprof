@@ -85,6 +85,7 @@ enum event_kind {
 	EV_REQ_EVENT = 16,
 	EV_REQ_TASK_EVENT = 17,
 	EV_SCX_DSQ_END = 18,
+	EV_PMU_EVENT = 19,
 
 	EV_CUDA_CALL = 49,
 
@@ -120,6 +121,7 @@ enum stack_trace_kind {
 	ST_CUDA			= 1 << 3, /* CUDA API calls */
 	ST_REQ			= 1 << 4, /* request lifecycle events (begin/end/set/unset) */
 	ST_UTRACE		= 1 << 5, /* user-defined tracing probes */
+	ST_PMU			= 1 << 6, /* sampled PMU event overflow (-S pmu=...) */
 
 	__ST_LAST,
 	ST_ANY = (__ST_LAST - 1) * 2 - 1,
@@ -265,6 +267,10 @@ struct wprof_event {
 		} swtch;
 		struct wprof_timer {
 		} timer;
+		struct wprof_pmu_event {
+			u64 sample_period;	/* counts this sample represents (ctx->sample_period) */
+			u32 pmu_idx;		/* which -S pmu= event fired */
+		} pmu_event;
 		struct wprof_waking {
 			struct wprof_thread wakee;
 		} waking;
@@ -400,6 +406,7 @@ static inline u16 bpf_event_fix_sz(const struct wprof_event *e)
 	switch (e->kind) {
 	case EV_SWITCH:		return EV_SZ(swtch);
 	case EV_TIMER:		return EV_SZ(timer);
+	case EV_PMU_EVENT:	return EV_SZ(pmu_event);
 	case EV_WAKING:		return EV_SZ(waking);
 	case EV_WAKEUP_NEW:	return EV_SZ(wakeup_new);
 	case EV_HARDIRQ_EXIT:	return EV_SZ(hardirq);

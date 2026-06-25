@@ -357,6 +357,109 @@ int parse_perf_counter(const char *spec, struct pmu_event *out)
 	return -EINVAL;
 }
 
+int parse_pmu_event_spec(const char *spec, struct pmu_event *out)
+{
+	const char *at = strchr(spec, '@');
+	size_t name_len = at ? (size_t)(at - spec) : strlen(spec);
+
+	memset(out, 0, sizeof(*out));
+	out->def_idx = -1;
+
+	if (name_len == 0) {
+		eprintf("Empty PMU event in '-S pmu=%s'\n", spec);
+		return -EINVAL;
+	}
+
+	/*
+	 * Defer event + rate resolution to pmu_event_resolve() (a referenced --pmu
+	 * event may be declared later in argv); just keep the raw spec for now.
+	 */
+	out->spec = strdup(spec);
+	return 0;
+}
+
+int pmu_event_resolve(struct pmu_event *e, const struct pmu_event *derivs, int deriv_cnt)
+{
+	char *spec = e->spec;
+	const char *at = strchr(spec, '@');
+	char *name = strndup(spec, at ? (size_t)(at - spec) : strlen(spec));
+	int err;
+
+	/* a derived metric (ratio) can be named but not sampled -- reject up front */
+	for (int i = 0; i < deriv_cnt; i++) {
+		if (strcasecmp(derivs[i].name, name) == 0) {
+			eprintf("Derived metric '%s' can't be used as a PMU sampling event\n", name);
+			return -EINVAL;
+		}
+	}
+
+	/* resolve the event identity exactly like a --pmu counter */
+	err = parse_perf_counter(name, e);
+	if (err) {
+		eprintf("Failed to resolve PMU sampling event '%s'\n", name);
+		return err;
+	} else if (e->perf_type == PERF_TYPE_DERIVED) {
+		eprintf("Derived metric '%s' can't be used as a PMU sampling event\n", name);
+		return -EINVAL;
+	} else if (e->perf_type == PERF_TYPE_UNRESOLVED) {
+		eprintf("Unresolved PMU event '%s' can't be sampled\n", name);
+		return -EINVAL;
+	}
+
+	/* parse_perf_counter() memset()'s the event, so reattach the owned spec string afterwards */
+	e->spec = spec;
+
+	/* we'll apply default rate later */
+	if (!at)
+		return 0;
+
+	/* rate: "<n>"/"period=<n>" => period, "<n>hz"/"freq=<n>" => frequency */
+	const char *rate = at + 1, *num;
+	bool is_freq = false;
+	char *end;
+	u64 v;
+
+	if (strncmp(rate, "freq=", 5) == 0) {
+		num = rate + 5;
+		is_freq = true;
+	} else if (strncmp(rate, "period=", 7) == 0) {
+		num = rate + 7;
+	} else {
+		num = rate;	/* bare "<n>" (period) or "<n>hz" (frequency) */
+	}
+
+	/* require a leading digit: strtoull() would wrap "-5" to a huge value */
+	if (num[0] < '0' || num[0] > '9') {
+		eprintf("Invalid sampling rate '%s' in '-S pmu=%s' (use <n>, <n>hz, freq=<hz>, or period=<n>)\n", rate, spec);
+		return -EINVAL;
+	}
+	errno = 0;
+	v = strtoull(num, &end, 0);
+	if (errno || v == 0) {
+		eprintf("Invalid sampling rate '%s' in '-S pmu=%s' (must be a positive number)\n", rate, spec);
+		return -EINVAL;
+	}
+	if (num == rate) {
+		if (strcasecmp(end, "hz") == 0) {
+			is_freq = true;
+		} else if (*end != '\0') {
+			eprintf("Invalid sampling rate '%s' in '-S pmu=%s' (expected <n> or <n>hz)\n", rate, spec);
+			return -EINVAL;
+		}
+	} else if (*end != '\0') {
+		eprintf("Invalid sampling %s '%s' in '-S pmu=%s' (expected a positive number)\n",
+			is_freq ? "frequency" : "period", num, spec);
+		return -EINVAL;
+	}
+
+	if (is_freq)
+		e->sampling_freq = v;
+	else
+		e->sampling_period = v;
+
+	return 0;
+}
+
 void serialized_pmu_event(const struct pmu_event *ev, struct pmu_event_stored *stored)
 {
 	memset(stored, 0, sizeof(*stored));
@@ -481,26 +584,44 @@ int pmu_resolve_replay_defs(struct wprof_data_hdr *hdr)
 		}
 	}
 
-	/* Resolve real event stored_idx against stored data */
+	/* Resolve real event def_idx against stored data */
 	for (int i = 0; i < env.pmu_real_cnt; i++) {
 		struct pmu_event *pmu = &env.pmu_reals[i];
 
-		pmu->stored_idx = -1;
+		pmu->def_idx = -1;
 
 		for (int j = 0; j < hdr->pmu_def_real_cnt; j++) {
 			struct wevent_pmu_def *def = wevent_pmu_def(hdr, j);
 			if (strcmp(pmu->name, wevent_str(hdr, def->name_stroff)) != 0)
 				continue;
-			pmu->stored_idx = j;
+			pmu->def_idx = j;
 			break;
 		}
 
-		if (pmu->stored_idx < 0) {
+		if (pmu->def_idx < 0) {
 			eprintf("replay: counter '%s' requested, but wasn't captured\n", pmu->name);
 			return -ENOENT;
 		}
 	}
 
 	/* Resolve derived metric indices against reals */
-	return pmu_resolve_derived(env.pmu_reals, env.pmu_real_cnt, env.pmu_derivs, env.pmu_deriv_cnt);
+	int err = pmu_resolve_derived(env.pmu_reals, env.pmu_real_cnt, env.pmu_derivs, env.pmu_deriv_cnt);
+	if (err)
+		return err;
+
+	/*
+	 * Rebuild sampled (-S pmu=) events from the def-table tail (after the counted
+	 * reals + derivs) so emit can name their per-thread tracks. The 0-based index
+	 * here matches the pmu_idx stored on each sample.
+	 */
+	u64 sampled_start_idx = hdr->pmu_def_real_cnt + hdr->pmu_def_deriv_cnt;
+	u64 pmu_def_cnt = wevent_pmu_def_cnt(hdr);
+	if (env.pmu_event_cnt < 0 && pmu_def_cnt > sampled_start_idx) {
+		env.pmu_event_cnt = pmu_def_cnt - sampled_start_idx;
+		env.pmu_events = calloc(env.pmu_event_cnt, sizeof(*env.pmu_events));
+		for (int i = sampled_start_idx; i < pmu_def_cnt; i++)
+			wevent_pmu_to_event(hdr, i, &env.pmu_events[i - sampled_start_idx]);
+	}
+
+	return 0;
 }

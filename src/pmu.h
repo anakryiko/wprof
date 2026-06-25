@@ -18,7 +18,8 @@
 #define PERF_TYPE_UNRESOLVED UINT32_MAX
 
 /*
- * Parsed PMU event specification.
+ * Parsed PMU event specification: a --pmu counter (real or derived) or a
+ * -S pmu= sampled event (the latter sets sampling_freq/sampling_period).
  *
  * perf_type values:
  * - PERF_TYPE_SOFTWARE (1): Software events (sw:xxx)
@@ -42,11 +43,11 @@ struct pmu_event {
 	char name[PMU_NAME_LEN]; /* trace output name (user-specified or auto) */
 	u32 name_iid;            /* pre-interned Perfetto annotation key IID */
 
-	/* Original user-provided --pmu spec; set at capture-time argv parse */
+	/* Original user-provided --pmu / -S pmu= spec; set at capture-time argv parse */
 	char *spec;
 
 	/* For replay: index into stored counter data (ctrs.val[]) */
-	int stored_idx;        /* -1 if unset, resolved during replay */
+	int def_idx;           /* -1 if unset, resolved during replay */
 
 	/* Temporary storage for derived metric parsing (cleared after resolution) */
 	char *num_name;   /* numerator counter name */
@@ -58,6 +59,10 @@ struct pmu_event {
 	 * multiplexing. 0.0 means "not captured" — treat as 1.0.
 	 */
 	double active_frac;
+
+	/* Sampled (-S pmu=) overflow rate; at most one nonzero (0/0 => default freq) */
+	u64 sampling_freq;
+	u64 sampling_period;
 };
 
 /* Stored format for data persistence (fixed size) */
@@ -68,6 +73,32 @@ struct pmu_event_stored {
 	__u64 config2;
 	char name[PMU_NAME_LEN];
 } __attribute__((aligned(8)));
+
+/**
+ * parse_pmu_event_spec - stash a "-S pmu=<spec>" value for deferred resolution
+ * @spec: "<event-or-name>[@<rate>]". Nothing is resolved here (the event part
+ *        may name a --pmu event declared later in argv); only @out->spec is set
+ *        and the event part validated as non-empty. pmu_event_resolve() does the
+ *        actual event + rate parsing.
+ * @out: zero-initialized event with ->spec set.
+ *
+ * Returns 0 on success, negative error code on failure.
+ */
+int parse_pmu_event_spec(const char *spec, struct pmu_event *out);
+
+/**
+ * pmu_event_resolve - resolve a sampled event's spec into its perf identity + rate
+ * @e: event to resolve in place (e->spec set); perf identity and sampling rate
+ *     are filled, e->spec preserved.
+ * @derivs: --pmu derived counters (to reject sampling them by name)
+ * @deriv_cnt: number of derived counters
+ *
+ * Parses the event part of e->spec with parse_perf_counter() and the @rate part
+ * for the sampling frequency/period. Rejects derived/unresolved events.
+ *
+ * Returns 0 on success, negative error code on failure.
+ */
+int pmu_event_resolve(struct pmu_event *e, const struct pmu_event *derivs, int deriv_cnt);
 
 /**
  * parse_perf_counter - Parse event specification string into pmu_event struct

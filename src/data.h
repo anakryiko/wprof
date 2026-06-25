@@ -112,6 +112,7 @@ enum wprof_extra_param_kind {
 	WEXTRA_EMIT_EMBED_STACKS	= 25,
 	WEXTRA_PREPARE_SPEC		= 26,
 	WEXTRA_ACTIVATE_SPEC		= 27,
+	WEXTRA_PMU_EVENT		= 28,
 };
 
 struct wprof_extra_param {
@@ -431,6 +432,12 @@ static inline struct wevent_pmu_def *wevent_pmu_def(const struct wprof_data_hdr 
 {
 	struct wevent_pmu_def *defs = (void *)hdr + hdr->hdr_sz + hdr->pmu_defs_off;
 	return &defs[idx];
+}
+
+/* Total PMU defs (counted reals + derived, then any sampled-only events). */
+static inline u64 wevent_pmu_def_cnt(const struct wprof_data_hdr *hdr)
+{
+	return hdr->pmu_defs_sz / sizeof(struct wevent_pmu_def);
 }
 
 static inline u64 *wevent_pmu_vals(struct wprof_data_hdr *hdr, u32 id)

@@ -24,7 +24,14 @@ struct wevent_task {
 	u32 pcomm_stroff;	/* offset into string pool */
 };
 
-/* PMU counter definition */
+/*
+ * PMU event/counter definition. Covers --pmu counters (real and derived) and
+ * -S pmu= sampled events uniformly. The role is positional: defs are stored as
+ * [reals][derived][sampled], delimited by pmu_def_real_cnt / pmu_def_deriv_cnt
+ * in the header (sampled count = total - real - deriv). Sampled events carry no
+ * extra fields here -- their rate lives in the persisted -S pmu= spec string and
+ * is needed only for display; per-sample data lives on the wevent_pmu_event.
+ */
 struct wevent_pmu_def {
 	u32 perf_type;
 	u32 name_stroff;	/* offset into string pool */
@@ -66,6 +73,14 @@ struct wevent {
 			u32 timer_stack_id;
 			u32 pystack_id;
 		} timer;
+
+		struct wevent_pmu_event {
+			u64 sample_period;	/* counts this sample represents */
+			u32 pmu_idx;		/* which sampled event fired (0-based -S pmu= index) */
+			u32 pmu_stack_id;
+			u32 pystack_id;
+			u32 pmu_vals_id;
+		} pmu_event;
 
 		struct wevent_waking {
 			u32 wakee_task_id;
@@ -244,6 +259,7 @@ static inline size_t wevent_fixed_sz(const struct wevent *e)
 	switch (e->kind) {
 	case EV_SWITCH:		return WEVENT_SZ(swtch);
 	case EV_TIMER:		return WEVENT_SZ(timer);
+	case EV_PMU_EVENT:	return WEVENT_SZ(pmu_event);
 	case EV_WAKING:		return WEVENT_SZ(waking);
 	case EV_WAKEUP_NEW:	return WEVENT_SZ(wakeup_new);
 	case EV_HARDIRQ_EXIT:	return WEVENT_SZ(hardirq);
@@ -285,6 +301,7 @@ static inline const char *wevent_kind_name(enum event_kind kind)
 	switch (kind) {
 	case EV_SWITCH:		return "switch";
 	case EV_TIMER:		return "timer";
+	case EV_PMU_EVENT:	return "pmu_event";
 	case EV_WAKING:		return "waking";
 	case EV_WAKEUP_NEW:	return "wakeup_new";
 	case EV_HARDIRQ_EXIT:	return "hardirq";

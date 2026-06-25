@@ -32,8 +32,8 @@ struct persist_state {
 	struct blobset *blobs;
 	struct thread_table threads;
 	struct pmu_vals_table pmu_vals;
-	struct wevent_pmu_def *pmu_defs;	/* real + derived PMUs */
-	int pmu_def_total_cnt;			/* real + derived PMU count */
+	struct wevent_pmu_def *pmu_defs;	/* counted reals + derived, then sampled-only events */
+	int pmu_def_total_cnt;
 	struct hashmap *tid_cache;	/* (host_pid, ns_tid) -> tid_cache_value for CUDA TID resolution */
 	struct hashmap *thread_states;	/* host TID -> cuda_thread_state (corr_id, stack_id) */
 };

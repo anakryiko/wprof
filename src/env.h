@@ -19,6 +19,7 @@
 #define DEFAULT_TASK_STATE_SZ (32 * 1024)
 
 #define DEFAULT_TIMER_FREQ_HZ 100
+#define DEFAULT_PMU_EVENT_FREQ_HZ 1000
 #define DEFAULT_DURATION_MS 1000
 #define DEFAULT_REQUESTED_STACK_TRACES ST_NONE
 #define DEFAULT_CAPTURE_IPIS FALSE
@@ -164,6 +165,9 @@ struct env {
 	struct pmu_event *pmu_derivs;
 	int pmu_unresolved_cnt;
 	struct pmu_event *pmu_unresolveds;
+
+	int pmu_event_cnt;			/* -1 = unset */
+	struct pmu_event *pmu_events;		/* sampled -S pmu= events */
 
 	/* request listing */
 	bool req_list;

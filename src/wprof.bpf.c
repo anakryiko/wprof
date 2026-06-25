@@ -639,6 +639,63 @@ int wprof_timer_tick(void *ctx)
 	return 0;
 }
 
+SEC("?perf_event")
+int wprof_pmu_event(struct bpf_perf_event_data *ctx)
+{
+	u64 now_ts = bpf_ktime_get_ns();
+	struct task_state *scur;
+	struct task_struct *cur = bpf_get_current_task_btf();
+	int cpu = bpf_get_smp_processor_id();
+
+	if (!should_trace_task(cur, now_ts))
+		return 0;
+
+	scur = task_state(cur->pid);
+	if (!scur)
+		return 0; /* shouldn't happen, unless we ran out of space */
+
+	struct perf_counters pmu_vals;
+	size_t pmu_sz = capture_perf_counters(&pmu_vals, NULL, cpu);
+
+	struct stack_trace *tr = NULL;
+	size_t tr_sz = 0;
+	if (requested_stack_traces & ST_PMU)
+		tr = grab_stack_trace(ctx, NULL, ST_PMU, &tr_sz);
+
+	struct pystacks_message *pymsg = NULL;
+	int py_sz = 0;
+	if (capture_pystacks) {
+		(void)inc_stat(pystacks_attempted);
+		pymsg = capture_pystack(ctx, cur, &py_sz);
+	}
+
+	struct wprof_event *e;
+	struct bpf_dynptr *dptr;
+	size_t fix_sz = EV_SZ(pmu_event);
+
+	emit_task_event_dyn(e, dptr, fix_sz, pmu_sz + tr_sz + py_sz, EV_PMU_EVENT, now_ts, cur) {
+		e->pmu_event.pmu_idx = bpf_get_attach_cookie(ctx);
+		e->pmu_event.sample_period = ctx->sample_period;
+
+		if (perf_ctr_cnt) {
+			emit_pmu_values(&pmu_vals, dptr, fix_sz);
+			e->flags |= EF_PMU_VALS;
+		}
+		if (tr) {
+			emit_stack_trace(tr, tr_sz, dptr, fix_sz + pmu_sz);
+			e->flags |= ST_PMU;
+		}
+		if (pymsg && py_sz > 0) {
+			emit_pystacks(pymsg, py_sz, dptr, fix_sz + pmu_sz + tr_sz);
+			e->flags |= EF_PYSTACK;
+		}
+	}
+
+	put_stack_trace(tr);
+
+	return 0;
+}
+
 SEC("?tp_btf/sched_switch")
 int BPF_PROG(wprof_task_switch,
 	     bool preempt,

@@ -163,6 +163,7 @@ enum dyn_track_kind {
 	DTK_THREAD_CUDA,		/* per-thread CUDA API calls track (id1 = tid) */
 	DTK_TIMER,			/* per-thread timer track (id1 = tid) */
 	DTK_TIMER_CALLSTACK,		/* per-thread embedded timer callstack slice track (id1 = tid) */
+	DTK_PMU_EVENT,			/* per-thread sampled PMU-event track (id1 = tid, id2 = pmu_idx) */
 	DTK_PYTRACE,			/* Python-traced thread track (by TID) */
 	DTK_REQ_THREAD_EMBED,		/* first-event-per-thread tracking for embed mode (id1 = tid, id2 = req_id) */
 	DTK_UTRACE,			/* utrace per-config track (id1 = tid, id2 = utrace_id) */
@@ -212,6 +213,7 @@ static size_t track_state_size(enum dyn_track_kind kind)
 	case DTK_PYTRACE:
 	case DTK_UTRACE:
 	case DTK_TIMER:
+	case DTK_PMU_EVENT:
 	case DTK_CUDA_PROC:
 	case DTK_CUDA_PROC_GPU:
 	case DTK_CUDA_PROC_STREAM:
@@ -1001,12 +1003,12 @@ static pb_iid emit_intern_str(struct worker_state *w, const char *s)
 
 static void emit_pmu_intern_names(struct worker_state *w)
 {
-	if (env.pmu_real_cnt + env.pmu_deriv_cnt == 0)
-		return;
-
 	struct pb_str_iids iids = {};
 	char buf[256];
 	const char *s;
+
+	if (env.pmu_real_cnt <= 0 && env.pmu_deriv_cnt <= 0 && env.pmu_event_cnt <= 0)
+		return;
 
 	for (int i = 0; i < env.pmu_real_cnt; i++) {
 		struct pmu_event *pmu = &env.pmu_reals[i];
@@ -1019,6 +1021,14 @@ static void emit_pmu_intern_names(struct worker_state *w)
 		snprintf(buf, sizeof(buf), "pmu:%s", pmu->name);
 		pmu->name_iid = str_iid_for(&w->name_iids, buf, NULL, &s);
 		append_str_iid(&iids, pmu->name_iid, s);
+	}
+	for (int i = 0; i < env.pmu_event_cnt; i++) {
+		struct pmu_event *pmu = &env.pmu_events[i];
+		bool new_iid;
+
+		pmu->name_iid = str_iid_for(&w->name_iids, pmu->name, &new_iid, &s);
+		if (new_iid)
+			append_str_iid(&iids, pmu->name_iid, s);
 	}
 
 	struct wpb_intern *interns = wpb_get_interns(iids.cnt);
@@ -1053,7 +1063,7 @@ static void emit_perf_counters(const u64 *st_ctrs, const u64 *ev_ctrs, bool diff
 
 	for (int i = 0; i < env.pmu_real_cnt; i++) {
 		const struct pmu_event *ev = &env.pmu_reals[i];
-		double value = diffs ? ev_ctrs[ev->stored_idx] : ev_ctrs[ev->stored_idx] - st_ctrs[ev->stored_idx];
+		double value = diffs ? ev_ctrs[ev->def_idx] : ev_ctrs[ev->def_idx] - st_ctrs[ev->def_idx];
 		emit_kv_float(iid_str(ev->name_iid, ev->name), "%.6lf", value);
 	}
 	for (int i = 0; i < env.pmu_deriv_cnt; i++) {
@@ -1076,7 +1086,7 @@ static void json_pmu_counters(struct json_state *j, const u64 *st_ctrs, const u6
 	json_subarr_start(j, "pmus");
 	for (int i = 0; i < env.pmu_real_cnt; i++) {
 		const struct pmu_event *ev = &env.pmu_reals[i];
-		double value = diffs ? ev_ctrs[ev->stored_idx] : ev_ctrs[ev->stored_idx] - st_ctrs[ev->stored_idx];
+		double value = diffs ? ev_ctrs[ev->def_idx] : ev_ctrs[ev->def_idx] - st_ctrs[ev->def_idx];
 		json_arr_float(j, "%.6lf", value);
 	}
 	for (int i = 0; i < env.pmu_deriv_cnt; i++) {
@@ -1423,6 +1433,85 @@ static int process_timer(struct worker_state *w, const struct wevent *e)
 		emit_timer_json(w, e);
 	else
 		emit_timer(w, e);
+	return 0;
+}
+
+/* EV_PMU_EVENT */
+
+static u64 ensure_pmu_event_track(const struct wprof_task *t, u32 pmu_idx, const char *name)
+{
+	struct track_state *s = track_state_get_or_add(DTK_PMU_EVENT, t->tid, pmu_idx);
+
+	if (!s->exists) {
+		emit_track_descr_impl(s->track_id, trackid_thread(t),
+				      name, s->kind, CHILD_ORDER_CHRONO, MERGE_NONE);
+		s->exists = true;
+	}
+	return s->track_id;
+}
+
+static void emit_pmu_event(struct worker_state *w, const struct wevent *e)
+{
+	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
+	/* pmu_idx is the sampled event's 0-based index (the perf_event bpf_cookie) */
+	const struct pmu_event *pmu = &env.pmu_events[e->pmu_event.pmu_idx];
+	const u64 *pmu_vals = wevent_pmu_vals(w->dump_hdr, e->pmu_event.pmu_vals_id);
+
+	emit_track_descrs(w, &task);
+
+	int tr_id = 0;
+	if (env.requested_stack_traces & ST_PMU) {
+		tr_id = e->pmu_event.pmu_stack_id;
+		/* use stitched native+Python callstack when available */
+		if (e->pmu_event.pystack_id > 0)
+			tr_id = e->pmu_event.pystack_id;
+	}
+
+	u64 track_uuid = ensure_pmu_event_track(&task, e->pmu_event.pmu_idx, pmu->name);
+	emit_instant(track_uuid, e->ts, iid_str(pmu->name_iid, pmu->name), IID_CAT_PMU_EVENT) {
+		emit_kv_int(IID_ANNK_CPU, e->cpu);
+		if (env.emit_numa)
+			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
+		if (e->pmu_event.sample_period)
+			emit_kv_int(IID_ANNK_SAMPLE_PERIOD, e->pmu_event.sample_period);
+		emit_perf_counters(NULL, pmu_vals, true);
+		emit_callstack(w, tr_id);
+	}
+}
+
+static void emit_pmu_event_json(struct worker_state *w, const struct wevent *e)
+{
+	struct json_state *j = &js;
+	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
+	const u64 *pmu_vals = wevent_pmu_vals(w->dump_hdr, e->pmu_event.pmu_vals_id);
+
+	json_obj_start(j);
+	json_kv_ts(j, "ts", e->ts - env.sess_start_ts);
+	json_kv_str(j, "t", "pmu_event");
+	json_task(j, "task", &task);
+	json_kv_int(j, "cpu", e->cpu);
+	if (env.emit_numa)
+		json_kv_int(j, "numa", e->numa_node);
+	json_kv_str(j, "pmu", env.pmu_events[e->pmu_event.pmu_idx].name);
+	if (e->pmu_event.sample_period)
+		json_kv_int(j, "sample_period", e->pmu_event.sample_period);
+	if ((env.requested_stack_traces & ST_PMU) && e->pmu_event.pmu_stack_id > 0)
+		json_kv_int(j, "stack_id", e->pmu_event.pmu_stack_id);
+	json_pmu_counters(j, NULL, pmu_vals, true);
+	json_obj_end(j);
+}
+
+static int process_pmu_event(struct worker_state *w, const struct wevent *e)
+{
+	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
+
+	if (!should_trace_task(&task))
+		return 0;
+
+	if (env.json_path)
+		emit_pmu_event_json(w, e);
+	else
+		emit_pmu_event(w, e);
 	return 0;
 }
 
@@ -4289,6 +4378,7 @@ static int process_utrace(struct worker_state *w, const struct wevent *e)
  */
 static handle_event_fn emit_fns[] = {
 	[EV_TIMER] = process_timer,
+	[EV_PMU_EVENT] = process_pmu_event,
 	[EV_SWITCH] = process_switch,
 	[EV_WAKEUP_NEW] = process_wakeup_new,
 	[EV_WAKING] = process_waking,
