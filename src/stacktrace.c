@@ -480,6 +480,37 @@ static struct addr_set entry_set_timer = {
 		NULL,
 	},
 };
+/*
+ * Sampled PMU events overflow via one of three delivery paths, each with a
+ * different *outermost* (root-most) plumbing frame; everything leaf-ward of it
+ * (perf_swevent_*, __perf_event_overflow, the bpf_overflow_handler/bpf_prog_run
+ * chain) is stripped implicitly, so only the outermost frame goes in the set:
+ *  - timer-based software events (cpu-clock, task-clock): the APIC timer IRQ on
+ *    x86, the GIC IRQ vector (el{1h,0t}_64_irq_handler) on arm64;
+ *  - hardware events (and hardware-cache events): the PMI, an NMI on x86. The
+ *    unwinder typically lands on the NMI iret trampoline (end_repeat_nmi), not
+ *    asm_exc_nmi, so both are listed. On arm64 the PMU overflow IRQ arrives
+ *    through the same GIC IRQ vector as the timer, so no extra marker is needed;
+ *  - inline software events (page-faults, context-switches, cpu-migrations,
+ *    {alignment,emulation}-faults): perf_sw_event() in the triggering code,
+ *    i.e. __perf_sw_event / ___perf_sw_event (which one is out-of-line vs
+ *    inlined varies by kernel/compiler, so list both).
+ * Do NOT add __perf_event_overflow et al. here: they sit *leaf-ward* of the
+ * timer/NMI markers, so as markers they'd halt the strip early and leave the
+ * IRQ/hrtimer frames behind.
+ */
+static struct addr_set entry_set_pmu_event = {
+	.names = (const char * const []){
+		"asm_sysvec_apic_timer_interrupt",	/* x86-64, software events via APIC timer (e.g. cpu-clock) */
+		"end_repeat_nmi",			/* x86-64 hardware PMI: the NMI iret trampoline the unwinder lands on */
+		"asm_exc_nmi",				/* x86-64 hardware PMI: NMI entry on unwinds that reach it instead */
+		"el1h_64_irq_handler",			/* arm64 IRQ from kernel: timer + PMU overflow (GIC IRQ) */
+		"el0t_64_irq_handler",			/* arm64 IRQ from user: timer + PMU overflow (GIC IRQ) */
+		"__perf_sw_event",			/* inline software events (e.g. page-faults, context-switches) */
+		"___perf_sw_event",			/* same, when this is the out-of-line frame */
+		NULL,
+	},
+};
 static struct addr_set entry_set_offcpu = {
 	.names = (const char * const []){
 		"__traceiter_sched_switch",		/* x86-64 */
@@ -569,6 +600,7 @@ static const struct addr_set *strip_set_for(const struct wprof_event *e,
 {
 	switch (kind) {
 	case ST_TIMER:  return &entry_set_timer;
+	case ST_PMU:    return &entry_set_pmu_event;
 	case ST_OFFCPU: return &entry_set_offcpu;
 	case ST_WAKER:  return &entry_set_waker;
 	case ST_UTRACE: {
@@ -697,6 +729,7 @@ int process_stack_traces(struct worker_state *workers, int worker_cnt, FILE *sta
 		goto skip_ksyms;
 	}
 	addr_set_resolve(&entry_set_timer, ksyms);
+	addr_set_resolve(&entry_set_pmu_event, ksyms);
 	addr_set_resolve(&entry_set_offcpu, ksyms);
 	addr_set_resolve(&entry_set_waker, ksyms);
 	addr_set_resolve(&entry_set_kprobe, ksyms);
