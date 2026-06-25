@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+#include <ctype.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <sys/syscall.h>
@@ -21,6 +22,7 @@
 #include <time.h>
 #include <sys/time.h>
 #include <sys/signal.h>
+#include <math.h>
 #include <pthread.h>
 #include <unistd.h>
 #include <bpf/btf.h>
@@ -415,6 +417,84 @@ s64 parse_time_units(const char *arg)
 		return (u64)(s * 1000000ULL);
 
 	return -EINVAL;
+}
+
+static enum size_unit size_unit_from_str(const char *s)
+{
+	if (strcasecmp(s, "b") == 0)
+		return SZ_B;
+	if (strcasecmp(s, "kb") == 0)
+		return SZ_KB;
+	if (strcasecmp(s, "mb") == 0)
+		return SZ_MB;
+	if (strcasecmp(s, "gb") == 0)
+		return SZ_GB;
+	if (strcasecmp(s, "tb") == 0)
+		return SZ_TB;
+	return SZ_NONE;
+}
+
+int parse_size(const char *s, enum size_unit def_unit, u64 *out)
+{
+	static const u64 mult[] = {
+		[SZ_B]  = 1,
+		[SZ_KB] = 1ULL << 10,
+		[SZ_MB] = 1ULL << 20,
+		[SZ_GB] = 1ULL << 30,
+		[SZ_TB] = 1ULL << 40,
+	};
+	enum size_unit kind;
+	unsigned long long ival = 0;
+	double dval = 0;
+	bool is_float;
+	int n, len;
+	char unit[5];
+
+	/* %llu and %lf skip leading whitespace, then wrap a '-' into a huge value */
+	while (isspace(*s))
+		s++;
+	if (*s == '-')
+		return -EINVAL;
+
+	len = strlen(s);
+
+	/*
+	 * Parse integers exactly via %llu and only fall back to %lf for
+	 * fractional sizes, which can't be represented losslessly anyway.
+	 */
+	if (sscanf(s, "%llu%2s %n", &ival, unit, &n) == 2 && n == len) {
+		is_float = false;
+		kind = size_unit_from_str(unit);
+	} else if (sscanf(s, "%llu %n", &ival, &n) == 1 && n == len) {
+		is_float = false;
+		kind = def_unit;
+	} else if (sscanf(s, "%lf%2s %n", &dval, unit, &n) == 2 && n == len) {
+		is_float = true;
+		kind = size_unit_from_str(unit);
+	} else if (sscanf(s, "%lf %n", &dval, &n) == 1 && n == len) {
+		is_float = true;
+		kind = def_unit;
+	} else {
+		return -EINVAL;
+	}
+
+	if (kind == SZ_NONE)
+		return -EINVAL;
+
+	if (is_float) {
+		/* NaN fails every comparison below, so reject it explicitly */
+		if (isnan(dval) || dval < 0)
+			return -EINVAL;
+		if (dval >= (double)UINT64_MAX / mult[kind]) /* +inf lands here too */
+			return -ERANGE;
+		*out = (u64)(dval * mult[kind]);
+	} else {
+		if (ival > UINT64_MAX / mult[kind])
+			return -ERANGE;
+		*out = ival * mult[kind];
+	}
+
+	return 0;
 }
 
 static u64 ktime_off;
