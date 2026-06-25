@@ -665,11 +665,15 @@ int BPF_PROG(wprof_task_switch,
 	struct perf_counters pmu_vals;
 	size_t pmu_sz = capture_perf_counters(&pmu_vals, NULL, cpu);
 
-	/* prev task was on-cpu since last checkpoint */
-	sprev->waking_ts = 0;
-
-	/* if process was involuntarily preempted, mark this as a start of
-	 * scheduling delay
+	/*
+	 * If prev was involuntarily preempted, mark this as the start of a
+	 * scheduling delay (waker = the task that bumped it). Otherwise leave
+	 * sprev->waking_ts alone: do NOT clear it, or we'd wipe a waker that
+	 * sched_waking just set for a task being switched out as "blocked" when
+	 * it was woken right as it went to sleep (wakeup-races-schedule) -- that
+	 * task's next on-cpu would then have no waker. A cleanly-blocking task
+	 * already has waking_ts==0 (cleared when it last ran), and the waker is
+	 * consumed+cleared on switch-in below, so there's nothing stale to clear.
 	 */
 	if (prev->__state == TASK_RUNNING && prev->pid) {
 		sprev->waking_ts = now_ts;
