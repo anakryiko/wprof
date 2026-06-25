@@ -129,3 +129,60 @@ $ sudo ./wprof --prepare +1s --activate /10s -d 5s   # prep at +1s, start on the
 - **The specs are recorded.** The raw `--prepare`/`--activate` strings are saved
   into `wprof.data` and shown by `wprof -R -I` and in JSON output, so a capture
   is self-describing.
+
+### PMU event sampling: `-S pmu=...`
+
+Beyond the fixed-rate on-CPU `TIMER` profiler, wprof can sample on an arbitrary
+**PMU event** — any hardware or software perf event. On each overflow it captures
+a **stack trace** and, if `--pmu` counters are configured, their **values at that
+sample**, and renders each sample as an instant on a per-thread child track named
+after the event. It composes with `TIMER`, `--pmu`, `-f py-stacks`, and filters.
+
+It is a kind of `-S`/`--stacks` (stacks are intrinsic to it). `-S` takes an
+*attached* argument, so write `-Spmu=…` or `--stacks=pmu=…`:
+
+```
+-Spmu=<event-or-name>[@<rate>]        # repeatable
+```
+
+**Event** (before `@`) is either a full PMU spec — same syntax as `--pmu`
+(`cpu-cycles`, `cache-misses`, `r003c`, `cpu/event=0x3c/`, `sw:cpu-clock`, …) —
+or the **name of an event already declared with `--pmu`** (so you can both count
+and sample the same event without repeating its definition; order doesn't
+matter). Derived metrics can't be sampled and are rejected.
+
+**Rate** (after `@`):
+
+| Form                 | Meaning |
+|----------------------|---------|
+| `<n>hz` / `freq=<n>` | frequency mode — n samples/sec/CPU; the kernel auto-tunes the period (`hz` is case-insensitive) |
+| `<n>` / `period=<n>` | period mode — one sample every n events |
+| *(omitted)*          | frequency mode at the default (1000hz) |
+
+```
+$ sudo ./wprof -d 5s -Spmu=cpu-cycles -T trace.pb                       # 1000hz, stack per sample
+$ sudo ./wprof -d 5s -Spmu=cpu-cycles@4000hz -T trace.pb                # 4000hz
+$ sudo ./wprof -d 5s -Spmu=cache-misses@period=100000 -T trace.pb       # every 100k misses
+$ sudo ./wprof -d 5s --pmu instructions -Spmu=instructions@2000hz -T trace.pb   # sample a --pmu event by name
+$ sudo ./wprof -d 5s -Spmu=cpu-cycles --pmu instructions --pmu cache-misses -T trace.pb  # +counters per sample
+```
+
+Each sampled event becomes a per-thread child track labeled with the event name;
+the sample's stack is attached as an interned callstack and any `--pmu` counters
+ride along as annotations. In JSON (`-J`) the rows are `"t":"pmu_event"` with
+`pmu`, `sample_period`, `stack_id`, and `pmus`.
+
+**Gotchas and implications**
+
+- **`-S` arg must be attached.** `-Spmu=…` / `--stacks=pmu=…`, not `-S pmu=…`
+  (a space makes argp treat it as a positional argument).
+- **Sampling rate is capped by the kernel.** Frequency mode is clamped by
+  `/proc/sys/kernel/perf_event_max_sample_rate`; asking for a higher `@<n>hz`
+  makes `perf_event_open` fail with `EINVAL`. Period mode can run much hotter —
+  a tiny period means a high interrupt rate and large captures, so choose it
+  deliberately.
+- **Hardware events need PMU access** and a resolvable event (e.g. `cpu-cycles`,
+  `instructions`); software events like `sw:cpu-clock` work without a PMU.
+- **The spec is recorded.** The `-Spmu=…` string and the resolved event/rate are
+  saved into `wprof.data` and shown by `wprof -R -I` (as `--stacks pmu=…` under
+  `Stack traces:`), so a capture is self-describing.
