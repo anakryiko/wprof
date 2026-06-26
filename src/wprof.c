@@ -509,6 +509,7 @@ static int setup_perf_timer_ticks(struct bpf_state *st, int num_cpus)
 static int setup_perf_counters(struct bpf_state *st, int num_cpus)
 {
 	struct perf_event_attr attr;
+	bool warned[env.pmu_real_cnt] = {};
 	int err;
 
 	st->perf_counter_fds = calloc(st->perf_counter_fd_cnt, sizeof(int));
@@ -550,7 +551,12 @@ static int setup_perf_counters(struct bpf_state *st, int num_cpus)
 
 			int pefd = sys_perf_event_open(&attr, -1, cpu, -1, PERF_FLAG_FD_CLOEXEC);
 			if (pefd < 0) {
-				eprintf("Failed to create %s PMU for CPU #%d, skipping...\n", ev->name, cpu);
+				/* warn once per counter, not once per (online) CPU */
+				if (!warned[j]) {
+					eprintf("WARNING: failed to create PMU counter '%s': perf_event_open() failed with %s, skipping...\n",
+						ev->name, errstr(-errno));
+					warned[j] = true;
+				}
 			} else {
 				st->perf_counter_fds[pe_idx] = pefd;
 				err = bpf_map__update_elem(st->skel->maps.perf_cntrs,
