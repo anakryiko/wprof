@@ -379,6 +379,12 @@ int pytrace_session_setup(struct pytrace_setup_ctx *ctx)
 
 	pytrace_active = true;
 
+	/*
+	 * Track before installing the profiler so a fork can't race an untracked fd
+	 * while callbacks are already firing. Untracked again in cleanup on failure.
+	 */
+	inj_track_dump_fd(ctx->pytrace_dump_fd);
+
 	PyGILState_STATE gstate = py_gilstate_ensure();
 
 	PyInterpreterState *interp = py_interp_head();
@@ -425,6 +431,7 @@ cleanup:
 	/* pytorch may have been set up before this failure; unwind it. */
 	pytorch_session_finalize();
 	pytrace_active = false;
+	inj_untrack_dump_fd(ctx->pytrace_dump_fd);
 	if (pytrace_code_cache) {
 		hashmap__free(pytrace_code_cache);
 		pytrace_code_cache = NULL;
@@ -476,6 +483,8 @@ static int pytrace_session_teardown(void)
 
 	if (!pytrace_dump)
 		return 0;
+
+	inj_untrack_dump_fd(fileno(pytrace_dump));
 
 	/* Uninstall profiler */
 	pytrace_active = false;

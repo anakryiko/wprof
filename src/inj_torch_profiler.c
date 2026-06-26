@@ -508,6 +508,13 @@ int pytorch_session_setup(int pytorch_dump_fd, unsigned long *sym_addrs, int sym
 
 	torch_active = true;
 	pthread_mutex_init(&torch_lock, NULL);
+
+	/*
+	 * Track before rf_register so the RecordFunction callback can't fire on an
+	 * untracked fd (a fork in that window would leave the child's fd unprotected).
+	 */
+	inj_track_dump_fd(pytorch_dump_fd);
+
 	rf_register();
 
 	return 0;
@@ -531,6 +538,8 @@ int pytorch_session_finalize(void)
 
 	if (!torch_dump)
 		return 0;
+
+	inj_untrack_dump_fd(fileno(torch_dump));
 
 	rf_unregister();
 	torch_active = false;

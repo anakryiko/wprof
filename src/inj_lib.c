@@ -46,6 +46,45 @@
 struct inj_setup_ctx *setup_ctx;
 struct inj_run_ctx *run_ctx;
 
+/*
+ * Live dump fds, redirected to /dev/null in a forked child (see inj_atfork_child).
+ * Tracked on the worker thread at session setup/teardown; read in the atfork
+ * child handler. A fork() on an app thread can race a track/untrack, so the
+ * count is published with release / read with acquire and each slot is written
+ * before the count is bumped, so a racing reader only ever sees fully-stored fds.
+ */
+#define INJ_MAX_DUMP_FDS 8
+static int inj_dump_fds[INJ_MAX_DUMP_FDS];
+static int inj_dump_fd_cnt;
+
+void inj_track_dump_fd(int fd)
+{
+	int n = __atomic_load_n(&inj_dump_fd_cnt, __ATOMIC_RELAXED);
+
+	if (fd < 0)
+		return;
+	if (n >= INJ_MAX_DUMP_FDS) {
+		elog("dump fd registry full (%d slots), fd %d not tracked; forked children may corrupt the capture\n",
+		     INJ_MAX_DUMP_FDS, fd);
+		return;
+	}
+	inj_dump_fds[n] = fd;
+	__atomic_store_n(&inj_dump_fd_cnt, n + 1, __ATOMIC_RELEASE);
+}
+
+void inj_untrack_dump_fd(int fd)
+{
+	int n = __atomic_load_n(&inj_dump_fd_cnt, __ATOMIC_RELAXED);
+
+	for (int i = 0; i < n; i++) {
+		if (inj_dump_fds[i] != fd)
+			continue;
+		inj_dump_fds[i] = inj_dump_fds[n - 1];
+		__atomic_store_n(&inj_dump_fd_cnt, n - 1, __ATOMIC_RELEASE);
+		return;
+	}
+}
+
 static int log_fd = -1;
 static int filelog_verbosity = -1;
 
@@ -292,6 +331,8 @@ static int cuda_dump_setup(int dump_fd)
 		goto cleanup;
 	}
 
+	inj_track_dump_fd(dump_fd);
+
 	return 0;
 
 cleanup:
@@ -312,6 +353,8 @@ int cuda_dump_finalize(void)
 
 	if (!cuda_dump)
 		return 0;
+
+	inj_untrack_dump_fd(fileno(cuda_dump));
 
 	fflush(cuda_dump);
 
@@ -896,10 +939,53 @@ static void stop_worker_thread(void)
 	worker_pthread = 0;
 }
 
+/*
+ * Runs in a forked child, before it returns from fork(). We never capture in
+ * forked children: they share the parent's dump fds (one open file description)
+ * and inherit copies of its stdio buffers, so any flush -- the child's own or
+ * libc's flush of the inherited buffer at child exit -- would corrupt the
+ * parent's capture. Manual close-on-fork: redirect every live dump fd to
+ * /dev/null (the parent keeps its own fds, so it is unaffected). Also forget the
+ * worker thread, which is not inherited across fork, so the destructor's
+ * stop_worker_thread() no-ops instead of signaling the parent's worker through
+ * the shared eventfd or hanging on the clone futex. Only async-signal-safe
+ * operations are allowed here. (A child can still inherit torch_lock held and
+ * deadlock on its first RecordFunction op -- child-only, no parent corruption.)
+ */
+static void inj_atfork_child(void)
+{
+	int n = __atomic_load_n(&inj_dump_fd_cnt, __ATOMIC_ACQUIRE);
+	int null_fd = open("/dev/null", O_WRONLY | O_CLOEXEC);
+
+	for (int i = 0; i < n; i++) {
+		if (null_fd >= 0)
+			dup2(null_fd, inj_dump_fds[i]);
+		else
+			close(inj_dump_fds[i]);
+	}
+	if (null_fd >= 0)
+		close(null_fd);
+
+	worker_pthread = 0;
+	inj_tid = -1;
+}
+
+/*
+ * Declared here to avoid pulling in all of <pthread.h>. Called at link time (not
+ * via dlsym) on purpose: glibc ties the handler to this DSO's __dso_handle and
+ * auto-unregisters it when libwprofinj.so is dlclose()'d at retract, so the
+ * handler can't dangle and crash the tracee on a later fork(). The libc_nonshared
+ * stub only needs __register_atfork (in libc), so this adds no libpthread dep.
+ */
+extern int pthread_atfork(void (*prepare)(void), void (*parent)(void), void (*child)(void));
+
 __attribute__((constructor))
 void libwprofinj_init()
 {
 	vlog("======= CONSTRUCTOR ======\n");
+
+	if (pthread_atfork(NULL, NULL, inj_atfork_child) != 0)
+		elog("Failed to register atfork handler; forked children may corrupt the capture\n");
 }
 
 struct inj_setup_ctx *LIBWPROFINJ_SETUP_SYM(struct inj_setup_ctx *ctx)
