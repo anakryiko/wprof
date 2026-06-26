@@ -187,8 +187,8 @@ static const struct argp_option opts[] = {
 	/* PMUs */
 	{ "pmu", OPT_PMU_COUNTER, "EVENT", 0,
 	  "Capture pmu counter. Formats: "
-	  "raw (r003c), PMU (cpu/event=0x3c/ or cpu/cpu-cycles/), "
-	  "software (sw:page-faults), cache (l1-icache-loads), "
+	  "hardware (cpu-cycles, instructions, ...), software (page-faults, context-switches, ...), "
+	  "raw (r003c), PMU (cpu/event=0x3c/ or cpu/cpu-cycles/), cache (l1-icache-loads), "
 	  "derived (derived:ipc=cpu_instructions/cpu_cpu-cycles)" },
 	{ "no-pmu", OPT_NO_PMU, NULL, 0, "Don't capture or emit PMUs" },
 
@@ -384,6 +384,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			env.pmu_events = realloc(env.pmu_events, (env.pmu_event_cnt + 1) * sizeof(*env.pmu_events));
 			env.pmu_events[env.pmu_event_cnt++] = ev;
 			kinds = ST_PMU;
+		} else if (arg && strcasecmp(arg, "pmu") == 0) {
+			eprintf("PMU sampling requires an event: use -Spmu=<event>[@<rate>]\n");
+			return -EINVAL;
 		} else {
 			kinds = parse_stack_kinds(arg);
 			if (kinds < 0)
