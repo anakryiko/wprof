@@ -199,6 +199,10 @@ static int handle_rb_event(void *ctx, void *data, size_t size)
 	w->rb_handled_cnt++;
 	w->rb_handled_sz += size;
 
+	w->cur_chunk->byte_sz += size;
+	w->cur_chunk->event_cnt++;
+	w->cur_chunk->end_ts = ts_max(w->cur_chunk->end_ts, e->ts);
+
 	return 0;
 }
 
@@ -1372,6 +1376,13 @@ static void cleanup_workers(struct worker_state *workers, int worker_cnt)
 		free(w->dump_path);
 		free(w->req_allowlist.ids);
 
+		/*
+		 * cur_chunk->path aliases dump_path (freed above) and cur_chunk->f
+		 * aliases dump (closed above), so only the chunk node itself is freed.
+		 */
+		free(w->cur_chunk);
+		w->cur_chunk = NULL;
+
 		w->dump_mem = NULL;
 		w->dump = NULL;
 	}
@@ -2122,15 +2133,22 @@ int main(int argc, char **argv)
 	for (int i = 0; i < env.ringbuf_cnt; i++) {
 		struct worker_state *worker = &workers[i];
 
-		char dump_path[PATH_MAX];
-		snprintf(dump_path, sizeof(dump_path), "%s/bpf-rb.%03d.data", workdir_name, i);
-		worker->dump_path = strdup(dump_path);
-		worker->dump = fopen_buffered(dump_path, "w+");
-		if (!worker->dump) {
+		char chunk_path[PATH_MAX];
+		snprintf(chunk_path, sizeof(chunk_path), "%s/bpf-rb.%03d.0.chunk", workdir_name, i);
+
+		struct fr_chunk *chunk = calloc(1, sizeof(*chunk));
+		chunk->path = strdup(chunk_path);
+		chunk->f = fopen_buffered(chunk_path, "w+");
+		chunk->worker_idx = i;
+		if (!chunk->f) {
 			err = -errno;
-			eprintf("Failed to create data dump at '%s': %d\n", dump_path, err);
+			eprintf("Failed to create data dump at '%s': %d\n", chunk_path, err);
 			goto cleanup;
 		}
+
+		worker->cur_chunk = chunk;
+		worker->dump = chunk->f;
+		worker->dump_path = chunk->path;
 	}
 
 	err = pmu_resolve_derived(env.pmu_reals, env.pmu_real_cnt, env.pmu_derivs, env.pmu_deriv_cnt);

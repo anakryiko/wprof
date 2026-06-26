@@ -322,6 +322,17 @@ struct emit_feature {
 extern const struct emit_feature emit_features[];
 extern const int emit_feature_cnt;
 
+struct fr_chunk {
+	char *path;
+	FILE *f;
+	u64 end_ts;      /* max event ts written to this chunk */
+	u64 byte_sz;
+	u64 event_cnt;
+	int worker_idx;
+	int seq;
+	struct fr_chunk *next;   /* singly-linked handoff list (used in Step 6) */
+};
+
 struct worker_state {
 	int worker_id;
 	struct str_iid_domain name_iids;
@@ -335,6 +346,8 @@ struct worker_state {
 	size_t dump_sz;
 	struct wprof_data_hdr *dump_hdr;
 	struct ring_buffer *rb_manager;
+
+	struct fr_chunk *cur_chunk;   /* current/open chunk; owns dump/dump_path aliases */
 
 	/* stack trace usage markers */
 	u64 *stacks_used; /* bitmask */
