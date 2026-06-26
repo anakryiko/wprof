@@ -38,4 +38,23 @@ struct wrust_ts_ptr {
 };
 void wrust_sort_events_by_ts(struct wrust_ts_ptr *items, size_t cnt);
 
+/*
+ * ==================== POINTER PRIORITY QUEUE ====================
+ * Min priority queue over (key, pointer) pairs, backed by std BinaryHeap.
+ * Sibling of wpq whose value is a pointer rather than a uint32_t; the pointer
+ * is stored as usize internally. Ordered ascending on key, with the pointer
+ * bits breaking ties deterministically. The queue does not own the pointed-to
+ * memory: wppq_free() releases only the queue itself, so drain via wppq_pop()
+ * first if the values need freeing.
+ */
+struct wppq;
+
+struct wppq *wppq_new(size_t cap);
+void wppq_free(struct wppq *pq);
+void wppq_push(struct wppq *pq, uint64_t key, void *val);
+bool wppq_empty(const struct wppq *pq);
+size_t wppq_len(const struct wppq *pq);
+uint64_t wppq_peek_key(const struct wppq *pq);  /* min key; requires non-empty */
+void *wppq_pop(struct wppq *pq);                 /* min value, or NULL if empty */
+
 #endif /* __WRUST_H_ */
