@@ -1978,6 +1978,22 @@ int main(int argc, char **argv)
 	env.timer_period_ns = 1000000000ULL / env.timer_freq_hz;
 	if (env.duration_ns == 0)
 		env.duration_ns = DEFAULT_DURATION_MS * 1000000ULL;
+	if (env.flightrec) {
+		/*
+		 * Bare -F (neither limit given) uses the default time+size pair.
+		 * Once any dimension is named, the unspecified one is left
+		 * unlimited (0) rather than silently re-imposing a default.
+		 */
+		if (env.fr_keep_time_ns < 0 && env.fr_keep_size < 0) {
+			env.fr_keep_time_ns = DEFAULT_FR_KEEP_TIME_NS;
+			env.fr_keep_size = DEFAULT_FR_KEEP_SIZE;
+		} else {
+			if (env.fr_keep_time_ns < 0)
+				env.fr_keep_time_ns = 0;
+			if (env.fr_keep_size < 0)
+				env.fr_keep_size = 0;
+		}
+	}
 
 	/*
 	 * Resolve -S pmu= sampling events (deferred so --pmu can be referenced by name)
