@@ -13,6 +13,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <time.h>
+#include <sys/syscall.h>
 
 #include "inj_common.h"
 
@@ -48,6 +49,23 @@ static inline u64 ktime_now_ns()
 	clock_gettime(CLOCK_MONOTONIC, &t);
 
 	return timespec_to_ns(&t);
+}
+
+/*
+ * gettid() is not cached by glibc, so each call is a real syscall. The hot
+ * tracing paths call it per event, so cache it per-thread. New threads start
+ * with freshly zeroed TLS, so the cache re-reads correctly (a real tid is never
+ * 0). We don't support tracing from forked children (they'd inherit and corrupt
+ * the parent's dump fd/stdio buffer regardless), so the post-fork stale-tid case
+ * is moot.
+ */
+static inline u32 inj_gettid(void)
+{
+	static __thread u32 cached_tid;
+
+	if (cached_tid == 0)
+		cached_tid = (u32)syscall(SYS_gettid);
+	return cached_tid;
 }
 
 #define atomic_add(p, v) __atomic_add_fetch((p), (v), __ATOMIC_RELAXED)
