@@ -45,4 +45,9 @@ static inline bool ts_after_or_at(u64 a, u64 b)
 	return ts_cmp(a, b) >= 0;
 }
 
+static inline u64 ts_max(u64 a, u64 b)
+{
+	return ts_after(a, b) ? a : b;
+}
+
 #endif /* __WPROF_TYPES_H_ */
