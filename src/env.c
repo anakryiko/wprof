@@ -172,7 +172,7 @@ static const struct argp_option opts[] = {
 	  "numa, tidpid, timer-ticks, py-stacks-only, req-split (on by default), req-embed, embed-stacks" },
 
 	/* tuning */
-	{ "ringbuf-size", OPT_RINGBUF_SZ, "SIZE", 0, "BPF ringbuf size (in KBs)" },
+	{ "ringbuf-size", OPT_RINGBUF_SZ, "SIZE", 0, "BPF ringbuf size; accepts units b/kb/mb/gb, bare number is KB" },
 	{ "task-state-size", OPT_TASK_STATE_SZ, "SIZE", 0, "BPF task state map size (in threads)" },
 	{ "ringbuf-cnt", OPT_RINGBUF_CNT, "N", 0, "Number of BPF ringbufs to use" },
 
@@ -708,15 +708,20 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			argp_usage(state);
 		}
 		break;
-	case OPT_RINGBUF_SZ:
-		errno = 0;
-		env.ringbuf_sz = strtol(arg, NULL, 0);
-		if (errno || env.ringbuf_sz < 0) {
+	case OPT_RINGBUF_SZ: {
+		u64 sz;
+
+		if (parse_size(arg, SZ_KB, &sz)) {	/* bare number still = KB (back-compat) */
 			fprintf(stderr, "Invalid ringbuf size: %s\n", arg);
 			argp_usage(state);
 		}
-		env.ringbuf_sz = round_pow_of_2(env.ringbuf_sz * 1024);
+		if (sz > INT_MAX) {	/* env.ringbuf_sz / round_pow_of_2() are int */
+			fprintf(stderr, "Ringbuf size too large: %s\n", arg);
+			argp_usage(state);
+		}
+		env.ringbuf_sz = round_pow_of_2(sz);
 		break;
+	}
 	case OPT_TASK_STATE_SZ:
 		errno = 0;
 		env.task_state_sz = strtol(arg, NULL, 0);
