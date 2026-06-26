@@ -94,6 +94,15 @@ struct task_state {
 static struct hashmap *tasks;
 static struct hashmap *emitted_descrs;
 
+/*
+ * Per (pmu_idx, cpu) snapshot of the previous PMU sample's absolute counter
+ * values, so each sample reports the delta since the previous sample of the same
+ * -Spmu= trigger on the same CPU. Perf counters are free-running per-CPU, so the
+ * captured values are absolute; deltas are reconstructed here at emit time.
+ */
+static u64 *pmu_cpu_val;		/* [pmu_event_cnt][cpu_cnt][pmu_real_cnt] previous absolute counters */
+static bool *pmu_cpu_val_seen;		/* [pmu_event_cnt][cpu_cnt] whether a previous sample exists */
+
 static inline u64 clamp_ts(u64 ts)
 {
 	if (ts_before(ts, env.sess_start_ts))
@@ -351,6 +360,17 @@ int init_emit(struct worker_state *w)
 		return -ENOMEM;
 
 	cur_wpb_writer = w->wpb_writer;
+
+	/*
+	 * Per (sampled-event, cpu) baseline for reconstructing PMU-sample counter
+	 * deltas, keyed by the event's 0-based index (the bpf_cookie).
+	 */
+	if (env.pmu_event_cnt > 0 && env.pmu_real_cnt > 0) {
+		size_t cells = env.pmu_event_cnt * env.stats->cpu_cnt;
+
+		pmu_cpu_val = calloc(cells * env.pmu_real_cnt, sizeof(*pmu_cpu_val));
+		pmu_cpu_val_seen = calloc(cells, sizeof(*pmu_cpu_val_seen));
+	}
 
 	return 0;
 }
@@ -1450,7 +1470,7 @@ static u64 ensure_pmu_event_track(const struct wprof_task *t, u32 pmu_idx, const
 	return s->track_id;
 }
 
-static void emit_pmu_event(struct worker_state *w, const struct wevent *e)
+static void emit_pmu_event(struct worker_state *w, const struct wevent *e, const u64 *st_ctrs)
 {
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
 	/* pmu_idx is the sampled event's 0-based index (the perf_event bpf_cookie) */
@@ -1474,12 +1494,12 @@ static void emit_pmu_event(struct worker_state *w, const struct wevent *e)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
 		if (e->pmu_event.sample_period)
 			emit_kv_int(IID_ANNK_SAMPLE_PERIOD, e->pmu_event.sample_period);
-		emit_perf_counters(NULL, pmu_vals, true);
+		emit_perf_counters(st_ctrs, pmu_vals, false);
 		emit_callstack(w, tr_id);
 	}
 }
 
-static void emit_pmu_event_json(struct worker_state *w, const struct wevent *e)
+static void emit_pmu_event_json(struct worker_state *w, const struct wevent *e, const u64 *st_ctrs)
 {
 	struct json_state *j = &js;
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
@@ -1497,7 +1517,7 @@ static void emit_pmu_event_json(struct worker_state *w, const struct wevent *e)
 		json_kv_int(j, "sample_period", e->pmu_event.sample_period);
 	if ((env.requested_stack_traces & ST_PMU) && e->pmu_event.pmu_stack_id > 0)
 		json_kv_int(j, "stack_id", e->pmu_event.pmu_stack_id);
-	json_pmu_counters(j, NULL, pmu_vals, true);
+	json_pmu_counters(j, st_ctrs, pmu_vals, false);
 	json_obj_end(j);
 }
 
@@ -1508,10 +1528,32 @@ static int process_pmu_event(struct worker_state *w, const struct wevent *e)
 	if (!should_trace_task(&task))
 		return 0;
 
+	/*
+	 * Counters are captured as absolute per-CPU values; report the delta since
+	 * the previous sample of this -Spmu= trigger on this CPU. The first sample
+	 * per (trigger, cpu) has no baseline yet, so it emits no counter values.
+	 */
+	u64 *prev = NULL;
+	bool *seen = NULL;
+	const u64 *st_ctrs = NULL;
+	if (env.pmu_real_cnt) {
+		size_t cell = e->pmu_event.pmu_idx * env.stats->cpu_cnt + e->cpu;
+
+		prev = &pmu_cpu_val[cell * env.pmu_real_cnt];
+		seen = &pmu_cpu_val_seen[cell];
+		st_ctrs = *seen ? prev : NULL;
+	}
+
 	if (env.json_path)
-		emit_pmu_event_json(w, e);
+		emit_pmu_event_json(w, e, st_ctrs);
 	else
-		emit_pmu_event(w, e);
+		emit_pmu_event(w, e, st_ctrs);
+
+	if (env.pmu_real_cnt) {
+		memcpy(prev, wevent_pmu_vals(w->dump_hdr, e->pmu_event.pmu_vals_id),
+		       env.pmu_real_cnt * sizeof(u64));
+		*seen = true;
+	}
 	return 0;
 }
 
