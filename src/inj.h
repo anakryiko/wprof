@@ -37,6 +37,15 @@ void log_printf(int verbosity, const char *fmt, ...);
 
 void *dyn_resolve_sym(const char *sym_name, void *dlopen_handle);
 
+/*
+ * Register/unregister a dump fd while its session is live. On fork(), an atfork
+ * child handler redirects every tracked fd to /dev/null (see libwprofinj_init),
+ * so a forked child -- which we never capture in -- can neither write new events
+ * nor flush its inherited stdio buffers into the parent's capture files.
+ */
+void inj_track_dump_fd(int fd);
+void inj_untrack_dump_fd(int fd);
+
 static inline uint64_t timespec_to_ns(struct timespec *ts)
 {
 	return ts->tv_sec * 1000000000ULL + ts->tv_nsec;
