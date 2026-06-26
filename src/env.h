@@ -330,7 +330,7 @@ struct fr_chunk {
 	u64 event_cnt;
 	int worker_idx;
 	int seq;
-	struct fr_chunk *next;   /* singly-linked handoff list (used in Step 6) */
+	struct fr_chunk *next;   /* link for the intrusive handoff list */
 };
 
 struct worker_state {

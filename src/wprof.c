@@ -44,6 +44,7 @@
 #include "emit.h"
 #include "stacktrace.h"
 #include "topology.h"
+#include "wrust.h"
 #include "proc.h"
 #include "requests.h"
 #include "cuda_data.h"
@@ -174,6 +175,107 @@ static void sig_pipe(int sig)
 	eprintf("!!! Got unexpected SIGPIPE!\n");
 }
 
+/*
+ * Flight-recorder thread state (flightrec mode only). Workers hand off their
+ * just-completed chunks via the intrusive `incoming` list; the FR thread
+ * fcloses them, pushes them into the PQ, and tracks size/newest-ts. The lock
+ * guards ONLY `incoming` + `stopping`; the PQ and the scalars below it are
+ * touched solely by the FR thread (and by main only after the thread joins).
+ */
+struct fr_state {
+	pthread_mutex_t lock;
+	pthread_cond_t cond;
+	struct fr_chunk *incoming;	/* intrusive singly-linked handoff list; NULL when empty */
+	bool stopping;
+
+	char *workdir;			/* where rotated chunks are created; set before threads run */
+
+	/* FR-thread-private (no lock); main-readable after join */
+	struct wppq *pq;
+	u64 total_size;
+	u64 rec_max_ts;			/* max end_ts over completed chunks */
+	u64 rec_min_ts;			/* window floor: max end_ts of evicted chunks */
+	pthread_t thread;
+};
+
+static struct fr_state *fr;
+
+static void *fr_worker(void *ctx)
+{
+	struct fr_state *st = ctx;
+
+	pthread_setname_np(pthread_self(), "wprof_flightrec");
+
+	for (;;) {
+		pthread_mutex_lock(&st->lock);
+		while (!st->stopping && !st->incoming)
+			pthread_cond_wait(&st->cond, &st->lock);
+
+		struct fr_chunk *batch = st->incoming;
+		st->incoming = NULL;
+		bool stopping = st->stopping;
+		pthread_mutex_unlock(&st->lock);
+
+		struct fr_chunk *next;
+		for (struct fr_chunk *c = batch; c; c = next) {
+			next = c->next;
+			c->next = NULL;
+			fclose(c->f); /* flush to disk; no fsync */
+			c->f = NULL;
+			st->total_size += c->byte_sz;
+			st->rec_max_ts = ts_max(st->rec_max_ts, c->end_ts);
+			wppq_push(st->pq, c->end_ts, c);
+			/* over-window eviction is added in a later change */
+		}
+
+		if (!stopping)
+			continue;
+		/*
+		 * Re-check under the lock: a worker may have prepended a final
+		 * batch between our unlock and now. Only exit once stopping is
+		 * set AND nothing is left to drain.
+		 */
+		pthread_mutex_lock(&st->lock);
+		bool done = !st->incoming;
+		pthread_mutex_unlock(&st->lock);
+		if (done)
+			return NULL;
+	}
+}
+
+/*
+ * Stop the flight-recorder thread, drain and free the PQ, and free `fr`.
+ * Idempotent: a no-op when `fr` is NULL, so it's safe on every cleanup path.
+ */
+static void fr_teardown(void)
+{
+	if (!fr)
+		return;
+
+	pthread_mutex_lock(&fr->lock);
+	fr->stopping = true;
+	pthread_cond_signal(&fr->cond);
+	pthread_mutex_unlock(&fr->lock);
+	pthread_join(fr->thread, NULL);
+
+	/*
+	 * Nothing consumes the PQ yet; just release it (chunk files stay on disk
+	 * for keep-workdir). A later change hands the PQ to merge instead.
+	 */
+	while (!wppq_empty(fr->pq)) {
+		struct fr_chunk *c = wppq_pop(fr->pq);
+
+		free(c->path);
+		free(c);
+	}
+	wppq_free(fr->pq);
+	pthread_cond_destroy(&fr->cond);
+	pthread_mutex_destroy(&fr->lock);
+	free(fr->workdir);
+	free(fr);
+	fr = NULL;
+}
+
 /* Receive events from the ring buffer. */
 static int handle_rb_event(void *ctx, void *data, size_t size)
 {
@@ -202,6 +304,45 @@ static int handle_rb_event(void *ctx, void *data, size_t size)
 	w->cur_chunk->byte_sz += size;
 	w->cur_chunk->event_cnt++;
 	w->cur_chunk->end_ts = ts_max(w->cur_chunk->end_ts, e->ts);
+
+	if (!env.flightrec || w->cur_chunk->byte_sz < env.fr_chunk_size)
+		return 0;
+
+	/*
+	 * Rotate: open a fresh current chunk and hand the just-completed one to
+	 * the FR thread. The current chunk is never handed off, so each chunk
+	 * has a single owner (this worker, or the FR thread) and is fclosed once.
+	 */
+	struct fr_chunk *old = w->cur_chunk;
+
+	char chunk_path[PATH_MAX];
+	snprintf(chunk_path, sizeof(chunk_path), "%s/bpf-rb.%03d.%d.chunk",
+		 fr->workdir, old->worker_idx, old->seq + 1);
+
+	struct fr_chunk *new = calloc(1, sizeof(*new));
+	new->path = strdup(chunk_path);
+	new->f = fopen_buffered(chunk_path, "w+");
+	new->worker_idx = old->worker_idx;
+	new->seq = old->seq + 1;
+	if (!new->f) {
+		int err = -errno;
+
+		eprintf("Failed to create data dump at '%s': %d\n", chunk_path, err);
+		free(new->path);
+		free(new);
+		return err;
+	}
+
+	/* Re-point to the new chunk BEFORE the old one becomes visible to the FR thread. */
+	w->cur_chunk = new;
+	w->dump = new->f;
+	w->dump_path = new->path;
+
+	pthread_mutex_lock(&fr->lock);
+	old->next = fr->incoming;
+	fr->incoming = old;
+	pthread_cond_signal(&fr->cond);
+	pthread_mutex_unlock(&fr->lock);
 
 	return 0;
 }
@@ -1213,10 +1354,12 @@ static int attach_bpf(struct bpf_state *st, struct worker_state *workers, int nu
 	for (int i = 0; i < env.ringbuf_cnt; i++) {
 		int err = pthread_create(&st->rb_threads[i], NULL, rb_worker, &workers[i]);
 		if (err) {
-			err = -errno;
+			/* pthread_create returns the error positively, doesn't set errno */
+			err = -err;
 			eprintf("Failed to spawn ringbuf worker thread #%d: %d\n", i, err);
 			return err;
 		}
+		st->rb_spawned++;
 	}
 
 	while (rb_workers_ready != env.ringbuf_cnt)
@@ -1227,15 +1370,32 @@ static int attach_bpf(struct bpf_state *st, struct worker_state *workers, int nu
 
 static int wait_bpf(struct bpf_state *st)
 {
-	for (int i = 0; i < env.ringbuf_cnt; i++) {
+	for (int i = 0; i < st->rb_spawned; i++) {
 		int err = pthread_join(st->rb_threads[i], NULL);
 		if (err) {
-			err = -errno;
+			/* pthread_join returns the error positively, doesn't set errno */
+			err = -err;
 			eprintf("Failed to cleanly join ringbuf worker thread #%d: %d\n", i, err);
 		}
 	}
 
 	return 0;
+}
+
+/*
+ * Stop and join the ringbuf worker threads. Idempotent: a no-op if they were
+ * never created or were already joined, so it's safe to call on every cleanup
+ * path. Sets `exiting` so the workers leave their consume loops.
+ */
+static int stop_rb_workers(struct bpf_state *st)
+{
+	if (!st->rb_spawned)
+		return 0;
+
+	exiting = true;
+	int err = wait_bpf(st);
+	st->rb_spawned = 0;
+	return err;
 }
 
 static void detach_bpf(struct bpf_state *st, int num_cpus)
@@ -2151,6 +2311,33 @@ int main(int argc, char **argv)
 		worker->dump_path = chunk->path;
 	}
 
+	if (env.flightrec) {
+		/*
+		 * Build into a local until the thread actually starts; only then
+		 * publish to the global `fr`. That way an early pthread_create
+		 * failure leaves `fr == NULL`, so fr_teardown() never joins a
+		 * thread that was never created.
+		 */
+		struct fr_state *st = calloc(1, sizeof(*st));
+
+		pthread_mutex_init(&st->lock, NULL);
+		pthread_cond_init(&st->cond, NULL);
+		st->pq = wppq_new(1024);
+		st->workdir = strdup(workdir_name);
+
+		err = pthread_create(&st->thread, NULL, fr_worker, st);
+		if (err) {
+			err = -err;
+			eprintf("Failed to start flight-recorder thread: %d\n", err);
+			wppq_free(st->pq);
+			pthread_cond_destroy(&st->cond);
+			pthread_mutex_destroy(&st->lock);
+			free(st);
+			goto cleanup;
+		}
+		fr = st;
+	}
+
 	err = pmu_resolve_derived(env.pmu_reals, env.pmu_real_cnt, env.pmu_derivs, env.pmu_deriv_cnt);
 	if (err) {
 		eprintf("Failed to resolve derived PMU definitions: %s\n", errstr(err));
@@ -2282,8 +2469,7 @@ int main(int argc, char **argv)
 		}
 	}
 
-	exiting = true; /* tell ringbuf worker threads to stop */
-	err = wait_bpf(&bpf_state); /* join ringbuf worker threads */
+	err = stop_rb_workers(&bpf_state); /* tell ringbuf worker threads to stop and join them */
 	if (err) {
 		eprintf("Failed during collecting BPF-generated data: %d\n", err);
 		goto cleanup;
@@ -2323,6 +2509,9 @@ int main(int argc, char **argv)
 
 	wprintf("Draining...\n");
 	drain_bpf(&bpf_state, num_cpus);
+
+	/* All event production has stopped; drain and tear down the FR thread. */
+	fr_teardown();
 
 	if (env.capture_pystacks && bpf_state.skel) {
 		err = pysym_init(bpf_map__fd(bpf_state.skel->maps.pystacks_symbols),
@@ -2443,11 +2632,25 @@ skip_data_collection:
 	print_stats(env.stats, err);
 
 cleanup:
+	/*
+	 * Idempotent teardown, ordered for the error paths that jump here with
+	 * ringbuf workers still running and `fr`/chunks still live (e.g. a
+	 * do_prepare/do_activate failure after attach_bpf):
+	 *   1. join the ringbuf workers   -> no more producers of events/chunks;
+	 *   2. detach + drain on the main thread, which calls handle_rb_event
+	 *      while the chunks and `fr` are still VALID;
+	 *   3. tear down the FR thread, which frees the chunks in the PQ + `fr`;
+	 *   4. THEN free the workers' current chunks.
+	 * On the normal success fall-through these all re-run harmlessly as
+	 * no-ops (workers already joined, ringbufs drained, `fr` already NULL).
+	 */
+	stop_rb_workers(&bpf_state);
+	detach_bpf(&bpf_state, num_cpus);
+	drain_bpf(&bpf_state, num_cpus);
+	fr_teardown();
 	if (env.injectee_cnt > 0)
 		injmgr_teardown();
 	cleanup_workers(workers, worker_cnt);
-	detach_bpf(&bpf_state, num_cpus);
-	drain_bpf(&bpf_state, num_cpus);
 	cleanup_bpf(&bpf_state);
 	if (workdir_fd >= 0)
 		close(workdir_fd);

@@ -658,9 +658,16 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 		void *data = w->dump_mem;
 		size_t data_sz = w->dump_sz;
 
-		/* re-sort events by timestamp, they can be a bit out of order */
+		/*
+		 * re-sort events by timestamp, they can be a bit out of order.
+		 * Size from the current chunk's own event count, not the worker's
+		 * cumulative rb_handled_cnt: with flight-recorder rotation only the
+		 * current chunk is mmap()ed here, so rb_handled_cnt over-counts (it
+		 * spans handed-off chunks too). Without rotation the two are equal,
+		 * so non-flightrec output is unchanged.
+		 */
 		wmerge->rec_idx = 0;
-		wmerge->rec_cnt = w->rb_handled_cnt;
+		wmerge->rec_cnt = w->cur_chunk->event_cnt;
 		wmerge->recs = calloc(wmerge->rec_cnt, sizeof(*wmerge->recs));
 
 		const struct bpf_event_record *rec;

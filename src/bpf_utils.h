@@ -14,6 +14,7 @@ struct wprof_bpf;
 struct bpf_state {
 	bool detached;
 	bool drained;
+	int rb_spawned;		/* # of ringbuf worker threads successfully created */
 	struct wprof_bpf *skel;
 	struct bpf_link **links;
 	int link_cnt;
