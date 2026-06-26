@@ -225,7 +225,28 @@ static void *fr_worker(void *ctx)
 			st->total_size += c->byte_sz;
 			st->rec_max_ts = ts_max(st->rec_max_ts, c->end_ts);
 			wppq_push(st->pq, c->end_ts, c);
-			/* over-window eviction is added in a later change */
+		}
+
+		/*
+		 * Evict the oldest completed chunks while over the size or time window.
+		 * The newest data lives in the per-worker current chunks, which are never
+		 * in the PQ, so the PQ may legitimately drain to empty.
+		 */
+		while (!wppq_empty(st->pq)) {
+			u64 chunk_max_ts = wppq_peek_key(st->pq);
+			bool over_size = env.fr_keep_size && st->total_size > env.fr_keep_size;
+			bool over_time = env.fr_keep_time_ns && st->rec_max_ts - chunk_max_ts > env.fr_keep_time_ns;
+
+			if (!over_size && !over_time)
+				break;
+
+			struct fr_chunk *c = wppq_pop(st->pq);
+			st->total_size -= c->byte_sz;
+			st->rec_min_ts = ts_max(st->rec_min_ts, c->end_ts);
+
+			unlink(c->path);
+			free(c->path);
+			free(c);
 		}
 
 		if (!stopping)
