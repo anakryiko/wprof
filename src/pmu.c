@@ -42,26 +42,99 @@ static const struct {
  * cache_id values: PERF_COUNT_HW_CACHE_L1D, _L1I, _LL, _DTLB, _ITLB, _BPU, _NODE
  * cache_op_id values: PERF_COUNT_HW_CACHE_OP_READ, _WRITE, _PREFETCH
  * cache_result_id values: PERF_COUNT_HW_CACHE_RESULT_ACCESS, _MISS
+ *
+ * Rather than a fixed table of full event names, the components are parsed
+ * structurally like perf -- <cache-type>[-<op>][-<result>] -- with op
+ * defaulting to "load" (READ) and result to "access" when omitted, and each
+ * component accepting perf's aliases (so L1-dcache-load-misses, LLC-loads,
+ * dTLB-store-misses, node-prefetches, ... all resolve without a table entry).
  */
-struct hw_cache_event {
+struct hw_cache_alias {
 	const char *name;
-	int cache_id;    /* PERF_COUNT_HW_CACHE_* from linux/perf_event.h */
-	int op_id;       /* PERF_COUNT_HW_CACHE_OP_* */
-	int result_id;   /* PERF_COUNT_HW_CACHE_RESULT_* */
+	int id;
 };
 
-static const struct hw_cache_event hw_cache_events[] = {
-	/* L1 Instruction cache */
-	{ "l1-icache-loads", PERF_COUNT_HW_CACHE_L1I, PERF_COUNT_HW_CACHE_OP_READ, PERF_COUNT_HW_CACHE_RESULT_ACCESS },
-	{ "l1-icache-load-misses", PERF_COUNT_HW_CACHE_L1I, PERF_COUNT_HW_CACHE_OP_READ, PERF_COUNT_HW_CACHE_RESULT_MISS },
+static const struct hw_cache_alias cache_types[] = {
+	{ "L1-dcache", PERF_COUNT_HW_CACHE_L1D },
+	{ "l1-d", PERF_COUNT_HW_CACHE_L1D },
+	{ "l1d", PERF_COUNT_HW_CACHE_L1D },
+	{ "L1-data", PERF_COUNT_HW_CACHE_L1D },
+	{ "L1-icache", PERF_COUNT_HW_CACHE_L1I },
+	{ "l1-i", PERF_COUNT_HW_CACHE_L1I },
+	{ "l1i", PERF_COUNT_HW_CACHE_L1I },
+	{ "L1-instruction", PERF_COUNT_HW_CACHE_L1I },
+	{ "LLC", PERF_COUNT_HW_CACHE_LL },
+	{ "L2", PERF_COUNT_HW_CACHE_LL },
+	{ "dTLB", PERF_COUNT_HW_CACHE_DTLB },
+	{ "d-tlb", PERF_COUNT_HW_CACHE_DTLB },
+	{ "Data-TLB", PERF_COUNT_HW_CACHE_DTLB },
+	{ "iTLB", PERF_COUNT_HW_CACHE_ITLB },
+	{ "i-tlb", PERF_COUNT_HW_CACHE_ITLB },
+	{ "Instruction-TLB", PERF_COUNT_HW_CACHE_ITLB },
+	{ "branch", PERF_COUNT_HW_CACHE_BPU },
+	{ "branches", PERF_COUNT_HW_CACHE_BPU },
+	{ "bpu", PERF_COUNT_HW_CACHE_BPU },
+	{ "btb", PERF_COUNT_HW_CACHE_BPU },
+	{ "bpc", PERF_COUNT_HW_CACHE_BPU },
+	{ "node", PERF_COUNT_HW_CACHE_NODE },
+	{},
+};
 
-	/* ITLB */
-	{ "itlb-loads", PERF_COUNT_HW_CACHE_ITLB, PERF_COUNT_HW_CACHE_OP_READ, PERF_COUNT_HW_CACHE_RESULT_ACCESS },
-	{ "itlb-load-misses", PERF_COUNT_HW_CACHE_ITLB, PERF_COUNT_HW_CACHE_OP_READ, PERF_COUNT_HW_CACHE_RESULT_MISS },
+static const struct hw_cache_alias cache_ops[] = {
+	{ "load", PERF_COUNT_HW_CACHE_OP_READ },
+	{ "loads", PERF_COUNT_HW_CACHE_OP_READ },
+	{ "read", PERF_COUNT_HW_CACHE_OP_READ },
+	{ "reads", PERF_COUNT_HW_CACHE_OP_READ },
+	{ "store", PERF_COUNT_HW_CACHE_OP_WRITE },
+	{ "stores", PERF_COUNT_HW_CACHE_OP_WRITE },
+	{ "write", PERF_COUNT_HW_CACHE_OP_WRITE },
+	{ "writes", PERF_COUNT_HW_CACHE_OP_WRITE },
+	{ "prefetch", PERF_COUNT_HW_CACHE_OP_PREFETCH },
+	{ "prefetches", PERF_COUNT_HW_CACHE_OP_PREFETCH },
+	{ "speculative-read", PERF_COUNT_HW_CACHE_OP_PREFETCH },
+	{ "speculative-load", PERF_COUNT_HW_CACHE_OP_PREFETCH },
+	{},
+};
 
-	/* Branch prediction */
-	{ "branch-loads", PERF_COUNT_HW_CACHE_BPU, PERF_COUNT_HW_CACHE_OP_READ, PERF_COUNT_HW_CACHE_RESULT_ACCESS },
-	{ "branch-load-misses", PERF_COUNT_HW_CACHE_BPU, PERF_COUNT_HW_CACHE_OP_READ, PERF_COUNT_HW_CACHE_RESULT_MISS },
+static const struct hw_cache_alias cache_results[] = {
+	{ "refs", PERF_COUNT_HW_CACHE_RESULT_ACCESS },
+	{ "reference", PERF_COUNT_HW_CACHE_RESULT_ACCESS },
+	{ "ops", PERF_COUNT_HW_CACHE_RESULT_ACCESS },
+	{ "access", PERF_COUNT_HW_CACHE_RESULT_ACCESS },
+	{ "accesses", PERF_COUNT_HW_CACHE_RESULT_ACCESS },
+	{ "miss", PERF_COUNT_HW_CACHE_RESULT_MISS },
+	{ "misses", PERF_COUNT_HW_CACHE_RESULT_MISS },
+	{},
+};
+
+/*
+ * Generic hardware events (PERF_TYPE_HARDWARE).
+ *
+ * The kernel's PMU driver maps these to the architecture's raw event code, so
+ * the same symbolic name resolves everywhere (x86, arm64, ...). This is the
+ * portable way to ask for "cpu-cycles": sysfs PMU-style events differ by arch
+ * in both the device and the spelling (cpu/cpu-cycles/ on x86 vs
+ * armv8_pmuv3_0/cpu_cycles/ on arm64, with big.LITTLE splitting the core PMU
+ * across several devices). Names mirror perf's generic event aliases.
+ */
+struct hw_event {
+	const char *name;
+	__u64 config;
+};
+
+static const struct hw_event hw_events[] = {
+	{ "cpu-cycles", PERF_COUNT_HW_CPU_CYCLES },
+	{ "cycles", PERF_COUNT_HW_CPU_CYCLES },
+	{ "instructions", PERF_COUNT_HW_INSTRUCTIONS },
+	{ "cache-references", PERF_COUNT_HW_CACHE_REFERENCES },
+	{ "cache-misses", PERF_COUNT_HW_CACHE_MISSES },
+	{ "branch-instructions", PERF_COUNT_HW_BRANCH_INSTRUCTIONS },
+	{ "branches", PERF_COUNT_HW_BRANCH_INSTRUCTIONS },
+	{ "branch-misses", PERF_COUNT_HW_BRANCH_MISSES },
+	{ "bus-cycles", PERF_COUNT_HW_BUS_CYCLES },
+	{ "stalled-cycles-frontend", PERF_COUNT_HW_STALLED_CYCLES_FRONTEND },
+	{ "stalled-cycles-backend", PERF_COUNT_HW_STALLED_CYCLES_BACKEND },
+	{ "ref-cycles", PERF_COUNT_HW_REF_CPU_CYCLES },
 	{},
 };
 
@@ -89,19 +162,19 @@ static int parse_raw_event(const char *spec, struct pmu_event *ev)
 /* Parse software events: "sw:page-faults" */
 static int parse_software_event(const char *spec, struct pmu_event *ev)
 {
-	if (strncmp(spec, "sw:", 3) != 0)
-		return -ENOENT;
-
-	const char *sw_name = spec + 3;
+	/* "sw:" prefix is optional — bare generic names work too, like perf and
+	 * like the bare hardware aliases (cpu-cycles, ...). */
+	if (strncmp(spec, "sw:", 3) == 0)
+		spec += 3;
 
 	/* Search software events */
 	for (int i = 0; sw_events[i].name; i++) {
-		if (strcasecmp(sw_name, sw_events[i].name) != 0)
+		if (strcasecmp(spec, sw_events[i].name) != 0)
 			continue;
 
 		ev->perf_type = PERF_TYPE_SOFTWARE;
 		ev->config = sw_events[i].config;
-		snprintf(ev->name, sizeof(ev->name), "sw_%s", sw_events[i].name);
+		snprintf(ev->name, sizeof(ev->name), "%s", sw_events[i].name);
 
 		return 0;
 	}
@@ -236,23 +309,78 @@ int pmu_resolve_symbolic_event(const char *pmu, const char *event_name,
 	return perf_event_parsing(buf, config, config1, config2, NULL, 0);
 }
 
-/*
- * Currently, we support a subset of hardware cache events.
- * See hw_cache_events.
- */
+/* Longest alias that is a prefix of @s ending at '-' or end-of-string. */
+static int match_hw_cache_alias(const char *s, const struct hw_cache_alias *aliases, int *consumed)
+{
+	int best_len = 0, id = -1;
+
+	for (int i = 0; aliases[i].name; i++) {
+		int len = strlen(aliases[i].name);
+
+		if (strncasecmp(s, aliases[i].name, len) == 0 &&
+		    (s[len] == '-' || s[len] == '\0') && len > best_len) {
+			best_len = len;
+			id = aliases[i].id;
+		}
+	}
+	*consumed = best_len;
+	return id;
+}
+
 static int lookup_hw_cache_event(const char *name, struct pmu_event *ev)
 {
-	for (int i = 0; hw_cache_events[i].name; i++) {
-		if (strcasecmp(name, hw_cache_events[i].name) != 0)
+	int consumed, op = -1, result = -1;
+	const char *p = name;
+	int cache = match_hw_cache_alias(p, cache_types, &consumed);
+
+	if (cache < 0)
+		return -ENOENT;
+	p += consumed;
+
+	/* trailing "-<op>" and/or "-<result>" tokens, in either order */
+	while (*p == '-') {
+		int id;
+
+		p++;
+		if (op < 0 && (id = match_hw_cache_alias(p, cache_ops, &consumed)) >= 0) {
+			op = id;
+			p += consumed;
+			continue;
+		}
+		if (result < 0 && (id = match_hw_cache_alias(p, cache_results, &consumed)) >= 0) {
+			result = id;
+			p += consumed;
+			continue;
+		}
+		return -ENOENT; /* unrecognized op/result token */
+	}
+	if (*p != '\0')
+		return -ENOENT;
+
+	if (op < 0)
+		op = PERF_COUNT_HW_CACHE_OP_READ;
+	if (result < 0)
+		result = PERF_COUNT_HW_CACHE_RESULT_ACCESS;
+
+	ev->perf_type = PERF_TYPE_HW_CACHE;
+	ev->config = cache | (op << 8) | (result << 16);
+	ev->config1 = 0;
+	ev->config2 = 0;
+	snprintf(ev->name, sizeof(ev->name), "%s", name);
+	return 0;
+}
+
+static int lookup_hw_event(const char *name, struct pmu_event *ev)
+{
+	for (int i = 0; hw_events[i].name; i++) {
+		if (strcasecmp(name, hw_events[i].name) != 0)
 			continue;
 
-		ev->perf_type = PERF_TYPE_HW_CACHE;
-		ev->config = hw_cache_events[i].cache_id |
-			     (hw_cache_events[i].op_id << 8) |
-			     (hw_cache_events[i].result_id << 16);
+		ev->perf_type = PERF_TYPE_HARDWARE;
+		ev->config = hw_events[i].config;
 		ev->config1 = 0;
 		ev->config2 = 0;
-		snprintf(ev->name, sizeof(ev->name), "%s", hw_cache_events[i].name);
+		snprintf(ev->name, sizeof(ev->name), "%s", hw_events[i].name);
 		return 0;
 	}
 	return -ENOENT;
@@ -331,10 +459,18 @@ int parse_perf_counter(const char *spec, struct pmu_event *out)
 {
 	int err;
 
-	/* Initialize output */
 	memset(out, 0, sizeof(*out));
 
 	err = parse_derived_event(spec, out);
+	if (err == 0 || err != -ENOENT)
+		return err;
+
+	/*
+	 * Generic hardware aliases (cpu-cycles, instructions, ...) before the raw
+	 * parser: names like "ref-cycles" start with 'r' and would otherwise make
+	 * parse_raw_event fail with -EINVAL instead of falling through.
+	 */
+	err = lookup_hw_event(spec, out);
 	if (err == 0 || err != -ENOENT)
 		return err;
 
