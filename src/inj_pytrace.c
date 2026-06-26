@@ -7,7 +7,6 @@
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
-#include <sys/syscall.h>
 
 #include "inj.h"
 #include "inj_common.h"
@@ -222,7 +221,7 @@ static int pytrace_profile_callback(PyObject *obj, PyFrameObject *frame, int wha
 		return 0;
 
 	u64 ts = ktime_now_ns();
-	u32 tid = (u32)syscall(SYS_gettid);
+	u32 tid = inj_gettid();
 
 #ifdef DEBUG
 	/* Count events by (tid, type) for debugging */

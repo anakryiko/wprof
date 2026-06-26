@@ -6,7 +6,6 @@
 #include <string.h>
 #include <errno.h>
 #include <dlfcn.h>
-#include <sys/syscall.h>
 #include <unistd.h>
 #include <pthread.h>
 #include <sys/mman.h>
@@ -89,7 +88,7 @@ static void *rf_start_cb(void *ret_slot, const void *record_fn)
 	}
 
 	u64 ts = ktime_now_ns();
-	u32 tid = (u32)syscall(SYS_gettid);
+	u32 tid = inj_gettid();
 	const char *name = rf_name(record_fn);
 
 	pthread_mutex_lock(&torch_lock);
@@ -124,7 +123,7 @@ static void rf_end_cb(const void *record_fn, void *ctx)
 		return;
 
 	u64 ts = ktime_now_ns();
-	u32 tid = (u32)syscall(SYS_gettid);
+	u32 tid = inj_gettid();
 
 	struct wpytrace_event ev = {
 		.ts = ts,
