@@ -15,6 +15,9 @@
 #define WPROF_VERSION "0.4"
 
 #define DEFAULT_RINGBUF_SZ (16 * 1024 * 1024)
+#define DEFAULT_FR_CHUNK_SZ (128 * 1024 * 1024)
+#define DEFAULT_FR_KEEP_TIME_NS (1000000000LL)	/* 1s */
+#define DEFAULT_FR_KEEP_SIZE (1LL << 30)	/* 1 GiB */
 #define DEFAULT_TASK_STATE_SZ (32 * 1024)
 
 #define DEFAULT_TIMER_FREQ_HZ 100
@@ -113,6 +116,13 @@ struct env {
 	u64 ktime_start_ns;
 	u64 realtime_start_ns;
 	u64 duration_ns;
+
+	/* flight-recorder mode (--flight-record / -F) */
+	bool flightrec;
+	s64 fr_keep_time_ns;	/* -1 until set; resolved in main() */
+	s64 fr_keep_size;	/* -1 until set; resolved in main() */
+	u64 fr_chunk_size;
+	char *fr_spec;	/* raw CLI spec, persisted via WEXTRA later */
 
 	/* time-delayed activation (--prepare / --activate) */
 	struct timespec_spec prepare_spec;

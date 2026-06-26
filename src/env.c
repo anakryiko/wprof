@@ -75,6 +75,9 @@ struct env env = {
 	.pmu_deriv_cnt = -1,
 	.pmu_unresolved_cnt = -1,
 	.pmu_event_cnt = -1,
+	.fr_keep_time_ns = -1,
+	.fr_keep_size = -1,
+	.fr_chunk_size = DEFAULT_FR_CHUNK_SZ,
 };
 
 enum {
@@ -119,10 +122,15 @@ enum {
 static const struct argp_option opts[] = {
 	{ "verbose", 'v', NULL, 0, "Verbose output" },
 	{ "stats", OPT_STATS, NULL, 0, "Print various wprof stats (BPF, resource usage, etc.)" },
-	{ "debug", OPT_DEBUG, "FEAT", 0, "Debug features (pb-debug-interns, pb-disable-interns, keep-workdir, raw-stacks, no-tsidx)"},
+	{ "debug", OPT_DEBUG, "FEAT", 0, "Debug features (pb-debug-interns, pb-disable-interns, keep-workdir, raw-stacks, no-tsidx, fr-chunk-size=SIZE)"},
 	{ "log", OPT_LOG, "LOG", 0, "Debug logging subset selector (libbpf, usdt, topology, inject, tracee, discovery)"},
 	{ "dur", 'd', "DURATION", 0, "Limit running duration; accepts time units s/ms/us/ns/m/h, bare number is ms (default: 1000ms)" },
 	{ "dur-ms", 0, 0, OPTION_ALIAS },
+	{ "flight-record", 'F', "SPEC", OPTION_ARG_OPTIONAL,
+	  "Flight-recorder mode: keep a rolling window, stop on Ctrl-C. SPEC is a "
+	  "comma list of a time and/or size limit, e.g. 10s,1000mb. Bare -F uses "
+	  "1s,1gb; naming one dimension leaves the other unlimited; a 0 token "
+	  "disables a dimension. Mutually exclusive with -d." },
 	{ "prepare", OPT_PREPARE, "WHEN", 0, "Delayed tracing setup, syntax: @now, @<ISO time>, +<dur>, /<dur> (align to next period). Default: at startup" },
 	{ "activate", OPT_ACTIVATE, "WHEN", 0, "Delayed data capture activation; same syntax as --prepare. Default: immediately after prepare" },
 	{ "timer-freq", OPT_TIMER_FREQ, "HZ", 0, "On-CPU timer interrupt frequency (default: 100Hz, i.e., every 10ms)" },
@@ -257,6 +265,13 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			env.raw_stacks = true;
 		} else if (strcasecmp(arg, "no-tsidx") == 0) {
 			env.no_tsidx = true;
+		} else if (strncasecmp(arg, "fr-chunk-size=", 14) == 0) {
+			const char *val = arg + 14;
+
+			if (parse_size(val, SZ_NONE, &env.fr_chunk_size)) {
+				eprintf("Invalid fr-chunk-size '%s' (unit required)!\n", val);
+				argp_usage(state);
+			}
 		} else {
 			eprintf("Unrecognized debug feature '%s'!\n", arg);
 			argp_usage(state);
@@ -291,6 +306,61 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			argp_usage(state);
 		}
 		env.duration_ns = dur;
+		break;
+	}
+	case 'F': {
+		char *copy, *saveptr, *tok;
+
+		env.flightrec = true;
+		/*
+		 * Both limits are independent and both apply; each dimension may
+		 * be set at most once across all -F flags (a repeat is an error)
+		 * and stays -1 until set. A 0 token disables that dimension.
+		 * Unset (-1) dimensions are resolved to defaults in main().
+		 */
+
+		/* accept the -F=SPEC form (argp keeps the '=' for short optional args) */
+		if (arg && arg[0] == '=')
+			arg++;
+
+		if (!arg || !arg[0])
+			break;
+
+		env.fr_spec = strdup(arg);
+
+		copy = strdup(arg);
+		for (tok = strtok_r(copy, ",", &saveptr); tok; tok = strtok_r(NULL, ",", &saveptr)) {
+			char last = tok[strlen(tok) - 1];
+
+			if (last == 'b' || last == 'B') {
+				u64 sz;
+
+				/* size token always carries a unit; 0 means no size cap */
+				if (env.fr_keep_size >= 0) {
+					eprintf("Flight-record size limit specified more than once!\n");
+					argp_usage(state);
+				}
+				if (parse_size(tok, SZ_NONE, &sz)) {
+					eprintf("Invalid flight-record size limit '%s'\n", tok);
+					argp_usage(state);
+				}
+				env.fr_keep_size = sz;
+			} else {
+				/* time token; 0/0s is valid and means no time limit */
+				if (env.fr_keep_time_ns >= 0) {
+					eprintf("Flight-record time limit specified more than once!\n");
+					argp_usage(state);
+				}
+				s64 t = parse_time_units(tok);
+
+				if (t < 0) {
+					eprintf("Invalid flight-record time limit '%s'\n", tok);
+					argp_usage(state);
+				}
+				env.fr_keep_time_ns = t;
+			}
+		}
+		free(copy);
 		break;
 	}
 	case OPT_PREPARE:
