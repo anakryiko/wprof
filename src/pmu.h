@@ -60,9 +60,18 @@ struct pmu_event {
 	 */
 	double active_frac;
 
-	/* Sampled (-S pmu=) overflow rate; at most one nonzero (0/0 => default freq) */
+	/*
+	 * Overflow rate for sampling: set on a -S pmu= event, and also copied onto
+	 * the matching --pmu real it reuses (such a real becomes the sampling source
+	 * itself). At most one of the two is nonzero (0/0 => not sampled / default).
+	 */
 	u64 sampling_freq;
 	u64 sampling_period;
+
+	/* For a -S pmu= event: index into pmu_reals[] of the --pmu counter it reuses
+	 * as its sampling source (that one real fd both samples and counts), or -1
+	 * for a pure sampler that opens its own fd. */
+	int reuse_pmu_idx;
 };
 
 /* Stored format for data persistence (fixed size) */

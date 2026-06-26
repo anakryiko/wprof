@@ -534,6 +534,19 @@ static int setup_perf_counters(struct bpf_state *st, int num_cpus)
 			 * time_running against time_enabled per event.
 			 */
 			attr.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING;
+			/*
+			 * A -Spmu= event that reuses this counter turns it into the sampling
+			 * source: it overflows at the requested rate and the BPF program
+			 * attaches to its fd (see attach_bpf). A sampling perf event still
+			 * counts, so the same fd doubles as the --pmu counter.
+			 */
+			if (ev->sampling_period) {
+				attr.sample_period = ev->sampling_period;
+				attr.freq = 0;
+			} else if (ev->sampling_freq) {
+				attr.sample_freq = ev->sampling_freq;
+				attr.freq = 1;
+			}
 
 			int pefd = sys_perf_event_open(&attr, -1, cpu, -1, PERF_FLAG_FD_CLOEXEC);
 			if (pefd < 0) {
@@ -571,6 +584,10 @@ static int setup_pmu_events(struct bpf_state *st, int num_cpus)
 
 	for (int s = 0; s < env.pmu_event_cnt; s++) {
 		const struct pmu_event *ev = &env.pmu_events[s];
+
+		/* events reusing a --pmu real are sampled off that real's fd in setup_perf_counters() */
+		if (ev->reuse_pmu_idx >= 0)
+			continue;
 
 		for (int cpu = 0; cpu < num_cpus; cpu++) {
 			/* skip offline/not present CPUs */
@@ -1133,25 +1150,27 @@ static int attach_bpf(struct bpf_state *st, struct worker_state *workers, int nu
 	}
 
 	/*
-	 * Attach the PMU-event program to each sampled event's per-CPU fds, passing
-	 * the event's pmu-def index (def_idx) as the bpf_cookie so emit can recover
-	 * the event by indexing the def table. Their links go into the shared ->links.
+	 * Attach the PMU-event program to each sampled event's per-CPU overflow fd,
+	 * passing the event's 0-based index as the bpf_cookie so emit can recover it.
+	 * An event reusing a --pmu real overflows on that real's counter fd; a pure
+	 * sampler overflows on its own fd. Their links go into the shared ->links.
 	 */
-	if (env.pmu_event_cnt > 0 && st->pmu_event_fds) {
-		st->links = realloc(st->links, (st->link_cnt + st->pmu_event_fd_cnt) * sizeof(*st->links));
+	if (env.pmu_event_cnt > 0) {
+		st->links = realloc(st->links, (st->link_cnt + env.pmu_event_cnt * num_cpus) * sizeof(*st->links));
 
 		for (int pmu_idx = 0; pmu_idx < env.pmu_event_cnt; pmu_idx++) {
 			LIBBPF_OPTS(bpf_perf_event_opts, popts, .bpf_cookie = pmu_idx);
+			int reuse_pmu_idx = env.pmu_events[pmu_idx].reuse_pmu_idx;
 
 			for (int cpu = 0; cpu < num_cpus; cpu++) {
-				int idx = pmu_idx * num_cpus + cpu;
 				struct bpf_link *link;
-
-				if (st->pmu_event_fds[idx] < 0)
+				int fd = reuse_pmu_idx >= 0 ? st->perf_counter_fds[cpu * env.pmu_real_cnt + reuse_pmu_idx]
+							    : st->pmu_event_fds[pmu_idx * num_cpus + cpu];
+				if (fd < 0)
 					continue;
 
-				link = bpf_program__attach_perf_event_opts( st->skel->progs.wprof_pmu_event,
-									   st->pmu_event_fds[idx], &popts);
+				link = bpf_program__attach_perf_event_opts(st->skel->progs.wprof_pmu_event,
+									   fd, &popts);
 				if (!link) {
 					err = -errno;
 					return err;
@@ -1979,8 +1998,10 @@ int main(int argc, char **argv)
 
 	/*
 	 * Resolve -S pmu= sampling events (deferred so --pmu can be referenced by name)
-	 * and apply the default rate when none was given. The bpf_cookie is the 0-based
-	 * index here, which emit maps back to env.pmu_events[].
+	 * and apply the default rate. The bpf_cookie is the 0-based index here, which
+	 * emit maps back to env.pmu_events[]. If the event matches an explicit --pmu
+	 * real, point reuse_pmu_idx at it and move the sampling rate onto that real, so
+	 * the real's single fd both samples and counts (no second hardware counter).
 	 */
 	for (int i = 0; i < env.pmu_event_cnt; i++) {
 		struct pmu_event *s = &env.pmu_events[i];
@@ -1990,6 +2011,28 @@ int main(int argc, char **argv)
 			goto cleanup;
 		if (s->sampling_freq == 0 && s->sampling_period == 0)
 			s->sampling_freq = DEFAULT_PMU_EVENT_FREQ_HZ;
+
+		s->reuse_pmu_idx = -1;
+		for (int j = 0; j < env.pmu_real_cnt; j++) {
+			struct pmu_event *r = &env.pmu_reals[j];
+
+			if (r->perf_type != s->perf_type ||
+			    r->config != s->config ||
+			    r->config1 != s->config1 ||
+			    r->config2 != s->config2)
+				continue;
+
+			if (r->sampling_freq || r->sampling_period) {
+				eprintf("--pmu counter '%s' can't back two -S pmu= sampling events\n", r->name);
+				err = -EINVAL;
+				goto cleanup;
+			}
+
+			r->sampling_freq = s->sampling_freq;
+			r->sampling_period = s->sampling_period;
+			s->reuse_pmu_idx = j;
+			break;
+		}
 	}
 
 	/*
