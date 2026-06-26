@@ -1640,7 +1640,8 @@ static int do_activate(struct bpf_state *bpf)
 	env.ktime_start_ns = ktime_now_ns();
 	env.realtime_start_ns = ktime_to_realtime_ns(env.ktime_start_ns);
 	env.sess_start_ts = env.ktime_start_ns;
-	env.sess_end_ts = env.ktime_start_ns + env.duration_ns;
+	/* flightrec runs until stopped: leave the end at 0 (gate treats 0 as no-end) */
+	env.sess_end_ts = env.flightrec ? 0 : env.ktime_start_ns + env.duration_ns;
 
 	bpf->skel->bss->session_start_ts = env.sess_start_ts;
 	bpf->skel->bss->session_end_ts = env.sess_end_ts;
@@ -2168,7 +2169,7 @@ int main(int argc, char **argv)
 	if (env.timer_freq_hz == 0)
 		env.timer_freq_hz = DEFAULT_TIMER_FREQ_HZ;
 	env.timer_period_ns = 1000000000ULL / env.timer_freq_hz;
-	if (env.duration_ns == 0)
+	if (!env.flightrec && env.duration_ns == 0)
 		env.duration_ns = DEFAULT_DURATION_MS * 1000000ULL;
 	if (env.flightrec) {
 		/*
@@ -2477,9 +2478,12 @@ int main(int argc, char **argv)
 				if (err)
 					goto cleanup;
 				env.sess_ctl.session_activated = true;
-				env.sess_ctl.sess_end_target_ts = env.sess_end_ts;
 				env.sess_ctl.state = SESS_RECORDING;
-				arm_timer_abs(env.sess_ctl.sess_end_tfd, env.sess_ctl.sess_end_target_ts);
+				/* flightrec has no planned end: run until stopped (Ctrl-C via CTL_SIGNAL) */
+				if (!env.flightrec) {
+					env.sess_ctl.sess_end_target_ts = env.sess_end_ts;
+					arm_timer_abs(env.sess_ctl.sess_end_tfd, env.sess_ctl.sess_end_target_ts);
+				}
 				break;
 			case CTL_END_TIMER:
 				drain_fd(env.sess_ctl.sess_end_tfd);
@@ -2513,6 +2517,12 @@ int main(int argc, char **argv)
 	if (!env.sess_ctl.session_complete) {
 		env.sess_end_ts = ktime_now_ns();
 		env.duration_ns = env.sess_end_ts - env.sess_start_ts;
+		/*
+		 * flightrec ran with no in-kernel end (0); push the stop time into
+		 * the gate so it stops generating late events before detach_bpf.
+		 */
+		if (env.flightrec && bpf_state.skel)
+			bpf_state.skel->bss->session_end_ts = env.sess_end_ts;
 	}
 
 	wprintf("Stopping...\n");
