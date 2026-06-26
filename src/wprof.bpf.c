@@ -188,9 +188,12 @@ static bool should_trace_task(struct task_struct *tsk, u64 now_ts)
 	if (unlikely(session_start_ts == 0)) /* we are still starting */
 		return false;
 
-	/* check if we are outside of session [start, end] time range */
+	/*
+	 * Skip events outside the session [start, end] time range;
+	 * session_end_ts == 0 means "no end" (flight-recorder runs until stopped).
+	 */
 	if (unlikely((long)(now_ts - session_start_ts) < 0 ||
-		     (long)(now_ts - session_end_ts) > 0 ))
+		     (session_end_ts && (long)(now_ts - session_end_ts) > 0)))
 		return false;
 
 	enum wprof_filt_mode mode = filt_mode;
