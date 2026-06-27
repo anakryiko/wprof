@@ -1714,6 +1714,18 @@ int main(int argc, char **argv)
 		}
 	}
 
+	if (env.flightrec && env.duration_ns) {
+		eprintf("--flight-record (-F) is mutually exclusive with --dur (-d)!\n");
+		err = -EINVAL;
+		goto cleanup;
+	}
+	if (env.flightrec && (env.capture_cuda == TRUE ||
+			      env.capture_pytrace == TRUE || env.capture_pytorch == TRUE)) {
+		eprintf("--flight-record (-F) does not support injected-tracee features (cuda/py-trace/py-torch)!\n");
+		err = -EINVAL;
+		goto cleanup;
+	}
+
 	if (!env.replay && geteuid() != 0)
 		eprintf("WARNING: wprof is not running as root, data capture will most probably FAIL due to insufficient permissions!\n");
 
