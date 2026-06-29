@@ -154,7 +154,7 @@ static int parse_raw_event(const char *spec, struct pmu_event *ev)
 
 	ev->perf_type = PERF_TYPE_RAW;
 	ev->config = val;
-	snprintf(ev->name, sizeof(ev->name), "raw_0x%llx", val);
+	ev->name = strdup(sfmt("raw_0x%llx", val));
 
 	return 0;
 }
@@ -174,7 +174,7 @@ static int parse_software_event(const char *spec, struct pmu_event *ev)
 
 		ev->perf_type = PERF_TYPE_SOFTWARE;
 		ev->config = sw_events[i].config;
-		snprintf(ev->name, sizeof(ev->name), "%s", sw_events[i].name);
+		ev->name = strdup(sw_events[i].name);
 
 		return 0;
 	}
@@ -243,7 +243,7 @@ static int pmu_dev_field_mapping(const char *key, __u64 val, __u64 *config,
 
 /* Parse the format like "event=0x24,umask=0x01,name=foo" */
 static int perf_event_parsing(char *attrs, __u64 *config, __u64 *config1, __u64 *config2,
-			      char *name, int max_len)
+			      char **name_out)
 {
 	char *saveptr, *token;
 	int err = -ENOENT;
@@ -260,8 +260,8 @@ static int perf_event_parsing(char *attrs, __u64 *config, __u64 *config1, __u64 
 
 		/* Handle name separately */
 		if (strcmp(key, "name") == 0) {
-			if (name && max_len)
-				snprintf(name, max_len, "%s", val_s);
+			if (name_out)
+				*name_out = strdup(val_s);
 			err = 0;
 			continue;
 		}
@@ -306,7 +306,7 @@ int pmu_resolve_symbolic_event(const char *pmu, const char *event_name,
 	/* Remove trailing newline */
 	buf[strcspn(buf, "\n")] = '\0';
 
-	return perf_event_parsing(buf, config, config1, config2, NULL, 0);
+	return perf_event_parsing(buf, config, config1, config2, NULL);
 }
 
 /* Longest alias that is a prefix of @s ending at '-' or end-of-string. */
@@ -366,7 +366,7 @@ static int lookup_hw_cache_event(const char *name, struct pmu_event *ev)
 	ev->config = cache | (op << 8) | (result << 16);
 	ev->config1 = 0;
 	ev->config2 = 0;
-	snprintf(ev->name, sizeof(ev->name), "%s", name);
+	ev->name = strdup(name);
 	return 0;
 }
 
@@ -380,7 +380,7 @@ static int lookup_hw_event(const char *name, struct pmu_event *ev)
 		ev->config = hw_events[i].config;
 		ev->config1 = 0;
 		ev->config2 = 0;
-		snprintf(ev->name, sizeof(ev->name), "%s", hw_events[i].name);
+		ev->name = strdup(hw_events[i].name);
 		return 0;
 	}
 	return -ENOENT;
@@ -413,14 +413,14 @@ static int parse_pmu_style_event(const char *spec, struct pmu_event *ev)
 
 	err = pmu_resolve_symbolic_event(pmu_dev, attrs, &ev->config, &ev->config1, &ev->config2);
 	if (err == 0) {
-		snprintf(ev->name, sizeof(ev->name), "%s_%s", pmu_dev, attrs);
+		ev->name = strdup(sfmt("%s_%s", pmu_dev, attrs));
 		return 0;
 	}
 
-	err = perf_event_parsing(attrs, &ev->config, &ev->config1, &ev->config2, ev->name, sizeof(ev->name));
+	err = perf_event_parsing(attrs, &ev->config, &ev->config1, &ev->config2, &ev->name);
 	if (err == 0) {
-		if (ev->name[0] == '\0')
-			snprintf(ev->name, sizeof(ev->name), "%s_0x%llx", pmu_dev, (__u64)ev->config);
+		if (!ev->name)
+			ev->name = strdup(sfmt("%s_0x%llx", pmu_dev, (__u64)ev->config));
 		return 0;
 	}
 
@@ -594,26 +594,6 @@ int pmu_event_resolve(struct pmu_event *e, const struct pmu_event *derivs, int d
 		e->sampling_period = v;
 
 	return 0;
-}
-
-void serialized_pmu_event(const struct pmu_event *ev, struct pmu_event_stored *stored)
-{
-	memset(stored, 0, sizeof(*stored));
-	stored->perf_type = ev->perf_type;
-	stored->config = ev->config;
-	stored->config1 = ev->config1;
-	stored->config2 = ev->config2;
-	snprintf(stored->name, sizeof(stored->name), "%s", ev->name);
-}
-
-void deserialized_pmu_event(const struct pmu_event_stored *stored, struct pmu_event *ev)
-{
-	memset(ev, 0, sizeof(*ev));
-	ev->perf_type = stored->perf_type;
-	ev->config = stored->config;
-	ev->config1 = stored->config1;
-	ev->config2 = stored->config2;
-	snprintf(ev->name, sizeof(ev->name), "%s", stored->name);
 }
 
 static int find_real_counter_by_name(const struct pmu_event *reals, int real_cnt, const char *name)

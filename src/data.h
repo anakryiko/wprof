@@ -496,7 +496,7 @@ static inline void wevent_pmu_to_event(struct wprof_data_hdr *hdr, u32 idx, stru
 	ev->config = def->config;
 	ev->config1 = def->config1;
 	ev->config2 = def->config2;
-	snprintf(ev->name, sizeof(ev->name), "%s", wevent_str(hdr, def->name_stroff));
+	ev->name = strdup(wevent_str(hdr, def->name_stroff));
 }
 
 
