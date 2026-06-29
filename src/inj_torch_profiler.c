@@ -130,13 +130,15 @@ static void rf_end_cb(const void *record_fn, void *ctx)
 
 	u64 ts = ktime_now_ns();
 	u32 tid = inj_gettid();
+	const char *name = rf_name(record_fn);
+	u32 name_off = strcache_intern(&torch_name_cache, name);
 
 	struct wpytrace_event ev = {
 		.ts = ts,
 		.tid = tid,
 		.what = WPYTRACE_PYTORCH_EXIT,
 		.code_key = 0,
-		.rf_name_off = 0,
+		.rf_name_off = name_off,
 	};
 
 	if (fwrite(&ev, sizeof(ev), 1, torch_dump) == 1)
