@@ -13,6 +13,7 @@
 #include "inj.h"
 #include "pytrace_data.h"
 #include "strset.h"
+#include "strcache.h"
 
 /* ==================== RecordFunction hooking ====================
  *
@@ -66,6 +67,14 @@ static u64 rf_callback_handle;
 static bool rf_active;
 
 /*
+ * Lock-free op-name interner (see strcache.h). RecordFunction fires on many
+ * threads, so this keeps the common path -- an op name already interned -- off
+ * torch_lock; only a name's first sighting takes the lock. Backed by
+ * torch_dump_strs / torch_lock, wired up in pytorch_session_setup().
+ */
+static struct strcache torch_name_cache;
+
+/*
  * RecordFunction start callback.
  *
  * C++ signature: std::unique_ptr<ObserverContext> (*)(const RecordFunction&)
@@ -90,10 +99,7 @@ static void *rf_start_cb(void *ret_slot, const void *record_fn)
 	u64 ts = ktime_now_ns();
 	u32 tid = inj_gettid();
 	const char *name = rf_name(record_fn);
-
-	pthread_mutex_lock(&torch_lock);
-	u32 name_off = strset__add_str(torch_dump_strs, name);
-	pthread_mutex_unlock(&torch_lock);
+	u32 name_off = strcache_intern(&torch_name_cache, name);
 
 	struct wpytrace_event ev = {
 		.ts = ts,
@@ -508,6 +514,7 @@ int pytorch_session_setup(int pytorch_dump_fd, unsigned long *sym_addrs, int sym
 
 	torch_active = true;
 	pthread_mutex_init(&torch_lock, NULL);
+	strcache_init(&torch_name_cache, torch_dump_strs, &torch_lock);
 
 	/*
 	 * Track before rf_register so the RecordFunction callback can't fire on an
@@ -542,6 +549,7 @@ int pytorch_session_finalize(void)
 	inj_untrack_dump_fd(fileno(torch_dump));
 
 	rf_unregister();
+	strcache_reset(&torch_name_cache); /* safe: rf_unregister drained all in-flight callbacks */
 	torch_active = false;
 	run_ctx->pytorch_event_cnt = torch_event_cnt;
 	pthread_mutex_destroy(&torch_lock);

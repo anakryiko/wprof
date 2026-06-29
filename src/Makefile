@@ -219,7 +219,7 @@ WPROF_HDRS := wprof.h utils.h env.h protobuf.h data.h emit.h stacktrace.h topolo
 WPROF_OBJS := $(patsubst %.c,$(OUTPUT)/%.o,$(WPROF_SRCS))
 
 WPROFINJ_SRCS := inj_lib.c inj_strset.c inj_hashmap.c inj_cupti.c inj_pytrace.c inj_torch_profiler.c
-WPROFINJ_HDRS := inj_common.h inj.h wprof_cupti.h pytrace_data.h
+WPROFINJ_HDRS := inj_common.h inj.h wprof_cupti.h pytrace_data.h strcache.h
 WPROFINJ_OBJS := $(patsubst %.c,$(OUTPUT)/%.o,$(WPROFINJ_SRCS))
 
 $(WPROFINJ_OBJS): ALL_CFLAGS += -fPIC
