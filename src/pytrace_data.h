@@ -23,17 +23,15 @@ struct wpytrace_data_hdr {
 	u64 code_map_cnt;
 } __attribute__((aligned(8)));
 
-/* PyTorch RecordFunction what values — start at 20 to leave room for growth */
-#define WPYTRACE_PYTORCH_ENTRY 20
-#define WPYTRACE_PYTORCH_EXIT  21
-
-/* Raw event recorded in the hot path */
+/*
+ * PyEval (pytrace) event: a Python call/return. The code object is resolved to
+ * func/file/lineno via the dump's code map.
+ */
 struct wpytrace_event {
 	u64 ts;
 	u64 code_key;
 	u32 tid;
-	u8  what:8;		/* PyTrace_CALL=0, PyTrace_RETURN=3, WPYTRACE_RF_ENTRY=20, WPYTRACE_RF_EXIT=21 */
-	u32 rf_name_off:24;
+	u32 what;	/* PyTrace_CALL=0, PyTrace_RETURN=3 */
 };
 
 /* Code object map entry: maps code_key -> string offsets */

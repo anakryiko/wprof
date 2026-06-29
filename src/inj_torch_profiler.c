@@ -11,7 +11,7 @@
 #include <sys/mman.h>
 
 #include "inj.h"
-#include "pytrace_data.h"
+#include "pytorch_data.h"
 #include "strset.h"
 #include "strcache.h"
 
@@ -101,12 +101,11 @@ static void *rf_start_cb(void *ret_slot, const void *record_fn)
 	const char *name = rf_name(record_fn);
 	u32 name_off = strcache_intern(&torch_name_cache, name);
 
-	struct wpytrace_event ev = {
+	struct wpytorch_event ev = {
 		.ts = ts,
 		.tid = tid,
-		.what = WPYTRACE_PYTORCH_ENTRY,
-		.code_key = 0,
-		.rf_name_off = name_off,
+		.what = WPYTORCH_ENTRY,
+		.name_off = name_off,
 	};
 
 	if (fwrite(&ev, sizeof(ev), 1, torch_dump) == 1)
@@ -133,12 +132,11 @@ static void rf_end_cb(const void *record_fn, void *ctx)
 	const char *name = rf_name(record_fn);
 	u32 name_off = strcache_intern(&torch_name_cache, name);
 
-	struct wpytrace_event ev = {
+	struct wpytorch_event ev = {
 		.ts = ts,
 		.tid = tid,
-		.what = WPYTRACE_PYTORCH_EXIT,
-		.code_key = 0,
-		.rf_name_off = name_off,
+		.what = WPYTORCH_EXIT,
+		.name_off = name_off,
 	};
 
 	if (fwrite(&ev, sizeof(ev), 1, torch_dump) == 1)
@@ -436,10 +434,10 @@ static void **torch_resolve_syms[TORCH_SYM_CNT] = {
 
 /* ==================== Dump file management ==================== */
 
-static void init_wpytrace_header(struct wpytrace_data_hdr *hdr)
+static void init_wpytorch_header(struct wpytorch_data_hdr *hdr)
 {
 	memset(hdr, 0, sizeof(*hdr));
-	memcpy(hdr->magic, "WPYTR", 6);
+	memcpy(hdr->magic, "WPYTO", 6);
 	hdr->hdr_sz = sizeof(*hdr);
 }
 
@@ -454,9 +452,9 @@ static int init_torch_data(FILE *dump)
 		return err;
 	}
 
-	struct wpytrace_data_hdr hdr;
-	init_wpytrace_header(&hdr);
-	hdr.flags = WPYTRACE_DATA_FLAG_INCOMPLETE;
+	struct wpytorch_data_hdr hdr;
+	init_wpytorch_header(&hdr);
+	hdr.flags = WPYTORCH_DATA_FLAG_INCOMPLETE;
 
 	if (fwrite(&hdr, sizeof(hdr), 1, dump) != 1) {
 		err = -errno;
@@ -565,16 +563,11 @@ int pytorch_session_finalize(void)
 		return err;
 	}
 
-	/*
-	 * Torch dumps have no code_map (that's pytrace-only), so write
-	 * code_map_off/sz/cnt as zero and go straight to the string table.
-	 */
-
 	/* Write string table */
 	const char *strs = strset__data(torch_dump_strs);
 	size_t strs_sz = strset__data_size(torch_dump_strs);
 
-	long strs_off = ftell(torch_dump) - sizeof(struct wpytrace_data_hdr);
+	long strs_off = ftell(torch_dump) - sizeof(struct wpytorch_data_hdr);
 	if (strs_sz > 0 && fwrite(strs, 1, strs_sz, torch_dump) != strs_sz) {
 		err = -errno;
 		elog("Failed to write torch strings: %d\n", err);
@@ -584,17 +577,14 @@ int pytorch_session_finalize(void)
 	fsync(fileno(torch_dump));
 
 	/* Finalize header */
-	struct wpytrace_data_hdr hdr;
-	init_wpytrace_header(&hdr);
+	struct wpytorch_data_hdr hdr;
+	init_wpytorch_header(&hdr);
 
 	hdr.sess_start_ns = run_ctx->sess_start_ts;
 	hdr.sess_end_ns = run_ctx->sess_end_ts;
 	hdr.events_off = 0;
-	hdr.events_sz = events_end - sizeof(struct wpytrace_data_hdr);
+	hdr.events_sz = events_end - sizeof(struct wpytorch_data_hdr);
 	hdr.event_cnt = torch_event_cnt;
-	hdr.code_map_off = 0;
-	hdr.code_map_sz = 0;
-	hdr.code_map_cnt = 0;
 	hdr.strs_off = strs_off;
 	hdr.strs_sz = strs_sz;
 
