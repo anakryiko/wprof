@@ -179,6 +179,7 @@ int persist_add_pmu_def(struct persist_state *ps, const struct pmu_event *ev)
 	ps->pmu_defs = realloc(ps->pmu_defs, (ps->pmu_def_total_cnt + 1) * sizeof(*ps->pmu_defs));
 
 	struct wevent_pmu_def *def = &ps->pmu_defs[ps->pmu_def_total_cnt];
+	memset(def, 0, sizeof(*def));
 	def->perf_type = ev->perf_type;
 	def->config = ev->config;
 	def->config1 = ev->config1;
