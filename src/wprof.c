@@ -563,13 +563,13 @@ static int setup_perf_counters(struct bpf_state *st, int num_cpus)
 							   &pe_idx, sizeof(pe_idx),
 							   &pefd, sizeof(pefd), 0);
 				if (err) {
-					eprintf("Failed to set up %s PMU on CPU#%d for BPF: %d\n", ev->name, cpu, err);
+					eprintf("Failed to set up %s PMU on CPU#%d for BPF: %s\n", ev->name, cpu, errstr(err));
 					return err;
 				}
 				err = ioctl(pefd, PERF_EVENT_IOC_ENABLE, 0);
 				if (err) {
 					err = -errno;
-					eprintf("Failed to enable %s PMU on CPU#%d: %d\n", ev->name, cpu, err);
+					eprintf("Failed to enable %s PMU on CPU#%d: %s\n", ev->name, cpu, errstr(err));
 					return err;
 				}
 			}
@@ -617,7 +617,7 @@ static int setup_pmu_events(struct bpf_state *st, int num_cpus)
 			int pefd = sys_perf_event_open(&attr, -1, cpu, -1, PERF_FLAG_FD_CLOEXEC);
 			if (pefd < 0) {
 				int err = -errno;
-				eprintf("Failed to set up PMU sampling event '%s' on CPU %d: %d\n", ev->name, cpu, err);
+				eprintf("Failed to set up PMU sampling event '%s' on CPU %d: %s\n", ev->name, cpu, errstr(err));
 				return err;
 			}
 			st->pmu_event_fds[s * num_cpus + cpu] = pefd;
@@ -1060,7 +1060,7 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 	if (env.pmu_real_cnt) {
 		err = setup_perf_counters(st, num_cpus);
 		if (err) {
-			eprintf("Failed to setup perf counters: %d\n", err);
+			eprintf("Failed to setup perf counters: %s\n", errstr(err));
 			return err;
 		}
 	}
@@ -1068,7 +1068,7 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 	if (env.pmu_event_cnt > 0) {
 		err = setup_pmu_events(st, num_cpus);
 		if (err) {
-			eprintf("Failed to setup PMU sampling events: %d\n", err);
+			eprintf("Failed to setup PMU sampling events: %s\n", errstr(err));
 			return err;
 		}
 	}
@@ -2148,7 +2148,7 @@ int main(int argc, char **argv)
 
 	err = pmu_resolve_derived(env.pmu_reals, env.pmu_real_cnt, env.pmu_derivs, env.pmu_deriv_cnt);
 	if (err) {
-		eprintf("Failed to resolve derived PMU definitions: %d\n", err);
+		eprintf("Failed to resolve derived PMU definitions: %s\n", errstr(err));
 		goto cleanup;
 	}
 
