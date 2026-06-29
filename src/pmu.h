@@ -9,8 +9,6 @@
 #include "wprof_types.h"
 #include "wprof.h"
 
-#define PMU_NAME_LEN 64
-
 /* Marker for derived metrics (not a real perf type) */
 #define PERF_TYPE_DERIVED (UINT32_MAX - 1)
 
@@ -40,7 +38,7 @@ struct pmu_event {
 	__u64 config2;         /* extended config (or denominator index for derived) */
 
 	/* Output configuration */
-	char name[PMU_NAME_LEN]; /* trace output name (user-specified or auto) */
+	char *name;              /* trace output name (user-specified or auto) */
 	u32 name_iid;            /* pre-interned Perfetto annotation key IID */
 
 	/* Original user-provided --pmu / -S pmu= spec; set at capture-time argv parse */
@@ -73,15 +71,6 @@ struct pmu_event {
 	 * for a pure sampler that opens its own fd. */
 	int reuse_pmu_idx;
 };
-
-/* Stored format for data persistence (fixed size) */
-struct pmu_event_stored {
-	__u32 perf_type;
-	__u64 config;
-	__u64 config1;
-	__u64 config2;
-	char name[PMU_NAME_LEN];
-} __attribute__((aligned(8)));
 
 /**
  * parse_pmu_event_spec - stash a "-S pmu=<spec>" value for deferred resolution
@@ -148,16 +137,6 @@ int pmu_resolve_type(const char *pmu_name, __u32 *type);
  */
 int pmu_resolve_symbolic_event(const char *pmu, const char *event_name,
 															 __u64 *config, __u64 *config1, __u64 *config2);
-
-/**
- * serialized_pmu_event - Convert pmu_event to stored format for data persistence
- */
-void serialized_pmu_event(const struct pmu_event *ev, struct pmu_event_stored *stored);
-
-/**
- * deserialized_pmu_event - Convert stored format back to pmu_event
- */
-void deserialized_pmu_event(const struct pmu_event_stored *stored, struct pmu_event *ev);
 
 /**
  * pmu_resolve_derived - Resolve derived metric indices

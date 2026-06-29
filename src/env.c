@@ -753,7 +753,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			memset(&ev, 0, sizeof(ev));
 			ev.perf_type = PERF_TYPE_UNRESOLVED;
 			ev.def_idx = -1;
-			snprintf(ev.name, sizeof(ev.name), "%s", arg);
+			ev.name = strdup(arg);
 		}
 
 		/* First counter specified resets all arrays from sentinel */
