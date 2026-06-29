@@ -12,6 +12,7 @@
 #include "pmu.h"
 #include "cuda_data.h"
 #include "pytrace_data.h"
+#include "pytorch_data.h"
 #include "utrace_cfg.h"
 #include "proc.h"
 #include "../libbpf/src/strset.h"
@@ -629,11 +630,11 @@ static const struct wpytrace_code_entry *lookup_pytrace_code(const struct wpytra
 }
 
 int persist_pytrace_event(struct persist_state *ps, const struct wpytrace_event *e, struct wevent *dst,
-			 const struct wpytrace_data_hdr *hdr, int host_pid, int ns_pid, const char *proc_name,
+			 int host_pid, int ns_pid, const char *proc_name,
 			 const struct wpytrace_code_entry *code_map, u64 code_map_cnt,
 			 const char *pytrace_strs)
 {
-	/* Resolve TID -- pytrace TIDs come from gettid() inside tracee and may be namespaced */
+	/* resolve the (possibly namespaced) tid to a task; drop the event if we can't */
 	struct tid_cache_value *ti = resolve_cuda_host_tid(ps, host_pid, proc_name, ns_pid, e->tid);
 	if (!ti)
 		return 0;
@@ -643,17 +644,8 @@ int persist_pytrace_event(struct persist_state *ps, const struct wpytrace_event 
 	dst->cpu = 0;
 	dst->numa_node = 0;
 	dst->ts = e->ts;
-
-	if (e->what == WPYTRACE_PYTORCH_ENTRY || e->what == WPYTRACE_PYTORCH_EXIT) {
-		dst->sz = WEVENT_SZ(rf);
-		dst->kind = (e->what == WPYTRACE_PYTORCH_ENTRY) ? EV_PYTORCH_ENTRY : EV_PYTORCH_EXIT;
-		dst->rf.name_stroff = e->rf_name_off ? persist_stroff(ps, pytrace_strs + e->rf_name_off) : 0;
-		return dst->sz;
-	}
-
-	enum event_kind kind = (e->what == 0) ? EV_PYTRACE_ENTRY : EV_PYTRACE_EXIT;
 	dst->sz = WEVENT_SZ(pytrace);
-	dst->kind = kind;
+	dst->kind = (e->what == 0) ? EV_PYTRACE_ENTRY : EV_PYTRACE_EXIT;
 
 	const struct wpytrace_code_entry *ce = lookup_pytrace_code(code_map, code_map_cnt, e->code_key);
 	if (ce) {
@@ -665,6 +657,26 @@ int persist_pytrace_event(struct persist_state *ps, const struct wpytrace_event 
 		dst->pytrace.file_name_stroff = 0;
 		dst->pytrace.lineno = 0;
 	}
+
+	return dst->sz;
+}
+
+int persist_pytorch_event(struct persist_state *ps, const struct wpytorch_event *e, struct wevent *dst,
+			  int host_pid, int ns_pid, const char *proc_name, const char *strs)
+{
+	/* resolve the (possibly namespaced) tid to a task; drop the event if we can't */
+	struct tid_cache_value *ti = resolve_cuda_host_tid(ps, host_pid, proc_name, ns_pid, e->tid);
+	if (!ti)
+		return 0;
+
+	dst->flags = 0;
+	dst->task_id = ti->task_id;
+	dst->cpu = 0;
+	dst->numa_node = 0;
+	dst->ts = e->ts;
+	dst->sz = WEVENT_SZ(rf);
+	dst->kind = (e->what == WPYTORCH_ENTRY) ? EV_PYTORCH_ENTRY : EV_PYTORCH_EXIT;
+	dst->rf.name_stroff = e->name_off ? persist_stroff(ps, strs + e->name_off) : 0;
 
 	return dst->sz;
 }

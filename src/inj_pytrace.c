@@ -259,7 +259,7 @@ static int pytrace_profile_callback(PyObject *obj, PyFrameObject *frame, int wha
 	struct wpytrace_event ev = {
 		.ts = ts,
 		.tid = tid,
-		.what = (u8)what,
+		.what = what,
 		.code_key = code_key,
 	};
 

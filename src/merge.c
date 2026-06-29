@@ -23,6 +23,7 @@
 #include "cuda_data.h"
 #include "pytrace.h"
 #include "pytrace_data.h"
+#include "pytorch_data.h"
 #include "proc.h"
 #include "persist.h"
 #include "stacktrace.h"
@@ -133,6 +134,14 @@ static int wpytrace_event_cmp(const void *a, const void *b)
 {
 	const struct wpytrace_event *x = *(const struct wpytrace_event **)a;
 	const struct wpytrace_event *y = *(const struct wpytrace_event **)b;
+
+	return ts_cmp(x->ts, y->ts);
+}
+
+static int wpytorch_event_cmp(const void *a, const void *b)
+{
+	const struct wpytorch_event *x = *(const struct wpytorch_event **)a;
+	const struct wpytorch_event *y = *(const struct wpytorch_event **)b;
 
 	return ts_cmp(x->ts, y->ts);
 }
@@ -739,7 +748,7 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 		wcuda->next_rec = wcuda->rec_cnt > 0 ? wcuda->recs[0] : NULL;
 	}
 
-	/* Prepare per-process pytrace event streams */
+	/* Prepare per-process pytrace (Python call/return) event streams */
 	struct wpytrace_state {
 		struct wpytrace_data_hdr *dump_hdr;
 		size_t dump_sz;
@@ -750,20 +759,26 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 		const struct wpytrace_event *next_rec;
 		u64 rec_cnt;
 		u64 rec_idx;
-		int tracee_idx; /* index into env.pytraces[] */
-	};
-
-	/*
-	 * Each pytrace tracee can produce up to 2 dump files: the pytrace dump
-	 * and an optional torch profiler dump. We allocate double the entries
-	 * and fill in both when the torch dump exists.
-	 */
+		int tracee_idx;		/* index into env.pytraces[] */
+	} *wpytraces = calloc(env.py_cnt, sizeof(*wpytraces));
 	int wpytrace_cnt = 0;
-	int wpytrace_cap = env.py_cnt * 2;
-	struct wpytrace_state *wpytraces = calloc(wpytrace_cap, sizeof(*wpytraces));
+
+	/* Prepare per-process pytorch (RecordFunction) event streams */
+	struct wpytorch_state {
+		struct wpytorch_data_hdr *dump_hdr;
+		size_t dump_sz;
+		const char *strs;
+		const struct wpytorch_event **recs;
+		const struct wpytorch_event *next_rec;
+		u64 rec_cnt;
+		u64 rec_idx;
+		int tracee_idx;		/* index into env.pytraces[] */
+	} *wpytorches = calloc(env.py_cnt, sizeof(*wpytorches));
+	int wpytorch_cnt = 0;
 
 	for (int i = 0; i < env.py_cnt; i++) {
 		struct pytrace_tracee *pf = &env.pytraces[i];
+		struct stat st;
 
 		if (pf->state == TRACEE_INACTIVE) {
 			/* expected clean shutdown case */
@@ -776,58 +791,80 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 			continue;
 		}
 
-		/* Load pytrace dump and optionally torch dump into wpytraces[] */
-		int dump_fds[] = { pf->pytrace_dump_fd, pf->pytorch_dump_fd };
-		const char *dump_paths[] = { pf->dump_path, pf->torch_dump_path };
-		const char *dump_labels[] = { "pytrace", "torch" };
+		struct wpytrace_state *wpy = &wpytraces[wpytrace_cnt];
 
-		for (int d = 0; d < ARRAY_SIZE(dump_fds); d++) {
-			if (dump_fds[d] < 0)
-				continue;
-
-			struct wpytrace_state *wpf = &wpytraces[wpytrace_cnt];
-
-			struct stat st;
-			if (fstat(dump_fds[d], &st) < 0) {
-				err = -errno;
-				eprintf("Failed to fstat() %s data dump for tracee %s at '%s': %d\n",
-					dump_labels[d], pytrace_str(pf), dump_paths[d], err);
-				continue;
-			}
-
-			wpf->dump_sz = st.st_size;
-			wpf->dump_hdr = mmap(NULL, wpf->dump_sz, PROT_READ | PROT_WRITE, MAP_SHARED, dump_fds[d], 0);
-			if (wpf->dump_hdr == MAP_FAILED) {
-				err = -errno;
-				eprintf("Failed to mmap() %s data dump for tracee %s at '%s': %d\n",
-					dump_labels[d], pytrace_str(pf), dump_paths[d], err);
-				wpf->dump_hdr = NULL;
-				continue;
-			}
-
-			wpf->strs = (void *)wpf->dump_hdr + wpf->dump_hdr->hdr_sz + wpf->dump_hdr->strs_off;
-			wpf->code_map = (void *)wpf->dump_hdr + wpf->dump_hdr->hdr_sz + wpf->dump_hdr->code_map_off;
-			wpf->code_map_cnt = wpf->dump_hdr->code_map_cnt;
-			qsort(wpf->code_map, wpf->code_map_cnt, sizeof(*wpf->code_map), wpytrace_code_entry_cmp);
-			wpf->tracee_idx = i;
-
-			/* Collect event pointers and sort by converted timestamp */
-			wpf->rec_idx = 0;
-			wpf->rec_cnt = wpf->dump_hdr->event_cnt;
-			wpf->recs = calloc(wpf->rec_cnt, sizeof(*wpf->recs));
-
-			struct wpytrace_event_record *rec;
-			u64 idx = 0;
-			wpytrace_for_each_event(rec, wpf->dump_hdr) {
-				wpf->recs[idx++] = rec->e;
-			}
-
-			qsort(wpf->recs, wpf->rec_cnt, sizeof(*wpf->recs), wpytrace_event_cmp);
-
-			wpf->next_rec = wpf->rec_cnt > 0 ? wpf->recs[0] : NULL;
-
-			wpytrace_cnt++;
+		if (pf->pytrace_dump_fd < 0)
+			goto skip_pytrace;
+		if (fstat(pf->pytrace_dump_fd, &st) < 0) {
+			err = -errno;
+			eprintf("Failed to fstat() pytrace data dump for tracee %s at '%s': %d\n",
+				pytrace_str(pf), pf->dump_path, err);
+			goto skip_pytrace;
 		}
+		wpy->dump_sz = st.st_size;
+		wpy->dump_hdr = mmap(NULL, wpy->dump_sz, PROT_READ | PROT_WRITE, MAP_SHARED, pf->pytrace_dump_fd, 0);
+		if (wpy->dump_hdr == MAP_FAILED) {
+			err = -errno;
+			eprintf("Failed to mmap() pytrace data dump for tracee %s at '%s': %d\n",
+				pytrace_str(pf), pf->dump_path, err);
+			wpy->dump_hdr = NULL;
+			goto skip_pytrace;
+		}
+
+		wpy->strs = (void *)wpy->dump_hdr + wpy->dump_hdr->hdr_sz + wpy->dump_hdr->strs_off;
+		wpy->code_map = (void *)wpy->dump_hdr + wpy->dump_hdr->hdr_sz + wpy->dump_hdr->code_map_off;
+		wpy->code_map_cnt = wpy->dump_hdr->code_map_cnt;
+		qsort(wpy->code_map, wpy->code_map_cnt, sizeof(*wpy->code_map), wpytrace_code_entry_cmp);
+		wpy->tracee_idx = i;
+		wpy->rec_idx = 0;
+		wpy->rec_cnt = wpy->dump_hdr->event_cnt;
+		wpy->recs = calloc(wpy->rec_cnt, sizeof(*wpy->recs));
+
+		struct wpytrace_event_record *py_rec;
+		wpytrace_for_each_event(py_rec, wpy->dump_hdr)
+			wpy->recs[py_rec->idx] = py_rec->e;
+
+		qsort(wpy->recs, wpy->rec_cnt, sizeof(*wpy->recs), wpytrace_event_cmp);
+		wpy->next_rec = wpy->rec_cnt > 0 ? wpy->recs[0] : NULL;
+		wpytrace_cnt++;
+
+skip_pytrace:
+		if (pf->pytorch_dump_fd < 0)
+			goto skip_pytorch;
+
+		struct wpytorch_state *wtorch = &wpytorches[wpytorch_cnt];
+
+		if (fstat(pf->pytorch_dump_fd, &st) < 0) {
+			err = -errno;
+			eprintf("Failed to fstat() pytorch data dump for tracee %s at '%s': %d\n",
+				pytrace_str(pf), pf->torch_dump_path, err);
+			goto skip_pytorch;
+		}
+		wtorch->dump_sz = st.st_size;
+		wtorch->dump_hdr = mmap(NULL, wtorch->dump_sz, PROT_READ | PROT_WRITE, MAP_SHARED, pf->pytorch_dump_fd, 0);
+		if (wtorch->dump_hdr == MAP_FAILED) {
+			err = -errno;
+			eprintf("Failed to mmap() pytorch data dump for tracee %s at '%s': %d\n",
+				pytrace_str(pf), pf->torch_dump_path, err);
+			wtorch->dump_hdr = NULL;
+			goto skip_pytorch;
+		}
+
+		wtorch->strs = (void *)wtorch->dump_hdr + wtorch->dump_hdr->hdr_sz + wtorch->dump_hdr->strs_off;
+		wtorch->tracee_idx = i;
+		wtorch->rec_idx = 0;
+		wtorch->rec_cnt = wtorch->dump_hdr->event_cnt;
+		wtorch->recs = calloc(wtorch->rec_cnt, sizeof(*wtorch->recs));
+
+		struct wpytorch_event_record *torch_rec;
+		wpytorch_for_each_event(torch_rec, wtorch->dump_hdr)
+			wtorch->recs[torch_rec->idx] = torch_rec->e;
+
+		qsort(wtorch->recs, wtorch->rec_cnt, sizeof(*wtorch->recs), wpytorch_event_cmp);
+		wtorch->next_rec = wtorch->rec_cnt > 0 ? wtorch->recs[0] : NULL;
+		wpytorch_cnt++;
+skip_pytorch:
+		continue;
 	}
 
 	/*
@@ -838,7 +875,7 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 	 */
 	struct wevent wevent_buf;
 
-	int stream_cnt = env.ringbuf_cnt + env.cuda_cnt + wpytrace_cnt;
+	int stream_cnt = env.ringbuf_cnt + env.cuda_cnt + wpytrace_cnt + wpytorch_cnt;
 	struct wpq *pq = wpq_new(stream_cnt);
 
 	for (int i = 0; i < env.ringbuf_cnt; i++) {
@@ -852,6 +889,10 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 	for (int i = 0; i < wpytrace_cnt; i++) {
 		if (wpytraces[i].next_rec)
 			wpq_push(pq, wpytraces[i].next_rec->ts, env.ringbuf_cnt + env.cuda_cnt + i);
+	}
+	for (int i = 0; i < wpytorch_cnt; i++) {
+		if (wpytorches[i].next_rec)
+			wpq_push(pq, wpytorches[i].next_rec->ts, env.ringbuf_cnt + env.cuda_cnt + wpytrace_cnt + i);
 	}
 
 	while (!wpq_empty(pq)) {
@@ -910,27 +951,50 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 				wpq_replace_min(pq, wcuda->next_rec->ts, widx);
 			else
 				wpq_pop(pq);
-		} else {
+		} else if (widx < env.ringbuf_cnt + env.cuda_cnt + wpytrace_cnt) {
 			int pidx = widx - env.ringbuf_cnt - env.cuda_cnt;
 
-			struct wpytrace_state *wpf = &wpytraces[pidx];
-			const struct wpytrace_event *r = wpf->next_rec;
-			struct pytrace_tracee *pf = &env.pytraces[wpf->tracee_idx];
+			struct wpytrace_state *wpy = &wpytraces[pidx];
+			const struct wpytrace_event *r = wpy->next_rec;
+			struct pytrace_tracee *pf = &env.pytraces[wpy->tracee_idx];
 
-			wevent_sz = persist_pytrace_event(&ps, r, &wevent_buf, wpf->dump_hdr,
+			wevent_sz = persist_pytrace_event(&ps, r, &wevent_buf,
 							 pf->pid, pf->ns_pid, pf->proc_name,
-							 wpf->code_map, wpf->code_map_cnt,
-							 wpf->strs);
+							 wpy->code_map, wpy->code_map_cnt, wpy->strs);
 			if (wevent_sz < 0) {
 				eprintf("Failed to convert pytrace event for tracee %s: %d\n", pytrace_str(pf), wevent_sz);
 				return wevent_sz;
 			}
 
-			wpf->rec_idx++;
-			wpf->next_rec = wpf->rec_idx < wpf->rec_cnt ? wpf->recs[wpf->rec_idx] : NULL;
+			wpy->rec_idx++;
+			wpy->next_rec = wpy->rec_idx < wpy->rec_cnt ? wpy->recs[wpy->rec_idx] : NULL;
 
-			if (wpf->next_rec)
-				wpq_replace_min(pq, wpf->next_rec->ts, widx);
+			if (wpy->next_rec)
+				wpq_replace_min(pq, wpy->next_rec->ts, widx);
+			else
+				wpq_pop(pq);
+
+			if (wevent_sz == 0)
+				continue;
+		} else {
+			int tidx = widx - env.ringbuf_cnt - env.cuda_cnt - wpytrace_cnt;
+
+			struct wpytorch_state *wtorch = &wpytorches[tidx];
+			const struct wpytorch_event *r = wtorch->next_rec;
+			struct pytrace_tracee *pf = &env.pytraces[wtorch->tracee_idx];
+
+			wevent_sz = persist_pytorch_event(&ps, r, &wevent_buf,
+							  pf->pid, pf->ns_pid, pf->proc_name, wtorch->strs);
+			if (wevent_sz < 0) {
+				eprintf("Failed to convert pytorch event for tracee %s: %d\n", pytrace_str(pf), wevent_sz);
+				return wevent_sz;
+			}
+
+			wtorch->rec_idx++;
+			wtorch->next_rec = wtorch->rec_idx < wtorch->rec_cnt ? wtorch->recs[wtorch->rec_idx] : NULL;
+
+			if (wtorch->next_rec)
+				wpq_replace_min(pq, wtorch->next_rec->ts, widx);
 			else
 				wpq_pop(pq);
 
@@ -970,11 +1034,15 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 				struct cuda_tracee *cuda = &env.cudas[cidx];
 				eprintf("Failed to fwrite() event from CUDA tracee %s: %d\n",
 					cuda_str(cuda), err);
-			} else {
+			} else if (widx < env.ringbuf_cnt + env.cuda_cnt + wpytrace_cnt) {
 				int pidx = widx - env.ringbuf_cnt - env.cuda_cnt;
-				struct wpytrace_state *wpf = &wpytraces[pidx];
-				struct pytrace_tracee *pf = &env.pytraces[wpf->tracee_idx];
+				struct pytrace_tracee *pf = &env.pytraces[wpytraces[pidx].tracee_idx];
 				eprintf("Failed to fwrite() event from pytrace tracee %s: %d\n",
+					pytrace_str(pf), err);
+			} else {
+				int tidx = widx - env.ringbuf_cnt - env.cuda_cnt - wpytrace_cnt;
+				struct pytrace_tracee *pf = &env.pytraces[wpytorches[tidx].tracee_idx];
+				eprintf("Failed to fwrite() event from pytorch tracee %s: %d\n",
 					pytrace_str(pf), err);
 			}
 			return err;
@@ -1028,14 +1096,24 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 
 	/* Cleanup pytrace and torch dumps */
 	for (int i = 0; i < wpytrace_cnt; i++) {
-		struct wpytrace_state *wpf = &wpytraces[i];
+		struct wpytrace_state *wpy = &wpytraces[i];
 
-		if (wpf->dump_hdr)
-			munmap(wpf->dump_hdr, wpf->dump_sz);
+		if (wpy->dump_hdr)
+			munmap(wpy->dump_hdr, wpy->dump_sz);
 
-		free(wpf->recs);
-		wpf->dump_hdr = NULL;
-		wpf->dump_sz = 0;
+		free(wpy->recs);
+		wpy->dump_hdr = NULL;
+		wpy->dump_sz = 0;
+	}
+	for (int i = 0; i < wpytorch_cnt; i++) {
+		struct wpytorch_state *wtorch = &wpytorches[i];
+
+		if (wtorch->dump_hdr)
+			munmap(wtorch->dump_hdr, wtorch->dump_sz);
+
+		free(wtorch->recs);
+		wtorch->dump_hdr = NULL;
+		wtorch->dump_sz = 0;
 	}
 	for (int i = 0; i < env.py_cnt; i++) {
 		struct pytrace_tracee *pf = &env.pytraces[i];
@@ -1054,6 +1132,7 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 		zclose(pf->pytorch_dump_fd);
 	}
 	free(wpytraces);
+	free(wpytorches);
 
 	/*
 	 * Collect extras (persisted capture-time filters);

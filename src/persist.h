@@ -7,6 +7,7 @@
 #include "wprof.h"
 #include "cuda_data.h"
 #include "pytrace_data.h"
+#include "pytorch_data.h"
 #include "wevent.h"
 #include "pmu.h"
 
@@ -50,8 +51,10 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 int persist_cuda_event(struct persist_state *ps, const struct wcuda_event *e, struct wevent *dst,
 		       int host_pid, const char *proc_name, const char *cuda_strs);
 int persist_pytrace_event(struct persist_state *ps, const struct wpytrace_event *e, struct wevent *dst,
-			 const struct wpytrace_data_hdr *hdr, int host_pid, int ns_pid, const char *proc_name,
+			 int host_pid, int ns_pid, const char *proc_name,
 			 const struct wpytrace_code_entry *code_map, u64 code_map_cnt,
 			 const char *pytrace_strs);
+int persist_pytorch_event(struct persist_state *ps, const struct wpytorch_event *e, struct wevent *dst,
+			  int host_pid, int ns_pid, const char *proc_name, const char *strs);
 
 #endif /* __PERSIST_H_ */
