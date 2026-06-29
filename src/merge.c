@@ -546,7 +546,8 @@ static void finalize_stats(struct wprof_stats *s)
 	nivcsw[0] = ru.ru_nivcsw;
 }
 
-int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
+int wprof_persist_data(const char *workdir_name, struct worker_state *workers,
+		       struct wppq *fr_pq, u64 sess_min_ts, u64 sess_max_ts)
 {
 	struct persist_state ps;
 	int err;
@@ -578,6 +579,20 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 			w->dump_mem = NULL;
 			return err;
 		}
+	}
+
+	/*
+	 * Drain the flight-recorder's retained chunks into per-worker buckets,
+	 * chained intrusively via c->next. Each worker's events then come from
+	 * its current chunk PLUS these completed ones. Non-flightrec passes a
+	 * NULL PQ, so fr_lists stays all-NULL and merge behaves as before.
+	 */
+	struct fr_chunk **fr_lists = calloc(env.ringbuf_cnt, sizeof(*fr_lists));
+	while (fr_pq && !wppq_empty(fr_pq)) {
+		struct fr_chunk *c = wppq_pop(fr_pq);
+
+		c->next = fr_lists[c->worker_idx];
+		fr_lists[c->worker_idx] = c;
 	}
 
 	/* Collect and symbolize stack traces, dump to separate file */
@@ -665,9 +680,15 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 		 * current chunk is mmap()ed here, so rb_handled_cnt over-counts (it
 		 * spans handed-off chunks too). Without rotation the two are equal,
 		 * so non-flightrec output is unchanged.
+		 *
+		 * With flight-recorder, also fold in the completed chunks the FR
+		 * thread retained for this worker; size recs[] by the summed
+		 * per-chunk event_cnt.
 		 */
 		wmerge->rec_idx = 0;
 		wmerge->rec_cnt = w->cur_chunk->event_cnt;
+		for (struct fr_chunk *c = fr_lists[i]; c; c = c->next)
+			wmerge->rec_cnt += c->event_cnt;
 		wmerge->recs = calloc(wmerge->rec_cnt, sizeof(*wmerge->recs));
 
 		const struct bpf_event_record *rec;
@@ -676,6 +697,35 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 			wmerge->recs[idx++] = (struct wrust_ts_ptr){ .ts = rec->e->ts, .ptr = rec->e };
 		}
 
+		/*
+		 * Completed chunks are headerless raw event streams, same format as
+		 * the current chunk. mmap each read-only and read its events; keep
+		 * the mapping alive (c->mmap) because recs[].ptr points into it --
+		 * the merge loop below dereferences those pointers. Unmapped in the
+		 * cleanup loop.
+		 */
+		for (struct fr_chunk *c = fr_lists[i]; c; c = c->next) {
+			int fd = open(c->path, O_RDONLY);
+			if (fd < 0) {
+				err = -errno;
+				eprintf("Failed to open flight-recorder chunk '%s': %d\n", c->path, err);
+				return err;
+			}
+
+			c->mmap = mmap(NULL, c->byte_sz, PROT_READ, MAP_SHARED, fd, 0);
+			close(fd);
+			if (c->mmap == MAP_FAILED) {
+				err = -errno;
+				eprintf("Failed to mmap flight-recorder chunk '%s': %d\n", c->path, err);
+				c->mmap = NULL;
+				return err;
+			}
+
+			for_each_bpf_event(rec, c->mmap, c->byte_sz)
+				wmerge->recs[idx++] = (struct wrust_ts_ptr){ .ts = rec->e->ts, .ptr = rec->e };
+		}
+
+		/* chunks are NOT time-disjoint, so sort the combined stream */
 		wrust_sort_events_by_ts(wmerge->recs, wmerge->rec_cnt);
 		wmerge->next_rec = wmerge->rec_cnt > 0 ? &wmerge->recs[0] : NULL;
 	}
@@ -898,6 +948,24 @@ skip_pytorch:
 			struct wmerge_state *wmerge = &wmerges[widx];
 			const struct wprof_event *r = wmerge->next_rec->ptr;
 
+			/*
+			 * Clamp output to the session window [sess_min_ts, sess_max_ts]:
+			 * events outside it are skipped -- advance the cursor as usual
+			 * but without writing the record. For non-flight-recorder these
+			 * bounds equal the capture-time gate, so nothing is dropped.
+			 */
+			if ((sess_min_ts && ts_before(wmerge->next_rec->ts, sess_min_ts)) ||
+			    (sess_max_ts && ts_after(wmerge->next_rec->ts, sess_max_ts))) {
+				wmerge->rec_idx++;
+				wmerge->next_rec = wmerge->rec_idx < wmerge->rec_cnt ? &wmerge->recs[wmerge->rec_idx] : NULL;
+
+				if (wmerge->next_rec)
+					wpq_replace_min(pq, wmerge->next_rec->ts, widx);
+				else
+					wpq_pop(pq);
+				continue;
+			}
+
 			wevent_sz = persist_bpf_event(&ps, r, &wevent_buf);
 			if (wevent_sz < 0) {
 				eprintf("Failed to convert BPF event for RB #%d: %d\n", widx, wevent_sz);
@@ -1060,9 +1128,27 @@ skip_pytorch:
 		w->dump_mem = NULL;
 		w->dump_hdr = NULL;
 
+		/*
+		 * Release the consumed flight-recorder chunks: unmap (kept alive
+		 * for the merge loop), unlink honoring keep-workdir, then free. The
+		 * PQ is already empty (all popped above), so fr_teardown's later
+		 * drain is a no-op.
+		 */
+		struct fr_chunk *next;
+		for (struct fr_chunk *c = fr_lists[i]; c; c = next) {
+			next = c->next;
+			if (c->mmap)
+				munmap(c->mmap, c->byte_sz);
+			if (!env.keep_workdir)
+				unlink(c->path);
+			free(c->path);
+			free(c);
+		}
+
 		free(wmerge->recs);
 	}
 	free(wmerges);
+	free(fr_lists);
 
 	/* Cleanup CUDA dumps */
 	for (int i = 0; i < wcuda_cnt; i++) {

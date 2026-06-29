@@ -196,6 +196,7 @@ struct fr_state {
 	u64 rec_max_ts;			/* max end_ts over completed chunks */
 	u64 rec_min_ts;			/* window floor: max end_ts of evicted chunks */
 	pthread_t thread;
+	bool joined;			/* thread already joined; fr_join() is then a no-op */
 };
 
 static struct fr_state *fr;
@@ -265,6 +266,24 @@ static void *fr_worker(void *ctx)
 }
 
 /*
+ * Stop and join the flight-recorder thread, leaving the PQ and its chunks
+ * intact for a consumer (merge). Idempotent: a no-op when `fr` is NULL or the
+ * thread was already joined.
+ */
+static void fr_join(void)
+{
+	if (!fr || fr->joined)
+		return;
+
+	pthread_mutex_lock(&fr->lock);
+	fr->stopping = true;
+	pthread_cond_signal(&fr->cond);
+	pthread_mutex_unlock(&fr->lock);
+	pthread_join(fr->thread, NULL);
+	fr->joined = true;
+}
+
+/*
  * Stop the flight-recorder thread, drain and free the PQ, and free `fr`.
  * Idempotent: a no-op when `fr` is NULL, so it's safe on every cleanup path.
  */
@@ -273,15 +292,13 @@ static void fr_teardown(void)
 	if (!fr)
 		return;
 
-	pthread_mutex_lock(&fr->lock);
-	fr->stopping = true;
-	pthread_cond_signal(&fr->cond);
-	pthread_mutex_unlock(&fr->lock);
-	pthread_join(fr->thread, NULL);
+	fr_join();
 
 	/*
-	 * Nothing consumes the PQ yet; just release it (chunk files stay on disk
-	 * for keep-workdir). A later change hands the PQ to merge instead.
+	 * Free whatever chunks merge didn't consume (e.g. the error path, where
+	 * merge never ran). On the success path merge has already drained the PQ
+	 * to empty, so this loop is a no-op. Chunk files stay on disk; the error
+	 * path deletes the whole workdir afterwards unless keep-workdir is set.
 	 */
 	while (!wppq_empty(fr->pq)) {
 		struct fr_chunk *c = wppq_pop(fr->pq);
@@ -2553,8 +2570,12 @@ int main(int argc, char **argv)
 	wprintf("Draining...\n");
 	drain_bpf(&bpf_state, num_cpus);
 
-	/* All event production has stopped; drain and tear down the FR thread. */
-	fr_teardown();
+	/*
+	 * All event production has stopped; join the FR thread but keep its PQ:
+	 * merge consumes the retained chunks below. The PQ + `fr` are freed by
+	 * fr_teardown() on the cleanup fall-through (its join is then a no-op).
+	 */
+	fr_join();
 
 	if (env.capture_pystacks && bpf_state.skel) {
 		err = pysym_init(bpf_map__fd(bpf_state.skel->maps.pystacks_symbols),
@@ -2587,7 +2608,24 @@ int main(int argc, char **argv)
 		env.capture_pytorch = false;
 	}
 
-	err = wprof_persist_data(workdir_name, workers);
+	/*
+	 * For flight-recorder, the consistent window starts at the recording
+	 * floor (the newest evicted chunk's end_ts) and ends at the stop time.
+	 * Re-anchor the recorded window start/length to [floor, stop] so the
+	 * header, tsidx, and wallclock conversions all reflect the retained
+	 * window rather than the full run. Capture is over, so mutating these is
+	 * safe. Merge then drops everything below the floor.
+	 */
+	if (env.flightrec && fr->rec_min_ts) {
+		env.ktime_start_ns = fr->rec_min_ts;
+		env.realtime_start_ns = ktime_to_realtime_ns(fr->rec_min_ts);
+		env.sess_start_ts = fr->rec_min_ts;
+		env.duration_ns = env.sess_end_ts - fr->rec_min_ts;
+	}
+
+	err = wprof_persist_data(workdir_name, workers,
+				 env.flightrec ? fr->pq : NULL,
+				 env.sess_start_ts, env.sess_end_ts);
 	if (err) {
 		eprintf("Failed to finalize data dump: %d\n", err);
 		goto cleanup;

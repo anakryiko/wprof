@@ -331,6 +331,7 @@ struct fr_chunk {
 	int worker_idx;
 	int seq;
 	struct fr_chunk *next;   /* link for the intrusive handoff list */
+	void *mmap;
 };
 
 struct worker_state {

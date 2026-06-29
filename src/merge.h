@@ -5,8 +5,11 @@
 
 #include "env.h"
 
+struct wppq;
+
 int wprof_init_data(FILE *dump);
 int wprof_load_data_dump(struct worker_state *w);
-int wprof_persist_data(const char *workdir_name, struct worker_state *workers);
+int wprof_persist_data(const char *workdir_name, struct worker_state *workers,
+		       struct wppq *fr_pq, u64 sess_min_ts, u64 sess_max_ts);
 
 #endif /* __MERGE_H_ */
