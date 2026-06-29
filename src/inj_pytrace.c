@@ -197,8 +197,10 @@ static u32 pytrace_cache_code(u64 code_key, PyCodeObject *code)
 
 	idx = pytrace_code_cnt;
 	pytrace_code_keys[idx] = code_key;
-	pytrace_code_entries[idx].func_name_off = strset__add_str(pytrace_dump_strs, func_name);
-	pytrace_code_entries[idx].file_name_off = strset__add_str(pytrace_dump_strs, file_name);
+	int func_off = strset__add_str(pytrace_dump_strs, func_name);
+	int file_off = strset__add_str(pytrace_dump_strs, file_name);
+	pytrace_code_entries[idx].func_name_off = func_off < 0 ? 0 : func_off;
+	pytrace_code_entries[idx].file_name_off = file_off < 0 ? 0 : file_off;
 	pytrace_code_entries[idx].lineno = lineno;
 	pytrace_code_cnt++;
 
