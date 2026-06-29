@@ -610,14 +610,14 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 		pmu_vals_dump = fopen_buffered(pmu_vals_path, "w+");
 		if (!pmu_vals_dump) {
 			err = -errno;
-			eprintf("Failed to create PMU values dump file '%s': %d\n", pmu_vals_path, err);
+			eprintf("Failed to create PMU values dump file '%s': %s\n", pmu_vals_path, errstr(err));
 			return err;
 		}
 		/* write null entry (index 0 reserved) */
 		u64 zeros[MAX_REAL_PMU_COUNTERS] = {};
 		if (fwrite(zeros, env.pmu_real_cnt * sizeof(u64), 1, pmu_vals_dump) != 1) {
 			err = -errno;
-			eprintf("Failed to write null PMU values entry: %d\n", err);
+			eprintf("Failed to write null PMU values entry: %s\n", errstr(err));
 			return err;
 		}
 		ps.pmu_vals.dump = pmu_vals_dump;
@@ -1137,7 +1137,7 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 	if (pmu_def_cnt > 0 && fwrite(ps.pmu_defs, sizeof(struct wevent_pmu_def),
 				      pmu_def_cnt, data_dump) != pmu_def_cnt) {
 		err = -errno;
-		eprintf("Failed to fwrite() PMU definitions: %d\n", err);
+		eprintf("Failed to fwrite() PMU definitions: %s\n", errstr(err));
 		return err;
 	}
 
@@ -1149,7 +1149,7 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 		file_pad(data_dump, 8);
 		err = file_splice_into(pmu_vals_dump, data_dump, &pmu_vals_off, &pmu_vals_sz);
 		if (err) {
-			eprintf("Failed to merge PMU values into final dump: %d\n", err);
+			eprintf("Failed to merge PMU values into final dump: %s\n", errstr(err));
 			return err;
 		}
 		pmu_vals_off -= sizeof(struct wprof_data_hdr);

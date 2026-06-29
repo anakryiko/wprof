@@ -166,7 +166,7 @@ int persist_pmu_vals_id(struct persist_state *ps, const u64 *vals)
 	size_t sz = ps->pmu_vals.real_pmu_cnt * sizeof(u64);
 
 	if (fwrite(vals, sz, 1, ps->pmu_vals.dump) != 1) {
-		eprintf("Failed to write PMU values: %d\n", -errno);
+		eprintf("Failed to write PMU values: %s\n", errstr(-errno));
 		exit(1);
 	}
 	ps->pmu_vals.count += 1;
