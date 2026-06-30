@@ -2311,6 +2311,12 @@ int main(int argc, char **argv)
 			*flag = f->default_val;
 	}
 
+	if (env.capture_pystacks && env.requested_stack_traces == ST_NONE) {
+		eprintf("-f py-stacks requires stack capture; enable it with -S (e.g. -S timer).\n");
+		err = -EINVAL;
+		goto cleanup;
+	}
+
 	/* create workdir specific to this wprof run */
 	struct timespec ts_now;
 	struct tm *tm_now;
