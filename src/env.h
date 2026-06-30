@@ -8,7 +8,6 @@
 #include "wpb.h"
 #include "wprof.h"
 #include "data.h"
-#include "cuda.h"
 #include "pytrace.h"
 #include "requests.h"
 #include "utrace_cfg.h"
@@ -98,6 +97,7 @@ struct sess_ctl {
 struct wprof_bpf;
 struct req_list_cfg;
 struct ksyms;
+struct injectee;
 
 struct env {
 	bool verbose;
@@ -225,11 +225,6 @@ struct env {
 	int cuda_pid_cnt;
 	enum cuda_discover_strategy cuda_discovery;
 
-	struct cuda_tracee *cudas;
-	int cuda_cnt;
-	bool cudas_deactivated;
-	bool cudas_retracted;
-
 	/* EXPERIMENTAL (Python stacks) */
 	int *pystacks_pids;
 	int pystacks_pid_cnt;
@@ -245,10 +240,11 @@ struct env {
 	int pytorch_pid_cnt;
 	enum pytrace_discover_strategy pytorch_discovery;
 
-	struct pytrace_tracee *pytraces;
-	int py_cnt;
-	bool pytraces_deactivated;
-	bool pytraces_retracted;
+	/* unified injection registry: one injectee per PID, shared across features */
+	struct injectee *injectees;
+	int injectee_cnt;
+	bool injectees_deactivated;
+	bool injectees_retracted;
 
 	/* nvidia-smi PID discovery (lazy, shared across features) */
 	int *nv_smi_pids;

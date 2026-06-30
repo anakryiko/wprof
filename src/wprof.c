@@ -46,10 +46,10 @@
 #include "topology.h"
 #include "proc.h"
 #include "requests.h"
-#include "cuda.h"
 #include "cuda_data.h"
 #include "pytrace.h"
 #include "pytrace_data.h"
+#include "injmgr.h"
 #include "bpf_utils.h"
 #include "elf_utils.h"
 #include "sys.h"
@@ -312,12 +312,12 @@ skip_rusage:
 		u64 state = wstat(s, WSTAT_CUDA_STATE, 1 + i);
 		const char *name = wevent_str(env.data_hdr, wstat(s, WSTAT_CUDA_NAME, 1 + i));
 
-		if (state == TRACEE_IGNORED)
+		if (state == INJECTEE_IGNORED)
 			continue;
 
-		if (state != TRACEE_INACTIVE) {
+		if (state != INJECTEE_INACTIVE) {
 			eprintf("!!! CUDA tracee #%d (%s) encountered problem. Last state: %s\n",
-				i, name, cuda_tracee_state_str(state));
+				i, name, injectee_state_str(state));
 			continue;
 		}
 
@@ -341,9 +341,9 @@ skip_rusage:
 		u64 state = wstat(s, WSTAT_PYTRACE_STATE, 1 + i);
 		const char *name = wevent_str(env.data_hdr, wstat(s, WSTAT_PYTRACE_NAME, 1 + i));
 
-		if (state != TRACEE_INACTIVE && state != TRACEE_SHUTDOWN_TIMEOUT) {
+		if (state != INJECTEE_INACTIVE && state != INJECTEE_SHUTDOWN_TIMEOUT) {
 			eprintf("!!! Python tracee #%d (%s) encountered problem. Last state: %s\n",
-				i, name, cuda_tracee_state_str(state));
+				i, name, injectee_state_str(state));
 			continue;
 		}
 		if (env.verbose || env.emit_stats) {
@@ -723,24 +723,19 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 		env.capture_requests = false;
 	}
 
-	if (env.cuda_pid_cnt > 0 || env.cuda_discovery) {
-		err = cuda_trace_setup(workdir_fd);
-		if (err) {
-			eprintf("CUDA trace setup failed: %d\n", err);
-			return err;
-		}
-		if (env.requested_stack_traces & ST_CUDA)
-			bpf_program__set_autoload(skel->progs.wprof_cuda_call, true);
-	}
+	bool want_cuda = (env.cuda_pid_cnt > 0 || env.cuda_discovery);
+	bool want_python = ((env.capture_pytrace == TRUE || env.capture_pytorch == TRUE) &&
+			    (env.pytrace_pid_cnt > 0 || env.pytorch_pid_cnt > 0 ||
+			     env.pytrace_discovery || env.pytorch_discovery));
 
-	if ((env.capture_pytrace == TRUE || env.capture_pytorch == TRUE) &&
-	    (env.pytrace_pid_cnt > 0 || env.pytorch_pid_cnt > 0 ||
-	     env.pytrace_discovery || env.pytorch_discovery)) {
-		err = pytrace_trace_setup(workdir_fd);
+	if (want_cuda || want_python) {
+		err = injmgr_setup(workdir_fd);
 		if (err) {
-			eprintf("Python trace setup failed: %d\n", err);
+			eprintf("Trace injection setup failed: %d\n", err);
 			return err;
 		}
+		if (want_cuda && (env.requested_stack_traces & ST_CUDA))
+			bpf_program__set_autoload(skel->progs.wprof_cuda_call, true);
 	}
 
 	if (env.capture_scx) {
@@ -1431,20 +1426,11 @@ static int do_prepare(struct bpf_state *bpf, struct worker_state *workers, int n
 		return err;
 	}
 
-	if (env.cuda_cnt > 0) {
-		wprintf("Preparing CUDA tracees...\n");
-		err = cuda_trace_prepare(workdir_fd, sess_timeout_ms);
+	if (env.injectee_cnt > 0) {
+		wprintf("Preparing trace injectees...\n");
+		err = injmgr_prepare(workdir_fd, sess_timeout_ms);
 		if (err) {
-			eprintf("Failed to prepare CUDA tracing sessions: %d\n", err);
-			return err;
-		}
-	}
-
-	if (env.py_cnt > 0) {
-		wprintf("Preparing Python tracees...\n");
-		err = pytrace_trace_prepare(workdir_fd, sess_timeout_ms);
-		if (err) {
-			eprintf("Failed to prepare Python tracing sessions: %d\n", err);
+			eprintf("Failed to prepare trace injection sessions: %d\n", err);
 			return err;
 		}
 	}
@@ -1467,30 +1453,21 @@ static int do_activate(struct bpf_state *bpf)
 	bpf->skel->bss->session_start_ts = env.sess_start_ts;
 	bpf->skel->bss->session_end_ts = env.sess_end_ts;
 
-	if (env.cuda_cnt > 0) {
-		wprintf("Activating CUDA tracees...\n");
-		err = cuda_trace_activate(env.sess_start_ts, env.sess_end_ts);
+	if (env.injectee_cnt > 0) {
+		wprintf("Activating trace injectees...\n");
+		err = injmgr_activate(env.sess_start_ts, env.sess_end_ts);
 		if (err) {
-			eprintf("Failed to activate CUDA tracing sessions: %d\n", err);
+			eprintf("Failed to activate trace injection sessions: %d\n", err);
 			return err;
 		}
 
 		if (env.requested_stack_traces & ST_CUDA) {
 			wprintf("Attaching CUDA USDTs...\n");
-			err = cuda_trace_attach_usdts(bpf, bpf->skel->progs.wprof_cuda_call);
+			err = injmgr_attach_usdts(bpf, bpf->skel->progs.wprof_cuda_call);
 			if (err) {
 				eprintf("Failed to attach CUDA tracking USDTs: %d\n", err);
 				return err;
 			}
-		}
-	}
-
-	if (env.py_cnt > 0) {
-		wprintf("Activating Python tracees...\n");
-		err = pytrace_trace_activate(env.sess_start_ts, env.sess_end_ts);
-		if (err) {
-			eprintf("Failed to activate Python tracing sessions: %d\n", err);
-			return err;
 		}
 	}
 
@@ -2306,18 +2283,15 @@ int main(int argc, char **argv)
 	wprintf("Stopping...\n");
 	detach_bpf(&bpf_state, num_cpus);
 
-	if (env.cuda_cnt > 0) {
-		cuda_trace_deactivate();
+	if (env.injectee_cnt > 0) {
+		injmgr_deactivate();
 		/*
 		 * If we capture CUDA stack traces, we want libwprofinj.so to be loaded during
 		 * stack symbolization, so we'll perform final retraction later.
 		 */
 		if (!(env.requested_stack_traces & ST_CUDA))
-			cuda_trace_retract();
+			injmgr_retract();
 	}
-
-	if (env.py_cnt > 0)
-		pytrace_trace_deactivate();
 
 	wprintf("Draining...\n");
 	drain_bpf(&bpf_state, num_cpus);
@@ -2331,13 +2305,24 @@ int main(int argc, char **argv)
 		}
 	}
 
-	if (env.cuda_cnt == 0) {
-		/* ensure we don't record CUDA data as available in wprof.data */
+	bool any_python = false;
+	u64 cuda_rec_cnt = 0;
+	for (int i = 0; i < env.injectee_cnt; i++) {
+		struct injectee *inj = &env.injectees[i];
+
+		if (inj->detect_feats & (INJ_FEAT_PYTRACE | INJ_FEAT_PYTORCH))
+			any_python = true;
+		if (inj->ctx)
+			cuda_rec_cnt += inj->ctx->cupti_rec_cnt;
+	}
+
+	if (cuda_rec_cnt == 0) {
+		/* don't claim CUDA capture if no CUDA records were collected (e.g. CUPTI busy) */
 		env.requested_stack_traces &= ~ST_CUDA;
 		env.capture_cuda = false;
 	}
 
-	if (env.py_cnt == 0) {
+	if (!any_python) {
 		env.capture_pytrace = false;
 		env.capture_pytorch = false;
 	}
@@ -2351,11 +2336,8 @@ int main(int argc, char **argv)
 	pysym_free();
 
 	/* we delayed ptrace retraction to symbolize libwprofinj.so stacks */
-	if (env.requested_stack_traces && env.cuda_cnt > 0)
-		cuda_trace_retract();
-
-	if (env.py_cnt > 0)
-		pytrace_trace_retract();
+	if ((env.requested_stack_traces & ST_CUDA) && env.injectee_cnt > 0)
+		injmgr_retract();
 
 	{
 		fflush(workers[0].dump);
@@ -2433,10 +2415,8 @@ skip_data_collection:
 	print_stats(env.stats, err);
 
 cleanup:
-	if (env.cuda_cnt > 0)
-		cuda_trace_teardown();
-	if (env.py_cnt > 0)
-		pytrace_trace_teardown();
+	if (env.injectee_cnt > 0)
+		injmgr_teardown();
 	cleanup_workers(workers, worker_cnt);
 	detach_bpf(&bpf_state, num_cpus);
 	drain_bpf(&bpf_state, num_cpus);
