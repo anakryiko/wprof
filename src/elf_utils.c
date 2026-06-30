@@ -27,6 +27,16 @@ struct elf_fd {
 	int fd;
 };
 
+/*
+ * Initialize libelf up front, on the main thread. libelf's selected version is
+ * a process-global; pre-setting it here keeps later concurrent ELF parsing from
+ * racing on it (each elf_open() sets it too, but always to the same value).
+ */
+void elf_init(void)
+{
+	elf_version(EV_CURRENT);
+}
+
 static int elf_open(const char *binary_path, struct elf_fd *elf_fd)
 {
 	int fd;

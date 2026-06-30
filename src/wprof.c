@@ -1699,6 +1699,7 @@ int main(int argc, char **argv)
 
 	env.actual_start_ts = ktime_now_ns();
 	calibrate_ktime(); /* establish the ktime<->realtime mapping up front, so it is always available */
+	elf_init(); /* set libelf's version up front so concurrent ELF parsing can't race on it */
 	env.sess_ctl.sig_efd = -1; /* so an early SIGINT (before the eventfd exists) is a no-op */
 
 	/* Parse command line arguments */
