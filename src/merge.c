@@ -754,7 +754,7 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 			eprintf("PyTrace tracee #%d (%s) timed out its shutdown, but we'll try to collect its data nevertheless!..\n",
 				i, pytrace_str(pf));
 		} else {
-			eprintf("Skipping pytrace tracing data from tracee #%d (%s) as it had problems...\n",
+			eprintf("Skipping PyTrace tracing data from tracee #%d (%s) as it had problems...\n",
 				i, pytrace_str(pf));
 			continue;
 		}
@@ -765,7 +765,7 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 			goto skip_pytrace;
 		if (fstat(pf->pytrace_dump_fd, &st) < 0) {
 			err = -errno;
-			eprintf("Failed to fstat() pytrace data dump for tracee %s at '%s': %d\n",
+			eprintf("Failed to fstat() PyTrace data dump for tracee %s at '%s': %d\n",
 				pytrace_str(pf), pf->dump_path, err);
 			goto skip_pytrace;
 		}
@@ -773,7 +773,7 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 		wpy->dump_hdr = mmap(NULL, wpy->dump_sz, PROT_READ | PROT_WRITE, MAP_SHARED, pf->pytrace_dump_fd, 0);
 		if (wpy->dump_hdr == MAP_FAILED) {
 			err = -errno;
-			eprintf("Failed to mmap() pytrace data dump for tracee %s at '%s': %d\n",
+			eprintf("Failed to mmap() PyTrace data dump for tracee %s at '%s': %d\n",
 				pytrace_str(pf), pf->dump_path, err);
 			wpy->dump_hdr = NULL;
 			goto skip_pytrace;
@@ -804,7 +804,7 @@ skip_pytrace:
 
 		if (fstat(pf->pytorch_dump_fd, &st) < 0) {
 			err = -errno;
-			eprintf("Failed to fstat() pytorch data dump for tracee %s at '%s': %d\n",
+			eprintf("Failed to fstat() PyTorch data dump for tracee %s at '%s': %d\n",
 				pytrace_str(pf), pf->torch_dump_path, err);
 			goto skip_pytorch;
 		}
@@ -812,7 +812,7 @@ skip_pytrace:
 		wtorch->dump_hdr = mmap(NULL, wtorch->dump_sz, PROT_READ | PROT_WRITE, MAP_SHARED, pf->pytorch_dump_fd, 0);
 		if (wtorch->dump_hdr == MAP_FAILED) {
 			err = -errno;
-			eprintf("Failed to mmap() pytorch data dump for tracee %s at '%s': %d\n",
+			eprintf("Failed to mmap() PyTorch data dump for tracee %s at '%s': %d\n",
 				pytrace_str(pf), pf->torch_dump_path, err);
 			wtorch->dump_hdr = NULL;
 			goto skip_pytorch;
@@ -1005,12 +1005,12 @@ skip_pytorch:
 			} else if (widx < env.ringbuf_cnt + env.cuda_cnt + wpytrace_cnt) {
 				int pidx = widx - env.ringbuf_cnt - env.cuda_cnt;
 				struct pytrace_tracee *pf = &env.pytraces[wpytraces[pidx].tracee_idx];
-				eprintf("Failed to fwrite() event from pytrace tracee %s: %d\n",
+				eprintf("Failed to fwrite() event from PyTrace tracee %s: %d\n",
 					pytrace_str(pf), err);
 			} else {
 				int tidx = widx - env.ringbuf_cnt - env.cuda_cnt - wpytrace_cnt;
 				struct pytrace_tracee *pf = &env.pytraces[wpytorches[tidx].tracee_idx];
-				eprintf("Failed to fwrite() event from pytorch tracee %s: %d\n",
+				eprintf("Failed to fwrite() event from PyTorch tracee %s: %d\n",
 					pytrace_str(pf), err);
 			}
 			return err;
