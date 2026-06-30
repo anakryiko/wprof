@@ -673,7 +673,7 @@ void log_printf(int verbosity, const char *fmt, ...)
 	old_errno = errno;
 
 	struct timeval tv;
-	struct tm *tm;
+	struct tm tm;
 	char buf[4096];
 	size_t len;
 
@@ -683,9 +683,9 @@ void log_printf(int verbosity, const char *fmt, ...)
 		buf[0] = '\0';
 	} else {
 		gettimeofday(&tv, NULL);
-		tm = localtime(&tv.tv_sec);
+		localtime_r(&tv.tv_sec, &tm);
 		len = snprintf(buf, sizeof(buf) - 1, "%02d:%02d:%02d.%06ld ",
-			       tm->tm_hour, tm->tm_min, tm->tm_sec, tv.tv_usec);
+			       tm.tm_hour, tm.tm_min, tm.tm_sec, tv.tv_usec);
 	}
 
 	va_start(args, fmt);
