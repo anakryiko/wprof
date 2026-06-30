@@ -2614,18 +2614,34 @@ int main(int argc, char **argv)
 	}
 
 	/*
-	 * For flight-recorder, the consistent window starts at the recording
-	 * floor (the newest evicted chunk's end_ts) and ends at the stop time.
-	 * Re-anchor the recorded window start/length to [floor, stop] so the
-	 * header, tsidx, and wallclock conversions all reflect the retained
-	 * window rather than the full run. Capture is over, so mutating these is
-	 * safe. Merge then drops everything below the floor.
+	 * For flight-recorder, the consistent window ends at the stop time and
+	 * starts at the recording floor. rec_min_ts (the newest evicted chunk's
+	 * end_ts) is computed from completed chunks only, so it lags the newest
+	 * data still held in the current chunks; bound the time dimension here
+	 * instead, where sess_end_ts is the true stop, keeping exactly the last
+	 * fr_keep_time_ns. Take the later of the two so a binding size limit
+	 * (which evicts further) still wins. Re-anchor the recorded window
+	 * start/length to [floor, stop] so the header, tsidx, and wallclock
+	 * conversions all reflect the retained window rather than the full run.
+	 * Capture is over, so mutating these is safe. Merge drops everything
+	 * below the floor.
 	 */
-	if (env.flightrec && fr->rec_min_ts) {
-		env.ktime_start_ns = fr->rec_min_ts;
-		env.realtime_start_ns = ktime_to_realtime_ns(fr->rec_min_ts);
-		env.sess_start_ts = fr->rec_min_ts;
-		env.duration_ns = env.sess_end_ts - fr->rec_min_ts;
+	if (env.flightrec) {
+		u64 floor_ts = fr->rec_min_ts;
+		if (env.fr_keep_time_ns)
+			floor_ts = ts_max(floor_ts, env.sess_end_ts - env.fr_keep_time_ns);
+		/*
+		 * A window longer than the run would push the floor before
+		 * recording began; clamp up to the real start so we never report a
+		 * start earlier than the real one. No upper clamp is needed:
+		 * rec_min_ts and sess_end_ts - keep_time are both <= stop.
+		 */
+		floor_ts = ts_max(floor_ts, env.sess_start_ts);
+
+		env.ktime_start_ns = floor_ts;
+		env.realtime_start_ns = ktime_to_realtime_ns(floor_ts);
+		env.sess_start_ts = floor_ts;
+		env.duration_ns = env.sess_end_ts - floor_ts;
 	}
 
 	err = wprof_persist_data(workdir_name, workers,
