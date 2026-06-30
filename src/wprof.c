@@ -1653,7 +1653,10 @@ static int do_activate(struct bpf_state *bpf)
 {
 	int err;
 
-	wprintf("Running...\n");
+	if (env.flightrec)
+		wprintf("Running in flight recorder mode, press Ctrl-C to stop...\n");
+	else
+		wprintf("Running...\n");
 
 	env.ktime_start_ns = ktime_now_ns();
 	env.realtime_start_ns = ktime_to_realtime_ns(env.ktime_start_ns);
