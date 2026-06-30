@@ -43,6 +43,7 @@ ARCH ?= $(shell uname -m | sed 's/x86_64/x86/' \
 			 | sed 's/riscv64/riscv/' \
 			 | sed 's/loongarch64/loongarch/')
 VMLINUX := ../vmlinux.h/include/$(ARCH)/vmlinux.h
+
 # Build pystacks BPF code from strobelight-libs
 PYSTACKS_BPF_SRC := $(STROBELIGHT_LIBS_SRC)/strobelight/bpf_lib/python/pystacks/pystacks.bpf.c
 PYSTACKS_COMMON_DIR := $(STROBELIGHT_LIBS_SRC)/strobelight/bpf_lib/common
@@ -51,16 +52,19 @@ PYSTACKS_INCLUDES := -I$(STROBELIGHT_LIBS_SRC)
 PYSTACKS_CFLAGS := -DWPROF_PYSTACKS
 PYSTACKS_BPF_CFLAGS := -D__$(shell uname -m)__ -Dint8_t=s8
 
+BPF_CFLAGS := -g -Wall -O2 -target bpf -mcpu=v4 -D__TARGET_ARCH_$(ARCH)				\
+	      -fms-extensions -Wno-microsoft-anon-tag
+
 # Use our own libbpf API headers and Linux UAPI headers distributed with
 # libbpf to avoid dependency on system-wide headers, which could be missing or
 # outdated
-INCLUDES := -I$(OUTPUT) -I../include -I../libbpf/include/uapi				\
-	    -I../libbpf/include -I$(dir $(VMLINUX)) -I$(LIBBLAZESYM_INC) -I../usdt	\
+INCLUDES := -I$(OUTPUT) -I../include -I../libbpf/include/uapi					\
+	    -I../libbpf/include -I$(dir $(VMLINUX)) -I$(LIBBLAZESYM_INC) -I../usdt		\
 			$(PYSTACKS_INCLUDES)
 CFLAGS ?= -g -O$(if $(DEBUG),0,2) -Wall
-ALL_CFLAGS := $(CFLAGS) $(EXTRA_CFLAGS) -fno-omit-frame-pointer				\
-	      -Wno-c23-extensions -Wno-sign-compare -Wno-format-truncation		\
-	      $(if $(filter-out 0,$(LTO)),-flto=auto -ffat-lto-objects) $(PYSTACKS_CFLAGS)		\
+ALL_CFLAGS := $(CFLAGS) $(EXTRA_CFLAGS) -fno-omit-frame-pointer					\
+	      -Wno-c23-extensions -Wno-sign-compare -Wno-format-truncation			\
+	      $(if $(filter-out 0,$(LTO)),-flto=auto -ffat-lto-objects) $(PYSTACKS_CFLAGS)	\
 	      $(if $(DEBUG),-DDEBUG)
 ALL_LDFLAGS := $(LDFLAGS) $(EXTRA_LDFLAGS) -lrt -ldl -lpthread -lm
 
@@ -80,9 +84,9 @@ ifeq ($(V),1)
 	msg =
 else
 	Q = @
-	msg = @printf '  %-8s %s%s\n'					\
-		      "$(1)"						\
-		      "$(patsubst $(abspath $(OUTPUT))/%,%,$(2))"	\
+	msg = @printf '  %-8s %s%s\n'								\
+		      "$(1)"									\
+		      "$(patsubst $(abspath $(OUTPUT))/%,%,$(2))"				\
 		      "$(if $(3), $(3))";
 	MAKEFLAGS += --no-print-directory
 endif
@@ -107,19 +111,19 @@ $(OUTPUT) $(OUTPUT)/libbpf $(BPFTOOL_OUTPUT):
 $(LIBBPF_OBJ): $(wildcard $(LIBBPF_SRC)/*.[ch] $(LIBBPF_SRC)/Makefile) | $(OUTPUT)/libbpf
 	$(call msg,LIB,$@)
 	$(Q) [ -d ../libbpf/src ] || git submodule update --init --recursive
-	$(Q)$(MAKE) -C $(LIBBPF_SRC) BUILD_STATIC_ONLY=1		      \
-		    OBJDIR=$(dir $@)/libbpf DESTDIR=$(dir $@)		      \
-		    INCLUDEDIR= LIBDIR= UAPIDIR=			      \
-		    EXTRA_CFLAGS="-g -O$(if $(DEBUG),0,2) -Wno-sign-compare"  \
+	$(Q)$(MAKE) -C $(LIBBPF_SRC) BUILD_STATIC_ONLY=1					\
+		    OBJDIR=$(dir $@)/libbpf DESTDIR=$(dir $@)					\
+		    INCLUDEDIR= LIBDIR= UAPIDIR=						\
+		    EXTRA_CFLAGS="-g -O$(if $(DEBUG),0,2) -Wno-sign-compare"			\
 		    install
 
 # Build bpftool
 $(BPFTOOL): | $(BPFTOOL_OUTPUT)
 	$(call msg,BPFTOOL,$@)
 	$(Q) [ -d ../bpftool/src ] || git submodule update --init --recursive
-	$(Q)CFLAGS= EXTRA_CFLAGS="$(CFLAGS) -Wno-sign-compare" 			\
-		$(MAKE) ARCH= CROSS_COMPILE=					\
-			BPF_DIR=$(LIBBPF_SRC) OUTPUT=$(BPFTOOL_OUTPUT_ABS)/	\
+	$(Q)CFLAGS= EXTRA_CFLAGS="$(CFLAGS) -Wno-sign-compare" 					\
+		$(MAKE) ARCH= CROSS_COMPILE=							\
+			BPF_DIR=$(LIBBPF_SRC) OUTPUT=$(BPFTOOL_OUTPUT_ABS)/			\
 			-C $(BPFTOOL_SRC) bootstrap
 
 # Build blazesym. Enable xz (.gnu_debugdata/MiniDebugInfo) + zstd decompression
@@ -128,10 +132,10 @@ $(BPFTOOL): | $(BPFTOOL_OUTPUT)
 $(LIBBLAZESYM_SRC)/target/$(if $(BLAZESYM_DEBUG),debug,release)/libblazesym_c.a::
 	$(call msg,LIB,$@)
 	$(Q) [ -d ../blazesym/src ] || git submodule update --init --recursive
-	$(Q)cd $(LIBBLAZESYM_SRC) &&						\
-	    LZMA_API_STATIC=1 $(CARGO) build -q					\
-		--package=blazesym-c 						\
-		--features blazesym/xz,blazesym/zstd				\
+	$(Q)cd $(LIBBLAZESYM_SRC) &&								\
+	    LZMA_API_STATIC=1 $(CARGO) build -q							\
+		--package=blazesym-c 								\
+		--features blazesym/xz,blazesym/zstd						\
 		$(if $(BLAZESYM_DEBUG),,--release)
 
 $(LIBBLAZESYM_OBJ): $(LIBBLAZESYM_SRC)/target/$(if $(BLAZESYM_DEBUG),debug,release)/libblazesym_c.a | $(OUTPUT)
@@ -164,9 +168,7 @@ $(LIBWRUST_OBJ): $(LIBWRUST_SRC)/target/release/libwrust_c.a | $(OUTPUT)
 # Build BPF code
 $(OUTPUT)/%.bpf.o: %.bpf.c $(LIBBPF_OBJ) $(wildcard %.h) $(VMLINUX) | $(OUTPUT) $(BPFTOOL)
 	$(call msg,BPF,$@)
-	$(Q)$(CLANG) -g -Wall -O2 -target bpf -mcpu=v4 -D__TARGET_ARCH_$(ARCH)			\
-		     $(PYSTACKS_CFLAGS)								\
-		     $(INCLUDES) $(CLANG_BPF_SYS_INCLUDES)		      			\
+	$(Q)$(CLANG) $(BPF_CFLAGS) $(PYSTACKS_CFLAGS) $(INCLUDES) $(CLANG_BPF_SYS_INCLUDES)	\
 		     -c $(filter %.c,$^) -o $(patsubst %.bpf.o,%.tmp.bpf.o,$@)
 	$(Q)$(BPFTOOL) gen object $@ $(patsubst %.bpf.o,%.tmp.bpf.o,$@)
 
@@ -177,17 +179,13 @@ $(OUTPUT)/scx.bpf.o: wprof.h wprof.bpf.h
 # Compile strobelight-libs common BPF helpers
 $(OUTPUT)/sl_%.tmp.bpf.o: $(PYSTACKS_COMMON_DIR)/%.bpf.c $(LIBBPF_OBJ) $(VMLINUX) | $(OUTPUT) $(BPFTOOL)
 	$(call msg,BPF,$@)
-	$(Q)$(CLANG) -g -Wall -O2 -target bpf -mcpu=v4 -D__TARGET_ARCH_$(ARCH)			\
-		     $(PYSTACKS_BPF_CFLAGS)						\
-		     $(INCLUDES) $(PYSTACKS_INCLUDES) $(CLANG_BPF_SYS_INCLUDES)		\
+	$(Q)$(CLANG) $(BPF_CFLAGS) $(PYSTACKS_BPF_CFLAGS) $(INCLUDES) $(CLANG_BPF_SYS_INCLUDES)	\
 		     -c $< -o $@
 
 # Compile pystacks BPF
 $(OUTPUT)/sl_pystacks.tmp.bpf.o: $(PYSTACKS_BPF_SRC) $(LIBBPF_OBJ) $(VMLINUX) | $(OUTPUT) $(BPFTOOL)
 	$(call msg,BPF,$@)
-	$(Q)$(CLANG) -g -Wall -O2 -target bpf -mcpu=v4 -D__TARGET_ARCH_$(ARCH)			\
-		     $(PYSTACKS_BPF_CFLAGS)						\
-		     $(INCLUDES) $(PYSTACKS_INCLUDES) $(CLANG_BPF_SYS_INCLUDES)		\
+	$(Q)$(CLANG) $(BPF_CFLAGS) $(PYSTACKS_BPF_CFLAGS) $(INCLUDES) $(CLANG_BPF_SYS_INCLUDES)	\
 		     -c $< -o $@
 
 # Link pystacks + common BPF objects
@@ -214,7 +212,7 @@ WPROF_HDRS := wprof.h utils.h env.h protobuf.h data.h emit.h stacktrace.h topolo
 	      proc.h requests.h cuda.h inj_common.h inject.h sys.h elf_utils.h cuda_data.h 	\
 	      wprof_types.h demangle.h merge.h wevent.h persist.h				\
 	      pystacks.h pyoffsets.h pydisc.h pysym.h pyline.h pytrace.h pytrace_data.h		\
-	      utrace_cfg.h utrace.h strs.h blobset.h ksyms.h bpf_utils.h hashmap.h	\
+	      utrace_cfg.h utrace.h strs.h blobset.h ksyms.h bpf_utils.h hashmap.h		\
 	      wpb.h wrust.h
 WPROF_OBJS := $(patsubst %.c,$(OUTPUT)/%.o,$(WPROF_SRCS))
 
@@ -261,7 +259,7 @@ wprof: $(WPROF_HDRS) $(WPROF_OBJS)								\
 .PHONY: clean
 clean:
 	$(call msg,CLEAN)
-	$(Q)rm -rf $(OUTPUT)/*.o $(OUTPUT)/libwprofinj.* wprof $(LIBWPB_OBJ) $(LIBWRUST_OBJ) \
+	$(Q)rm -rf $(OUTPUT)/*.o $(OUTPUT)/libwprofinj.* wprof $(LIBWPB_OBJ) $(LIBWRUST_OBJ) 	\
 		$(LIBWPB_SRC)/target $(LIBWRUST_SRC)/target
 
 .PHONY: clean-all
