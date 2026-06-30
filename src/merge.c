@@ -114,38 +114,6 @@ int wprof_load_data_dump(struct worker_state *w)
 	return 0;
 }
 
-static int bpf_event_cmp(const void *a, const void *b)
-{
-	const struct bpf_event_record *x = a;
-	const struct bpf_event_record *y = b;
-
-	return ts_cmp(x->e->ts, y->e->ts);
-}
-
-static int wcuda_event_cmp(const void *a, const void *b)
-{
-	const struct wcuda_event *x = *(const struct wcuda_event **)a;
-	const struct wcuda_event *y = *(const struct wcuda_event **)b;
-
-	return ts_cmp(x->ts, y->ts);
-}
-
-static int wpytrace_event_cmp(const void *a, const void *b)
-{
-	const struct wpytrace_event *x = *(const struct wpytrace_event **)a;
-	const struct wpytrace_event *y = *(const struct wpytrace_event **)b;
-
-	return ts_cmp(x->ts, y->ts);
-}
-
-static int wpytorch_event_cmp(const void *a, const void *b)
-{
-	const struct wpytorch_event *x = *(const struct wpytorch_event **)a;
-	const struct wpytorch_event *y = *(const struct wpytorch_event **)b;
-
-	return ts_cmp(x->ts, y->ts);
-}
-
 /* arg is the kind-specific union payload: a stroff, bloboff, or on/off value. */
 static void add_extra(struct wprof_extra_param **extras, u64 *cnt,
 		      enum wprof_extra_param_kind kind, u32 arg)
@@ -657,8 +625,8 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 	u64 tsidx_cnt = 0, tsidx_cap = 0;
 	u64 tsidx_next_ts = env.ktime_start_ns;
 	struct wmerge_state {
-		struct bpf_event_record *recs;
-		const struct bpf_event_record *next_rec;
+		struct wrust_ts_ptr *recs;
+		const struct wrust_ts_ptr *next_rec;
 		u64 rec_cnt;
 		u64 rec_idx;
 	} *wmerges = calloc(env.ringbuf_cnt, sizeof(*wmerges));
@@ -678,10 +646,10 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 		const struct bpf_event_record *rec;
 		u64 idx = 0;
 		for_each_bpf_event(rec, data, data_sz) {
-			wmerge->recs[idx++] = *rec;
+			wmerge->recs[idx++] = (struct wrust_ts_ptr){ .ts = rec->e->ts, .ptr = rec->e };
 		}
 
-		qsort(wmerge->recs, wmerge->rec_cnt, sizeof(*wmerge->recs), bpf_event_cmp);
+		wrust_sort_events_by_ts(wmerge->recs, wmerge->rec_cnt);
 		wmerge->next_rec = wmerge->rec_cnt > 0 ? &wmerge->recs[0] : NULL;
 	}
 
@@ -690,8 +658,8 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 		struct wcuda_data_hdr *dump_hdr;
 		size_t dump_sz;
 		const char *strs;
-		const struct wcuda_event **recs;
-		const struct wcuda_event *next_rec;
+		struct wrust_ts_ptr *recs;
+		const struct wrust_ts_ptr *next_rec;
 		u64 rec_cnt;
 		u64 rec_idx;
 	} *wcudas = calloc(env.cuda_cnt, sizeof(*wcudas));
@@ -741,11 +709,11 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 		struct wcuda_event_record *rec;
 		u64 idx = 0;
 		wcuda_for_each_event(rec, wcuda->dump_hdr) {
-			wcuda->recs[idx++] = rec->e;
+			wcuda->recs[idx++] = (struct wrust_ts_ptr){ .ts = rec->e->ts, .ptr = rec->e };
 		}
 
-		qsort(wcuda->recs, wcuda->rec_cnt, sizeof(*wcuda->recs), wcuda_event_cmp);
-		wcuda->next_rec = wcuda->rec_cnt > 0 ? wcuda->recs[0] : NULL;
+		wrust_sort_events_by_ts(wcuda->recs, wcuda->rec_cnt);
+		wcuda->next_rec = wcuda->rec_cnt > 0 ? &wcuda->recs[0] : NULL;
 	}
 
 	/* Prepare per-process pytrace (Python call/return) event streams */
@@ -755,8 +723,8 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 		const char *strs;
 		struct wpytrace_code_entry *code_map;
 		u64 code_map_cnt;
-		const struct wpytrace_event **recs;
-		const struct wpytrace_event *next_rec;
+		struct wrust_ts_ptr *recs;
+		const struct wrust_ts_ptr *next_rec;
 		u64 rec_cnt;
 		u64 rec_idx;
 		int tracee_idx;		/* index into env.pytraces[] */
@@ -768,8 +736,8 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 		struct wpytorch_data_hdr *dump_hdr;
 		size_t dump_sz;
 		const char *strs;
-		const struct wpytorch_event **recs;
-		const struct wpytorch_event *next_rec;
+		struct wrust_ts_ptr *recs;
+		const struct wrust_ts_ptr *next_rec;
 		u64 rec_cnt;
 		u64 rec_idx;
 		int tracee_idx;		/* index into env.pytraces[] */
@@ -822,10 +790,10 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 
 		struct wpytrace_event_record *py_rec;
 		wpytrace_for_each_event(py_rec, wpy->dump_hdr)
-			wpy->recs[py_rec->idx] = py_rec->e;
+			wpy->recs[py_rec->idx] = (struct wrust_ts_ptr){ .ts = py_rec->e->ts, .ptr = py_rec->e };
 
-		qsort(wpy->recs, wpy->rec_cnt, sizeof(*wpy->recs), wpytrace_event_cmp);
-		wpy->next_rec = wpy->rec_cnt > 0 ? wpy->recs[0] : NULL;
+		wrust_sort_events_by_ts(wpy->recs, wpy->rec_cnt);
+		wpy->next_rec = wpy->rec_cnt > 0 ? &wpy->recs[0] : NULL;
 		wpytrace_cnt++;
 
 skip_pytrace:
@@ -858,10 +826,10 @@ skip_pytrace:
 
 		struct wpytorch_event_record *torch_rec;
 		wpytorch_for_each_event(torch_rec, wtorch->dump_hdr)
-			wtorch->recs[torch_rec->idx] = torch_rec->e;
+			wtorch->recs[torch_rec->idx] = (struct wrust_ts_ptr){ .ts = torch_rec->e->ts, .ptr = torch_rec->e };
 
-		qsort(wtorch->recs, wtorch->rec_cnt, sizeof(*wtorch->recs), wpytorch_event_cmp);
-		wtorch->next_rec = wtorch->rec_cnt > 0 ? wtorch->recs[0] : NULL;
+		wrust_sort_events_by_ts(wtorch->recs, wtorch->rec_cnt);
+		wtorch->next_rec = wtorch->rec_cnt > 0 ? &wtorch->recs[0] : NULL;
 		wpytorch_cnt++;
 skip_pytorch:
 		continue;
@@ -880,7 +848,7 @@ skip_pytorch:
 
 	for (int i = 0; i < env.ringbuf_cnt; i++) {
 		if (wmerges[i].next_rec)
-			wpq_push(pq, wmerges[i].next_rec->e->ts, i);
+			wpq_push(pq, wmerges[i].next_rec->ts, i);
 	}
 	for (int i = 0; i < env.cuda_cnt; i++) {
 		if (wcudas[i].next_rec)
@@ -904,9 +872,9 @@ skip_pytorch:
 		int wevent_sz;
 		if (widx < env.ringbuf_cnt) {
 			struct wmerge_state *wmerge = &wmerges[widx];
-			const struct bpf_event_record *r = wmerge->next_rec;
+			const struct wprof_event *r = wmerge->next_rec->ptr;
 
-			wevent_sz = persist_bpf_event(&ps, r->e, &wevent_buf);
+			wevent_sz = persist_bpf_event(&ps, r, &wevent_buf);
 			if (wevent_sz < 0) {
 				eprintf("Failed to convert BPF event for RB #%d: %d\n", widx, wevent_sz);
 				return wevent_sz;
@@ -916,7 +884,7 @@ skip_pytorch:
 			wmerge->next_rec = wmerge->rec_idx < wmerge->rec_cnt ? &wmerge->recs[wmerge->rec_idx] : NULL;
 
 			if (wmerge->next_rec)
-				wpq_replace_min(pq, wmerge->next_rec->e->ts, widx);
+				wpq_replace_min(pq, wmerge->next_rec->ts, widx);
 			else
 				wpq_pop(pq);
 
@@ -934,7 +902,7 @@ skip_pytorch:
 			int cidx = widx - env.ringbuf_cnt;
 
 			struct wcuda_state *wcuda = &wcudas[cidx];
-			const struct wcuda_event *r = wcuda->next_rec;
+			const struct wcuda_event *r = wcuda->next_rec->ptr;
 			struct cuda_tracee *cuda = &env.cudas[cidx];
 
 			wevent_sz = persist_cuda_event(&ps, r, &wevent_buf,
@@ -945,7 +913,7 @@ skip_pytorch:
 			}
 
 			wcuda->rec_idx++;
-			wcuda->next_rec = wcuda->rec_idx < wcuda->rec_cnt ? wcuda->recs[wcuda->rec_idx] : NULL;
+			wcuda->next_rec = wcuda->rec_idx < wcuda->rec_cnt ? &wcuda->recs[wcuda->rec_idx] : NULL;
 
 			if (wcuda->next_rec)
 				wpq_replace_min(pq, wcuda->next_rec->ts, widx);
@@ -955,7 +923,7 @@ skip_pytorch:
 			int pidx = widx - env.ringbuf_cnt - env.cuda_cnt;
 
 			struct wpytrace_state *wpy = &wpytraces[pidx];
-			const struct wpytrace_event *r = wpy->next_rec;
+			const struct wpytrace_event *r = wpy->next_rec->ptr;
 			struct pytrace_tracee *pf = &env.pytraces[wpy->tracee_idx];
 
 			wevent_sz = persist_pytrace_event(&ps, r, &wevent_buf,
@@ -967,7 +935,7 @@ skip_pytorch:
 			}
 
 			wpy->rec_idx++;
-			wpy->next_rec = wpy->rec_idx < wpy->rec_cnt ? wpy->recs[wpy->rec_idx] : NULL;
+			wpy->next_rec = wpy->rec_idx < wpy->rec_cnt ? &wpy->recs[wpy->rec_idx] : NULL;
 
 			if (wpy->next_rec)
 				wpq_replace_min(pq, wpy->next_rec->ts, widx);
@@ -980,7 +948,7 @@ skip_pytorch:
 			int tidx = widx - env.ringbuf_cnt - env.cuda_cnt - wpytrace_cnt;
 
 			struct wpytorch_state *wtorch = &wpytorches[tidx];
-			const struct wpytorch_event *r = wtorch->next_rec;
+			const struct wpytorch_event *r = wtorch->next_rec->ptr;
 			struct pytrace_tracee *pf = &env.pytraces[wtorch->tracee_idx];
 
 			wevent_sz = persist_pytorch_event(&ps, r, &wevent_buf,
@@ -991,7 +959,7 @@ skip_pytorch:
 			}
 
 			wtorch->rec_idx++;
-			wtorch->next_rec = wtorch->rec_idx < wtorch->rec_cnt ? wtorch->recs[wtorch->rec_idx] : NULL;
+			wtorch->next_rec = wtorch->rec_idx < wtorch->rec_cnt ? &wtorch->recs[wtorch->rec_idx] : NULL;
 
 			if (wtorch->next_rec)
 				wpq_replace_min(pq, wtorch->next_rec->ts, widx);

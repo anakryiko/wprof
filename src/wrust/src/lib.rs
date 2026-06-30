@@ -6,3 +6,4 @@
 //! need for more Rust-backed interfaces comes up.
 
 mod pq;
+mod sort;
