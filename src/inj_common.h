@@ -3,6 +3,8 @@
 #ifndef __INJ_COMMON_H_
 #define __INJ_COMMON_H_
 
+#include <stdio.h>
+
 #include "wprof_types.h"
 #include "cuda_data.h"
 #include "pytrace_data.h"
@@ -43,7 +45,7 @@ static const char *torch_sym_names[TORCH_SYM_CNT] = {
 };
 
 #define LIBWPROFINJ_SETUP_SYM __libwprof_inj_setup
-#define LIBWPROFINJ_VERSION 1
+#define LIBWPROFINJ_VERSION 2
 
 struct inj_setup_ctx {
 	/* Should be set to LIBWPROFINJ_VERSION */
@@ -64,16 +66,26 @@ struct inj_setup_ctx {
 	int uds_parent_fd;
 };
 
-enum inj_exit_hint {
-	HINT_UNSET = 0,
-	HINT_CUPTI_BUSY = 1,
-	HINT_ERROR,
-};
-
 enum inj_setup_state {
 	INJ_SETUP_PENDING = 0,
 	INJ_SETUP_READY = 1,
 	INJ_SETUP_FAILED = 2,
+};
+
+/* Per-feature setup outcome, reported independently in inj_run_ctx. */
+enum inj_feat_state {
+	FEAT_NONE = 0,		/* feature not requested for this tracee */
+	FEAT_PENDING,		/* setup message sent, not yet processed */
+	FEAT_READY,		/* set up and capturing */
+	FEAT_FAILED,		/* setup failed */
+	FEAT_IGNORED,		/* e.g. CUDA: CUPTI busy / no GPU usage */
+};
+
+/* Bitmask of features multiplexed onto a single injection. */
+enum inj_feature {
+	INJ_FEAT_CUDA = 1,
+	INJ_FEAT_PYTRACE = 2,
+	INJ_FEAT_PYTORCH = 4,
 };
 
 struct inj_run_ctx {
@@ -82,9 +94,14 @@ struct inj_run_ctx {
 	long sess_start_ts;
 	long sess_end_ts;
 
-	enum inj_setup_state setup_state;
-	enum inj_exit_hint exit_hint;
-	char exit_hint_msg[1024];
+	enum inj_setup_state setup_state;	/* overall; set by START_SESSION */
+	enum inj_feat_state cuda_feat_state;	/* set by CUDA_SETUP */
+	enum inj_feat_state pytrace_feat_state;	/* set by PYTRACE_SETUP */
+	enum inj_feat_state pytorch_feat_state;	/* set by PYTORCH_SETUP */
+	/* human-readable reason a feature failed or was ignored (set by its *_SETUP) */
+	char cuda_feat_hint[512];
+	char pytrace_feat_hint[512];
+	char pytorch_feat_hint[512];
 
 	long cupti_rec_cnt;		/* captured records */
 	long cupti_drop_cnt;		/* dropped records */
@@ -101,22 +118,37 @@ struct inj_run_ctx {
 	long pytorch_event_cnt;		/* captured events */
 };
 
+/*
+ * Per-feature setup messages (CUDA/PYTRACE/PYTORCH_SETUP) configure one feature
+ * each and carry that feature's dump fd as ancillary data; START_SESSION then
+ * arms the session timer and flips the overall setup_state to READY. They are
+ * pipelined over one UDS, so the socket is SOCK_SEQPACKET to preserve message
+ * boundaries (one recvmsg == one inj_msg).
+ */
 enum inj_msg_kind {
 	__INJ_INVALID = 0,
 	INJ_MSG_SETUP = 1,
-	INJ_MSG_CUDA_SESSION = 2,
-	INJ_MSG_SHUTDOWN = 3,
-	INJ_MSG_PYTRACE_SESSION = 4,
+	INJ_MSG_CUDA_SETUP = 2,
+	INJ_MSG_PYTRACE_SETUP = 3,
+	INJ_MSG_PYTORCH_SETUP = 4,
+	INJ_MSG_START_SESSION = 5,
+	INJ_MSG_SHUTDOWN = 6,
 };
 
 static inline const char *inj_msg_str(enum inj_msg_kind kind)
 {
 	switch (kind) {
 	case INJ_MSG_SETUP: return "SETUP";
-	case INJ_MSG_CUDA_SESSION: return "CUDA_SESSION";
+	case INJ_MSG_CUDA_SETUP: return "CUDA_SETUP";
+	case INJ_MSG_PYTRACE_SETUP: return "PYTRACE_SETUP";
+	case INJ_MSG_PYTORCH_SETUP: return "PYTORCH_SETUP";
+	case INJ_MSG_START_SESSION: return "START_SESSION";
 	case INJ_MSG_SHUTDOWN: return "SHUTDOWN";
-	case INJ_MSG_PYTRACE_SESSION: return "PYTRACE_SESSION";
-	default: return "???";
+	default: {
+		static __thread char buf[24];
+		snprintf(buf, sizeof(buf), "UNKNOWN(%d)", kind);
+		return buf;
+	}
 	}
 }
 
@@ -126,17 +158,21 @@ struct inj_msg {
 	union {
 		struct inj_msg_setup {
 		} setup;
-		struct inj_msg_cuda_session {
-			long session_timeout_ms;
-		} cuda_session;
-		struct inj_msg_pytrace_session {
-			long session_timeout_ms;
+		struct inj_msg_cuda_setup {
+			/* cuda dump fd passed as ancillary data */
+		} cuda_setup;
+		struct inj_msg_pytrace_setup {
 			int py_version_minor; /* Python 3.x minor version */
-			bool enable_pytrace;
-			bool enable_pytorch;
 			unsigned long sym_addrs[PYTRACE_SYM_CNT];
+			/* pytrace dump fd passed as ancillary data */
+		} pytrace_setup;
+		struct inj_msg_pytorch_setup {
 			unsigned long torch_sym_addrs[TORCH_SYM_CNT];
-		} pytrace_session;
+			/* pytorch dump fd passed as ancillary data */
+		} pytorch_setup;
+		struct inj_msg_start_session {
+			long session_timeout_ms;
+		} start_session;
 		struct inj_msg_shutdown {
 		} shutdown;
 	};

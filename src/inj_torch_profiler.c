@@ -448,7 +448,7 @@ static int init_torch_data(FILE *dump)
 	err = fseek(dump, 0, SEEK_SET);
 	if (err) {
 		err = -errno;
-		elog("Failed to fseek(0) torch data dump: %d\n", err);
+		elog("Failed to fseek(0) PyTorch data dump: %d\n", err);
 		return err;
 	}
 
@@ -458,7 +458,7 @@ static int init_torch_data(FILE *dump)
 
 	if (fwrite(&hdr, sizeof(hdr), 1, dump) != 1) {
 		err = -errno;
-		elog("Failed to fwrite() torch data dump header: %d\n", err);
+		elog("Failed to fwrite() PyTorch data dump header: %d\n", err);
 		return err;
 	}
 
@@ -469,12 +469,14 @@ static int init_torch_data(FILE *dump)
 
 /* ==================== Public API ==================== */
 
+/* Always consumes pytorch_dump_fd: keeps it via fdopen on success, closes it on failure. */
 int pytorch_session_setup(int pytorch_dump_fd, unsigned long *sym_addrs, int sym_addr_cnt)
 {
 	int err = 0;
 
 	if (sym_addr_cnt != TORCH_SYM_CNT) {
-		elog("BUG: pytorch torch_sym_addr_cnt:%d != TORCH_SYM_CNT:%d\n", sym_addr_cnt, TORCH_SYM_CNT);
+		elog("BUG: PyTorch torch_sym_addr_cnt:%d != TORCH_SYM_CNT:%d\n", sym_addr_cnt, TORCH_SYM_CNT);
+		zclose(pytorch_dump_fd);
 		return -EINVAL;
 	}
 
@@ -486,26 +488,27 @@ int pytorch_session_setup(int pytorch_dump_fd, unsigned long *sym_addrs, int sym
 	}
 
 	if (!rf_add_global_callback || !rf_remove_callback || !rf_name) {
-		elog("Missing required torch RecordFunction symbols\n");
+		elog("Missing required PyTorch RecordFunction symbols\n");
+		zclose(pytorch_dump_fd);
 		return -ENOENT;
 	}
 
 	torch_dump_strs = strset__new(TORCH_DUMP_MAX_STRS_SZ, "", 1);
 	if (!torch_dump_strs) {
-		elog("Failed to create torch string set\n");
+		elog("Failed to create PyTorch string set\n");
 		return -ENOMEM;
 	}
 
 	torch_dump = fdopen(pytorch_dump_fd, "w");
 	if (!torch_dump) {
 		err = -errno;
-		elog("Failed to create FILE wrapper around torch dump FD %d: %d\n", pytorch_dump_fd, err);
+		elog("Failed to create FILE wrapper around PyTorch dump FD %d: %d\n", pytorch_dump_fd, err);
 		goto cleanup;
 	}
 	setvbuf(torch_dump, NULL, _IOFBF, TORCH_DUMP_BUF_SZ);
 
 	if ((err = init_torch_data(torch_dump)) < 0) {
-		elog("Failed to init torch dump: %d\n", err);
+		elog("Failed to init PyTorch dump: %d\n", err);
 		goto cleanup;
 	}
 
@@ -559,7 +562,7 @@ int pytorch_session_finalize(void)
 	long events_end = ftell(torch_dump);
 	if (events_end < 0) {
 		err = -errno;
-		elog("Failed to get torch dump file position: %d\n", err);
+		elog("Failed to get PyTorch dump file position: %d\n", err);
 		return err;
 	}
 
@@ -570,7 +573,7 @@ int pytorch_session_finalize(void)
 	long strs_off = ftell(torch_dump) - sizeof(struct wpytorch_data_hdr);
 	if (strs_sz > 0 && fwrite(strs, 1, strs_sz, torch_dump) != strs_sz) {
 		err = -errno;
-		elog("Failed to write torch strings: %d\n", err);
+		elog("Failed to write PyTorch strings: %d\n", err);
 		return err;
 	}
 
@@ -591,20 +594,20 @@ int pytorch_session_finalize(void)
 	err = fseek(torch_dump, 0, SEEK_SET);
 	if (err) {
 		err = -errno;
-		elog("Failed to fseek(0) torch dump: %d\n", err);
+		elog("Failed to fseek(0) PyTorch dump: %d\n", err);
 		return err;
 	}
 
 	if (fwrite(&hdr, sizeof(hdr), 1, torch_dump) != 1) {
 		err = -errno;
-		elog("Failed to fwrite() torch dump header: %d\n", err);
+		elog("Failed to fwrite() PyTorch dump header: %d\n", err);
 		return err;
 	}
 
 	fflush(torch_dump);
 	fsync(fileno(torch_dump));
 
-	vlog("torch profiler finalized: %llu events, %zu string bytes\n",
+	vlog("PyTorch profiler finalized: %llu events, %zu string bytes\n",
 	     torch_event_cnt, strs_sz);
 
 	fclose(torch_dump);

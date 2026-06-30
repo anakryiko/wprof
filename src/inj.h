@@ -28,6 +28,9 @@
 #define vlog(fmt, ...) do { log_printf(2, fmt, ##__VA_ARGS__); } while (0)
 #define dlog(fmt, ...) do { log_printf(3, fmt, ##__VA_ARGS__); } while (0)
 
+/* Record a human-readable reason into a fixed-size run_ctx hint buffer. */
+#define inj_set_feat_hint(hint, fmt, ...) snprintf(hint, sizeof(hint), fmt, ##__VA_ARGS__)
+
 extern struct inj_setup_ctx *setup_ctx;
 extern struct inj_run_ctx *run_ctx;
 extern struct strset *cuda_dump_strs;
@@ -85,29 +88,12 @@ static inline u32 inj_gettid(void)
 int cuda_dump_event(struct wcuda_event *e);
 int cuda_dump_finalize(void);
 
-static inline void inj_set_exit_hint(enum inj_exit_hint hint, const char *msg)
-{
-	if (!run_ctx)
-		return;
-	run_ctx->exit_hint = hint;
-	snprintf(run_ctx->exit_hint_msg, sizeof(run_ctx->exit_hint_msg), "%s", msg);
-}
-
 int init_cupti_activities(void);
 int start_cupti_activities(void);
 void finalize_cupti_activities(void);
 
-struct pytrace_setup_ctx {
-	int pytrace_dump_fd;
-	int pytorch_dump_fd;
-	int version_minor;
-	unsigned long *sym_addrs;
-	int sym_addr_cnt;
-	unsigned long *torch_sym_addrs;
-	int torch_sym_addr_cnt;
-};
-
-int pytrace_session_setup(struct pytrace_setup_ctx *ctx);
+int pytrace_session_setup(int pytrace_dump_fd, int version_minor,
+			  unsigned long *sym_addrs, int sym_addr_cnt);
 int pytrace_session_finalize(void);
 
 int pytorch_session_setup(int pytorch_dump_fd, unsigned long *sym_addrs, int sym_addr_cnt);

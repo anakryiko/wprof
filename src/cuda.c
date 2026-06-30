@@ -121,7 +121,7 @@ force_continue:
 	if (!tracee) {
 		err = -errno;
 		close(log_fd);
-		eprintf("PTRACE injection failed for %s: %d\n",
+		eprintf("PTRACE injection failed for CUDA tracee %s: %d\n",
 			proc_str(pid, ns_tid_by_host_tid(pid, pid), proc_name(pid)), err);
 		return -errno;
 	}
@@ -129,7 +129,7 @@ force_continue:
 	/* request libwprofinj-side USDTs to be triggered if we need stack traces */
 	err = tracee_handshake(tracee, log_fd, env.requested_stack_traces & ST_CUDA);
 	if (err) {
-		eprintf("Injection handshake with %s failed: %d\n",
+		eprintf("Injection handshake with CUDA tracee %s failed: %d\n",
 			proc_str(pid, ns_tid_by_host_tid(pid, pid), proc_name(pid)), err);
 		goto err_retract;
 	}
@@ -147,7 +147,7 @@ err_retract:
 	close(log_fd);
 	int rerr = tracee_retract(tracee);
 	if (rerr) {
-		eprintf("PTRACE retraction failed for %s: %d\n",
+		eprintf("PTRACE retraction failed for CUDA tracee %s: %d\n",
 			proc_str(pid, ns_tid_by_host_tid(pid, pid), proc_name(pid)), rerr);
 		return err;
 	}
@@ -236,6 +236,7 @@ int cuda_trace_setup(int workdir_fd)
 
 int cuda_trace_prepare(int workdir_fd, long sess_timeout_ms)
 {
+	/* Pass 1: open dumps and hand every tracee its CUDA_SETUP message. */
 	for (int i = 0; i < env.cuda_cnt; i++) {
 		struct cuda_tracee *cuda = &env.cudas[i];
 
@@ -245,21 +246,16 @@ int cuda_trace_prepare(int workdir_fd, long sess_timeout_ms)
 		int dump_fd = openat(workdir_fd, dump_path, O_RDWR | O_CREAT | O_CLOEXEC, 0644);
 		if (dump_fd < 0) {
 			int err = -errno;
-			eprintf("Failed to create CUDA tracee %s dump file at '%s': %d\n",
-				cuda_str(cuda), dump_path, err);
+			eprintf("Failed to create CUDA tracee %s dump file at '%s': %d\n", cuda_str(cuda), dump_path, err);
 			return -errno;
 		}
 
-		struct inj_msg msg = {
-			.kind = INJ_MSG_CUDA_SESSION,
-			.cuda_session = {
-				.session_timeout_ms = sess_timeout_ms,
-			},
+		struct inj_msg setup_msg = {
+			.kind = INJ_MSG_CUDA_SETUP,
 		};
-		int err = uds_send_data(cuda->uds_fd, &msg, sizeof(msg), &dump_fd, 1);
+		int err = uds_send_data(cuda->uds_fd, &setup_msg, sizeof(setup_msg), &dump_fd, 1);
 		if (err < 0) {
-			eprintf("Failed to start CUDA trace session for tracee %s: %d\n",
-				cuda_str(cuda), err);
+			eprintf("Failed to send CUDA_SETUP to CUDA tracee %s: %d\n", cuda_str(cuda), err);
 			close(dump_fd);
 			cuda->state = TRACEE_SETUP_FAILED;
 			continue;
@@ -270,10 +266,31 @@ int cuda_trace_prepare(int workdir_fd, long sess_timeout_ms)
 		cuda->state = TRACEE_PENDING;
 	}
 
+	/* Pass 2: now that every tracee is set up, start their sessions together. */
 	for (int i = 0; i < env.cuda_cnt; i++) {
 		struct cuda_tracee *cuda = &env.cudas[i];
 
-		dprintf(1 ,"Tracee #%d (%s, %s): LOG %s DUMP %s\n",
+		if (cuda->state != TRACEE_PENDING)
+			continue;
+
+		struct inj_msg start_msg = {
+			.kind = INJ_MSG_START_SESSION,
+			.start_session = {
+				.session_timeout_ms = sess_timeout_ms,
+			},
+		};
+		int err = uds_send_data(cuda->uds_fd, &start_msg, sizeof(start_msg), NULL, 0);
+		if (err < 0) {
+			eprintf("Failed to send START_SESSION to CUDA tracee %s: %d\n", cuda_str(cuda), err);
+			/* dump_fd is owned by cuda->dump_fd now; teardown will close it */
+			cuda->state = TRACEE_SETUP_FAILED;
+		}
+	}
+
+	for (int i = 0; i < env.cuda_cnt; i++) {
+		struct cuda_tracee *cuda = &env.cudas[i];
+
+		dprintf(1 ,"CUDA tracee #%d (%s, %s): LOG %s DUMP %s\n",
 			i, cuda_str(cuda),
 			cuda_tracee_state_str(cuda->state),
 			cuda->log_path, cuda->dump_path);
@@ -294,25 +311,26 @@ int cuda_trace_prepare(int workdir_fd, long sess_timeout_ms)
 
 		switch (cuda->ctx->setup_state) {
 		case INJ_SETUP_READY:
-			vprintf("Tracee #%d (%s) is READY!\n",
+			vprintf("CUDA tracee #%d (%s) is READY!\n",
 				i, cuda_str(cuda));
 			cuda->state = TRACEE_ACTIVE;
 			break;
 		case INJ_SETUP_FAILED:
-		default:
-			if (cuda->ctx->exit_hint == HINT_CUPTI_BUSY) {
-				dprintf(1, "Tracee #%d (%s) will be IGNORED: NO CUDA USAGE (or, unlikely, CUPTI is used by another profiler).\n",
-					i, cuda_str(cuda));
+			if (cuda->ctx->cuda_feat_state == FEAT_IGNORED) {
+				dprintf(1, "CUDA tracee #%d (%s) will be IGNORED: %s\n",
+					i, cuda_str(cuda), cuda->ctx->cuda_feat_hint);
 				cuda->state = TRACEE_IGNORED;
-			} else if (cuda->ctx->exit_hint) {
-				vprintf("Tracee #%d (%s) failed initial setup with message: '%s'.\n",
-					i, cuda_str(cuda), cuda->ctx->exit_hint_msg);
+			} else if (cuda->ctx->cuda_feat_hint[0]) {
+				vprintf("CUDA tracee #%d (%s): %s\n", i, cuda_str(cuda), cuda->ctx->cuda_feat_hint);
 				cuda->state = TRACEE_SETUP_FAILED;
-			} else  {
-				vprintf("Tracee #%d (%s) TIMED OUT! Ignoring it...\n",
-					i, cuda_str(cuda));
-				cuda->state = TRACEE_SETUP_TIMEOUT;
+			} else {
+				vprintf("CUDA tracee #%d (%s) failed initial setup.\n", i, cuda_str(cuda));
+				cuda->state = TRACEE_SETUP_FAILED;
 			}
+			break;
+		default:
+			vprintf("CUDA tracee #%d (%s) TIMED OUT! Ignoring it...\n", i, cuda_str(cuda));
+			cuda->state = TRACEE_SETUP_TIMEOUT;
 			break;
 		}
 	}
@@ -334,12 +352,12 @@ int cuda_trace_attach_usdts(struct bpf_state *st, struct bpf_program *prog)
 
 		int err = attach_usdt_probe(st, prog, "libwprofinj.so", lib_path, "wprof", "cuda_call");
 		if (err) {
-			eprintf("Failed to attach USDTs for tracee #%d (%s): %d, skipping...\n",
+			eprintf("Failed to attach USDTs for CUDA tracee #%d (%s): %d, skipping...\n",
 				i, cuda_str(cuda), err);
 			continue;
 		}
 
-		vprintf("Tracee #%d (%s) got USDTs successfully attached.\n", i, cuda_str(cuda));
+		vprintf("CUDA tracee #%d (%s) got USDTs successfully attached.\n", i, cuda_str(cuda));
 	}
 
 	return 0;
@@ -365,7 +383,7 @@ static void dump_tracee_log(struct cuda_tracee *cuda, int idx)
 	if (!(env_log_set & LOG_TRACEE))
 		return;
 
-	vprintf("Tracee #%d (%s) LOG (%s) DUMP (LAST STATE %s):\n"
+	vprintf("CUDA tracee #%d (%s) LOG (%s) DUMP (LAST STATE %s):\n"
 		"=======================================================================================================\n",
 		idx, cuda_str(cuda), cuda->log_path, cuda_tracee_state_str(cuda->state));
 
@@ -374,7 +392,7 @@ static void dump_tracee_log(struct cuda_tracee *cuda, int idx)
 	FILE *f = fdopen(cuda->log_fd, "r");
 	if (!f) {
 		int err = -errno;
-		eprintf("Failed to create FILE wrapper around tracee #%d (%s) log FD: %d\n",
+		eprintf("Failed to create FILE wrapper around CUDA tracee #%d (%s) log FD: %d\n",
 			idx, cuda_str(cuda), err);
 		return;
 	}
@@ -413,7 +431,7 @@ void cuda_trace_deactivate(void)
 			continue;
 		}
 
-		vprintf("Signaling tracee #%d (%s) to exit...\n", i, cuda_str(cuda));
+		vprintf("Signaling CUDA tracee #%d (%s) to exit...\n", i, cuda_str(cuda));
 
 		struct inj_msg msg = {
 			.kind = INJ_MSG_SHUTDOWN,
@@ -425,7 +443,7 @@ void cuda_trace_deactivate(void)
 		zclose(cuda->uds_fd);
 
 		if (err < 0) {
-			eprintf("Failed to send SHUTDOWN command cleanly to tracee #%d (%s): %d\n",
+			eprintf("Failed to send SHUTDOWN command cleanly to CUDA tracee #%d (%s): %d\n",
 				i, cuda_str(cuda), err);
 			if (cuda->state == TRACEE_ACTIVE)
 				cuda->state = TRACEE_SHUTDOWN_FAILED;
@@ -443,12 +461,12 @@ void cuda_trace_deactivate(void)
 		if (cuda->state != TRACEE_ACTIVE &&
 		    cuda->state != TRACEE_IGNORED &&
 		    cuda->state != TRACEE_SETUP_FAILED) {
-			vprintf("NOT WAITING for tracee #%d (%s, %s) as it was not successfully set up!\n",
+			vprintf("NOT WAITING for CUDA tracee #%d (%s, %s) as it was not successfully set up!\n",
 				i, cuda_str(cuda), cuda_tracee_state_str(cuda->state));
 			continue;
 		}
 
-		dprintf(1, "Waiting for tracee #%d (%s) to be done...\n", i, cuda_str(cuda));
+		dprintf(1, "Waiting for CUDA tracee #%d (%s) to be done...\n", i, cuda_str(cuda));
 
 		while (!cuda->ctx->worker_thread_done &&
 		       (ktime_now_ns() - start_ts < LIBWPROFINJ_TEARDOWN_TIMEOUT_MS * 1000000ULL)) {
@@ -456,16 +474,16 @@ void cuda_trace_deactivate(void)
 		}
 
 		if (!cuda->ctx->worker_thread_done) {
-			eprintf("Tracee #%d (%s) TIMED OUT DURING TEARDOWN! SKIPPING PTRACE RETRACTION!\n",
+			eprintf("CUDA tracee #%d (%s) TIMED OUT DURING TEARDOWN! SKIPPING PTRACE RETRACTION!\n",
 				i, cuda_str(cuda));
 			cuda->state = TRACEE_SHUTDOWN_TIMEOUT;
 			dump_tracee_log(cuda, i);
 		} else {
 			if (cuda->state == TRACEE_IGNORED) {
-				dprintf(1, "Tracee #%d (%s) has shut down cleanly.\n",
+				dprintf(1, "CUDA tracee #%d (%s) has shut down cleanly.\n",
 					i, cuda_str(cuda));
 			} else {
-				vprintf("Tracee #%d (%s) has shut down cleanly.\n",
+				vprintf("CUDA tracee #%d (%s) has shut down cleanly.\n",
 					i, cuda_str(cuda));
 			}
 
@@ -496,11 +514,11 @@ void cuda_trace_retract(void)
 			continue;
 		}
 
-		dprintf(1, "Retracting tracee #%d (%s)...\n", i, cuda_str(cuda));
+		dprintf(1, "Retracting CUDA tracee #%d (%s)...\n", i, cuda_str(cuda));
 
 		int err = tracee_retract(cuda->tracee);
 		if (err) {
-			eprintf("Retraction for tracee #%d (%s) FAILED: %d!\n",
+			eprintf("Retraction for CUDA tracee #%d (%s) FAILED: %d!\n",
 				i, cuda_str(cuda), err);
 		}
 

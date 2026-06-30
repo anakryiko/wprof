@@ -862,20 +862,20 @@ struct tracee_state *tracee_inject(int pid)
 	tracee->memfd_remote_fd = memfd_ret;
 
 	/*
-	 * Inject socketpair(AF_UNIX, SOCK_STREAM)
+	 * Inject socketpair(AF_UNIX, SOCK_SEQPACKET)
 	 */
-	dlog("Executing socketpair(AF_UNIX, SOCK_STREAM)...\n");
+	dlog("Executing socketpair(AF_UNIX, SOCK_SEQPACKET)...\n");
 
 	/* int socketpair(int domain, int type, int protocol, int sv[2]); */
 	regs = tracee->orig_regs;
 	___regs_set_sys_args(&regs, __NR_socketpair,
-			     AF_UNIX, SOCK_STREAM, 0, tracee->data_mmap_addr);
+			     AF_UNIX, SOCK_SEQPACKET, 0, tracee->data_mmap_addr);
 
 	long sockpair_ret;
 	if ((err = ptrace_exec_syscall(tracee, &regs, &sockpair_ret)) < 0)
 		goto cleanup;
 	if (sockpair_ret != 0) {
-		elog("socketpair(AF_UNIX, SOCK_STREAM) failed: %ld\n", sockpair_ret);
+		elog("socketpair(AF_UNIX, SOCK_SEQPACKET) failed: %ld\n", sockpair_ret);
 		goto cleanup;
 	}
 

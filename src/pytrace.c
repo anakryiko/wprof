@@ -164,18 +164,18 @@ static int try_inject_to_python_process(int pid, int workdir_fd)
 	/* Resolve all required Python C API symbols before injection */
 	u64 ts = ktime_now_ns();
 	err = pytrace_resolve_symbols(&bi, sym_addrs);
-	dlogf(PYTRACE, 1, "PID %d: pytrace symbol resolution took %.3lfms\n", pid, (ktime_now_ns() - ts) / 1e6);
+	dlogf(PYTRACE, 1, "PID %d: PyTrace symbol resolution took %.3lfms\n", pid, (ktime_now_ns() - ts) / 1e6);
 	if (err) {
 		eprintf("Failed to resolve Python symbols for %s, skipping injection\n",
 			pytrace_proc_str(pid, ns_tid_by_host_tid(pid, pid), proc_name(pid)));
 		return err;
 	}
 
-	/* Resolve PyTorch RecordFunction symbols if torch profiling is requested */
+	/* Resolve PyTorch RecordFunction symbols if PyTorch profiling is requested */
 	if (env.capture_pytorch == TRUE) {
 		ts = ktime_now_ns();
 		err = torch_resolve_symbols(pid, torch_sym_addrs);
-		dlogf(PYTRACE, 1, "PID %d: torch symbol resolution took %.3lfms\n", pid, (ktime_now_ns() - ts) / 1e6);
+		dlogf(PYTRACE, 1, "PID %d: PyTorch symbol resolution took %.3lfms\n", pid, (ktime_now_ns() - ts) / 1e6);
 		if (err) {
 			eprintf("Failed to resolve PyTorch symbols for PID %d (%s), skipping injection...\n",
 					pid, proc_name(pid));
@@ -256,14 +256,14 @@ static void pytrace_discover_inject(enum pytrace_discover_strategy discovery, in
 	case PYTRACE_DISCOVER_NONE:
 		break;
 	default:
-		BUG("unrecognized pytrace discovery strategy %d\n", discovery);
+		BUG("unrecognized PyTrace discovery strategy %d\n", discovery);
 	}
 }
 
 int pytrace_trace_setup(int workdir_fd)
 {
 	/*
-	 * py-trace and py-torch carry independent discovery strategies; run each,
+	 * PyTrace and PyTorch carry independent discovery strategies; run each,
 	 * but skip a duplicate so we don't scan /proc (or re-walk nvidia-smi) twice
 	 * when both sides use the same strategy. try_inject_to_python_process()
 	 * dedups by PID, so any overlap between differing strategies is harmless.
@@ -283,10 +283,15 @@ int pytrace_trace_setup(int workdir_fd)
 
 int pytrace_trace_prepare(int workdir_fd, long sess_timeout_ms)
 {
+	/*
+	 * Pass 1: open dumps and hand every tracee its per-feature SETUP
+	 * message(s). One message per enabled feature, each carrying its own dump
+	 * fd; the SEQPACKET UDS preserves these as distinct messages.
+	 */
 	for (int i = 0; i < env.py_cnt; i++) {
 		struct pytrace_tracee *pf = &env.pytraces[i];
 
-		/* No base pytrace dump for a PyTorch-only session (py-torch without py-trace). */
+		/* No base PyTrace dump for a PyTorch-only session (PyTorch without PyTrace). */
 		char dump_path[128];
 		int pytrace_dump_fd = -1;
 		if (env.capture_pytrace == TRUE) {
@@ -295,14 +300,11 @@ int pytrace_trace_prepare(int workdir_fd, long sess_timeout_ms)
 			pytrace_dump_fd = openat(workdir_fd, dump_path, O_RDWR | O_CREAT | O_CLOEXEC, 0644);
 			if (pytrace_dump_fd < 0) {
 				int err = -errno;
-				eprintf("Failed to create Python tracee %s dump file at '%s': %d\n",
+				eprintf("Failed to create PyTrace tracee %s dump file at '%s': %d\n",
 					pytrace_str(pf), dump_path, err);
 				return err;
 			}
 		}
-
-		vprintf("Sending PYTRACE_SESSION to tracee #%d (%s), Python 3.%d, timeout %ldms...\n",
-			i, pytrace_str(pf), pf->py_version_minor, sess_timeout_ms);
 
 		int pytorch_dump_fd = -1;
 		if (env.capture_pytorch == TRUE) {
@@ -311,51 +313,81 @@ int pytrace_trace_prepare(int workdir_fd, long sess_timeout_ms)
 			pytorch_dump_fd = openat(workdir_fd, torch_path, O_RDWR | O_CREAT | O_CLOEXEC, 0644);
 			if (pytorch_dump_fd < 0) {
 				int err = -errno;
-				eprintf("Failed to create torch tracee %s dump file at '%s': %d\n",
+				eprintf("Failed to create PyTorch tracee %s dump file at '%s': %d\n",
 					pytrace_str(pf), torch_path, err);
 				if (pytrace_dump_fd >= 0)
 					close(pytrace_dump_fd);
 				return err;
-			} else {
-				pf->pytorch_dump_fd = pytorch_dump_fd;
-				pf->torch_dump_path = strdup(torch_path);
+			}
+			pf->pytorch_dump_fd = pytorch_dump_fd;
+			pf->torch_dump_path = strdup(torch_path);
+		}
+
+		vprintf("Sending feature setup to tracee #%d (%s), Python 3.%d...\n",
+			i, pytrace_str(pf), pf->py_version_minor);
+
+		if (pytrace_dump_fd >= 0) {
+			struct inj_msg msg = {
+				.kind = INJ_MSG_PYTRACE_SETUP,
+				.pytrace_setup = {
+					.py_version_minor = pf->py_version_minor,
+				},
+			};
+			memcpy(msg.pytrace_setup.sym_addrs, pf->sym_addrs, sizeof(pf->sym_addrs));
+			int err = uds_send_data(pf->uds_fd, &msg, sizeof(msg), &pytrace_dump_fd, 1);
+			if (err < 0) {
+				eprintf("Failed to send PYTRACE_SETUP to tracee %s: %d\n", pytrace_str(pf), err);
+				goto setup_failed;
 			}
 		}
 
-		struct inj_msg msg = {
-			.kind = INJ_MSG_PYTRACE_SESSION,
-			.pytrace_session = {
-				.session_timeout_ms = sess_timeout_ms,
-				.py_version_minor = pf->py_version_minor,
-				.enable_pytrace = (pytrace_dump_fd >= 0),
-				.enable_pytorch = (pytorch_dump_fd >= 0),
-			},
-		};
-		memcpy(msg.pytrace_session.sym_addrs, pf->sym_addrs, sizeof(pf->sym_addrs));
-		memcpy(msg.pytrace_session.torch_sym_addrs, pf->torch_sym_addrs, sizeof(pf->torch_sym_addrs));
-		/* Pass only the enabled dump FDs, in (pytrace, torch) order. */
-		int fds[2];
-		int fd_cnt = 0;
-		if (pytrace_dump_fd >= 0)
-			fds[fd_cnt++] = pytrace_dump_fd;
-		if (pytorch_dump_fd >= 0)
-			fds[fd_cnt++] = pytorch_dump_fd;
-		int err = uds_send_data(pf->uds_fd, &msg, sizeof(msg), fds, fd_cnt);
-		if (err < 0) {
-			eprintf("Failed to start Python trace session for tracee %s: %d\n",
-				pytrace_str(pf), err);
-			if (pytrace_dump_fd >= 0)
-				close(pytrace_dump_fd);
-			if (pytorch_dump_fd >= 0)
-				close(pytorch_dump_fd);
-			pf->state = TRACEE_SETUP_FAILED;
-			continue;
+		if (pytorch_dump_fd >= 0) {
+			struct inj_msg msg = {
+				.kind = INJ_MSG_PYTORCH_SETUP,
+			};
+			memcpy(msg.pytorch_setup.torch_sym_addrs, pf->torch_sym_addrs, sizeof(pf->torch_sym_addrs));
+			int err = uds_send_data(pf->uds_fd, &msg, sizeof(msg), &pytorch_dump_fd, 1);
+			if (err < 0) {
+				eprintf("Failed to send PYTORCH_SETUP to tracee %s: %d\n", pytrace_str(pf), err);
+				goto setup_failed;
+			}
 		}
 
 		pf->pytrace_dump_fd = pytrace_dump_fd;
 		if (pytrace_dump_fd >= 0)
 			pf->dump_path = strdup(dump_path);
 		pf->state = TRACEE_PENDING;
+		continue;
+
+setup_failed:
+		if (pytrace_dump_fd >= 0)
+			close(pytrace_dump_fd);
+		if (pytorch_dump_fd >= 0) {
+			close(pytorch_dump_fd);
+			pf->pytorch_dump_fd = -1;
+		}
+		pf->state = TRACEE_SETUP_FAILED;
+	}
+
+	/* Pass 2: now that every tracee is set up, start their sessions together. */
+	for (int i = 0; i < env.py_cnt; i++) {
+		struct pytrace_tracee *pf = &env.pytraces[i];
+
+		if (pf->state != TRACEE_PENDING)
+			continue;
+
+		struct inj_msg start_msg = {
+			.kind = INJ_MSG_START_SESSION,
+			.start_session = {
+				.session_timeout_ms = sess_timeout_ms,
+			},
+		};
+		int err = uds_send_data(pf->uds_fd, &start_msg, sizeof(start_msg), NULL, 0);
+		if (err < 0) {
+			eprintf("Failed to send START_SESSION to tracee %s: %d\n", pytrace_str(pf), err);
+			/* dump fds are owned by pf now; teardown will close them */
+			pf->state = TRACEE_SETUP_FAILED;
+		}
 	}
 
 	/* Wait for tracees to be ready */
@@ -378,17 +410,20 @@ int pytrace_trace_prepare(int workdir_fd, long sess_timeout_ms)
 			pf->state = TRACEE_ACTIVE;
 			break;
 		case INJ_SETUP_FAILED:
+			vprintf("Python tracee #%d (%s) failed initial setup.\n", i, pytrace_str(pf));
+			pf->state = TRACEE_SETUP_FAILED;
+			break;
 		default:
-			if (pf->ctx->exit_hint) {
-				vprintf("Python tracee #%d (%s) failed: '%s'.\n",
-					i, pytrace_str(pf), pf->ctx->exit_hint_msg);
-				pf->state = TRACEE_SETUP_FAILED;
-			} else {
-				vprintf("Python tracee #%d (%s) TIMED OUT!\n", i, pytrace_str(pf));
-				pf->state = TRACEE_SETUP_TIMEOUT;
-			}
+			vprintf("Python tracee #%d (%s) TIMED OUT!\n", i, pytrace_str(pf));
+			pf->state = TRACEE_SETUP_TIMEOUT;
 			break;
 		}
+
+		/* Surface per-feature setup failures (even if another feature succeeded). */
+		if (pf->ctx->pytrace_feat_state == FEAT_FAILED && pf->ctx->pytrace_feat_hint[0])
+			vprintf("  PyTrace tracee #%d (%s): %s\n", i, pytrace_str(pf), pf->ctx->pytrace_feat_hint);
+		if (pf->ctx->pytorch_feat_state == FEAT_FAILED && pf->ctx->pytorch_feat_hint[0])
+			vprintf("  PyTorch tracee #%d (%s): %s\n", i, pytrace_str(pf), pf->ctx->pytorch_feat_hint);
 	}
 
 	return 0;
@@ -412,6 +447,9 @@ int pytrace_trace_activate(long sess_start_ts, long sess_end_ts)
 static void dump_tracee_log(struct pytrace_tracee *pf, int idx)
 {
 	if (!(env_log_set & LOG_PYTRACE))
+		return;
+
+	if (pf->log_fd < 0) /* already dumped (and consumed the fd) */
 		return;
 
 	vprintf("Python tracee #%d (%s) LOG (%s) DUMP (LAST STATE %s):\n"
@@ -481,7 +519,13 @@ void pytrace_trace_deactivate(void)
 	for (int i = 0; i < env.py_cnt; i++) {
 		struct pytrace_tracee *pf = &env.pytraces[i];
 
-		if (pf->state != TRACEE_ACTIVE)
+		/*
+		 * Non-fatal feature setup keeps a SETUP_FAILED tracee's worker alive
+		 * until we close its UDS above, so we must wait for it to finish
+		 * before pytrace_trace_retract() dlclose()s the library out from under
+		 * it (its log was already dumped in the signal loop above).
+		 */
+		if (pf->state != TRACEE_ACTIVE && pf->state != TRACEE_SETUP_FAILED)
 			continue;
 
 		while (!pf->ctx->worker_thread_done &&
@@ -493,19 +537,23 @@ void pytrace_trace_deactivate(void)
 			eprintf("Python tracee #%d (%s) TIMED OUT DURING TEARDOWN!\n",
 				i, pytrace_str(pf));
 			pf->state = TRACEE_SHUTDOWN_TIMEOUT;
-		} else {
-			if (pf->pytorch_dump_fd >= 0) {
-				vprintf("PyTorch tracee #%d (%s) shut down cleanly: %ld events.\n",
-					i, pytrace_str(pf), pf->ctx->pytorch_event_cnt);
-			}
-			if (pf->pytrace_dump_fd >= 0) {
-				vprintf("PyTrace tracee #%d (%s) shut down cleanly: %ld events, %ld code objects cached.\n",
-					i, pytrace_str(pf),
-					pf->ctx->pytrace_event_cnt, pf->ctx->pytrace_code_cache_cnt);
-			}
-			pf->state = TRACEE_INACTIVE;
+			dump_tracee_log(pf, i);
+			continue;
 		}
 
+		if (pf->state == TRACEE_SETUP_FAILED) /* worker drained; keep state for retract */
+			continue;
+
+		if (pf->pytorch_dump_fd >= 0) {
+			vprintf("PyTorch tracee #%d (%s) shut down cleanly: %ld events.\n",
+				i, pytrace_str(pf), pf->ctx->pytorch_event_cnt);
+		}
+		if (pf->pytrace_dump_fd >= 0) {
+			vprintf("PyTrace tracee #%d (%s) shut down cleanly: %ld events, %ld code objects cached.\n",
+				i, pytrace_str(pf),
+				pf->ctx->pytrace_event_cnt, pf->ctx->pytrace_code_cache_cnt);
+		}
+		pf->state = TRACEE_INACTIVE;
 		dump_tracee_log(pf, i);
 	}
 

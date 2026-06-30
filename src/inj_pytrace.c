@@ -264,7 +264,7 @@ static int pytrace_profile_callback(PyObject *obj, PyFrameObject *frame, int wha
 	};
 
 	if (fwrite(&ev, sizeof(ev), 1, pytrace_dump) != 1) {
-		elog("Failed to write pytrace event: %d\n", -errno);
+		elog("Failed to write PyTrace event: %d\n", -errno);
 		return 0;
 	}
 
@@ -286,7 +286,7 @@ static int init_wpytrace_data(FILE *dump)
 	err = fseek(dump, 0, SEEK_SET);
 	if (err) {
 		err = -errno;
-		elog("Failed to fseek(0) pytrace data dump: %d\n", err);
+		elog("Failed to fseek(0) PyTrace data dump: %d\n", err);
 		return err;
 	}
 
@@ -296,7 +296,7 @@ static int init_wpytrace_data(FILE *dump)
 
 	if (fwrite(&hdr, sizeof(hdr), 1, dump) != 1) {
 		err = -errno;
-		elog("Failed to fwrite() pytrace data dump header: %d\n", err);
+		elog("Failed to fwrite() PyTrace data dump header: %d\n", err);
 		return err;
 	}
 
@@ -305,69 +305,53 @@ static int init_wpytrace_data(FILE *dump)
 	return 0;
 }
 
-int pytrace_session_setup(struct pytrace_setup_ctx *ctx)
+/* Always consumes pytrace_dump_fd: keeps it via fdopen on success, closes it on failure. */
+int pytrace_session_setup(int pytrace_dump_fd, int version_minor,
+			  unsigned long *sym_addrs, int sym_addr_cnt)
 {
 	int err = 0;
 
-	py_version_minor = ctx->version_minor;
-	vlog("Setting up pytrace session (Python 3.%d)...\n", py_version_minor);
+	py_version_minor = version_minor;
+	vlog("Setting up PyTrace session (Python 3.%d)...\n", py_version_minor);
 
-	if (ctx->sym_addr_cnt != PYTRACE_SYM_CNT) {
-		elog("BUG: pytrace sym_addr_cnt:%d != PYTRACE_SYM_CNT:%d\n", ctx->sym_addr_cnt, PYTRACE_SYM_CNT);
+	if (sym_addr_cnt != PYTRACE_SYM_CNT) {
+		elog("BUG: PyTrace sym_addr_cnt:%d != PYTRACE_SYM_CNT:%d\n", sym_addr_cnt, PYTRACE_SYM_CNT);
+		zclose(pytrace_dump_fd);
 		return -EINVAL;
 	}
 
 	/* Assign Python C API function pointers from host-resolved addresses */
 	for (int i = 0; i < PYTRACE_SYM_CNT; i++) {
-		*(void **)pytrace_resolve_syms[i] = (void *)ctx->sym_addrs[i];
-		if (ctx->sym_addrs[i])
-			vlog("  %s = %p\n", pytrace_sym_names[i], (void *)ctx->sym_addrs[i]);
+		*(void **)pytrace_resolve_syms[i] = (void *)sym_addrs[i];
+		if (sym_addrs[i])
+			vlog("  %s = %p\n", pytrace_sym_names[i], (void *)sym_addrs[i]);
 	}
 
-	/*
-	 * Validation and pytorch setup come before any pytrace allocations,
-	 * so failures here can return directly without cleanup.
-	 */
+	/* Runs before any PyTrace allocations, so it can return after just closing the fd. */
 	if (!py_is_initialized()) {
-		elog("Python interpreter not initialized, skipping pytrace\n");
+		elog("Python interpreter not initialized, skipping PyTrace\n");
+		zclose(pytrace_dump_fd);
 		return -ENOENT;
-	}
-
-	if (ctx->pytorch_dump_fd >= 0) {
-		err = pytorch_session_setup(ctx->pytorch_dump_fd, ctx->torch_sym_addrs, ctx->torch_sym_addr_cnt);
-		if (err) {
-			vlog("PyTorch tracing setup failed: %d\n", err);
-			return err;
-		}
-	}
-
-	/*
-	 * PyTorch-only session (py-torch without py-trace): no pytrace dump fd, so
-	 * skip Python function tracing (dump + CPython hook) below.
-	 */
-	if (ctx->pytrace_dump_fd < 0) {
-		vlog("pytrace: Python function tracing disabled (PyTorch-only session)\n");
-		return 0;
 	}
 
 	/* Set up dump file */
 	pytrace_dump_strs = strset__new(PYTRACE_DUMP_MAX_STRS_SZ, "", 1);
 	if (!pytrace_dump_strs) {
-		elog("Failed to create pytrace string set\n");
+		elog("Failed to create PyTrace string set\n");
 		err = -ENOMEM;
-		goto cleanup; /* unwind a pytorch subscription that may already be live */
+		goto cleanup; /* unwind a PyTorch subscription that may already be live */
 	}
 
-	pytrace_dump = fdopen(ctx->pytrace_dump_fd, "w");
+	pytrace_dump = fdopen(pytrace_dump_fd, "w");
 	if (!pytrace_dump) {
 		err = -errno;
-		elog("Failed to create FILE wrapper around pytrace dump FD %d: %d\n", ctx->pytrace_dump_fd, err);
+		elog("Failed to create FILE wrapper around PyTrace dump FD %d: %d\n", pytrace_dump_fd, err);
 		goto cleanup;
 	}
 	setvbuf(pytrace_dump, NULL, _IOFBF, PYTRACE_DUMP_BUF_SZ);
 
 	if ((err = init_wpytrace_data(pytrace_dump)) < 0) {
-		elog("Failed to init pytrace dump: %d\n", err);
+		elog("Failed to init PyTrace dump: %d\n", err);
 		goto cleanup;
 	}
 
@@ -375,7 +359,7 @@ int pytrace_session_setup(struct pytrace_setup_ctx *ctx)
 	pytrace_code_cache = hashmap__new(pytrace_code_hash_fn, pytrace_code_equal_fn, NULL);
 	if (!pytrace_code_cache) {
 		err = -ENOMEM;
-		elog("Failed to create pytrace code cache\n");
+		elog("Failed to create PyTrace code cache\n");
 		goto cleanup;
 	}
 
@@ -385,7 +369,7 @@ int pytrace_session_setup(struct pytrace_setup_ctx *ctx)
 	 * Track before installing the profiler so a fork can't race an untracked fd
 	 * while callbacks are already firing. Untracked again in cleanup on failure.
 	 */
-	inj_track_dump_fd(ctx->pytrace_dump_fd);
+	inj_track_dump_fd(pytrace_dump_fd);
 
 	PyGILState_STATE gstate = py_gilstate_ensure();
 
@@ -404,7 +388,7 @@ int pytrace_session_setup(struct pytrace_setup_ctx *ctx)
 		py_eval_set_profile_all_threads(pytrace_profile_callback, NULL);
 		for (PyThreadState *ts = py_interp_threadhead(interp); ts; ts = py_threadstate_next(ts))
 			thread_cnt++;
-		vlog("pytrace profiler installed on all threads via PyEval_SetProfileAllThreads\n");
+		vlog("PyTrace profiler installed on all threads via PyEval_SetProfileAllThreads\n");
 	} else {
 		/*
 		 * Pre-3.12: swap to each thread state and install individually.
@@ -420,20 +404,18 @@ int pytrace_session_setup(struct pytrace_setup_ctx *ctx)
 		}
 
 		py_threadstate_swap(saved);
-		vlog("pytrace profiler installed on %d threads via PyThreadState_Swap\n", thread_cnt);
+		vlog("PyTrace profiler installed on %d threads via PyThreadState_Swap\n", thread_cnt);
 	}
 
 	py_gilstate_release(gstate);
 
-	vlog("pytrace session ready: profiler active on %d Python thread(s)\n", thread_cnt);
+	vlog("PyTrace session ready: profiler active on %d Python thread(s)\n", thread_cnt);
 
 	return 0;
 
 cleanup:
-	/* pytorch may have been set up before this failure; unwind it. */
-	pytorch_session_finalize();
 	pytrace_active = false;
-	inj_untrack_dump_fd(ctx->pytrace_dump_fd);
+	inj_untrack_dump_fd(pytrace_dump_fd);
 	if (pytrace_code_cache) {
 		hashmap__free(pytrace_code_cache);
 		pytrace_code_cache = NULL;
@@ -444,7 +426,7 @@ cleanup:
 		fclose(pytrace_dump);
 		pytrace_dump = NULL;
 	} else {
-		zclose(ctx->pytrace_dump_fd);
+		zclose(pytrace_dump_fd);
 	}
 	return err;
 }
@@ -497,7 +479,7 @@ static int pytrace_session_teardown(void)
 	long events_end = ftell(pytrace_dump);
 	if (events_end < 0) {
 		err = -errno;
-		elog("Failed to get pytrace dump file position: %d\n", err);
+		elog("Failed to get PyTrace dump file position: %d\n", err);
 		return err;
 	}
 
@@ -512,7 +494,7 @@ static int pytrace_session_teardown(void)
 		};
 		if (fwrite(&entry, sizeof(entry), 1, pytrace_dump) != 1) {
 			err = -errno;
-			elog("Failed to write pytrace code map entry: %d\n", err);
+			elog("Failed to write PyTrace code map entry: %d\n", err);
 			return err;
 		}
 	}
@@ -525,7 +507,7 @@ static int pytrace_session_teardown(void)
 	long strs_off = ftell(pytrace_dump) - sizeof(struct wpytrace_data_hdr);
 	if (strs_sz > 0 && fwrite(strs, 1, strs_sz, pytrace_dump) != strs_sz) {
 		err = -errno;
-		elog("Failed to write pytrace strings: %d\n", err);
+		elog("Failed to write PyTrace strings: %d\n", err);
 		return err;
 	}
 
@@ -549,13 +531,13 @@ static int pytrace_session_teardown(void)
 	err = fseek(pytrace_dump, 0, SEEK_SET);
 	if (err) {
 		err = -errno;
-		elog("Failed to fseek(0) pytrace dump: %d\n", err);
+		elog("Failed to fseek(0) PyTrace dump: %d\n", err);
 		return err;
 	}
 
 	if (fwrite(&hdr, sizeof(hdr), 1, pytrace_dump) != 1) {
 		err = -errno;
-		elog("Failed to fwrite() pytrace dump header: %d\n", err);
+		elog("Failed to fwrite() PyTrace dump header: %d\n", err);
 		return err;
 	}
 
@@ -572,7 +554,7 @@ static int pytrace_session_teardown(void)
 	static const char *pytrace_names[] = {"CALL", "EXCEPTION", "LINE", "RETURN", "C_CALL", "C_EXCEPTION", "C_RETURN"};
 	for (int i = 0; i < pytrace_thread_stats_cnt; i++) {
 		char buf[256];
-		int off = snprintf(buf, sizeof(buf), "pytrace tid %u:", pytrace_thread_stats[i].tid);
+		int off = snprintf(buf, sizeof(buf), "PyTrace tid %u:", pytrace_thread_stats[i].tid);
 		for (int j = 0; j < PYTRACE_TYPE_CNT; j++) {
 			if (pytrace_thread_stats[i].counts[j])
 				off += snprintf(buf + off, sizeof(buf) - off, " %s=%llu",
@@ -582,7 +564,7 @@ static int pytrace_session_teardown(void)
 	}
 #endif
 
-	vlog("pytrace session finalized: %llu events, %u code objects, %zu string bytes\n",
+	vlog("PyTrace session finalized: %llu events, %u code objects, %zu string bytes\n",
 	     pytrace_event_cnt, pytrace_code_cnt, strs_sz);
 
 	fclose(pytrace_dump);
@@ -605,7 +587,5 @@ static int pytrace_session_teardown(void)
 
 int pytrace_session_finalize(void)
 {
-	/* Finalize pytorch first (doesn't need GIL) */
-	pytorch_session_finalize();
 	return pytrace_session_teardown();
 }

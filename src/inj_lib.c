@@ -215,16 +215,14 @@ static void *stack = NULL;
 static int exit_fd = -1;
 static pid_t worker_tid; /* for clone() and futex() only */
 static int epoll_fd = -1;
-static int cuda_timer_fd = -1;
-static int pytrace_timer_fd = -1;
+static int session_timer_fd = -1;
 
 static char msg_buf[UDS_MAX_MSG_LEN] __attribute__((aligned(8)));
 
 enum epoll_kind {
 	EK_EXIT,
 	EK_UDS,
-	EK_TIMER_CUDA,
-	EK_TIMER_PYTRACE,
+	EK_TIMER_SESSION,
 };
 
 static int epoll_add(int epoll_fd, int fd, __u32 epoll_events, enum epoll_kind kind)
@@ -254,7 +252,6 @@ static int epoll_del(int epoll_fd, int fd)
 	return 0;
 }
 
-static bool pytrace_session_active;
 static bool session_ended;
 
 #define CUDA_DUMP_BUF_SZ (256 * 1024)
@@ -429,18 +426,27 @@ static int handle_session_end(void)
 	if (cuda_dump) {
 		ret = cuda_dump_finalize();
 		if (ret) {
-			/* keep going: pytrace finalize below unsubscribes RecordFunction */
+			/* keep going so the other features still get finalized */
 			elog("Failed to finalize CUDA data dump: %d\n", ret);
 			err = err ?: ret;
 		}
 	}
 
-	if (pytrace_session_active) {
-		ret = pytrace_session_finalize();
-		if (ret) {
-			elog("Failed to finalize pytrace data dump: %d\n", ret);
-			err = err ?: ret;
-		}
+	/*
+	 * Finalize PyTorch before PyTrace: PyTorch teardown doesn't need the GIL,
+	 * while PyTrace's profiler uninstall takes it. Each is a no-op if its
+	 * feature wasn't set up.
+	 */
+	ret = pytorch_session_finalize();
+	if (ret) {
+		elog("Failed to finalize PyTorch data dump: %d\n", ret);
+		err = err ?: ret;
+	}
+
+	ret = pytrace_session_finalize();
+	if (ret) {
+		elog("Failed to finalize PyTrace data dump: %d\n", ret);
+		err = err ?: ret;
 	}
 
 	return err;
@@ -510,30 +516,34 @@ static int handle_msg(struct inj_msg *msg, int *fds, int fd_cnt)
 		zclose(run_ctx_memfd);
 		break;
 	}
-	case INJ_MSG_CUDA_SESSION: {
+	case INJ_MSG_CUDA_SETUP: {
 		if (fd_cnt != 1) {
-			err = -EPROTO;
-			elog("Received CUDA_SESSION command, but not log_fd!\n");
-			return err;
+			elog("Received CUDA_SETUP with unexpected FD count %d (want 1)!\n", fd_cnt);
+			return -EPROTO;
 		}
+		int dump_fd = fds[0];
 
-		long sess_timeout_ms = msg->cuda_session.session_timeout_ms;
-		vlog("Setting up CUDA session (timeout %ldms)...\n", sess_timeout_ms);
+		vlog("Setting up CUDA feature...\n");
 
 		err = init_cupti_activities();
 		if (err) {
 			elog("Failed to initialize CUPTI: %d\n", err);
-			return err;
+			run_ctx->cuda_feat_state = FEAT_FAILED;
+			inj_set_feat_hint(run_ctx->cuda_feat_hint, "Failed to initialize CUPTI: %d", err);
+			zclose(dump_fd);
+			return 0;
 		}
 
-		int dump_fd = fds[0];
 		if ((err = cuda_dump_setup(dump_fd)) < 0) {
 			elog("Failed to setup CUDA data dump: %d\n", err);
-			return err;
+			run_ctx->cuda_feat_state = FEAT_FAILED;
+			inj_set_feat_hint(run_ctx->cuda_feat_hint, "Failed to set up CUDA data dump: %d", err);
+			/* cuda_dump_setup() closes dump_fd on failure */
+			return 0;
 		}
 
 		/*
-		 * Temporarily set name to CUPTIO-specific variant as CUPTI might create more
+		 * Temporarily set name to CUPTI-specific variant as CUPTI might create more
 		 * pthreads and will inherit current thread name. This will lead to confusion due
 		 * to multiple "wprofinj" threads. Renaming to "wprofinj-cupti" (and then back to
 		 * "wprofinj" once we are done with CUPTI initialization) we make sure that we can
@@ -541,22 +551,99 @@ static int handle_msg(struct inj_msg *msg, int *fds, int fd_cnt)
 		 */
 		(void)prctl(PR_SET_NAME, WPROFINJ_CUPTI_THREAD_NAME, 0, 0, 0);
 
-		if ((err = start_cupti_activities()) < 0) {
-			elog("Failed to start CUDA activity tracing: %d\n", err);
-			return err;
-		}
+		err = start_cupti_activities();
 
 		/* restore original "wprofinj" name now */
 		(void)prctl(PR_SET_NAME, WPROFINJ_THREAD_NAME, 0, 0, 0);
 
-		run_ctx->setup_state = INJ_SETUP_READY;
+		if (err) {
+			/*
+			 * -EBUSY means CUPTI rejected our subscription, which in practice
+			 * means this process doesn't actually use CUDA (or, rarely, another
+			 * CUPTI tool is active). Treat as "ignore this feature", not a hard
+			 * failure, so co-resident features still run. The CUDA dump stays
+			 * owned by cuda_dump and is finalized (empty) at session end.
+			 */
+			run_ctx->cuda_feat_state = (err == -EBUSY) ? FEAT_IGNORED : FEAT_FAILED;
+			/* -EBUSY: start_cupti_activities() already recorded the busy reason. */
+			if (err != -EBUSY)
+				inj_set_feat_hint(run_ctx->cuda_feat_hint, "Failed to start CUDA activity tracing: %d", err);
+			elog("Failed to start CUDA activity tracing: %d (feature %s)\n",
+			     err, err == -EBUSY ? "ignored" : "failed");
+			return 0;
+		}
 
-		if ((err = setup_session_timer(&cuda_timer_fd, sess_timeout_ms, EK_TIMER_CUDA)) < 0) {
-			elog("Failed to set up CUDA session timer: %d\n", err);
+		run_ctx->cuda_feat_state = FEAT_READY;
+		vlog("CUDA feature ready.\n");
+		break;
+	}
+	case INJ_MSG_PYTRACE_SETUP: {
+		if (fd_cnt != 1) {
+			elog("Received PYTRACE_SETUP with unexpected FD count %d (want 1)!\n", fd_cnt);
+			return -EPROTO;
+		}
+		int dump_fd = fds[0];
+		int py_ver_minor = msg->pytrace_setup.py_version_minor;
+
+		vlog("Setting up PyTrace feature (Python 3.%d)...\n", py_ver_minor);
+
+		err = pytrace_session_setup(dump_fd, py_ver_minor,
+					    msg->pytrace_setup.sym_addrs,
+					    ARRAY_SIZE(msg->pytrace_setup.sym_addrs));
+		if (err) {
+			elog("Failed to setup PyTrace feature: %d\n", err);
+			/* pytrace_session_setup() consumes dump_fd on failure */
+			run_ctx->pytrace_feat_state = FEAT_FAILED;
+			inj_set_feat_hint(run_ctx->pytrace_feat_hint, "Failed to set up PyTrace: %d", err);
+			return 0;
+		}
+
+		run_ctx->pytrace_feat_state = FEAT_READY;
+		vlog("PyTrace feature ready.\n");
+		break;
+	}
+	case INJ_MSG_PYTORCH_SETUP: {
+		if (fd_cnt != 1) {
+			elog("Received PYTORCH_SETUP with unexpected FD count %d (want 1)!\n", fd_cnt);
+			return -EPROTO;
+		}
+		int dump_fd = fds[0];
+
+		vlog("Setting up PyTorch feature...\n");
+
+		err = pytorch_session_setup(dump_fd, msg->pytorch_setup.torch_sym_addrs,
+					    ARRAY_SIZE(msg->pytorch_setup.torch_sym_addrs));
+		if (err) {
+			elog("Failed to setup PyTorch feature: %d\n", err);
+			/* pytorch_session_setup() consumes dump_fd on failure */
+			run_ctx->pytorch_feat_state = FEAT_FAILED;
+			inj_set_feat_hint(run_ctx->pytorch_feat_hint, "Failed to set up PyTorch: %d", err);
+			return 0;
+		}
+
+		run_ctx->pytorch_feat_state = FEAT_READY;
+		vlog("PyTorch feature ready.\n");
+		break;
+	}
+	case INJ_MSG_START_SESSION: {
+		long sess_timeout_ms = msg->start_session.session_timeout_ms;
+		bool any_ready = run_ctx->cuda_feat_state == FEAT_READY ||
+				 run_ctx->pytrace_feat_state == FEAT_READY ||
+				 run_ctx->pytorch_feat_state == FEAT_READY;
+
+		if (!any_ready) {
+			vlog("START_SESSION: no feature set up successfully, marking session failed.\n");
+			run_ctx->setup_state = INJ_SETUP_FAILED;
+			break;
+		}
+
+		if ((err = setup_session_timer(&session_timer_fd, sess_timeout_ms, EK_TIMER_SESSION)) < 0) {
+			elog("Failed to set up session timer: %d\n", err);
 			return err;
 		}
 
-		vlog("CUDA session timeout successfully set up %3ldms from now.\n", sess_timeout_ms);
+		run_ctx->setup_state = INJ_SETUP_READY;
+		vlog("Session started (timeout %3ldms from now).\n", sess_timeout_ms);
 		break;
 	}
 	case INJ_MSG_SHUTDOWN:
@@ -570,54 +657,8 @@ static int handle_msg(struct inj_msg *msg, int *fds, int fd_cnt)
 
 		vlog("Shutdown completed successfully.\n");
 		return -ESHUTDOWN;
-	case INJ_MSG_PYTRACE_SESSION: {
-		/* FDs arrive in (pytrace, torch) order, each present only if enabled. */
-		int want_fds = 0;
-		if (msg->pytrace_session.enable_pytrace)
-			want_fds += 1;
-		if (msg->pytrace_session.enable_pytorch)
-			want_fds += 1;
-		if (fd_cnt != want_fds || fd_cnt < 1) {
-			err = -EPROTO;
-			elog("Received PYTRACE_SESSION command with unexpected FD count %d (want %d)!\n",
-			     fd_cnt, want_fds);
-			return err;
-		}
-
-		long sess_timeout_ms = msg->pytrace_session.session_timeout_ms;
-		int py_ver_minor = msg->pytrace_session.py_version_minor;
-		vlog("Setting up pytrace session (timeout %ldms, Python 3.%d)...\n", sess_timeout_ms, py_ver_minor);
-
-		int fd_idx = 0;
-		int pytrace_dump_fd = msg->pytrace_session.enable_pytrace ? fds[fd_idx++] : -1;
-		int pytorch_dump_fd = msg->pytrace_session.enable_pytorch ? fds[fd_idx++] : -1;
-		struct pytrace_setup_ctx ctx = {
-			.pytrace_dump_fd = pytrace_dump_fd,
-			.pytorch_dump_fd = pytorch_dump_fd,
-			.version_minor = py_ver_minor,
-			.sym_addrs = msg->pytrace_session.sym_addrs,
-			.sym_addr_cnt = ARRAY_SIZE(msg->pytrace_session.sym_addrs),
-			.torch_sym_addrs = msg->pytrace_session.torch_sym_addrs,
-			.torch_sym_addr_cnt = ARRAY_SIZE(msg->pytrace_session.torch_sym_addrs)
-		};
-		if ((err = pytrace_session_setup(&ctx)) < 0) {
-			elog("Failed to setup pytrace session: %d\n", err);
-			return err;
-		}
-
-		pytrace_session_active = true;
-		run_ctx->setup_state = INJ_SETUP_READY;
-
-		if ((err = setup_session_timer(&pytrace_timer_fd, sess_timeout_ms, EK_TIMER_PYTRACE)) < 0) {
-			elog("Failed to set up pytrace session timer: %d\n", err);
-			return err;
-		}
-
-		vlog("pytrace session setup complete.\n");
-		break;
-	}
 	default:
-		elog("Unexpected message (kind %d)!\n", msg->kind);
+		elog("Unexpected message %s!\n", inj_msg_str(msg->kind));
 		return -EINVAL;
 	}
 	return 0;
@@ -671,6 +712,13 @@ event_loop:
 	for (int i = 0; i < n; i++) {
 		switch (evs[i].data.u32) {
 		case EK_UDS:
+			/*
+			 * recvmsg() shrinks msg_controllen to the ancillary size it
+			 * actually received, so reset it before every call — otherwise a
+			 * later fd-bearing message after a 0-fd one would be silently
+			 * truncated (MSG_CTRUNC) and lose its fd.
+			 */
+			msg.msg_controllen = sizeof(buf);
 			ret = recvmsg(setup_ctx->uds_fd, &msg, 0);
 			if (ret < 0) {
 				err = -errno;
@@ -694,6 +742,12 @@ event_loop:
 				goto cleanup;
 			}
 
+			if (msg.msg_flags & MSG_CTRUNC) {
+				err = -EPROTO;
+				elog("UDS recvmsg() truncated ancillary data (lost FDs), exiting!\n");
+				goto cleanup;
+			}
+
 			fds = NULL;
 			fd_cnt = 0;
 			if (msg.msg_controllen > 0) {
@@ -707,7 +761,7 @@ event_loop:
 				}
 
 				int fds_sz = cmsg->cmsg_len - CMSG_LEN(0);
-				if (fds_sz > sizeof(fds) || fds_sz % sizeof(int) != 0) {
+				if (fds_sz > sizeof(int) * MAX_UDS_FD_CNT || fds_sz % sizeof(int) != 0) {
 					err = -EPROTO;
 					elog("UDS recvmsg() returned unexpected cmsghdr FDs payload (size %d), exiting!\n", fds_sz);
 					goto cleanup;
@@ -719,8 +773,8 @@ event_loop:
 
 			struct inj_msg *m = (void *)msg_buf;
 
-			vlog("Received UDS message kind %d (%s) with %d FD%s.\n",
-			     m->kind, inj_msg_str(m->kind), fd_cnt, fd_cnt > 1 ? "s" : "");
+			vlog("Received UDS message %s with %d FD%s.\n",
+			     inj_msg_str(m->kind), fd_cnt, fd_cnt > 1 ? "s" : "");
 
 			err = handle_msg(m, fds, fd_cnt);
 			if (err == -ESHUTDOWN) {
@@ -730,26 +784,22 @@ event_loop:
 			if (err) {
 				for (int i = 0; i < fd_cnt; i++)
 					close(fds[i]);
-				elog("Failure while handling message (kind %d): %d, exiting!\n", m->kind, err);
+				elog("Failure while handling message %s: %d, exiting!\n", inj_msg_str(m->kind), err);
 				goto cleanup;
 			}
 			break;
-		case EK_TIMER_CUDA:
-		case EK_TIMER_PYTRACE: {
+		case EK_TIMER_SESSION: {
 			long long expirations;
-			enum epoll_kind kind = evs[i].data.u32;
-			int fd = kind == EK_TIMER_CUDA ? cuda_timer_fd : pytrace_timer_fd;
-			const char *kind_str = kind == EK_TIMER_CUDA ? "CUDA" : "PYTRACE";
-			(void)read(fd, &expirations, sizeof(expirations));
+			(void)read(session_timer_fd, &expirations, sizeof(expirations));
 
 			err = handle_session_end();
 			if (err) {
-				elog("Failed to cleanly handle %s session end: %d\n", kind_str, err);
+				elog("Failed to cleanly handle session end: %d\n", err);
 				goto cleanup;
 			}
 
-			vlog("%s session timer expired with %.3lfms delay after planned session end.\n",
-			     kind_str, (ktime_now_ns() - run_ctx->sess_end_ts) / 1000000.0);
+			vlog("Session timer expired with %.3lfms delay after planned session end.\n",
+			     (ktime_now_ns() - run_ctx->sess_end_ts) / 1000000.0);
 			break;
 		}
 		case EK_EXIT:
@@ -789,18 +839,11 @@ cleanup:
 	zclose(setup_ctx->uds_fd);
 	zclose(run_ctx_memfd);
 	zclose(epoll_fd);
-	zclose(cuda_timer_fd);
-	zclose(pytrace_timer_fd);
+	zclose(session_timer_fd);
 
 	if (err) {
-		if (run_ctx && run_ctx->setup_state == INJ_SETUP_PENDING) {
+		if (run_ctx && run_ctx->setup_state == INJ_SETUP_PENDING)
 			run_ctx->setup_state = INJ_SETUP_FAILED;
-			if (!run_ctx->exit_hint) {
-				char msg[256];
-				snprintf(msg, sizeof(msg), "Worker thread exited with error %d!\n", err);
-				inj_set_exit_hint(HINT_ERROR, msg);
-			}
-		}
 
 		elog("Worker thread exited with ERROR %d.\n", err);
 	} else {
