@@ -497,6 +497,46 @@ int parse_size(const char *s, enum size_unit def_unit, u64 *out)
 	return 0;
 }
 
+/*
+ * Inverse of parse_size(): render bytes in the largest binary unit that
+ * divides it evenly, so the result re-parses to the same value.
+ */
+const char *fmt_size_units(u64 bytes)
+{
+	if (bytes == 0)
+		return "0b";
+	if (bytes % (1ULL << 40) == 0)
+		return sfmt("%llutb", (unsigned long long)(bytes >> 40));
+	if (bytes % (1ULL << 30) == 0)
+		return sfmt("%llugb", (unsigned long long)(bytes >> 30));
+	if (bytes % (1ULL << 20) == 0)
+		return sfmt("%llumb", (unsigned long long)(bytes >> 20));
+	if (bytes % (1ULL << 10) == 0)
+		return sfmt("%llukb", (unsigned long long)(bytes >> 10));
+	return sfmt("%llub", (unsigned long long)bytes);
+}
+
+/*
+ * Inverse of parse_time_units(): render nanoseconds in the largest unit
+ * that divides it evenly, so the result re-parses to the same value.
+ */
+const char *fmt_time_units(u64 ns)
+{
+	if (ns == 0)
+		return "0s";
+	if (ns % 3600000000000ULL == 0)
+		return sfmt("%lluh", (unsigned long long)(ns / 3600000000000ULL));
+	if (ns % 60000000000ULL == 0)
+		return sfmt("%llum", (unsigned long long)(ns / 60000000000ULL));
+	if (ns % 1000000000ULL == 0)
+		return sfmt("%llus", (unsigned long long)(ns / 1000000000ULL));
+	if (ns % 1000000ULL == 0)
+		return sfmt("%llums", (unsigned long long)(ns / 1000000ULL));
+	if (ns % 1000ULL == 0)
+		return sfmt("%lluus", (unsigned long long)(ns / 1000ULL));
+	return sfmt("%lluns", (unsigned long long)ns);
+}
+
 static u64 ktime_off;
 
 void calibrate_ktime(void)

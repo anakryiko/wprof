@@ -152,6 +152,7 @@ const char *extra_param_str(struct wprof_data_hdr *hdr, const struct wprof_extra
 	case WEXTRA_PREPARE_SPEC:		return sfmt("--prepare %s", wevent_str(hdr, e->stroff));
 	case WEXTRA_ACTIVATE_SPEC:		return sfmt("--activate %s", wevent_str(hdr, e->stroff));
 	case WEXTRA_PMU_EVENT:			return sfmt("--stacks pmu=%s", wevent_str(hdr, e->stroff));
+	case WEXTRA_FR_SPEC:			return sfmt("--flight-record=%s", wevent_str(hdr, e->stroff));
 	default:
 		BUG("unknown extra param kind %d\n", e->kind);
 	}
@@ -2155,6 +2156,7 @@ int main(int argc, char **argv)
 			case WEXTRA_PREPARE_SPEC:
 			case WEXTRA_ACTIVATE_SPEC:
 			case WEXTRA_PMU_EVENT:
+			case WEXTRA_FR_SPEC:
 				/* capture-time only; informational at replay (see cmdline reconstruction) */
 				break;
 			default:

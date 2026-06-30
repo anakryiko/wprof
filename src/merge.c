@@ -179,6 +179,17 @@ static void collect_extras(struct persist_state *ps, struct wprof_extra_param **
 		add_extra(extras, cnt, WEXTRA_PREPARE_SPEC, persist_stroff(ps, env.prepare_spec_str));
 	if (env.activate_spec_str)
 		add_extra(extras, cnt, WEXTRA_ACTIVATE_SPEC, persist_stroff(ps, env.activate_spec_str));
+	if (env.flightrec) {
+		char spec[64];
+		int n = 0;
+		if (env.fr_keep_time_ns)
+			n += snprintf(spec + n, sizeof(spec) - n, "%s", fmt_time_units(env.fr_keep_time_ns));
+		if (env.fr_keep_size)
+			n += snprintf(spec + n, sizeof(spec) - n, "%s%s", n ? "," : "", fmt_size_units(env.fr_keep_size));
+		if (n == 0)
+			snprintf(spec, sizeof(spec), "0s,0b");	/* both unlimited */
+		add_extra(extras, cnt, WEXTRA_FR_SPEC, persist_stroff(ps, spec));
+	}
 
 	/* persist emit (-e) options that differ from default, storing the on/off value */
 	for (int i = 0; i < emit_feature_cnt; i++) {

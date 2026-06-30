@@ -113,6 +113,7 @@ enum wprof_extra_param_kind {
 	WEXTRA_PREPARE_SPEC		= 26,
 	WEXTRA_ACTIVATE_SPEC		= 27,
 	WEXTRA_PMU_EVENT		= 28,
+	WEXTRA_FR_SPEC			= 29,
 };
 
 struct wprof_extra_param {
