@@ -6,6 +6,8 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <pthread.h>
+#include <stdatomic.h>
 
 #include "injmgr.h"
 #include "proc.h"
@@ -19,6 +21,9 @@
 #define LIBWPROFINJ_CUDA_DUMP_PATH_FMT "wprofinj-cuda.%d.%d.data"
 #define LIBWPROFINJ_PYTRACE_DUMP_PATH_FMT "wprofinj-pytrace.%d.%d.data"
 #define LIBWPROFINJ_PYTORCH_DUMP_PATH_FMT "wprofinj-pytorch.%d.%d.data"
+
+/* Upper bound on injection worker threads; injection is ptrace/IO-bound. */
+#define INJMGR_MAX_WORKERS 8
 
 const char *inj_proc_str(int pid, int ns_pid, const char *name)
 {
@@ -154,57 +159,73 @@ struct inj_detect_info {
 	unsigned long pytorch_sym_addrs[PYTORCH_SYM_CNT];
 };
 
+/* One worker's outcome for a candidate, folded into env.injectees serially. */
+struct inj_result {
+	int err;			/* <0: injection failed */
+	bool created;			/* an injectee was produced (features detected) */
+	struct tracee_state *tracee;
+	int log_fd;
+	char *log_path;
+	enum inj_feature feats;
+	bool force_cuda;
+	struct inj_detect_info info;
+};
+
 static enum inj_feature injmgr_detect_feats(const struct inj_cand *c, struct inj_detect_info *d)
 {
-	enum inj_feature detect = 0;
+	enum inj_feature feats = 0;
 
 	if ((c->intents & INJ_FEAT_CUDA) && cuda_detect(c->pid, c->force_cuda))
-		detect |= INJ_FEAT_CUDA;
+		feats |= INJ_FEAT_CUDA;
 
 	/* PyTrace and PyTorch both require the process to be Python. */
 	if (c->intents & (INJ_FEAT_PYTRACE | INJ_FEAT_PYTORCH)) {
 		if (pytrace_detect(c->pid, &d->py_version_minor, d->py_sym_addrs)) {
 			if (c->intents & INJ_FEAT_PYTRACE)
-				detect |= INJ_FEAT_PYTRACE;
+				feats |= INJ_FEAT_PYTRACE;
 			if ((c->intents & INJ_FEAT_PYTORCH) && pytorch_detect(c->pid, d->pytorch_sym_addrs))
-				detect |= INJ_FEAT_PYTORCH;
+				feats |= INJ_FEAT_PYTORCH;
 		}
 	}
 
-	return detect;
+	return feats;
 }
 
-static int injmgr_inject(const struct inj_cand *c, int workdir_fd)
+/*
+ * Detect + inject one candidate, recording the outcome in *res. Runs on a
+ * worker thread, so it must not touch env.injectees (or any shared state beyond
+ * thread-safe helpers); the result is folded into env.injectees serially later.
+ */
+static void injmgr_inject(const struct inj_cand *c, int workdir_fd, struct inj_result *res)
 {
-	int err = 0;
 	struct inj_detect_info d = {};
-	enum inj_feature detect = injmgr_detect_feats(c, &d);
-	if (!detect)
-		return 0;
+	enum inj_feature feats = injmgr_detect_feats(c, &d);
+	if (!feats)
+		return;
 
 	const char *who = inj_proc_str(c->pid, ns_tid_by_host_tid(c->pid, c->pid), proc_name(c->pid));
-	vprintf("%s uses %s, injecting...\n", who, inj_feat_str(detect));
+	vprintf("%s uses %s, injecting...\n", who, inj_feat_str(feats));
 
 	char log_path[512];
 	snprintf(log_path, sizeof(log_path), LIBWPROFINJ_LOG_PATH_FMT, getpid(), c->pid);
 	int log_fd = openat(workdir_fd, log_path, O_RDWR | O_CREAT | O_CLOEXEC, 0644);
 	if (log_fd < 0) {
-		err = -errno;
-		eprintf("Failed to create %s log file at '%s': %d\n", who, log_path, err);
-		return err;
+		res->err = -errno;
+		eprintf("Failed to create %s log file at '%s': %d\n", who, log_path, res->err);
+		return;
 	}
 
 	struct tracee_state *tracee = tracee_inject(c->pid);
 	if (!tracee) {
-		err = -errno;
+		res->err = -errno;
 		close(log_fd);
-		eprintf("PTRACE injection failed for %s: %d\n", who, err);
-		return err;
+		eprintf("PTRACE injection failed for %s: %d\n", who, res->err);
+		return;
 	}
 
 	/* request libwprofinj-side USDTs to be triggered if we need stack traces */
-	bool use_usdts = (detect & INJ_FEAT_CUDA) && (env.requested_stack_traces & ST_CUDA);
-	err = tracee_handshake(tracee, log_fd, use_usdts);
+	bool use_usdts = (feats & INJ_FEAT_CUDA) && (env.requested_stack_traces & ST_CUDA);
+	int err = tracee_handshake(tracee, log_fd, use_usdts);
 	if (err) {
 		eprintf("Injection handshake with %s failed: %d\n", who, err);
 		close(log_fd);
@@ -213,35 +234,93 @@ static int injmgr_inject(const struct inj_cand *c, int workdir_fd)
 			eprintf("PTRACE retraction failed for %s: %d\n", who, rerr);
 		else
 			tracee_free(tracee);
-		return err;
+		res->err = err;
+		return;
 	}
 
-	/* handshake transfers UDS FD ownership to us, it's now our responsibility to close it */
-	struct injectee *inj = injmgr_add_injectee(tracee);
-	inj->log_fd = log_fd;
-	inj->log_path = strdup(log_path);
-	inj->detect_feats = detect;
-	inj->force_cuda = c->force_cuda;
-	inj->py_version_minor = d.py_version_minor;
-	memcpy(inj->py_sym_addrs, d.py_sym_addrs, sizeof(inj->py_sym_addrs));
-	memcpy(inj->pytorch_sym_addrs, d.pytorch_sym_addrs, sizeof(inj->pytorch_sym_addrs));
-	inj->state = INJECTEE_INJECTED;
+	/* handshake transfers UDS FD ownership to us; record it for serial collection */
+	res->created = true;
+	res->tracee = tracee;
+	res->log_fd = log_fd;
+	res->log_path = strdup(log_path);
+	res->feats = feats;
+	res->force_cuda = c->force_cuda;
+	res->info = d;
+}
 
-	return 0;
+/* Shared state for the injection worker pool. */
+struct injmgr_pool {
+	int workdir_fd;
+	atomic_int next;		/* next candidate index to claim */
+	struct inj_result *results;
+};
+
+static void *injmgr_worker(void *arg)
+{
+	struct injmgr_pool *pool = arg;
+	int i;
+
+	while ((i = atomic_fetch_add(&pool->next, 1)) < inj_cand_cnt)
+		injmgr_inject(&inj_cands[i], pool->workdir_fd, &pool->results[i]);
+
+	return NULL;
 }
 
 int injmgr_setup(int workdir_fd)
 {
 	injmgr_enumerate_candidates();
+	if (inj_cand_cnt == 0)
+		return 0;
 
+	/*
+	 * Detection and ptrace injection are independent per candidate and
+	 * dominated by per-process I/O and ptrace round-trips, so run them over a
+	 * small worker pool. Each worker fills its own results[] slot and never
+	 * touches env.injectees; the results are folded in serially afterwards.
+	 */
+	struct inj_result *results = calloc(inj_cand_cnt, sizeof(*results));
+	int worker_cnt = min(inj_cand_cnt, INJMGR_MAX_WORKERS);
+	struct injmgr_pool pool = { .workdir_fd = workdir_fd, .next = 0, .results = results };
+
+	vprintf("Injecting into %d process%s using %d worker%s...\n",
+		inj_cand_cnt, inj_cand_cnt > 1 ? "es" : "",
+		worker_cnt, worker_cnt > 1 ? "s" : "");
+
+	/* Spawn worker_cnt-1 helpers; the calling thread is a worker too. */
+	pthread_t threads[INJMGR_MAX_WORKERS];
+	int spawned = 0;
+	for (int t = 0; t < worker_cnt - 1; t++) {
+		if (pthread_create(&threads[spawned], NULL, injmgr_worker, &pool) == 0)
+			spawned++;
+	}
+	injmgr_worker(&pool);
+	for (int t = 0; t < spawned; t++)
+		pthread_join(threads[t], NULL);
+
+	/* Fold results into env.injectees in candidate order (single-threaded). */
 	for (int i = 0; i < inj_cand_cnt; i++) {
-		int err = injmgr_inject(&inj_cands[i], workdir_fd);
-		if (err) {
+		struct inj_result *res = &results[i];
+
+		if (res->err) {
 			eprintf("Injection into PID %d (%s) failed: %d (skipping...)\n",
-				inj_cands[i].pid, proc_name(inj_cands[i].pid), err);
+				inj_cands[i].pid, proc_name(inj_cands[i].pid), res->err);
+			continue;
 		}
+		if (!res->created)
+			continue;
+
+		struct injectee *inj = injmgr_add_injectee(res->tracee);
+		inj->log_fd = res->log_fd;
+		inj->log_path = res->log_path;
+		inj->detect_feats = res->feats;
+		inj->force_cuda = res->force_cuda;
+		inj->py_version_minor = res->info.py_version_minor;
+		memcpy(inj->py_sym_addrs, res->info.py_sym_addrs, sizeof(inj->py_sym_addrs));
+		memcpy(inj->pytorch_sym_addrs, res->info.pytorch_sym_addrs, sizeof(inj->pytorch_sym_addrs));
+		inj->state = INJECTEE_INJECTED;
 	}
 
+	free(results);
 	free(inj_cands);
 	inj_cands = NULL;
 	inj_cand_cnt = 0;
