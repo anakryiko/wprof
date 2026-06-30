@@ -611,8 +611,8 @@ static int handle_msg(struct inj_msg *msg, int *fds, int fd_cnt)
 
 		vlog("Setting up PyTorch feature...\n");
 
-		err = pytorch_session_setup(dump_fd, msg->pytorch_setup.torch_sym_addrs,
-					    ARRAY_SIZE(msg->pytorch_setup.torch_sym_addrs));
+		err = pytorch_session_setup(dump_fd, msg->pytorch_setup.pytorch_sym_addrs,
+					    ARRAY_SIZE(msg->pytorch_setup.pytorch_sym_addrs));
 		if (err) {
 			elog("Failed to setup PyTorch feature: %d\n", err);
 			/* pytorch_session_setup() consumes dump_fd on failure */

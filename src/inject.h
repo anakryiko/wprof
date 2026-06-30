@@ -16,7 +16,7 @@ struct tracee_info {
 struct tracee_state;
 
 struct tracee_state *tracee_inject(int pid);
-int tracee_handshake(struct tracee_state *tracee, int workdir_fd, bool use_usdts);
+int tracee_handshake(struct tracee_state *tracee, int log_fd, bool use_usdts);
 int tracee_retract(struct tracee_state *tracee);
 void tracee_free(struct tracee_state *tracee);
 

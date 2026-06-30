@@ -537,7 +537,7 @@ int start_cupti_activities(void)
 		 * another CUPTI tool is active). The caller maps -EBUSY to
 		 * FEAT_IGNORED; record the reason here, where we actually know it.
 		 */
-		elog("No CUDA is used by this process or (unlikely) another CUPTI tool is active right now! Bailing...\n");
+		elog("No CUDA is used by this process or another CUPTI tool is active right now! Bailing...\n");
 		inj_set_feat_hint(run_ctx->cuda_feat_hint, "CUDA/GPU not used by this process (or CUPTI in use by another tool)");
 		return -EBUSY;
 	} else if (ret != CUPTI_SUCCESS) {

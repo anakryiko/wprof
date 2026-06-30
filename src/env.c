@@ -120,7 +120,7 @@ static const struct argp_option opts[] = {
 	{ "verbose", 'v', NULL, 0, "Verbose output" },
 	{ "stats", OPT_STATS, NULL, 0, "Print various wprof stats (BPF, resource usage, etc.)" },
 	{ "debug", OPT_DEBUG, "FEAT", 0, "Debug features (pb-debug-interns, pb-disable-interns, keep-workdir, raw-stacks, no-tsidx)"},
-	{ "log", OPT_LOG, "LOG", 0, "Debug logging subset selector (libbpf, usdt, topology, inject, tracee, pytrace)"},
+	{ "log", OPT_LOG, "LOG", 0, "Debug logging subset selector (libbpf, usdt, topology, inject, tracee, discovery)"},
 	{ "dur", 'd', "DURATION", 0, "Limit running duration; accepts time units s/ms/us/ns/m/h, bare number is ms (default: 1000ms)" },
 	{ "dur-ms", 0, 0, OPTION_ALIAS },
 	{ "prepare", OPT_PREPARE, "WHEN", 0, "Delayed tracing setup, syntax: @now, @<ISO time>, +<dur>, /<dur> (align to next period). Default: at startup" },
@@ -273,8 +273,8 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			env.log_set |= LOG_INJECTION;
 		} else if (strcasecmp(arg, "tracee") == 0) {
 			env.log_set |= LOG_TRACEE;
-		} else if (strcasecmp(arg, "pytrace") == 0) {
-			env.log_set |= LOG_PYTRACE;
+		} else if (strcasecmp(arg, "discovery") == 0) {
+			env.log_set |= LOG_DISCOVERY;
 		} else {
 			eprintf("Unrecognized log subset '%s'!\n", arg);
 			argp_usage(state);

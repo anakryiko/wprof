@@ -35,10 +35,10 @@ static const char *pytrace_sym_names[PYTRACE_SYM_CNT] = {
 	"PyEval_SetProfileAllThreads",
 };
 
-#define TORCH_SYM_CNT 3		/* must match ARRAY_SIZE(torch_resolve_syms) in inj_torch_profiler.c */
+#define PYTORCH_SYM_CNT 3		/* must match ARRAY_SIZE(torch_resolve_syms) in inj_torch_profiler.c */
 
 __attribute__((unused))
-static const char *torch_sym_names[TORCH_SYM_CNT] = {
+static const char *pytorch_sym_names[PYTORCH_SYM_CNT] = {
 	"_ZN2at17addGlobalCallbackENS_22RecordFunctionCallbackE",	/* at::addGlobalCallback */
 	"_ZN2at14removeCallbackEm",					/* at::removeCallback */
 	"_ZNK2at14RecordFunction4nameEv",				/* at::RecordFunction::name */
@@ -167,7 +167,7 @@ struct inj_msg {
 			/* pytrace dump fd passed as ancillary data */
 		} pytrace_setup;
 		struct inj_msg_pytorch_setup {
-			unsigned long torch_sym_addrs[TORCH_SYM_CNT];
+			unsigned long pytorch_sym_addrs[PYTORCH_SYM_CNT];
 			/* pytorch dump fd passed as ancillary data */
 		} pytorch_setup;
 		struct inj_msg_start_session {

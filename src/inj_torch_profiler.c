@@ -425,8 +425,8 @@ static int verify_mutex_symbols(void)
 	return 0;
 }
 
-/* Table of function pointers assigned from host-resolved addresses, must match torch_sym_names order */
-static void **torch_resolve_syms[TORCH_SYM_CNT] = {
+/* Table of function pointers assigned from host-resolved addresses, must match pytorch_sym_names order */
+static void **torch_resolve_syms[PYTORCH_SYM_CNT] = {
 	(void **)&rf_add_global_callback,
 	(void **)&rf_remove_callback,
 	(void **)&rf_name,
@@ -474,8 +474,8 @@ int pytorch_session_setup(int pytorch_dump_fd, unsigned long *sym_addrs, int sym
 {
 	int err = 0;
 
-	if (sym_addr_cnt != TORCH_SYM_CNT) {
-		elog("BUG: PyTorch torch_sym_addr_cnt:%d != TORCH_SYM_CNT:%d\n", sym_addr_cnt, TORCH_SYM_CNT);
+	if (sym_addr_cnt != PYTORCH_SYM_CNT) {
+		elog("BUG: PyTorch torch_sym_addr_cnt:%d != PYTORCH_SYM_CNT:%d\n", sym_addr_cnt, PYTORCH_SYM_CNT);
 		zclose(pytorch_dump_fd);
 		return -EINVAL;
 	}
@@ -484,7 +484,7 @@ int pytorch_session_setup(int pytorch_dump_fd, unsigned long *sym_addrs, int sym
 	for (int i = 0; i < sym_addr_cnt; i++) {
 		*torch_resolve_syms[i] = (void *)sym_addrs[i];
 		if (sym_addrs[i])
-			vlog("  %s = %p\n", torch_sym_names[i], (void *)sym_addrs[i]);
+			vlog("  %s = %p\n", pytorch_sym_names[i], (void *)sym_addrs[i]);
 	}
 
 	if (!rf_add_global_callback || !rf_remove_callback || !rf_name) {

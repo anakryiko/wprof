@@ -19,11 +19,11 @@
 #include "data.h"
 #include "env.h"
 #include "pmu.h"
-#include "cuda.h"
 #include "cuda_data.h"
 #include "pytrace.h"
 #include "pytrace_data.h"
 #include "pytorch_data.h"
+#include "injmgr.h"
 #include "proc.h"
 #include "persist.h"
 #include "stacktrace.h"
@@ -278,8 +278,13 @@ static struct wprof_stats *prepare_stats(struct persist_state *ps, struct worker
 	struct wprof_bpf *skel = env.skel;
 	int rb_cnt = env.ringbuf_cnt;
 	int cpu_cnt = env.num_cpus;
-	int cuda_cnt = env.cuda_cnt;
-	int py_cnt = env.py_cnt;
+	int cuda_cnt = 0, py_cnt = 0;
+	for (int i = 0; i < env.injectee_cnt; i++) {
+		if (env.injectees[i].detect_feats & INJ_FEAT_CUDA)
+			cuda_cnt++;
+		if (env.injectees[i].detect_feats & (INJ_FEAT_PYTRACE | INJ_FEAT_PYTORCH))
+			py_cnt++;
+	}
 	int pmu_cnt = env.pmu_real_cnt;
 	int prog_cnt = 0;
 
@@ -435,30 +440,38 @@ skip_bpf_stats:
 	u64 *cuda_buf_cnt = wstats(s, WSTAT_CUDA_BUF_CNT, NULL);
 	u64 *cuda_data_sz = wstats(s, WSTAT_CUDA_DATA_SZ, NULL);
 
-	for (int i = 0; i < cuda_cnt; i++) {
-		struct cuda_tracee *cuda = &env.cudas[i];
+	int ci = 0;
+	for (int i = 0; i < env.injectee_cnt; i++) {
+		struct injectee *inj = &env.injectees[i];
 
-		/* per-tracee */
-		cuda_name[1 + i] = persist_stroff(ps, cuda_str(cuda));
-		cuda_state[1 + i] = cuda->state;
-
-		if (cuda->state == TRACEE_IGNORED || !cuda->ctx)
+		if (!(inj->detect_feats & INJ_FEAT_CUDA))
 			continue;
 
-		cuda_rec_cnt[1 + i] = cuda->ctx->cupti_rec_cnt;
-		cuda_drop_cnt[1 + i] = cuda->ctx->cupti_drop_cnt;
-		cuda_err_cnt[1 + i] = cuda->ctx->cupti_err_cnt;
-		cuda_ignore_cnt[1 + i] = cuda->ctx->cupti_ignore_cnt;
-		cuda_buf_cnt[1 + i] = cuda->ctx->cupti_buf_cnt;
-		cuda_data_sz[1 + i] = cuda->ctx->cupti_data_sz;
+		/* per-tracee */
+		cuda_name[1 + ci] = persist_stroff(ps, injectee_str(inj));
+		cuda_state[1 + ci] = inj->state;
+
+		if (inj->state == INJECTEE_IGNORED || !inj->ctx) {
+			ci++;
+			continue;
+		}
+
+		cuda_rec_cnt[1 + ci] = inj->ctx->cupti_rec_cnt;
+		cuda_drop_cnt[1 + ci] = inj->ctx->cupti_drop_cnt;
+		cuda_err_cnt[1 + ci] = inj->ctx->cupti_err_cnt;
+		cuda_ignore_cnt[1 + ci] = inj->ctx->cupti_ignore_cnt;
+		cuda_buf_cnt[1 + ci] = inj->ctx->cupti_buf_cnt;
+		cuda_data_sz[1 + ci] = inj->ctx->cupti_data_sz;
 
 		/* global */
-		cuda_rec_cnt[0] += cuda->ctx->cupti_rec_cnt;
-		cuda_drop_cnt[0] += cuda->ctx->cupti_drop_cnt;
-		cuda_err_cnt[0] += cuda->ctx->cupti_err_cnt;
-		cuda_ignore_cnt[0] += cuda->ctx->cupti_ignore_cnt;
-		cuda_buf_cnt[0] += cuda->ctx->cupti_buf_cnt;
-		cuda_data_sz[0] += cuda->ctx->cupti_data_sz;
+		cuda_rec_cnt[0] += inj->ctx->cupti_rec_cnt;
+		cuda_drop_cnt[0] += inj->ctx->cupti_drop_cnt;
+		cuda_err_cnt[0] += inj->ctx->cupti_err_cnt;
+		cuda_ignore_cnt[0] += inj->ctx->cupti_ignore_cnt;
+		cuda_buf_cnt[0] += inj->ctx->cupti_buf_cnt;
+		cuda_data_sz[0] += inj->ctx->cupti_data_sz;
+
+		ci++;
 	}
 
 	/* PyTrace tracee stats (per-tracee) */
@@ -468,24 +481,32 @@ skip_bpf_stats:
 	u64 *pytrace_code_cache_cnt = wstats(s, WSTAT_PYTRACE_CODE_CACHE_CNT, NULL);
 	u64 *pytorch_event_cnt = wstats(s, WSTAT_PYTORCH_EVENT_CNT, NULL);
 
-	for (int i = 0; i < py_cnt; i++) {
-		struct pytrace_tracee *py = &env.pytraces[i];
+	int pi = 0;
+	for (int i = 0; i < env.injectee_cnt; i++) {
+		struct injectee *inj = &env.injectees[i];
 
-		/* per-tracee */
-		pytrace_name[1 + i] = persist_stroff(ps, pytrace_str(py));
-		pytrace_state[1 + i] = py->state;
-
-		if (!py->ctx)
+		if (!(inj->detect_feats & (INJ_FEAT_PYTRACE | INJ_FEAT_PYTORCH)))
 			continue;
 
-		pytrace_event_cnt[1 + i] = py->ctx->pytrace_event_cnt;
-		pytrace_code_cache_cnt[1 + i] = py->ctx->pytrace_code_cache_cnt;
-		pytorch_event_cnt[1 + i] = py->ctx->pytorch_event_cnt;
+		/* per-tracee */
+		pytrace_name[1 + pi] = persist_stroff(ps, injectee_str(inj));
+		pytrace_state[1 + pi] = inj->state;
+
+		if (!inj->ctx) {
+			pi++;
+			continue;
+		}
+
+		pytrace_event_cnt[1 + pi] = inj->ctx->pytrace_event_cnt;
+		pytrace_code_cache_cnt[1 + pi] = inj->ctx->pytrace_code_cache_cnt;
+		pytorch_event_cnt[1 + pi] = inj->ctx->pytorch_event_cnt;
 
 		/* global */
-		pytrace_event_cnt[0] += py->ctx->pytrace_event_cnt;
-		pytrace_code_cache_cnt[0] += py->ctx->pytrace_code_cache_cnt;
-		pytorch_event_cnt[0] += py->ctx->pytorch_event_cnt;
+		pytrace_event_cnt[0] += inj->ctx->pytrace_event_cnt;
+		pytrace_code_cache_cnt[0] += inj->ctx->pytrace_code_cache_cnt;
+		pytorch_event_cnt[0] += inj->ctx->pytorch_event_cnt;
+
+		pi++;
 	}
 
 	double *pmu_active_frac = (double *)wstats(s, WSTAT_PMU_ACTIVE_FRAC, NULL);
@@ -653,7 +674,11 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 		wmerge->next_rec = wmerge->rec_cnt > 0 ? &wmerge->recs[0] : NULL;
 	}
 
-	/* Prepare per-process CUDA event streams */
+	/*
+	 * Prepare per-process event streams (CUDA, PyTrace, PyTorch), each keyed
+	 * back to the injectee it came from. A single injectee contributes to
+	 * several streams when it was injected for multiple features.
+	 */
 	struct wcuda_state {
 		struct wcuda_data_hdr *dump_hdr;
 		size_t dump_sz;
@@ -662,61 +687,10 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 		const struct wrust_ts_ptr *next_rec;
 		u64 rec_cnt;
 		u64 rec_idx;
-	} *wcudas = calloc(env.cuda_cnt, sizeof(*wcudas));
+		int tracee_idx;		/* index into env.injectees[] */
+	} *wcudas = calloc(env.injectee_cnt, sizeof(*wcudas));
+	int wcuda_cnt = 0;
 
-	for (int i = 0; i < env.cuda_cnt; i++) {
-		struct cuda_tracee *cuda = &env.cudas[i];
-		struct wcuda_state *wcuda = &wcudas[i];
-
-		if (cuda->state == TRACEE_INACTIVE) {
-			/* expected clean shutdown case */
-		} else if (cuda->state == TRACEE_SHUTDOWN_TIMEOUT) {
-			eprintf("Tracee #%d (%s) timed out its shutdown, but we'll try to collect its data nevertheless!..\n",
-				i, cuda_str(cuda));
-		} else if (cuda->state == TRACEE_IGNORED) {
-			/* expected uninteresting case, don't pollute logs */
-			continue;
-		} else {
-			eprintf("Skipping CUDA tracing data from tracee #%d (%s, %s) as it had problems...\n",
-				i, cuda_str(cuda), cuda_tracee_state_str(cuda->state));
-			continue;
-		}
-
-		struct stat st;
-		if (fstat(cuda->dump_fd, &st) < 0) {
-			err = -errno;
-			eprintf("Failed to fstat() CUDA data dump for tracee %s at '%s': %d\n",
-				cuda_str(cuda), cuda->dump_path, err);
-			continue;
-		}
-
-		wcuda->dump_sz = st.st_size;
-		wcuda->dump_hdr = mmap(NULL, wcuda->dump_sz, PROT_READ | PROT_WRITE, MAP_SHARED, cuda->dump_fd, 0);
-		if (wcuda->dump_hdr == MAP_FAILED) {
-			err = -errno;
-			eprintf("Failed to mmap() CUDA data dump for tracee %s at '%s': %d\n",
-				cuda_str(cuda), cuda->dump_path, err);
-			continue;
-		}
-
-		wcuda->strs = (void *)wcuda->dump_hdr + wcuda->dump_hdr->hdr_sz + wcuda->dump_hdr->strs_off;
-
-		/* re-sort CUDA events because they don't come completely ordered out of CUPTI */
-		wcuda->rec_idx = 0;
-		wcuda->rec_cnt = wcuda->dump_hdr->event_cnt;
-		wcuda->recs = calloc(wcuda->rec_cnt, sizeof(*wcuda->recs));
-
-		struct wcuda_event_record *rec;
-		u64 idx = 0;
-		wcuda_for_each_event(rec, wcuda->dump_hdr) {
-			wcuda->recs[idx++] = (struct wrust_ts_ptr){ .ts = rec->e->ts, .ptr = rec->e };
-		}
-
-		wrust_sort_events_by_ts(wcuda->recs, wcuda->rec_cnt);
-		wcuda->next_rec = wcuda->rec_cnt > 0 ? &wcuda->recs[0] : NULL;
-	}
-
-	/* Prepare per-process pytrace (Python call/return) event streams */
 	struct wpytrace_state {
 		struct wpytrace_data_hdr *dump_hdr;
 		size_t dump_sz;
@@ -727,11 +701,10 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 		const struct wrust_ts_ptr *next_rec;
 		u64 rec_cnt;
 		u64 rec_idx;
-		int tracee_idx;		/* index into env.pytraces[] */
-	} *wpytraces = calloc(env.py_cnt, sizeof(*wpytraces));
+		int tracee_idx;		/* index into env.injectees[] */
+	} *wpytraces = calloc(env.injectee_cnt, sizeof(*wpytraces));
 	int wpytrace_cnt = 0;
 
-	/* Prepare per-process pytorch (RecordFunction) event streams */
 	struct wpytorch_state {
 		struct wpytorch_data_hdr *dump_hdr;
 		size_t dump_sz;
@@ -740,97 +713,142 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers)
 		const struct wrust_ts_ptr *next_rec;
 		u64 rec_cnt;
 		u64 rec_idx;
-		int tracee_idx;		/* index into env.pytraces[] */
-	} *wpytorches = calloc(env.py_cnt, sizeof(*wpytorches));
+		int tracee_idx;		/* index into env.injectees[] */
+	} *wpytorches = calloc(env.injectee_cnt, sizeof(*wpytorches));
 	int wpytorch_cnt = 0;
 
-	for (int i = 0; i < env.py_cnt; i++) {
-		struct pytrace_tracee *pf = &env.pytraces[i];
+	for (int i = 0; i < env.injectee_cnt; i++) {
+		struct injectee *inj = &env.injectees[i];
 		struct stat st;
 
-		if (pf->state == TRACEE_INACTIVE) {
+		if (inj->state == INJECTEE_INACTIVE) {
 			/* expected clean shutdown case */
-		} else if (pf->state == TRACEE_SHUTDOWN_TIMEOUT) {
-			eprintf("PyTrace tracee #%d (%s) timed out its shutdown, but we'll try to collect its data nevertheless!..\n",
-				i, pytrace_str(pf));
+		} else if (inj->state == INJECTEE_SHUTDOWN_TIMEOUT) {
+			eprintf("Tracee #%d (%s) timed out its shutdown, but we'll try to collect its data nevertheless!..\n",
+				i, injectee_str(inj));
+		} else if (inj->state == INJECTEE_IGNORED) {
+			/* expected uninteresting case, don't pollute logs */
+			continue;
 		} else {
-			eprintf("Skipping PyTrace tracing data from tracee #%d (%s) as it had problems...\n",
-				i, pytrace_str(pf));
+			eprintf("Skipping tracing data from tracee #%d (%s, %s) as it had problems...\n",
+				i, injectee_str(inj), injectee_state_str(inj->state));
 			continue;
 		}
 
-		struct wpytrace_state *wpy = &wpytraces[wpytrace_cnt];
+		/* CUDA event stream */
+		if (inj->cuda_dump_fd >= 0) {
+			struct wcuda_state *wcuda = &wcudas[wcuda_cnt];
 
-		if (pf->pytrace_dump_fd < 0)
-			goto skip_pytrace;
-		if (fstat(pf->pytrace_dump_fd, &st) < 0) {
-			err = -errno;
-			eprintf("Failed to fstat() PyTrace data dump for tracee %s at '%s': %d\n",
-				pytrace_str(pf), pf->dump_path, err);
-			goto skip_pytrace;
+			if (fstat(inj->cuda_dump_fd, &st) < 0) {
+				err = -errno;
+				eprintf("Failed to fstat() CUDA data dump for tracee %s at '%s': %d\n",
+					injectee_str(inj), inj->cuda_dump_path, err);
+				goto skip_cuda;
+			}
+
+			wcuda->dump_sz = st.st_size;
+			wcuda->dump_hdr = mmap(NULL, wcuda->dump_sz, PROT_READ | PROT_WRITE, MAP_SHARED, inj->cuda_dump_fd, 0);
+			if (wcuda->dump_hdr == MAP_FAILED) {
+				err = -errno;
+				eprintf("Failed to mmap() CUDA data dump for tracee %s at '%s': %d\n",
+					injectee_str(inj), inj->cuda_dump_path, err);
+				wcuda->dump_hdr = NULL;
+				goto skip_cuda;
+			}
+
+			wcuda->strs = (void *)wcuda->dump_hdr + wcuda->dump_hdr->hdr_sz + wcuda->dump_hdr->strs_off;
+
+			/* re-sort CUDA events because they don't come completely ordered out of CUPTI */
+			wcuda->tracee_idx = i;
+			wcuda->rec_idx = 0;
+			wcuda->rec_cnt = wcuda->dump_hdr->event_cnt;
+			wcuda->recs = calloc(wcuda->rec_cnt, sizeof(*wcuda->recs));
+
+			struct wcuda_event_record *rec;
+			u64 idx = 0;
+			wcuda_for_each_event(rec, wcuda->dump_hdr) {
+				wcuda->recs[idx++] = (struct wrust_ts_ptr){ .ts = rec->e->ts, .ptr = rec->e };
+			}
+
+			wrust_sort_events_by_ts(wcuda->recs, wcuda->rec_cnt);
+			wcuda->next_rec = wcuda->rec_cnt > 0 ? &wcuda->recs[0] : NULL;
+			wcuda_cnt++;
 		}
-		wpy->dump_sz = st.st_size;
-		wpy->dump_hdr = mmap(NULL, wpy->dump_sz, PROT_READ | PROT_WRITE, MAP_SHARED, pf->pytrace_dump_fd, 0);
-		if (wpy->dump_hdr == MAP_FAILED) {
-			err = -errno;
-			eprintf("Failed to mmap() PyTrace data dump for tracee %s at '%s': %d\n",
-				pytrace_str(pf), pf->dump_path, err);
-			wpy->dump_hdr = NULL;
-			goto skip_pytrace;
+skip_cuda:
+
+		/* PyTrace (Python call/return) event stream */
+		if (inj->pytrace_dump_fd >= 0) {
+			struct wpytrace_state *wpy = &wpytraces[wpytrace_cnt];
+
+			if (fstat(inj->pytrace_dump_fd, &st) < 0) {
+				err = -errno;
+				eprintf("Failed to fstat() PyTrace data dump for tracee %s at '%s': %d\n",
+					injectee_str(inj), inj->pytrace_dump_path, err);
+				goto skip_pytrace;
+			}
+			wpy->dump_sz = st.st_size;
+			wpy->dump_hdr = mmap(NULL, wpy->dump_sz, PROT_READ | PROT_WRITE, MAP_SHARED, inj->pytrace_dump_fd, 0);
+			if (wpy->dump_hdr == MAP_FAILED) {
+				err = -errno;
+				eprintf("Failed to mmap() PyTrace data dump for tracee %s at '%s': %d\n",
+					injectee_str(inj), inj->pytrace_dump_path, err);
+				wpy->dump_hdr = NULL;
+				goto skip_pytrace;
+			}
+
+			wpy->strs = (void *)wpy->dump_hdr + wpy->dump_hdr->hdr_sz + wpy->dump_hdr->strs_off;
+			wpy->code_map = (void *)wpy->dump_hdr + wpy->dump_hdr->hdr_sz + wpy->dump_hdr->code_map_off;
+			wpy->code_map_cnt = wpy->dump_hdr->code_map_cnt;
+			qsort(wpy->code_map, wpy->code_map_cnt, sizeof(*wpy->code_map), wpytrace_code_entry_cmp);
+			wpy->tracee_idx = i;
+			wpy->rec_idx = 0;
+			wpy->rec_cnt = wpy->dump_hdr->event_cnt;
+			wpy->recs = calloc(wpy->rec_cnt, sizeof(*wpy->recs));
+
+			struct wpytrace_event_record *py_rec;
+			wpytrace_for_each_event(py_rec, wpy->dump_hdr)
+				wpy->recs[py_rec->idx] = (struct wrust_ts_ptr){ .ts = py_rec->e->ts, .ptr = py_rec->e };
+
+			wrust_sort_events_by_ts(wpy->recs, wpy->rec_cnt);
+			wpy->next_rec = wpy->rec_cnt > 0 ? &wpy->recs[0] : NULL;
+			wpytrace_cnt++;
 		}
-
-		wpy->strs = (void *)wpy->dump_hdr + wpy->dump_hdr->hdr_sz + wpy->dump_hdr->strs_off;
-		wpy->code_map = (void *)wpy->dump_hdr + wpy->dump_hdr->hdr_sz + wpy->dump_hdr->code_map_off;
-		wpy->code_map_cnt = wpy->dump_hdr->code_map_cnt;
-		qsort(wpy->code_map, wpy->code_map_cnt, sizeof(*wpy->code_map), wpytrace_code_entry_cmp);
-		wpy->tracee_idx = i;
-		wpy->rec_idx = 0;
-		wpy->rec_cnt = wpy->dump_hdr->event_cnt;
-		wpy->recs = calloc(wpy->rec_cnt, sizeof(*wpy->recs));
-
-		struct wpytrace_event_record *py_rec;
-		wpytrace_for_each_event(py_rec, wpy->dump_hdr)
-			wpy->recs[py_rec->idx] = (struct wrust_ts_ptr){ .ts = py_rec->e->ts, .ptr = py_rec->e };
-
-		wrust_sort_events_by_ts(wpy->recs, wpy->rec_cnt);
-		wpy->next_rec = wpy->rec_cnt > 0 ? &wpy->recs[0] : NULL;
-		wpytrace_cnt++;
-
 skip_pytrace:
-		if (pf->pytorch_dump_fd < 0)
-			goto skip_pytorch;
 
-		struct wpytorch_state *wtorch = &wpytorches[wpytorch_cnt];
+		/* PyTorch (RecordFunction) event stream */
+		if (inj->pytorch_dump_fd >= 0) {
+			struct wpytorch_state *wtorch = &wpytorches[wpytorch_cnt];
 
-		if (fstat(pf->pytorch_dump_fd, &st) < 0) {
-			err = -errno;
-			eprintf("Failed to fstat() PyTorch data dump for tracee %s at '%s': %d\n",
-				pytrace_str(pf), pf->torch_dump_path, err);
-			goto skip_pytorch;
+			if (fstat(inj->pytorch_dump_fd, &st) < 0) {
+				err = -errno;
+				eprintf("Failed to fstat() PyTorch data dump for tracee %s at '%s': %d\n",
+					injectee_str(inj), inj->pytorch_dump_path, err);
+				goto skip_pytorch;
+			}
+			wtorch->dump_sz = st.st_size;
+			wtorch->dump_hdr = mmap(NULL, wtorch->dump_sz, PROT_READ | PROT_WRITE, MAP_SHARED, inj->pytorch_dump_fd, 0);
+			if (wtorch->dump_hdr == MAP_FAILED) {
+				err = -errno;
+				eprintf("Failed to mmap() PyTorch data dump for tracee %s at '%s': %d\n",
+					injectee_str(inj), inj->pytorch_dump_path, err);
+				wtorch->dump_hdr = NULL;
+				goto skip_pytorch;
+			}
+
+			wtorch->strs = (void *)wtorch->dump_hdr + wtorch->dump_hdr->hdr_sz + wtorch->dump_hdr->strs_off;
+			wtorch->tracee_idx = i;
+			wtorch->rec_idx = 0;
+			wtorch->rec_cnt = wtorch->dump_hdr->event_cnt;
+			wtorch->recs = calloc(wtorch->rec_cnt, sizeof(*wtorch->recs));
+
+			struct wpytorch_event_record *torch_rec;
+			wpytorch_for_each_event(torch_rec, wtorch->dump_hdr)
+				wtorch->recs[torch_rec->idx] = (struct wrust_ts_ptr){ .ts = torch_rec->e->ts, .ptr = torch_rec->e };
+
+			wrust_sort_events_by_ts(wtorch->recs, wtorch->rec_cnt);
+			wtorch->next_rec = wtorch->rec_cnt > 0 ? &wtorch->recs[0] : NULL;
+			wpytorch_cnt++;
 		}
-		wtorch->dump_sz = st.st_size;
-		wtorch->dump_hdr = mmap(NULL, wtorch->dump_sz, PROT_READ | PROT_WRITE, MAP_SHARED, pf->pytorch_dump_fd, 0);
-		if (wtorch->dump_hdr == MAP_FAILED) {
-			err = -errno;
-			eprintf("Failed to mmap() PyTorch data dump for tracee %s at '%s': %d\n",
-				pytrace_str(pf), pf->torch_dump_path, err);
-			wtorch->dump_hdr = NULL;
-			goto skip_pytorch;
-		}
-
-		wtorch->strs = (void *)wtorch->dump_hdr + wtorch->dump_hdr->hdr_sz + wtorch->dump_hdr->strs_off;
-		wtorch->tracee_idx = i;
-		wtorch->rec_idx = 0;
-		wtorch->rec_cnt = wtorch->dump_hdr->event_cnt;
-		wtorch->recs = calloc(wtorch->rec_cnt, sizeof(*wtorch->recs));
-
-		struct wpytorch_event_record *torch_rec;
-		wpytorch_for_each_event(torch_rec, wtorch->dump_hdr)
-			wtorch->recs[torch_rec->idx] = (struct wrust_ts_ptr){ .ts = torch_rec->e->ts, .ptr = torch_rec->e };
-
-		wrust_sort_events_by_ts(wtorch->recs, wtorch->rec_cnt);
-		wtorch->next_rec = wtorch->rec_cnt > 0 ? &wtorch->recs[0] : NULL;
-		wpytorch_cnt++;
 skip_pytorch:
 		continue;
 	}
@@ -843,24 +861,24 @@ skip_pytorch:
 	 */
 	struct wevent wevent_buf;
 
-	int stream_cnt = env.ringbuf_cnt + env.cuda_cnt + wpytrace_cnt + wpytorch_cnt;
+	int stream_cnt = env.ringbuf_cnt + wcuda_cnt + wpytrace_cnt + wpytorch_cnt;
 	struct wpq *pq = wpq_new(stream_cnt);
 
 	for (int i = 0; i < env.ringbuf_cnt; i++) {
 		if (wmerges[i].next_rec)
 			wpq_push(pq, wmerges[i].next_rec->ts, i);
 	}
-	for (int i = 0; i < env.cuda_cnt; i++) {
+	for (int i = 0; i < wcuda_cnt; i++) {
 		if (wcudas[i].next_rec)
 			wpq_push(pq, wcudas[i].next_rec->ts, env.ringbuf_cnt + i);
 	}
 	for (int i = 0; i < wpytrace_cnt; i++) {
 		if (wpytraces[i].next_rec)
-			wpq_push(pq, wpytraces[i].next_rec->ts, env.ringbuf_cnt + env.cuda_cnt + i);
+			wpq_push(pq, wpytraces[i].next_rec->ts, env.ringbuf_cnt + wcuda_cnt + i);
 	}
 	for (int i = 0; i < wpytorch_cnt; i++) {
 		if (wpytorches[i].next_rec)
-			wpq_push(pq, wpytorches[i].next_rec->ts, env.ringbuf_cnt + env.cuda_cnt + wpytrace_cnt + i);
+			wpq_push(pq, wpytorches[i].next_rec->ts, env.ringbuf_cnt + wcuda_cnt + wpytrace_cnt + i);
 	}
 
 	while (!wpq_empty(pq)) {
@@ -898,17 +916,17 @@ skip_pytorch:
 			 */
 			if (wevent_sz == 0)
 				continue;
-		} else if (widx < env.ringbuf_cnt + env.cuda_cnt) {
+		} else if (widx < env.ringbuf_cnt + wcuda_cnt) {
 			int cidx = widx - env.ringbuf_cnt;
 
 			struct wcuda_state *wcuda = &wcudas[cidx];
 			const struct wcuda_event *r = wcuda->next_rec->ptr;
-			struct cuda_tracee *cuda = &env.cudas[cidx];
+			struct injectee *inj = &env.injectees[wcuda->tracee_idx];
 
 			wevent_sz = persist_cuda_event(&ps, r, &wevent_buf,
-						       cuda->pid, cuda->proc_name, wcuda->strs);
+						       inj->pid, inj->proc_name, wcuda->strs);
 			if (wevent_sz < 0) {
-				eprintf("Failed to convert CUDA event for tracee %s: %d\n", cuda_str(cuda), wevent_sz);
+				eprintf("Failed to convert CUDA event for tracee %s: %d\n", injectee_str(inj), wevent_sz);
 				return wevent_sz;
 			}
 
@@ -919,18 +937,18 @@ skip_pytorch:
 				wpq_replace_min(pq, wcuda->next_rec->ts, widx);
 			else
 				wpq_pop(pq);
-		} else if (widx < env.ringbuf_cnt + env.cuda_cnt + wpytrace_cnt) {
-			int pidx = widx - env.ringbuf_cnt - env.cuda_cnt;
+		} else if (widx < env.ringbuf_cnt + wcuda_cnt + wpytrace_cnt) {
+			int pidx = widx - env.ringbuf_cnt - wcuda_cnt;
 
 			struct wpytrace_state *wpy = &wpytraces[pidx];
 			const struct wpytrace_event *r = wpy->next_rec->ptr;
-			struct pytrace_tracee *pf = &env.pytraces[wpy->tracee_idx];
+			struct injectee *inj = &env.injectees[wpy->tracee_idx];
 
 			wevent_sz = persist_pytrace_event(&ps, r, &wevent_buf,
-							 pf->pid, pf->ns_pid, pf->proc_name,
+							 inj->pid, inj->ns_pid, inj->proc_name,
 							 wpy->code_map, wpy->code_map_cnt, wpy->strs);
 			if (wevent_sz < 0) {
-				eprintf("Failed to convert pytrace event for tracee %s: %d\n", pytrace_str(pf), wevent_sz);
+				eprintf("Failed to convert pytrace event for tracee %s: %d\n", injectee_str(inj), wevent_sz);
 				return wevent_sz;
 			}
 
@@ -945,16 +963,16 @@ skip_pytorch:
 			if (wevent_sz == 0)
 				continue;
 		} else {
-			int tidx = widx - env.ringbuf_cnt - env.cuda_cnt - wpytrace_cnt;
+			int tidx = widx - env.ringbuf_cnt - wcuda_cnt - wpytrace_cnt;
 
 			struct wpytorch_state *wtorch = &wpytorches[tidx];
 			const struct wpytorch_event *r = wtorch->next_rec->ptr;
-			struct pytrace_tracee *pf = &env.pytraces[wtorch->tracee_idx];
+			struct injectee *inj = &env.injectees[wtorch->tracee_idx];
 
 			wevent_sz = persist_pytorch_event(&ps, r, &wevent_buf,
-							  pf->pid, pf->ns_pid, pf->proc_name, wtorch->strs);
+							  inj->pid, inj->ns_pid, inj->proc_name, wtorch->strs);
 			if (wevent_sz < 0) {
-				eprintf("Failed to convert pytorch event for tracee %s: %d\n", pytrace_str(pf), wevent_sz);
+				eprintf("Failed to convert pytorch event for tracee %s: %d\n", injectee_str(inj), wevent_sz);
 				return wevent_sz;
 			}
 
@@ -997,21 +1015,21 @@ skip_pytorch:
 			if (widx < env.ringbuf_cnt) {
 				eprintf("Failed to fwrite() event from ringbuf #%d ('%s'): %d\n",
 					widx, workers[widx].dump_path, err);
-			} else if (widx < env.ringbuf_cnt + env.cuda_cnt) {
+			} else if (widx < env.ringbuf_cnt + wcuda_cnt) {
 				int cidx = widx - env.ringbuf_cnt;
-				struct cuda_tracee *cuda = &env.cudas[cidx];
+				struct injectee *inj = &env.injectees[wcudas[cidx].tracee_idx];
 				eprintf("Failed to fwrite() event from CUDA tracee %s: %d\n",
-					cuda_str(cuda), err);
-			} else if (widx < env.ringbuf_cnt + env.cuda_cnt + wpytrace_cnt) {
-				int pidx = widx - env.ringbuf_cnt - env.cuda_cnt;
-				struct pytrace_tracee *pf = &env.pytraces[wpytraces[pidx].tracee_idx];
+					injectee_str(inj), err);
+			} else if (widx < env.ringbuf_cnt + wcuda_cnt + wpytrace_cnt) {
+				int pidx = widx - env.ringbuf_cnt - wcuda_cnt;
+				struct injectee *inj = &env.injectees[wpytraces[pidx].tracee_idx];
 				eprintf("Failed to fwrite() event from PyTrace tracee %s: %d\n",
-					pytrace_str(pf), err);
+					injectee_str(inj), err);
 			} else {
-				int tidx = widx - env.ringbuf_cnt - env.cuda_cnt - wpytrace_cnt;
-				struct pytrace_tracee *pf = &env.pytraces[wpytorches[tidx].tracee_idx];
+				int tidx = widx - env.ringbuf_cnt - wcuda_cnt - wpytrace_cnt;
+				struct injectee *inj = &env.injectees[wpytorches[tidx].tracee_idx];
 				eprintf("Failed to fwrite() event from PyTorch tracee %s: %d\n",
-					pytrace_str(pf), err);
+					injectee_str(inj), err);
 			}
 			return err;
 		}
@@ -1041,20 +1059,11 @@ skip_pytorch:
 	free(wmerges);
 
 	/* Cleanup CUDA dumps */
-	for (int i = 0; i < env.cuda_cnt; i++) {
-		struct cuda_tracee *cuda = &env.cudas[i];
+	for (int i = 0; i < wcuda_cnt; i++) {
 		struct wcuda_state *w = &wcudas[i];
 
 		if (w->dump_hdr)
 			munmap(w->dump_hdr, w->dump_sz);
-
-		if (!env.keep_workdir)
-			unlink(cuda->dump_path);
-
-		free(cuda->dump_path);
-		cuda->dump_path = NULL;
-
-		zclose(cuda->dump_fd);
 
 		free(w->recs);
 		w->dump_hdr = NULL;
@@ -1083,24 +1092,31 @@ skip_pytorch:
 		wtorch->dump_hdr = NULL;
 		wtorch->dump_sz = 0;
 	}
-	for (int i = 0; i < env.py_cnt; i++) {
-		struct pytrace_tracee *pf = &env.pytraces[i];
-
-		if (!env.keep_workdir && pf->dump_path)
-			unlink(pf->dump_path);
-		if (!env.keep_workdir && pf->torch_dump_path)
-			unlink(pf->torch_dump_path);
-
-		free(pf->dump_path);
-		pf->dump_path = NULL;
-		free(pf->torch_dump_path);
-		pf->torch_dump_path = NULL;
-
-		zclose(pf->pytrace_dump_fd);
-		zclose(pf->pytorch_dump_fd);
-	}
 	free(wpytraces);
 	free(wpytorches);
+
+	/* Remove and close each injectee's per-feature dump files now they're merged. */
+	for (int i = 0; i < env.injectee_cnt; i++) {
+		struct injectee *inj = &env.injectees[i];
+
+		if (!env.keep_workdir && inj->cuda_dump_path)
+			unlink(inj->cuda_dump_path);
+		if (!env.keep_workdir && inj->pytrace_dump_path)
+			unlink(inj->pytrace_dump_path);
+		if (!env.keep_workdir && inj->pytorch_dump_path)
+			unlink(inj->pytorch_dump_path);
+
+		free(inj->cuda_dump_path);
+		inj->cuda_dump_path = NULL;
+		free(inj->pytrace_dump_path);
+		inj->pytrace_dump_path = NULL;
+		free(inj->pytorch_dump_path);
+		inj->pytorch_dump_path = NULL;
+
+		zclose(inj->cuda_dump_fd);
+		zclose(inj->pytrace_dump_fd);
+		zclose(inj->pytorch_dump_fd);
+	}
 
 	/*
 	 * Collect extras (persisted capture-time filters);
