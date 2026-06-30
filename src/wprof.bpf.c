@@ -995,7 +995,7 @@ int BPF_PROG(wprof_task_free, struct task_struct *p)
 	struct task_state *s;
 
 	if (!should_trace_task(p, now_ts))
-		return 0;
+		goto cleanup;
 
 	s = task_state_peek(p->pid);
 	if (!s)
@@ -1008,6 +1008,7 @@ int BPF_PROG(wprof_task_free, struct task_struct *p)
 		emit_task_event(e, EV_SZ(task), 0, EV_TASK_FREE, now_ts, p);
 	}
 
+cleanup:
 	task_state_delete(p->pid);
 
 	return 0;
