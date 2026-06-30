@@ -88,8 +88,7 @@ bool pytrace_detect(int pid, int *out_py_minor, unsigned long *out_py_sym_addrs)
 		return false;
 	}
 
-	vprintf("Process %s is Python 3.%d.\n",
-	      inj_proc_str(pid, ns_tid_by_host_tid(pid, pid), proc_name(pid)), bi.py_minor);
+	vprintf("%s is Python 3.%d.\n", inj_proc_str(pid, ns_tid_by_host_tid(pid, pid), proc_name(pid)), bi.py_minor);
 
 	dlogf(DISCOVERY, 0, "PID %d: Python binary at '%s'\n", pid, bi.host_path);
 
@@ -118,7 +117,6 @@ bool pytorch_detect(int pid, unsigned long *out_pytorch_sym_addrs)
 		return false;
 	}
 
-	vprintf("Process %s uses PyTorch.\n",
-		inj_proc_str(pid, ns_tid_by_host_tid(pid, pid), proc_name(pid)));
+	vprintf("%s uses PyTorch.\n", inj_proc_str(pid, ns_tid_by_host_tid(pid, pid), proc_name(pid)));
 	return true;
 }

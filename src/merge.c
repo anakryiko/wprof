@@ -791,14 +791,14 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers,
 		if (inj->state == INJECTEE_INACTIVE) {
 			/* expected clean shutdown case */
 		} else if (inj->state == INJECTEE_SHUTDOWN_TIMEOUT) {
-			eprintf("Tracee #%d (%s) timed out its shutdown, but we'll try to collect its data nevertheless!..\n",
-				i, injectee_str(inj));
+			eprintf("%s timed out its shutdown, but we'll try to collect its data nevertheless!..\n",
+				injectee_str(inj));
 		} else if (inj->state == INJECTEE_IGNORED) {
 			/* expected uninteresting case, don't pollute logs */
 			continue;
 		} else {
-			eprintf("Skipping tracing data from tracee #%d (%s, %s) as it had problems...\n",
-				i, injectee_str(inj), injectee_state_str(inj->state));
+			eprintf("Skipping tracing data from %s (%s) as it had problems...\n",
+				injectee_str(inj), injectee_state_str(inj->state));
 			continue;
 		}
 
@@ -808,7 +808,7 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers,
 
 			if (fstat(inj->cuda_dump_fd, &st) < 0) {
 				err = -errno;
-				eprintf("Failed to fstat() CUDA data dump for tracee %s at '%s': %d\n",
+				eprintf("Failed to fstat() CUDA data dump for %s at '%s': %d\n",
 					injectee_str(inj), inj->cuda_dump_path, err);
 				goto skip_cuda;
 			}
@@ -817,7 +817,7 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers,
 			wcuda->dump_hdr = mmap(NULL, wcuda->dump_sz, PROT_READ | PROT_WRITE, MAP_SHARED, inj->cuda_dump_fd, 0);
 			if (wcuda->dump_hdr == MAP_FAILED) {
 				err = -errno;
-				eprintf("Failed to mmap() CUDA data dump for tracee %s at '%s': %d\n",
+				eprintf("Failed to mmap() CUDA data dump for %s at '%s': %d\n",
 					injectee_str(inj), inj->cuda_dump_path, err);
 				wcuda->dump_hdr = NULL;
 				goto skip_cuda;
@@ -849,7 +849,7 @@ skip_cuda:
 
 			if (fstat(inj->pytrace_dump_fd, &st) < 0) {
 				err = -errno;
-				eprintf("Failed to fstat() PyTrace data dump for tracee %s at '%s': %d\n",
+				eprintf("Failed to fstat() PyTrace data dump for %s at '%s': %d\n",
 					injectee_str(inj), inj->pytrace_dump_path, err);
 				goto skip_pytrace;
 			}
@@ -857,7 +857,7 @@ skip_cuda:
 			wpy->dump_hdr = mmap(NULL, wpy->dump_sz, PROT_READ | PROT_WRITE, MAP_SHARED, inj->pytrace_dump_fd, 0);
 			if (wpy->dump_hdr == MAP_FAILED) {
 				err = -errno;
-				eprintf("Failed to mmap() PyTrace data dump for tracee %s at '%s': %d\n",
+				eprintf("Failed to mmap() PyTrace data dump for %s at '%s': %d\n",
 					injectee_str(inj), inj->pytrace_dump_path, err);
 				wpy->dump_hdr = NULL;
 				goto skip_pytrace;
@@ -888,7 +888,7 @@ skip_pytrace:
 
 			if (fstat(inj->pytorch_dump_fd, &st) < 0) {
 				err = -errno;
-				eprintf("Failed to fstat() PyTorch data dump for tracee %s at '%s': %d\n",
+				eprintf("Failed to fstat() PyTorch data dump for %s at '%s': %d\n",
 					injectee_str(inj), inj->pytorch_dump_path, err);
 				goto skip_pytorch;
 			}
@@ -896,7 +896,7 @@ skip_pytrace:
 			wtorch->dump_hdr = mmap(NULL, wtorch->dump_sz, PROT_READ | PROT_WRITE, MAP_SHARED, inj->pytorch_dump_fd, 0);
 			if (wtorch->dump_hdr == MAP_FAILED) {
 				err = -errno;
-				eprintf("Failed to mmap() PyTorch data dump for tracee %s at '%s': %d\n",
+				eprintf("Failed to mmap() PyTorch data dump for %s at '%s': %d\n",
 					injectee_str(inj), inj->pytorch_dump_path, err);
 				wtorch->dump_hdr = NULL;
 				goto skip_pytorch;
@@ -1011,7 +1011,7 @@ skip_pytorch:
 			wevent_sz = persist_cuda_event(&ps, r, &wevent_buf,
 						       inj->pid, inj->proc_name, wcuda->strs);
 			if (wevent_sz < 0) {
-				eprintf("Failed to convert CUDA event for tracee %s: %d\n", injectee_str(inj), wevent_sz);
+				eprintf("Failed to convert CUDA event for %s: %d\n", injectee_str(inj), wevent_sz);
 				return wevent_sz;
 			}
 
@@ -1033,7 +1033,7 @@ skip_pytorch:
 							 inj->pid, inj->ns_pid, inj->proc_name,
 							 wpy->code_map, wpy->code_map_cnt, wpy->strs);
 			if (wevent_sz < 0) {
-				eprintf("Failed to convert pytrace event for tracee %s: %d\n", injectee_str(inj), wevent_sz);
+				eprintf("Failed to convert pytrace event for %s: %d\n", injectee_str(inj), wevent_sz);
 				return wevent_sz;
 			}
 
@@ -1057,7 +1057,7 @@ skip_pytorch:
 			wevent_sz = persist_pytorch_event(&ps, r, &wevent_buf,
 							  inj->pid, inj->ns_pid, inj->proc_name, wtorch->strs);
 			if (wevent_sz < 0) {
-				eprintf("Failed to convert pytorch event for tracee %s: %d\n", injectee_str(inj), wevent_sz);
+				eprintf("Failed to convert pytorch event for %s: %d\n", injectee_str(inj), wevent_sz);
 				return wevent_sz;
 			}
 
@@ -1103,17 +1103,17 @@ skip_pytorch:
 			} else if (widx < env.ringbuf_cnt + wcuda_cnt) {
 				int cidx = widx - env.ringbuf_cnt;
 				struct injectee *inj = &env.injectees[wcudas[cidx].tracee_idx];
-				eprintf("Failed to fwrite() event from CUDA tracee %s: %d\n",
+				eprintf("Failed to fwrite() CUDA event from %s: %d\n",
 					injectee_str(inj), err);
 			} else if (widx < env.ringbuf_cnt + wcuda_cnt + wpytrace_cnt) {
 				int pidx = widx - env.ringbuf_cnt - wcuda_cnt;
 				struct injectee *inj = &env.injectees[wpytraces[pidx].tracee_idx];
-				eprintf("Failed to fwrite() event from PyTrace tracee %s: %d\n",
+				eprintf("Failed to fwrite() PyTrace event from %s: %d\n",
 					injectee_str(inj), err);
 			} else {
 				int tidx = widx - env.ringbuf_cnt - wcuda_cnt - wpytrace_cnt;
 				struct injectee *inj = &env.injectees[wpytorches[tidx].tracee_idx];
-				eprintf("Failed to fwrite() event from PyTorch tracee %s: %d\n",
+				eprintf("Failed to fwrite() PyTorch event from %s: %d\n",
 					injectee_str(inj), err);
 			}
 			return err;
