@@ -28,4 +28,14 @@ void wpq_peek(const struct wpq *pq, uint64_t *key, uint32_t *val);
 void wpq_replace_min(struct wpq *pq, uint64_t key, uint32_t val);
 void wpq_pop(struct wpq *pq);
 
+/* ==================== SORT ====================
+ * In-place stable sort of (timestamp, event pointer) pairs, ascending by ts. The
+ * timestamp is kept inline so the sort never dereferences ptr.
+ */
+struct wrust_ts_ptr {
+	uint64_t ts;
+	const void *ptr;
+};
+void wrust_sort_events_by_ts(struct wrust_ts_ptr *items, size_t cnt);
+
 #endif /* __WRUST_H_ */
