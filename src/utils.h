@@ -199,10 +199,12 @@ static inline uint64_t timespec_to_ns(struct timespec *ts)
 }
 
 s64 parse_time_units(const char *arg);
+const char *fmt_time_units(u64 ns);
 
 enum size_unit { SZ_NONE = 0, SZ_B, SZ_KB, SZ_MB, SZ_GB, SZ_TB };
 
 int parse_size(const char *s, enum size_unit def_unit, u64 *out);
+const char *fmt_size_units(u64 bytes);
 
 static inline u64 ktime_now_ns()
 {

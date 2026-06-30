@@ -326,8 +326,6 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		if (!arg || !arg[0])
 			break;
 
-		env.fr_spec = strdup(arg);
-
 		copy = strdup(arg);
 		for (tok = strtok_r(copy, ",", &saveptr); tok; tok = strtok_r(NULL, ",", &saveptr)) {
 			char last = tok[strlen(tok) - 1];

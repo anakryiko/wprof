@@ -122,7 +122,6 @@ struct env {
 	s64 fr_keep_time_ns;	/* -1 until set; resolved in main() */
 	s64 fr_keep_size;	/* -1 until set; resolved in main() */
 	u64 fr_chunk_size;
-	char *fr_spec;	/* raw CLI spec, persisted via WEXTRA later */
 
 	/* time-delayed activation (--prepare / --activate) */
 	struct timespec_spec prepare_spec;
