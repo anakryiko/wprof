@@ -500,20 +500,17 @@ skip_rusage:
 			continue;
 
 		if (state != INJECTEE_INACTIVE) {
-			eprintf("!!! CUDA tracee #%d (%s) encountered problem. Last state: %s\n",
-				i, name, injectee_state_str(state));
+			eprintf("!!! CUDA %s encountered problem. Last state: %s\n", name, injectee_state_str(state));
 			continue;
 		}
 
 		u64 drop_cnt = wstat(s, WSTAT_CUDA_DROP_CNT, 1 + i);
 		u64 err_cnt = wstat(s, WSTAT_CUDA_ERR_CNT, 1 + i);
-		if (drop_cnt + err_cnt > 0) {
-			eprintf("!!! CUDA tracee #%d (%s): %llu records dropped, %llu errors.\n",
-				i, name, drop_cnt, err_cnt);
-		}
+		if (drop_cnt + err_cnt > 0)
+			eprintf("!!! CUDA %s: %llu records dropped, %llu errors.\n", name, drop_cnt, err_cnt);
 		if (env.verbose || env.emit_stats) {
-			eprintf("CUDA tracee #%d (%s): %llu records (%llu ignored), %llu buffers, %.3lfMBs.\n",
-				i, name,
+			eprintf("CUDA %s: %llu records (%llu ignored), %llu buffers, %.3lfMBs.\n",
+				name,
 				wstat(s, WSTAT_CUDA_REC_CNT, 1 + i),
 				wstat(s, WSTAT_CUDA_IGNORE_CNT, 1 + i),
 				wstat(s, WSTAT_CUDA_BUF_CNT, 1 + i),
@@ -526,18 +523,15 @@ skip_rusage:
 		const char *name = wevent_str(env.data_hdr, wstat(s, WSTAT_PYTRACE_NAME, 1 + i));
 
 		if (state != INJECTEE_INACTIVE && state != INJECTEE_SHUTDOWN_TIMEOUT) {
-			eprintf("!!! Python tracee #%d (%s) encountered problem. Last state: %s\n",
-				i, name, injectee_state_str(state));
+			eprintf("!!! Python %s encountered problem. Last state: %s\n", name, injectee_state_str(state));
 			continue;
 		}
 		if (env.verbose || env.emit_stats) {
-			if (env.capture_pytorch == TRUE) {
-				eprintf("PyTorch tracee #%d (%s): %llu events.\n",
-					i, name, wstat(s, WSTAT_PYTORCH_EVENT_CNT, 1 + i));
-			}
+			if (env.capture_pytorch == TRUE)
+				eprintf("PyTorch %s: %llu events.\n", name, wstat(s, WSTAT_PYTORCH_EVENT_CNT, 1 + i));
 			if (env.capture_pytrace == TRUE) {
-				eprintf("PyTrace tracee #%d (%s): %llu events, %llu code objects cached.\n",
-					i, name,
+				eprintf("PyTrace %s: %llu events, %llu code objects cached.\n",
+					name,
 					wstat(s, WSTAT_PYTRACE_EVENT_CNT, 1 + i),
 					wstat(s, WSTAT_PYTRACE_CODE_CACHE_CNT, 1 + i));
 			}

@@ -25,9 +25,9 @@ const char *inj_proc_str(int pid, int ns_pid, const char *name)
 	static __thread char buf[128];
 
 	if (pid == ns_pid)
-		snprintf(buf, sizeof(buf), "%d, %s", pid, name);
+		snprintf(buf, sizeof(buf), "PID %d (%s)", pid, name);
 	else
-		snprintf(buf, sizeof(buf), "%d=%d, %s", pid, ns_pid, name);
+		snprintf(buf, sizeof(buf), "PID %d=%d (%s)", pid, ns_pid, name);
 
 	return buf;
 }
@@ -40,18 +40,17 @@ const char *injectee_str(const struct injectee *inj)
 static const char *inj_feat_str(enum inj_feature feats)
 {
 	static __thread char buf[32];
+	int n = 0;
 
 	buf[0] = '\0';
 	if (feats & INJ_FEAT_CUDA)
-		strcat(buf, "CUDA ");
+		n += snprintf(buf + n, sizeof(buf) - n, "%sCUDA", buf[0] ? "+" : "");
 	if (feats & INJ_FEAT_PYTRACE)
-		strcat(buf, "PyTrace ");
+		n += snprintf(buf + n, sizeof(buf) - n, "%sPyTrace", buf[0] ? "+" : "");
 	if (feats & INJ_FEAT_PYTORCH)
-		strcat(buf, "PyTorch ");
-	if (buf[0] == '\0')
-		return "none";
-	buf[strlen(buf) - 1] = '\0'; /* trim trailing space */
-	return buf;
+		n += snprintf(buf + n, sizeof(buf) - n, "%sPyTorch", buf[0] ? "+" : "");
+
+	return buf[0] ? buf : "none";
 }
 
 /*
@@ -184,14 +183,14 @@ static int injmgr_inject(const struct inj_cand *c, int workdir_fd)
 		return 0;
 
 	const char *who = inj_proc_str(c->pid, ns_tid_by_host_tid(c->pid, c->pid), proc_name(c->pid));
-	vprintf("Process %s uses %s, injecting...\n", who, inj_feat_str(detect));
+	vprintf("%s uses %s, injecting...\n", who, inj_feat_str(detect));
 
 	char log_path[512];
 	snprintf(log_path, sizeof(log_path), LIBWPROFINJ_LOG_PATH_FMT, getpid(), c->pid);
 	int log_fd = openat(workdir_fd, log_path, O_RDWR | O_CREAT | O_CLOEXEC, 0644);
 	if (log_fd < 0) {
 		err = -errno;
-		eprintf("Failed to create tracee %s log file at '%s': %d\n", who, log_path, err);
+		eprintf("Failed to create %s log file at '%s': %d\n", who, log_path, err);
 		return err;
 	}
 
@@ -257,14 +256,14 @@ static int injmgr_send_cuda_setup(struct injectee *inj, int workdir_fd)
 	int dump_fd = openat(workdir_fd, path, O_RDWR | O_CREAT | O_CLOEXEC, 0644);
 	if (dump_fd < 0) {
 		int err = -errno;
-		eprintf("Failed to create CUDA tracee %s dump file at '%s': %d\n", injectee_str(inj), path, err);
+		eprintf("Failed to create CUDA dump file for %s at '%s': %d\n", injectee_str(inj), path, err);
 		return err;
 	}
 
 	struct inj_msg msg = { .kind = INJ_MSG_CUDA_SETUP };
 	int err = uds_send_data(inj->uds_fd, &msg, sizeof(msg), &dump_fd, 1);
 	if (err < 0) {
-		eprintf("Failed to send CUDA_SETUP to CUDA tracee %s: %d\n", injectee_str(inj), err);
+		eprintf("Failed to send CUDA_SETUP to %s: %d\n", injectee_str(inj), err);
 		close(dump_fd);
 		return err;
 	}
@@ -281,7 +280,7 @@ static int injmgr_send_pytrace_setup(struct injectee *inj, int workdir_fd)
 	int dump_fd = openat(workdir_fd, path, O_RDWR | O_CREAT | O_CLOEXEC, 0644);
 	if (dump_fd < 0) {
 		int err = -errno;
-		eprintf("Failed to create PyTrace tracee %s dump file at '%s': %d\n", injectee_str(inj), path, err);
+		eprintf("Failed to create PyTrace dump file for %s at '%s': %d\n", injectee_str(inj), path, err);
 		return err;
 	}
 
@@ -292,7 +291,7 @@ static int injmgr_send_pytrace_setup(struct injectee *inj, int workdir_fd)
 	memcpy(msg.pytrace_setup.sym_addrs, inj->py_sym_addrs, sizeof(inj->py_sym_addrs));
 	int err = uds_send_data(inj->uds_fd, &msg, sizeof(msg), &dump_fd, 1);
 	if (err < 0) {
-		eprintf("Failed to send PYTRACE_SETUP to PyTrace tracee %s: %d\n", injectee_str(inj), err);
+		eprintf("Failed to send PYTRACE_SETUP to %s: %d\n", injectee_str(inj), err);
 		close(dump_fd);
 		return err;
 	}
@@ -309,7 +308,7 @@ static int injmgr_send_pytorch_setup(struct injectee *inj, int workdir_fd)
 	int dump_fd = openat(workdir_fd, path, O_RDWR | O_CREAT | O_CLOEXEC, 0644);
 	if (dump_fd < 0) {
 		int err = -errno;
-		eprintf("Failed to create PyTorch tracee %s dump file at '%s': %d\n", injectee_str(inj), path, err);
+		eprintf("Failed to create PyTorch dump file for %s at '%s': %d\n", injectee_str(inj), path, err);
 		return err;
 	}
 
@@ -317,7 +316,7 @@ static int injmgr_send_pytorch_setup(struct injectee *inj, int workdir_fd)
 	memcpy(msg.pytorch_setup.pytorch_sym_addrs, inj->pytorch_sym_addrs, sizeof(inj->pytorch_sym_addrs));
 	int err = uds_send_data(inj->uds_fd, &msg, sizeof(msg), &dump_fd, 1);
 	if (err < 0) {
-		eprintf("Failed to send PYTORCH_SETUP to PyTorch tracee %s: %d\n", injectee_str(inj), err);
+		eprintf("Failed to send PYTORCH_SETUP to %s: %d\n", injectee_str(inj), err);
 		close(dump_fd);
 		return err;
 	}
@@ -361,7 +360,7 @@ int injmgr_prepare(int workdir_fd, long sess_timeout_ms)
 		};
 		int err = uds_send_data(inj->uds_fd, &msg, sizeof(msg), NULL, 0);
 		if (err < 0) {
-			eprintf("Failed to send START_SESSION to tracee %s: %d\n", injectee_str(inj), err);
+			eprintf("Failed to send START_SESSION to %s: %d\n", injectee_str(inj), err);
 			inj->state = INJECTEE_SETUP_FAILED;
 		}
 	}
@@ -389,34 +388,34 @@ int injmgr_prepare(int workdir_fd, long sess_timeout_ms)
 
 		switch (inj->ctx->setup_state) {
 		case INJ_SETUP_READY:
-			vprintf("Tracee %s is READY (%s)!\n", injectee_str(inj), inj_feat_str(inj->avail_feats));
+			vprintf("%s is READY (%s)!\n", injectee_str(inj), inj_feat_str(inj->avail_feats));
 			inj->state = INJECTEE_ACTIVE;
 			break;
 		case INJ_SETUP_FAILED:
 			/* A CUPTI-busy CUDA-only tracee is IGNORED, not failed. */
 			if (inj->detect_feats == INJ_FEAT_CUDA && inj->ctx->cuda_feat_state == FEAT_IGNORED) {
-				dprintf(1, "Tracee %s will be IGNORED: %s\n", injectee_str(inj), inj->ctx->cuda_feat_hint);
+				dprintf(1, "%s will be IGNORED: %s\n", injectee_str(inj), inj->ctx->cuda_feat_hint);
 				inj->state = INJECTEE_IGNORED;
 			} else {
-				vprintf("Tracee %s failed initial setup.\n", injectee_str(inj));
+				vprintf("%s failed initial setup.\n", injectee_str(inj));
 				inj->state = INJECTEE_SETUP_FAILED;
 			}
 			break;
 		default:
-			vprintf("Tracee %s TIMED OUT! Ignoring it...\n", injectee_str(inj));
+			vprintf("%s TIMED OUT! Ignoring it...\n", injectee_str(inj));
 			inj->state = INJECTEE_SETUP_TIMEOUT;
 			break;
 		}
 
 		/* Surface any per-feature problem even when another feature succeeded. */
 		if ((inj->detect_feats & INJ_FEAT_CUDA) && inj->state == INJECTEE_ACTIVE && inj->ctx->cuda_feat_state == FEAT_IGNORED)
-			vprintf("  CUDA requested for tracee %s but not captured: %s\n", injectee_str(inj), inj->ctx->cuda_feat_hint);
+			vprintf("  CUDA: %s requested but not captured: %s\n", injectee_str(inj), inj->ctx->cuda_feat_hint);
 		if ((inj->detect_feats & INJ_FEAT_CUDA) && inj->ctx->cuda_feat_state == FEAT_FAILED && inj->ctx->cuda_feat_hint[0])
-			vprintf("  CUDA tracee %s: %s\n", injectee_str(inj), inj->ctx->cuda_feat_hint);
+			vprintf("  CUDA: %s: %s\n", injectee_str(inj), inj->ctx->cuda_feat_hint);
 		if ((inj->detect_feats & INJ_FEAT_PYTRACE) && inj->ctx->pytrace_feat_state == FEAT_FAILED && inj->ctx->pytrace_feat_hint[0])
-			vprintf("  PyTrace tracee %s: %s\n", injectee_str(inj), inj->ctx->pytrace_feat_hint);
+			vprintf("  PyTrace: %s: %s\n", injectee_str(inj), inj->ctx->pytrace_feat_hint);
 		if ((inj->detect_feats & INJ_FEAT_PYTORCH) && inj->ctx->pytorch_feat_state == FEAT_FAILED && inj->ctx->pytorch_feat_hint[0])
-			vprintf("  PyTorch tracee %s: %s\n", injectee_str(inj), inj->ctx->pytorch_feat_hint);
+			vprintf("  PyTorch: %s: %s\n", injectee_str(inj), inj->ctx->pytorch_feat_hint);
 	}
 
 	return 0;
@@ -452,11 +451,11 @@ int injmgr_attach_usdts(struct bpf_state *st, struct bpf_program *prog)
 
 		int err = attach_usdt_probe(st, prog, "libwprofinj.so", lib_path, "wprof", "cuda_call");
 		if (err) {
-			eprintf("Failed to attach USDTs for CUDA tracee %s: %d, skipping...\n", injectee_str(inj), err);
+			eprintf("Failed to attach CUDA USDTs for %s: %d, skipping...\n", injectee_str(inj), err);
 			continue;
 		}
 
-		vprintf("CUDA tracee %s got USDTs successfully attached.\n", injectee_str(inj));
+		vprintf("Attached CUDA USDTs for %s.\n", injectee_str(inj));
 	}
 
 	return 0;
@@ -470,7 +469,7 @@ static void injmgr_dump_tracee_log(struct injectee *inj)
 	if (inj->log_fd < 0) /* already dumped (and consumed the fd) */
 		return;
 
-	vprintf("Tracee %s LOG (%s) DUMP (LAST STATE %s):\n"
+	vprintf("%s LOG (%s) DUMP (LAST STATE %s):\n"
 		"=======================================================================================================\n",
 		injectee_str(inj), inj->log_path, injectee_state_str(inj->state));
 
@@ -479,7 +478,7 @@ static void injmgr_dump_tracee_log(struct injectee *inj)
 	FILE *f = fdopen(inj->log_fd, "r");
 	if (!f) {
 		int err = -errno;
-		eprintf("Failed to create FILE wrapper around tracee %s log FD: %d\n", injectee_str(inj), err);
+		eprintf("Failed to create FILE wrapper around %s log FD: %d\n", injectee_str(inj), err);
 		return;
 	}
 
@@ -516,7 +515,7 @@ void injmgr_deactivate(void)
 			continue;
 		}
 
-		vprintf("Signaling tracee %s to exit...\n", injectee_str(inj));
+		vprintf("Signaling %s to exit...\n", injectee_str(inj));
 
 		struct inj_msg msg = { .kind = INJ_MSG_SHUTDOWN };
 		int err = uds_send_data(inj->uds_fd, &msg, sizeof(msg), NULL, 0);
@@ -525,7 +524,7 @@ void injmgr_deactivate(void)
 		zclose(inj->uds_fd);
 
 		if (err < 0) {
-			eprintf("Failed to send SHUTDOWN command cleanly to tracee %s: %d\n", injectee_str(inj), err);
+			eprintf("Failed to send SHUTDOWN command cleanly to %s: %d\n", injectee_str(inj), err);
 			if (inj->state == INJECTEE_ACTIVE)
 				inj->state = INJECTEE_SHUTDOWN_FAILED;
 			injmgr_dump_tracee_log(inj);
@@ -549,7 +548,7 @@ void injmgr_deactivate(void)
 		}
 
 		if (!inj->ctx->worker_thread_done) {
-			eprintf("Tracee %s TIMED OUT DURING TEARDOWN! SKIPPING PTRACE RETRACTION!\n", injectee_str(inj));
+			eprintf("%s TIMED OUT DURING TEARDOWN! SKIPPING PTRACE RETRACTION!\n", injectee_str(inj));
 			inj->state = INJECTEE_SHUTDOWN_TIMEOUT;
 			injmgr_dump_tracee_log(inj);
 			continue;
@@ -557,16 +556,16 @@ void injmgr_deactivate(void)
 
 		if (inj->state == INJECTEE_ACTIVE) {
 			if (inj->avail_feats & INJ_FEAT_CUDA)
-				vprintf("CUDA tracee %s shut down cleanly: %ld records.\n", injectee_str(inj), inj->ctx->cupti_rec_cnt);
+				vprintf("CUDA: %s shut down cleanly: %ld records.\n", injectee_str(inj), inj->ctx->cupti_rec_cnt);
 			if (inj->avail_feats & INJ_FEAT_PYTORCH)
-				vprintf("PyTorch tracee %s shut down cleanly: %ld events.\n", injectee_str(inj), inj->ctx->pytorch_event_cnt);
+				vprintf("PyTorch: %s shut down cleanly: %ld events.\n", injectee_str(inj), inj->ctx->pytorch_event_cnt);
 			if (inj->avail_feats & INJ_FEAT_PYTRACE) {
-				vprintf("PyTrace tracee %s shut down cleanly: %ld events, %ld code objects cached.\n",
+				vprintf("PyTrace: %s shut down cleanly: %ld events, %ld code objects cached.\n",
 					injectee_str(inj), inj->ctx->pytrace_event_cnt, inj->ctx->pytrace_code_cache_cnt);
 			}
 			inj->state = INJECTEE_INACTIVE;
 		} else {
-			dprintf(1, "Tracee %s has shut down cleanly.\n", injectee_str(inj));
+			dprintf(1, "%s has shut down cleanly.\n", injectee_str(inj));
 		}
 		injmgr_dump_tracee_log(inj);
 	}
@@ -589,11 +588,11 @@ void injmgr_retract(void)
 		    inj->state != INJECTEE_INACTIVE)
 			continue;
 
-		dprintf(1, "Retracting tracee %s...\n", injectee_str(inj));
+		dprintf(1, "Retracting %s...\n", injectee_str(inj));
 
 		int err = tracee_retract(inj->tracee);
 		if (err)
-			eprintf("Retraction for tracee %s FAILED: %d!\n", injectee_str(inj), err);
+			eprintf("Retraction for %s FAILED: %d!\n", injectee_str(inj), err);
 	}
 
 	env.injectees_retracted = true;

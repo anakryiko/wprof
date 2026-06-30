@@ -47,7 +47,6 @@ bool cuda_detect(int pid, bool force)
 		return false;
 	}
 
-	vprintf("Process %s has CUPTI.\n",
-		inj_proc_str(pid, ns_tid_by_host_tid(pid, pid), proc_name(pid)));
+	vprintf("%s has CUPTI.\n", inj_proc_str(pid, ns_tid_by_host_tid(pid, pid), proc_name(pid)));
 	return true;
 }
