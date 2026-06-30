@@ -1705,7 +1705,7 @@ int main(int argc, char **argv)
 					struct wprof_extra_param *e = wevent_extra_param(dump_hdr, i);
 					if (e->kind == WEXTRA_METADATA) {
 						has_metadata = true;
-					} else if (e->kind == WEXTRA_STATS || e->kind != WEXTRA_PMU_EVENT) {
+					} else if (e->kind == WEXTRA_STATS || e->kind == WEXTRA_PMU_EVENT) {
 						/* excluded from extras printing */
 					} else {
 						has_extras = true;
