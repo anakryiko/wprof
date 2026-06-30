@@ -532,10 +532,13 @@ int start_cupti_activities(void)
 
 	ret = cupti_subscribe(&cupti_subscr, cupti_callback, NULL);
 	if (ret == CUPTI_ERROR_MULTIPLE_SUBSCRIBERS_NOT_SUPPORTED) {
+		/*
+		 * Most likely CUDA/GPU isn't used by this process (or, unlikely,
+		 * another CUPTI tool is active). The caller maps -EBUSY to
+		 * FEAT_IGNORED; record the reason here, where we actually know it.
+		 */
 		elog("No CUDA is used by this process or (unlikely) another CUPTI tool is active right now! Bailing...\n");
-		inj_set_exit_hint(HINT_CUPTI_BUSY,
-				  "Mostly likely CUDA/GPU isn't used by this process. "
-				  "Or (unlikely) CUPTI is used by someone else inside this process.\n");
+		inj_set_feat_hint(run_ctx->cuda_feat_hint, "CUDA/GPU not used by this process (or CUPTI in use by another tool)");
 		return -EBUSY;
 	} else if (ret != CUPTI_SUCCESS) {
 		elog("Failed to perform CUPTI subscription: %d (%s)!\n", ret, cupti_errstr(ret));
