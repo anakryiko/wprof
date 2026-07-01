@@ -198,6 +198,9 @@ enum wprof_stat_id {
 	 */
 	WSTAT_PYTORCH_EVENT_CNT,
 
+	/* BPF-side resource stat, appended for compat (global + per-cpu) */
+	WSTAT_TASK_STORAGE_FALLBACKS,
+
 	__WSTAT_CNT,
 };
 

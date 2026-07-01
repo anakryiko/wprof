@@ -585,10 +585,17 @@ skip_rusage:
 	}
 
 	u64 task_drops = wstat(s, WSTAT_TASK_STATE_DROPS, 0);
+	u64 task_fallbacks = wstat(s, WSTAT_TASK_STORAGE_FALLBACKS, 0);
 	u64 req_drops = wstat(s, WSTAT_REQ_STATE_DROPS, 0);
 
-	if (task_drops)
+	if (env.emit_stats) {
+		if (task_drops || task_fallbacks) {
+			eprintf("%sTask state drops: %llu, storage fallbacks: %llu\n",
+				task_drops ? "!!! " : "", task_drops, task_fallbacks);
+		}
+	} else if (task_drops) {
 		eprintf("!!! Task state drops: %llu\n", task_drops);
+	}
 	if (req_drops)
 		eprintf("!!! Request state drops: %llu\n", req_drops);
 
