@@ -187,7 +187,7 @@ static int handle_cupti_record(CUpti_Activity *rec)
 		if (!rec_within_session(start_ts, end_ts, run_ctx->sess_start_ts, run_ctx->sess_end_ts))
 			return -ENODATA;
 
-		int name_off = strset__add_str(cuda_dump_strs, r->name);
+		int name_off = strset__add_str(cuda_respool_strs, r->name);
 		struct wcuda_event e = {
 			.sz = sizeof(e),
 			.kind = WCK_CUDA_KERNEL,

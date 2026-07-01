@@ -21,8 +21,7 @@ struct wcuda_data_hdr {
 	int version_minor;
 	u64 sess_start_ns;
 	u64 sess_end_ns;
-	u64 events_off, events_sz, event_cnt;
-	u64 strs_off, strs_sz;
+	u64 strs_sz;		/* string pool immediately follows this header */
 	struct wcuda_data_cfg cfg;
 } __attribute__((aligned(8)));
 
@@ -104,7 +103,7 @@ struct wcuda_event {
 
 static inline const char *wcuda_str(struct wcuda_data_hdr *hdr, u32 off)
 {
-	return (void *)hdr + hdr->hdr_sz + hdr->strs_off + off;
+	return (void *)hdr + hdr->hdr_sz + off;
 }
 
 /* WCUDA_EVENT ITERATOR */
@@ -120,13 +119,11 @@ struct wcuda_event_iter {
 	struct wcuda_event_record rec;
 };
 
-static inline struct wcuda_event_iter wcuda_event_iter_new(void *data)
+static inline struct wcuda_event_iter wcuda_event_iter_new(void *data, size_t sz)
 {
-	struct wcuda_data_hdr *hdr = data;
-
 	return (struct wcuda_event_iter) {
-		.next = data + sizeof(struct wcuda_data_hdr) + hdr->events_off,
-		.last = data + sizeof(struct wcuda_data_hdr) + hdr->events_off + hdr->events_sz,
+		.next = data,
+		.last = data + sz,
 	};
 }
 
@@ -144,8 +141,8 @@ static inline struct wcuda_event_record *wcuda_event_iter_next(struct wcuda_even
 	return &it->rec;
 }
 
-#define wcuda_for_each_event(rec, data) for (						\
-	struct wcuda_event_iter it = wcuda_event_iter_new(data);			\
+#define wcuda_for_each_event(rec, data, sz) for (					\
+	struct wcuda_event_iter it = wcuda_event_iter_new(data, sz);			\
 	(rec = wcuda_event_iter_next(&it));						\
 )
 

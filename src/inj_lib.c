@@ -255,15 +255,17 @@ static int epoll_del(int epoll_fd, int fd)
 static bool session_ended;
 
 #define CUDA_DUMP_BUF_SZ (256 * 1024)
-static FILE *cuda_dump;
+static FILE *cuda_events_dump;		/* headerless event stream */
+static FILE *cuda_respool_dump;		/* resource pool (header + string pool), written at finalize */
+/* not persisted in the dump; tracked for future per-chunk CHUNK_DONE reporting */
 static u64 cuda_event_cnt;
 
 #define CUDA_DUMP_MAX_STRS_SZ (1024 * 1024 * 1024)
-struct strset *cuda_dump_strs;
+struct strset *cuda_respool_strs;
 
 int cuda_dump_event(struct wcuda_event *e)
 {
-	if (fwrite(e, sizeof(*e), 1, cuda_dump) != 1) {
+	if (fwrite(e, sizeof(*e), 1, cuda_events_dump) != 1) {
 		int err = -errno;
 		elog("Failed to fwrite() CUDA event: %d\n", err);
 		return err;
@@ -283,63 +285,47 @@ static void init_wcuda_header(struct wcuda_data_hdr *hdr)
 	hdr->version_minor = WCUDA_DATA_MINOR;
 }
 
-static int init_wcuda_data(FILE *dump)
-{
-	int err;
-
-	err = fseek(dump, 0, SEEK_SET);
-	if (err) {
-		err = -errno;
-		elog("Failed to fseek(0) CUDA data dump: %d\n", err);
-		return err;
-	}
-
-	struct wcuda_data_hdr hdr;
-	init_wcuda_header(&hdr);
-	hdr.flags = WCUDA_DATA_FLAG_INCOMPLETE;
-
-	if (fwrite(&hdr, sizeof(hdr), 1, dump) != 1) {
-		err = -errno;
-		elog("Failed to fwrite() CUDA data dump header: %d\n", err);
-		return err;
-	}
-
-	fflush(dump);
-	fsync(fileno(dump));
-	return 0;
-}
-
-static int cuda_dump_setup(int dump_fd)
+static int cuda_dump_setup(int events_fd, int respool_fd)
 {
 	int err = 0;
 
-	cuda_dump_strs = strset__new(CUDA_DUMP_MAX_STRS_SZ, "", 1);
+	cuda_respool_strs = strset__new(CUDA_DUMP_MAX_STRS_SZ, "", 1);
 
-	cuda_dump = fdopen(dump_fd, "w");
-	if (!cuda_dump) {
+	/* event stream is headerless: records are written from offset 0 */
+	cuda_events_dump = fdopen(events_fd, "w");
+	if (!cuda_events_dump) {
 		err = -errno;
-		elog("Failed to create FILE wrapper around dump FD %d: %d\n", dump_fd, err);
+		elog("Failed to create FILE wrapper around CUDA event FD %d: %d\n", events_fd, err);
 		goto cleanup;
 	}
-	setvbuf(cuda_dump, NULL, _IOFBF, CUDA_DUMP_BUF_SZ);
+	setvbuf(cuda_events_dump, NULL, _IOFBF, CUDA_DUMP_BUF_SZ);
 
-	if ((err = init_wcuda_data(cuda_dump)) < 0) {
-		elog("Failed to init CUDA dump: %d\n", err);
+	cuda_respool_dump = fdopen(respool_fd, "w");
+	if (!cuda_respool_dump) {
+		err = -errno;
+		elog("Failed to create FILE wrapper around CUDA resource pool FD %d: %d\n", respool_fd, err);
 		goto cleanup;
 	}
 
-	inj_track_dump_fd(dump_fd);
+	inj_track_dump_fd(events_fd);
+	inj_track_dump_fd(respool_fd);
 
 	return 0;
 
 cleanup:
-	strset__free(cuda_dump_strs);
-	cuda_dump_strs = NULL;
-	if (cuda_dump) { 
-		fclose(cuda_dump);
-		cuda_dump = NULL;
+	strset__free(cuda_respool_strs);
+	cuda_respool_strs = NULL;
+	if (cuda_events_dump) {
+		fclose(cuda_events_dump);
+		cuda_events_dump = NULL;
 	} else {
-		zclose(dump_fd);
+		zclose(events_fd);
+	}
+	if (cuda_respool_dump) {
+		fclose(cuda_respool_dump);
+		cuda_respool_dump = NULL;
+	} else {
+		zclose(respool_fd);
 	}
 	return err;
 }
@@ -348,62 +334,45 @@ int cuda_dump_finalize(void)
 {
 	int err = 0;
 
-	if (!cuda_dump)
+	if (!cuda_events_dump)
 		return 0;
 
-	inj_untrack_dump_fd(fileno(cuda_dump));
+	/* finalize the headerless event stream: just flush and close */
+	inj_untrack_dump_fd(fileno(cuda_events_dump));
+	fflush(cuda_events_dump);
+	fsync(fileno(cuda_events_dump));
+	fclose(cuda_events_dump);
+	cuda_events_dump = NULL;
 
-	fflush(cuda_dump);
-
-	long strs_off = ftell(cuda_dump);
-	if (strs_off < 0) {
-		err = -errno;
-		elog("Failed to get CUDA dump file position: %d\n", err);
-		return err;
-	}
-
-	const char *strs = strset__data(cuda_dump_strs);
-	size_t strs_sz = strset__data_size(cuda_dump_strs);
-
-	size_t written;
-	if ((written = fwrite(strs, 1, strs_sz, cuda_dump)) != strs_sz) {
-		err = -errno;
-		elog("Failed to write strings (ret %zu) to CUDA dump: %d\n", written, err);
-		return err;
-	}
-
-	fsync(fileno(cuda_dump));
+	/* write the resource pool: header followed by the string pool */
+	const char *strs = strset__data(cuda_respool_strs);
+	size_t strs_sz = strset__data_size(cuda_respool_strs);
 
 	struct wcuda_data_hdr hdr;
 	init_wcuda_header(&hdr);
-
 	hdr.sess_start_ns = run_ctx->sess_start_ts;
 	hdr.sess_end_ns = run_ctx->sess_end_ts;
-	hdr.events_off = 0;
-	hdr.events_sz = strs_off - sizeof(struct wcuda_data_hdr);
-	hdr.event_cnt = cuda_event_cnt;
-	hdr.strs_off = strs_off - sizeof(struct wcuda_data_hdr);
 	hdr.strs_sz = strs_sz;
 	hdr.cfg.dummy = 0;
 
-	err = fseek(cuda_dump, 0, SEEK_SET);
-	if (err) {
+	inj_untrack_dump_fd(fileno(cuda_respool_dump));
+
+	if (fwrite(&hdr, sizeof(hdr), 1, cuda_respool_dump) != 1) {
 		err = -errno;
-		elog("Failed to fseek(0): %d\n", err);
+		elog("Failed to fwrite() CUDA resource pool header: %d\n", err);
 		return err;
 	}
 
-	if (fwrite(&hdr, sizeof(hdr), 1, cuda_dump) != 1) {
+	if (fwrite(strs, 1, strs_sz, cuda_respool_dump) != strs_sz) {
 		err = -errno;
-		elog("Failed to fwrite() CUDA dump header: %d\n", err);
+		elog("Failed to write strings to CUDA resource pool: %d\n", err);
 		return err;
 	}
 
-	fflush(cuda_dump);
-	fsync(fileno(cuda_dump));
-
-	fclose(cuda_dump);
-	cuda_dump = NULL;
+	fflush(cuda_respool_dump);
+	fsync(fileno(cuda_respool_dump));
+	fclose(cuda_respool_dump);
+	cuda_respool_dump = NULL;
 
 	return 0;
 }
@@ -423,7 +392,7 @@ static int handle_session_end(void)
 
 	finalize_cupti_activities();
 
-	if (cuda_dump) {
+	if (cuda_events_dump) {
 		ret = cuda_dump_finalize();
 		if (ret) {
 			/* keep going so the other features still get finalized */
@@ -517,11 +486,12 @@ static int handle_msg(struct inj_msg *msg, int *fds, int fd_cnt)
 		break;
 	}
 	case INJ_MSG_CUDA_SETUP: {
-		if (fd_cnt != 1) {
-			elog("Received CUDA_SETUP with unexpected FD count %d (want 1)!\n", fd_cnt);
+		if (fd_cnt != 2) {
+			elog("Received CUDA_SETUP with unexpected FD count %d (want 2)!\n", fd_cnt);
 			return -EPROTO;
 		}
-		int dump_fd = fds[0];
+		int events_fd = fds[0];	/* headerless event dump */
+		int respool_fd = fds[1];	/* resource pool */
 
 		vlog("Setting up CUDA feature...\n");
 
@@ -530,11 +500,12 @@ static int handle_msg(struct inj_msg *msg, int *fds, int fd_cnt)
 			elog("Failed to initialize CUPTI: %d\n", err);
 			run_ctx->cuda_feat_state = FEAT_FAILED;
 			inj_set_feat_hint(run_ctx->cuda_feat_hint, "Failed to initialize CUPTI: %d", err);
-			zclose(dump_fd);
+			zclose(events_fd);
+			zclose(respool_fd);
 			return 0;
 		}
 
-		if ((err = cuda_dump_setup(dump_fd)) < 0) {
+		if ((err = cuda_dump_setup(events_fd, respool_fd)) < 0) {
 			elog("Failed to setup CUDA data dump: %d\n", err);
 			run_ctx->cuda_feat_state = FEAT_FAILED;
 			inj_set_feat_hint(run_ctx->cuda_feat_hint, "Failed to set up CUDA data dump: %d", err);
@@ -562,7 +533,7 @@ static int handle_msg(struct inj_msg *msg, int *fds, int fd_cnt)
 			 * means this process doesn't actually use CUDA (or, rarely, another
 			 * CUPTI tool is active). Treat as "ignore this feature", not a hard
 			 * failure, so co-resident features still run. The CUDA dump stays
-			 * owned by cuda_dump and is finalized (empty) at session end.
+			 * owned by cuda_events_dump and is finalized (empty) at session end.
 			 */
 			run_ctx->cuda_feat_state = (err == -EBUSY) ? FEAT_IGNORED : FEAT_FAILED;
 			/* -EBUSY: start_cupti_activities() already recorded the busy reason. */

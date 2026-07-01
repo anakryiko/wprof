@@ -747,8 +747,10 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers,
 	 * several streams when it was injected for multiple features.
 	 */
 	struct wcuda_state {
-		struct wcuda_data_hdr *dump_hdr;
-		size_t dump_sz;
+		struct wcuda_data_hdr *respool_hdr;	/* mmap of the pool/meta file */
+		size_t respool_sz;
+		void *events_mem;			/* mmap of the headerless event file */
+		size_t events_sz;
 		const char *strs;
 		struct wrust_ts_ptr *recs;
 		const struct wrust_ts_ptr *next_rec;
@@ -802,38 +804,66 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers,
 			continue;
 		}
 
-		/* CUDA event stream */
-		if (inj->cuda_dump_fd >= 0) {
+		/* CUDA event stream: headerless event file + resource pool (header + strs) file */
+		if (inj->cuda_respool_fd >= 0) {
 			struct wcuda_state *wcuda = &wcudas[wcuda_cnt];
 
-			if (fstat(inj->cuda_dump_fd, &st) < 0) {
+			if (fstat(inj->cuda_respool_fd, &st) < 0) {
 				err = -errno;
-				eprintf("Failed to fstat() CUDA data dump for %s at '%s': %d\n",
-					injectee_str(inj), inj->cuda_dump_path, err);
+				eprintf("Failed to fstat() CUDA resource pool for %s at '%s': %d\n",
+					injectee_str(inj), inj->cuda_respool_path, err);
 				goto skip_cuda;
 			}
-
-			wcuda->dump_sz = st.st_size;
-			wcuda->dump_hdr = mmap(NULL, wcuda->dump_sz, PROT_READ | PROT_WRITE, MAP_SHARED, inj->cuda_dump_fd, 0);
-			if (wcuda->dump_hdr == MAP_FAILED) {
-				err = -errno;
-				eprintf("Failed to mmap() CUDA data dump for %s at '%s': %d\n",
-					injectee_str(inj), inj->cuda_dump_path, err);
-				wcuda->dump_hdr = NULL;
+			if (st.st_size < sizeof(struct wcuda_data_hdr)) {
+				/* injectee never finalized (e.g. died mid-session): skip its CUDA data, carry on */
+				eprintf("!!! CUDA data for %s is incomplete (resource pool not finalized), skipping it!\n",
+					injectee_str(inj));
 				goto skip_cuda;
 			}
+			wcuda->respool_sz = st.st_size;
+			wcuda->respool_hdr = mmap(NULL, wcuda->respool_sz, PROT_READ | PROT_WRITE, MAP_SHARED, inj->cuda_respool_fd, 0);
+			if (wcuda->respool_hdr == MAP_FAILED) {
+				err = -errno;
+				eprintf("Failed to mmap() CUDA resource pool for %s at '%s': %d\n",
+					injectee_str(inj), inj->cuda_respool_path, err);
+				wcuda->respool_hdr = NULL;
+				goto skip_cuda;
+			}
+			wcuda->strs = (void *)wcuda->respool_hdr + wcuda->respool_hdr->hdr_sz;
 
-			wcuda->strs = (void *)wcuda->dump_hdr + wcuda->dump_hdr->hdr_sz + wcuda->dump_hdr->strs_off;
+			if (fstat(inj->cuda_events_fd, &st) < 0) {
+				err = -errno;
+				eprintf("Failed to fstat() CUDA event dump for %s at '%s': %d\n",
+					injectee_str(inj), inj->cuda_events_path, err);
+				goto skip_cuda;
+			}
+			wcuda->events_sz = st.st_size;
+			if (wcuda->events_sz > 0) {
+				wcuda->events_mem = mmap(NULL, wcuda->events_sz, PROT_READ | PROT_WRITE, MAP_SHARED,
+							 inj->cuda_events_fd, 0);
+				if (wcuda->events_mem == MAP_FAILED) {
+					err = -errno;
+					eprintf("Failed to mmap() CUDA event dump for %s at '%s': %d\n",
+						injectee_str(inj), inj->cuda_events_path, err);
+					wcuda->events_mem = NULL;
+					goto skip_cuda;
+				}
+			}
 
-			/* re-sort CUDA events because they don't come completely ordered out of CUPTI */
 			wcuda->tracee_idx = i;
 			wcuda->rec_idx = 0;
-			wcuda->rec_cnt = wcuda->dump_hdr->event_cnt;
+
+			/* headerless event stream: count records first, then size and fill */
+			struct wcuda_event_record *rec;
+			wcuda->rec_cnt = 0;
+			wcuda_for_each_event(rec, wcuda->events_mem, wcuda->events_sz) {
+				wcuda->rec_cnt++;
+			}
 			wcuda->recs = calloc(wcuda->rec_cnt, sizeof(*wcuda->recs));
 
-			struct wcuda_event_record *rec;
+			/* re-sort CUDA events because they don't come completely ordered out of CUPTI */
 			u64 idx = 0;
-			wcuda_for_each_event(rec, wcuda->dump_hdr) {
+			wcuda_for_each_event(rec, wcuda->events_mem, wcuda->events_sz) {
 				wcuda->recs[idx++] = (struct wrust_ts_ptr){ .ts = rec->e->ts, .ptr = rec->e };
 			}
 
@@ -1165,12 +1195,16 @@ skip_pytorch:
 	for (int i = 0; i < wcuda_cnt; i++) {
 		struct wcuda_state *w = &wcudas[i];
 
-		if (w->dump_hdr)
-			munmap(w->dump_hdr, w->dump_sz);
+		if (w->respool_hdr)
+			munmap(w->respool_hdr, w->respool_sz);
+		if (w->events_mem)
+			munmap(w->events_mem, w->events_sz);
 
 		free(w->recs);
-		w->dump_hdr = NULL;
-		w->dump_sz = 0;
+		w->respool_hdr = NULL;
+		w->respool_sz = 0;
+		w->events_mem = NULL;
+		w->events_sz = 0;
 	}
 	free(wcudas);
 
@@ -1202,21 +1236,26 @@ skip_pytorch:
 	for (int i = 0; i < env.injectee_cnt; i++) {
 		struct injectee *inj = &env.injectees[i];
 
-		if (!env.keep_workdir && inj->cuda_dump_path)
-			unlink(inj->cuda_dump_path);
+		if (!env.keep_workdir && inj->cuda_events_path)
+			unlink(inj->cuda_events_path);
+		if (!env.keep_workdir && inj->cuda_respool_path)
+			unlink(inj->cuda_respool_path);
 		if (!env.keep_workdir && inj->pytrace_dump_path)
 			unlink(inj->pytrace_dump_path);
 		if (!env.keep_workdir && inj->pytorch_dump_path)
 			unlink(inj->pytorch_dump_path);
 
-		free(inj->cuda_dump_path);
-		inj->cuda_dump_path = NULL;
+		free(inj->cuda_events_path);
+		inj->cuda_events_path = NULL;
+		free(inj->cuda_respool_path);
+		inj->cuda_respool_path = NULL;
 		free(inj->pytrace_dump_path);
 		inj->pytrace_dump_path = NULL;
 		free(inj->pytorch_dump_path);
 		inj->pytorch_dump_path = NULL;
 
-		zclose(inj->cuda_dump_fd);
+		zclose(inj->cuda_events_fd);
+		zclose(inj->cuda_respool_fd);
 		zclose(inj->pytrace_dump_fd);
 		zclose(inj->pytorch_dump_fd);
 	}

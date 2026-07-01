@@ -69,8 +69,10 @@ struct injectee {
 	enum inj_feature avail_feats;	/* reached FEAT_READY */
 	bool force_cuda;		/* nvidia-smi/explicit: skip the CUPTI-present check */
 
-	int cuda_dump_fd;
-	char *cuda_dump_path;
+	int cuda_events_fd;		/* headerless event dump */
+	char *cuda_events_path;
+	int cuda_respool_fd;		/* resource pool (header + strs) */
+	char *cuda_respool_path;
 
 	int py_version_minor;
 	unsigned long py_sym_addrs[PYTRACE_SYM_CNT];
