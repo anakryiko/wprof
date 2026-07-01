@@ -599,16 +599,10 @@ SEC("?perf_event")
 int wprof_timer_tick(void *ctx)
 {
 	u64 now_ts = bpf_ktime_get_ns();
-	struct task_state *scur;
 	struct task_struct *cur = bpf_get_current_task_btf();
 
 	if (!should_trace_task(cur, now_ts))
 		return false;
-
-	scur = task_state(cur->pid);
-	if (!scur)
-		return 0; /* shouldn't happen, unless we ran out of space */
-
 
 	struct wprof_event *e;
 	struct bpf_dynptr *dptr;
@@ -646,16 +640,11 @@ SEC("?perf_event")
 int wprof_pmu_event(struct bpf_perf_event_data *ctx)
 {
 	u64 now_ts = bpf_ktime_get_ns();
-	struct task_state *scur;
 	struct task_struct *cur = bpf_get_current_task_btf();
 	int cpu = bpf_get_smp_processor_id();
 
 	if (!should_trace_task(cur, now_ts))
 		return 0;
-
-	scur = task_state(cur->pid);
-	if (!scur)
-		return 0; /* shouldn't happen, unless we ran out of space */
 
 	struct perf_counters pmu_vals;
 	size_t pmu_sz = capture_perf_counters(&pmu_vals, NULL, cpu);
