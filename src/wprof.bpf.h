@@ -16,6 +16,10 @@
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
 
+enum wprof_task_flags {
+	WTASK_F_LOCAL_STORAGE = 0x1,	/* state lives in task-local storage, not the hash */
+};
+
 struct task_state {
 	u64 waking_ts;
 	u32 waking_flags;
@@ -31,6 +35,7 @@ struct task_state {
 	struct perf_counters ctrs;
 	/* SCX-related fields, used by scx.bpf.c */
 	struct wprof_scx_dsq scx_dsq;
+	u32 flags;
 };
 
 __hidden int glob_match(const char *pat, size_t pat_sz, const char *str, size_t str_sz);

@@ -59,6 +59,7 @@ struct wprof_bpf_stats {
 	u64 rb_rescues;
 	u64 rb_misses;
 	u64 task_state_drops;
+	u64 task_storage_fallbacks;
 	u64 req_state_drops;
 	u64 pystacks_attempted;
 	u64 pystacks_found;

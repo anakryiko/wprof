@@ -238,6 +238,7 @@ static int stat_elem_cnt(enum wprof_stat_id id, int rb_cnt, int cpu_cnt,
 		return 1 + rb_cnt;
 	/* global + per-cpu */
 	case WSTAT_TASK_STATE_DROPS:
+	case WSTAT_TASK_STORAGE_FALLBACKS:
 	case WSTAT_REQ_STATE_DROPS:
 	case WSTAT_PYSTACKS_ATTEMPTED:
 	case WSTAT_PYSTACKS_FOUND:
@@ -364,6 +365,7 @@ static struct wprof_stats *prepare_stats(struct persist_state *ps, struct worker
 	u64 *rb_rescues = wstats(s, WSTAT_RB_RESCUES, NULL);
 	u64 *rb_misses = wstats(s, WSTAT_RB_MISSES, NULL);
 	u64 *task_drops = wstats(s, WSTAT_TASK_STATE_DROPS, NULL);
+	u64 *task_fallbacks = wstats(s, WSTAT_TASK_STORAGE_FALLBACKS, NULL);
 	u64 *req_drops = wstats(s, WSTAT_REQ_STATE_DROPS, NULL);
 	u64 *pystacks_attempted = wstats(s, WSTAT_PYSTACKS_ATTEMPTED, NULL);
 	u64 *pystacks_found = wstats(s, WSTAT_PYSTACKS_FOUND, NULL);
@@ -392,12 +394,14 @@ static struct wprof_stats *prepare_stats(struct persist_state *ps, struct worker
 
 		/* global */
 		task_drops[0] += bs->task_state_drops;
+		task_fallbacks[0] += bs->task_storage_fallbacks;
 		req_drops[0] += bs->req_state_drops;
 		pystacks_attempted[0] += bs->pystacks_attempted;
 		pystacks_found[0] += bs->pystacks_found;
 
 		/* per-cpu */
 		task_drops[1 + i] = bs->task_state_drops;
+		task_fallbacks[1 + i] = bs->task_storage_fallbacks;
 		req_drops[1 + i] = bs->req_state_drops;
 		pystacks_attempted[1 + i] = bs->pystacks_attempted;
 		pystacks_found[1 + i] = bs->pystacks_found;

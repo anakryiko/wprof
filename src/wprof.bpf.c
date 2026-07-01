@@ -40,6 +40,18 @@ struct {
 	__type(value, struct task_state);
 } task_states SEC(".maps");
 
+/*
+ * Preferred backend for per-task state: BPF task-local storage, keyed by the
+ * task_struct itself. Falls back to the task_states hash above when disabled
+ * (--debug=no-task-storage) or when a storage allocation fails; see task_state().
+ */
+struct {
+	__uint(type, BPF_MAP_TYPE_TASK_STORAGE);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, int);
+	__type(value, struct task_state);
+} task_states_storage SEC(".maps");
+
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__type(key, u32);
@@ -131,6 +143,15 @@ const volatile bool capture_scx = true;
 const volatile bool capture_scx_layer_id = false;
 const volatile bool capture_task_life = true;
 
+/*
+ * Use BPF task-local storage for per-task state (the default). When false
+ * (--debug=no-task-storage, or a per-task allocation fails) task_state() uses
+ * the task_states hash instead. const volatile so the storage path is
+ * dead-code-eliminated when off, letting the task_states_storage map be skipped
+ * (autocreate=false) with no load error.
+ */
+const volatile bool use_task_storage = true;
+
 bool capture_pystacks = false;
 
 static int zero = 0;
@@ -146,10 +167,9 @@ static __always_inline int task_id(int pid)
 	return pid ?: -(bpf_get_smp_processor_id() + 1);
 }
 
-__hidden struct task_state *task_state(struct task_struct *task)
+static struct task_state *task_state_hash(int id)
 {
 	struct task_state *s;
-	int id = task_id(task->pid);
 
 	s = bpf_map_lookup_elem(&task_states, &id);
 	if (!s) {
@@ -161,18 +181,54 @@ __hidden struct task_state *task_state(struct task_struct *task)
 	return s;
 }
 
+__hidden struct task_state *task_state(struct task_struct *task)
+{
+	int id = task_id(task->pid);
+	struct task_state *s;
+
+	if (!use_task_storage)
+		goto lookup_hash;
+
+	s = bpf_task_storage_get(&task_states_storage, task, &empty_task_state,
+				 BPF_LOCAL_STORAGE_GET_F_CREATE);
+	if (!s) {
+		/* storage allocation failed; degrade to the hash for this task */
+		(void)inc_stat(task_storage_fallbacks);
+		goto lookup_hash;
+	}
+
+	/* first creation: adopt any state left in the hash by an earlier fallback */
+	if (!(s->flags & WTASK_F_LOCAL_STORAGE)) {
+		struct task_state *h = bpf_map_lookup_elem(&task_states, &id);
+		if (h) {
+			*s = *h;
+			bpf_map_delete_elem(&task_states, &id);
+		}
+		s->flags |= WTASK_F_LOCAL_STORAGE;
+	}
+	return s;
+
+lookup_hash:
+	return task_state_hash(id);
+}
+
 /* don't create an entry if it's not there already */
 static struct task_state *task_state_peek(struct task_struct *task)
 {
 	int id = task_id(task->pid);
-
+	if (use_task_storage) {
+		struct task_state *s = bpf_task_storage_get(&task_states_storage, task, NULL, 0);
+		if (s)
+			return s;
+	}
 	return bpf_map_lookup_elem(&task_states, &id);
 }
 
 static void task_state_delete(struct task_struct *task)
 {
 	int id = task_id(task->pid);
-
+	if (use_task_storage)
+		bpf_task_storage_delete(&task_states_storage, task);
 	bpf_map_delete_elem(&task_states, &id);
 }
 
