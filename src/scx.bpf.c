@@ -40,7 +40,7 @@ static int on_dsq_insert(struct task_struct *p, u64 dsq, enum scx_dsq_insert_typ
 	if (!capture_scx)
 		return 0;
 
-	scur = task_state(p->pid);
+	scur = task_state(p);
 	if (!scur)
 		return 0;
 
@@ -103,7 +103,7 @@ static int on_dsq_move(struct task_struct *p, u64 dsq, enum scx_dsq_insert_type 
 	if (!capture_scx)
 		return 0;
 
-	scur = task_state(p->pid);
+	scur = task_state(p);
 	if (!scur)
 		return 0;
 

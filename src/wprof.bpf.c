@@ -146,10 +146,10 @@ static __always_inline int task_id(int pid)
 	return pid ?: -(bpf_get_smp_processor_id() + 1);
 }
 
-__hidden struct task_state *task_state(int pid)
+__hidden struct task_state *task_state(struct task_struct *task)
 {
 	struct task_state *s;
-	int id = task_id(pid);
+	int id = task_id(task->pid);
 
 	s = bpf_map_lookup_elem(&task_states, &id);
 	if (!s) {
@@ -162,16 +162,16 @@ __hidden struct task_state *task_state(int pid)
 }
 
 /* don't create an entry if it's not there already */
-static struct task_state *task_state_peek(int pid)
+static struct task_state *task_state_peek(struct task_struct *task)
 {
-	int id = task_id(pid);
+	int id = task_id(task->pid);
 
 	return bpf_map_lookup_elem(&task_states, &id);
 }
 
-static void task_state_delete(int pid)
+static void task_state_delete(struct task_struct *task)
 {
-	int id = task_id(pid);
+	int id = task_id(task->pid);
 
 	bpf_map_delete_elem(&task_states, &id);
 }
@@ -704,8 +704,8 @@ int BPF_PROG(wprof_task_switch,
 	if (!should_trace_task(prev, now_ts) && !should_trace_task(next, now_ts))
 		return 0;
 
-	sprev = task_state(prev->pid);
-	snext = task_state(next->pid);
+	sprev = task_state(prev);
+	snext = task_state(next);
 	if (!sprev || !snext)
 		return 0;
 
@@ -807,7 +807,7 @@ int BPF_PROG(wprof_task_waking, struct task_struct *p)
 	if (!should_trace_task(p, now_ts))
 		return 0;
 
-	s = task_state(p->pid);
+	s = task_state(p);
 	if (!s)
 		return 0;
 
@@ -857,7 +857,7 @@ int BPF_PROG(wprof_task_wakeup_new, struct task_struct *p)
 	if (!should_trace_task(p, now_ts))
 		return 0;
 
-	s = task_state(p->pid);
+	s = task_state(p);
 	if (!s)
 		return 0;
 
@@ -989,7 +989,7 @@ int BPF_PROG(wprof_task_free, struct task_struct *p)
 	if (!should_trace_task(p, now_ts))
 		goto cleanup;
 
-	s = task_state_peek(p->pid);
+	s = task_state_peek(p);
 	if (!s)
 		return 0;
 
@@ -1001,7 +1001,7 @@ int BPF_PROG(wprof_task_free, struct task_struct *p)
 	}
 
 cleanup:
-	task_state_delete(p->pid);
+	task_state_delete(p);
 
 	return 0;
 }
@@ -1013,7 +1013,7 @@ static int handle_hardirq(u64 now_ts, struct task_struct *task,
 	struct wprof_event *e;
 	int cpu;
 
-	s = task_state(task->pid);
+	s = task_state(task);
 	if (!s)
 		return 0;
 
@@ -1079,7 +1079,7 @@ static int handle_softirq(u64 now_ts, struct task_struct *task, int vec_nr, bool
 	struct wprof_event *e;
 	int cpu;
 
-	s = task_state(task->pid);
+	s = task_state(task);
 	if (!s)
 		return 0;
 
@@ -1157,7 +1157,7 @@ static int handle_workqueue(u64 now_ts, struct task_struct *task, struct work_st
 	struct wprof_event *e;
 	int cpu, err;
 
-	s = task_state(task->pid);
+	s = task_state(task);
 	if (!s)
 		return 0;
 

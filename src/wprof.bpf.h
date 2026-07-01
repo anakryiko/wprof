@@ -34,7 +34,7 @@ struct task_state {
 };
 
 __hidden int glob_match(const char *pat, size_t pat_sz, const char *str, size_t str_sz);
-__hidden struct task_state *task_state(int pid);
+__hidden struct task_state *task_state(struct task_struct *task);
 __hidden int handle_dsq(u64 now_ts, struct task_struct *task, struct task_state *s);
 __hidden void emit_scx_dsq_event(u64 end_ts, struct task_struct *task, struct task_state *s);
 
