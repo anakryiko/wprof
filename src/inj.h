@@ -33,7 +33,7 @@
 
 extern struct inj_setup_ctx *setup_ctx;
 extern struct inj_run_ctx *run_ctx;
-extern struct strset *cuda_dump_strs;
+extern struct strset *cuda_respool_strs;
 
 __printf(2, 3)
 void log_printf(int verbosity, const char *fmt, ...);

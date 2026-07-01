@@ -18,7 +18,8 @@
 #include "bpf_utils.h"
 
 #define LIBWPROFINJ_LOG_PATH_FMT "wprofinj-log.%d.%d.log"
-#define LIBWPROFINJ_CUDA_DUMP_PATH_FMT "wprofinj-cuda.%d.%d.data"
+#define LIBWPROFINJ_CUDA_EVENTS_PATH_FMT "wprofinj-cuda.%d.%d.events"
+#define LIBWPROFINJ_CUDA_RESPOOL_PATH_FMT "wprofinj-cuda.%d.%d.respool"
 #define LIBWPROFINJ_PYTRACE_DUMP_PATH_FMT "wprofinj-pytrace.%d.%d.data"
 #define LIBWPROFINJ_PYTORCH_DUMP_PATH_FMT "wprofinj-pytorch.%d.%d.data"
 
@@ -145,7 +146,8 @@ static struct injectee *injmgr_add_injectee(struct tracee_state *tracee)
 	inj->ctx = info->run_ctx;
 	inj->lib_fd = info->lib_fd;
 	inj->log_fd = -1;
-	inj->cuda_dump_fd = -1;
+	inj->cuda_events_fd = -1;
+	inj->cuda_respool_fd = -1;
 	inj->pytrace_dump_fd = -1;
 	inj->pytorch_dump_fd = -1;
 
@@ -330,25 +332,41 @@ int injmgr_setup(int workdir_fd)
 
 static int injmgr_send_cuda_setup(struct injectee *inj, int workdir_fd)
 {
-	char path[512];
-	snprintf(path, sizeof(path), LIBWPROFINJ_CUDA_DUMP_PATH_FMT, getpid(), inj->pid);
-	int dump_fd = openat(workdir_fd, path, O_RDWR | O_CREAT | O_CLOEXEC, 0644);
-	if (dump_fd < 0) {
-		int err = -errno;
-		eprintf("Failed to create CUDA dump file for %s at '%s': %d\n", injectee_str(inj), path, err);
+	char events_path[512], respool_path[512];
+	int events_fd, respool_fd, err;
+
+	snprintf(events_path, sizeof(events_path), LIBWPROFINJ_CUDA_EVENTS_PATH_FMT, getpid(), inj->pid);
+	snprintf(respool_path, sizeof(respool_path), LIBWPROFINJ_CUDA_RESPOOL_PATH_FMT, getpid(), inj->pid);
+
+	events_fd = openat(workdir_fd, events_path, O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+	if (events_fd < 0) {
+		err = -errno;
+		eprintf("Failed to create CUDA event dump for %s at '%s': %d\n", injectee_str(inj), events_path, err);
+		return err;
+	}
+	respool_fd = openat(workdir_fd, respool_path, O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+	if (respool_fd < 0) {
+		err = -errno;
+		eprintf("Failed to create CUDA resource pool for %s at '%s': %d\n", injectee_str(inj), respool_path, err);
+		close(events_fd);
 		return err;
 	}
 
+	/* fds[0] = headerless event dump, fds[1] = resource pool */
+	int fds[2] = { events_fd, respool_fd };
 	struct inj_msg msg = { .kind = INJ_MSG_CUDA_SETUP };
-	int err = uds_send_data(inj->uds_fd, &msg, sizeof(msg), &dump_fd, 1);
+	err = uds_send_data(inj->uds_fd, &msg, sizeof(msg), fds, 2);
 	if (err < 0) {
 		eprintf("Failed to send CUDA_SETUP to %s: %d\n", injectee_str(inj), err);
-		close(dump_fd);
+		close(events_fd);
+		close(respool_fd);
 		return err;
 	}
 
-	inj->cuda_dump_fd = dump_fd;
-	inj->cuda_dump_path = strdup(path);
+	inj->cuda_events_fd = events_fd;
+	inj->cuda_events_path = strdup(events_path);
+	inj->cuda_respool_fd = respool_fd;
+	inj->cuda_respool_path = strdup(respool_path);
 	return 0;
 }
 
@@ -686,7 +704,8 @@ void injmgr_teardown(void)
 		struct injectee *inj = &env.injectees[i];
 
 		zclose(inj->uds_fd);
-		zclose(inj->cuda_dump_fd);
+		zclose(inj->cuda_events_fd);
+		zclose(inj->cuda_respool_fd);
 		zclose(inj->pytrace_dump_fd);
 		zclose(inj->pytorch_dump_fd);
 		zclose(inj->log_fd);
