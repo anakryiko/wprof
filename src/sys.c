@@ -213,6 +213,20 @@ int uds_send_data(int uds_fd, void *data, size_t data_len, int *fds, int fd_cnt)
 	return 0;
 }
 
+int uds_recv_data(int uds_fd, void *data, size_t data_len)
+{
+	struct iovec io = { .iov_base = data, .iov_len = data_len };
+	struct msghdr msg = { .msg_iov = &io, .msg_iovlen = 1 };
+
+	/*
+	 * No msg_control buffer: injectee->wprof messages never carry ancillary
+	 * fds (only the wprof->injectee direction does), and any that arrived
+	 * would be closed by the kernel rather than leaked.
+	 */
+	int ret = recvmsg(uds_fd, &msg, 0);
+	return ret < 0 ? -errno : ret;
+}
+
 int delete_dir(const char *path)
 {
 	DIR *dir = opendir(path);
