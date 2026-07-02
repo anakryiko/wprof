@@ -29,10 +29,9 @@
 #define TORCH_DUMP_BUF_SZ (256 * 1024)
 #define TORCH_DUMP_MAX_STRS_SZ (16 * 1024 * 1024)
 
-static FILE *torch_events_dump;		/* headerless event stream */
+static struct chunker torch_chunker;	/* headerless event stream */
 static FILE *torch_respool_dump;	/* resource pool (header + string pool), written at finalize */
 static struct strset *torch_respool_strs;
-static u64 torch_event_cnt;
 
 static bool torch_active;
 static pthread_mutex_t torch_lock;
@@ -88,7 +87,7 @@ static struct strcache torch_name_cache;
  */
 static void *rf_start_cb(void *ret_slot, const void *record_fn)
 {
-	if (!torch_active || !torch_events_dump) {
+	if (!torch_active || !torch_chunker.cur) {
 		*(void **)ret_slot = NULL;
 		return ret_slot;
 	}
@@ -109,8 +108,9 @@ static void *rf_start_cb(void *ret_slot, const void *record_fn)
 		.name_off = name_off,
 	};
 
-	if (fwrite(&ev, sizeof(ev), 1, torch_events_dump) == 1)
-		atomic_add(&torch_event_cnt, 1);
+	int err = chunker_write(&torch_chunker, &ev, sizeof(ev), ts);
+	if (err)
+		elog("Failed to write PyTorch event: %d\n", err);
 
 	*(void **)ret_slot = NULL;
 	return ret_slot;
@@ -123,7 +123,7 @@ static void *rf_start_cb(void *ret_slot, const void *record_fn)
  */
 static void rf_end_cb(const void *record_fn, void *ctx)
 {
-	if (!torch_active || !torch_events_dump)
+	if (!torch_active || !torch_chunker.cur)
 		return;
 	if (!run_ctx->sess_start_ts)
 		return;
@@ -140,8 +140,9 @@ static void rf_end_cb(const void *record_fn, void *ctx)
 		.name_off = name_off,
 	};
 
-	if (fwrite(&ev, sizeof(ev), 1, torch_events_dump) == 1)
-		atomic_add(&torch_event_cnt, 1);
+	int err = chunker_write(&torch_chunker, &ev, sizeof(ev), ts);
+	if (err)
+		elog("Failed to write PyTorch event: %d\n", err);
 }
 
 /* ==================== RecordFunction trampoline ====================
@@ -473,19 +474,14 @@ int pytorch_session_setup(int events_fd, int respool_fd, unsigned long *sym_addr
 	torch_respool_strs = strset__new(TORCH_DUMP_MAX_STRS_SZ, "", 1);
 	if (!torch_respool_strs) {
 		elog("Failed to create PyTorch string set\n");
-		zclose(events_fd);
-		zclose(respool_fd);
-		return -ENOMEM;
-	}
-
-	/* event stream is headerless: records are written from offset 0 */
-	torch_events_dump = fdopen(events_fd, "w");
-	if (!torch_events_dump) {
-		err = -errno;
-		elog("Failed to create FILE wrapper around PyTorch event FD %d: %d\n", events_fd, err);
+		err = -ENOMEM;
 		goto cleanup;
 	}
-	setvbuf(torch_events_dump, NULL, _IOFBF, TORCH_DUMP_BUF_SZ);
+
+	err = chunker_init(&torch_chunker, events_fd, INJ_FEAT_PYTORCH, TORCH_DUMP_BUF_SZ);
+	if (err)
+		goto cleanup;
+	events_fd = -1;		/* the chunker owns it now */
 
 	torch_respool_dump = fdopen(respool_fd, "w");
 	if (!torch_respool_dump) {
@@ -502,10 +498,10 @@ int pytorch_session_setup(int events_fd, int respool_fd, unsigned long *sym_addr
 	strcache_init(&torch_name_cache, torch_respool_strs, &torch_lock);
 
 	/*
-	 * Track before rf_register so the RecordFunction callback can't fire on an
-	 * untracked fd (a fork in that window would leave the child's fd unprotected).
+	 * The event fd is tracked by chunker_init; track the resource pool too, before
+	 * rf_register so the RecordFunction callback can't fire on an untracked fd
+	 * (a fork in that window would leave the child's fd unprotected).
 	 */
-	inj_track_dump_fd(events_fd);
 	inj_track_dump_fd(respool_fd);
 
 	rf_register();
@@ -516,18 +512,14 @@ cleanup:
 	torch_active = false;
 	strset__free(torch_respool_strs);
 	torch_respool_strs = NULL;
-	if (torch_events_dump) {
-		fclose(torch_events_dump);
-		torch_events_dump = NULL;
-	} else {
-		zclose(events_fd);
-	}
+	chunker_finalize(&torch_chunker);		/* closes and untracks the event stream */
 	if (torch_respool_dump) {
 		fclose(torch_respool_dump);
 		torch_respool_dump = NULL;
 	} else {
 		zclose(respool_fd);
 	}
+	zclose(events_fd);
 	return err;
 }
 
@@ -535,21 +527,17 @@ int pytorch_session_finalize(void)
 {
 	int err = 0;
 
-	if (!torch_events_dump)
+	if (!torch_chunker.cur)
 		return 0;
 
 	rf_unregister();
 	strcache_reset(&torch_name_cache); /* safe: rf_unregister drained all in-flight callbacks */
 	torch_active = false;
-	run_ctx->pytorch_event_cnt = torch_event_cnt;
+	run_ctx->pytorch_event_cnt = torch_chunker.total_event_cnt;
 	pthread_mutex_destroy(&torch_lock);
 
 	/* finalize the headerless event stream: just flush and close */
-	inj_untrack_dump_fd(fileno(torch_events_dump));
-	fflush(torch_events_dump);
-	fsync(fileno(torch_events_dump));
-	fclose(torch_events_dump);
-	torch_events_dump = NULL;
+	chunker_finalize(&torch_chunker);
 
 	/* write the resource pool: header followed by the string pool */
 	const char *strs = strset__data(torch_respool_strs);
@@ -581,7 +569,7 @@ int pytorch_session_finalize(void)
 	torch_respool_dump = NULL;
 
 	vlog("PyTorch profiler finalized: %llu events, %zu string bytes\n",
-	     torch_event_cnt, strs_sz);
+	     torch_chunker.total_event_cnt, strs_sz);
 
 	strset__free(torch_respool_strs);
 	torch_respool_strs = NULL;

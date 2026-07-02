@@ -74,9 +74,8 @@ static bool pytrace_active;
 /* Dump file state */
 #define PYTRACE_DUMP_BUF_SZ (256 * 1024)
 #define PYTRACE_DUMP_MAX_STRS_SZ (16 * 1024 * 1024)
-static FILE *pytrace_events_dump;	/* headerless event stream */
+static struct chunker pytrace_chunker;	/* headerless event stream */
 static FILE *pytrace_respool_dump;	/* resource pool (header + code map + string pool), written at finalize */
-static u64 pytrace_event_cnt;
 
 #ifdef DEBUG
 #define MAX_TRACED_THREADS 64
@@ -264,12 +263,9 @@ static int pytrace_profile_callback(PyObject *obj, PyFrameObject *frame, int wha
 		.code_key = code_key,
 	};
 
-	if (fwrite(&ev, sizeof(ev), 1, pytrace_events_dump) != 1) {
-		elog("Failed to write PyTrace event: %d\n", -errno);
-		return 0;
-	}
-
-	atomic_add(&pytrace_event_cnt, 1);
+	int err = chunker_write(&pytrace_chunker, &ev, sizeof(ev), ts);
+	if (err)
+		elog("Failed to write PyTrace event: %d\n", err);
 	return 0;
 }
 
@@ -315,19 +311,14 @@ int pytrace_session_setup(int events_fd, int respool_fd, int version_minor,
 	pytrace_respool_strs = strset__new(PYTRACE_DUMP_MAX_STRS_SZ, "", 1);
 	if (!pytrace_respool_strs) {
 		elog("Failed to create PyTrace string set\n");
-		zclose(events_fd);
-		zclose(respool_fd);
-		return -ENOMEM;
-	}
-
-	/* event stream is headerless: records are written from offset 0 */
-	pytrace_events_dump = fdopen(events_fd, "w");
-	if (!pytrace_events_dump) {
-		err = -errno;
-		elog("Failed to create FILE wrapper around PyTrace event FD %d: %d\n", events_fd, err);
+		err = -ENOMEM;
 		goto cleanup;
 	}
-	setvbuf(pytrace_events_dump, NULL, _IOFBF, PYTRACE_DUMP_BUF_SZ);
+
+	err = chunker_init(&pytrace_chunker, events_fd, INJ_FEAT_PYTRACE, PYTRACE_DUMP_BUF_SZ);
+	if (err)
+		goto cleanup;
+	events_fd = -1;		/* the chunker owns it now */
 
 	pytrace_respool_dump = fdopen(respool_fd, "w");
 	if (!pytrace_respool_dump) {
@@ -347,10 +338,10 @@ int pytrace_session_setup(int events_fd, int respool_fd, int version_minor,
 	pytrace_active = true;
 
 	/*
-	 * Track before installing the profiler so a fork can't race an untracked fd
-	 * while callbacks are already firing. Untracked again in cleanup on failure.
+	 * The event fd is tracked by chunker_init; track the resource pool too, before
+	 * installing the profiler so a fork can't race an untracked fd while
+	 * callbacks are already firing. Untracked again in cleanup on failure.
 	 */
-	inj_track_dump_fd(events_fd);
 	inj_track_dump_fd(respool_fd);
 
 	PyGILState_STATE gstate = py_gilstate_ensure();
@@ -397,7 +388,6 @@ int pytrace_session_setup(int events_fd, int respool_fd, int version_minor,
 
 cleanup:
 	pytrace_active = false;
-	inj_untrack_dump_fd(events_fd);
 	inj_untrack_dump_fd(respool_fd);
 	if (pytrace_code_cache) {
 		hashmap__free(pytrace_code_cache);
@@ -405,18 +395,14 @@ cleanup:
 	}
 	strset__free(pytrace_respool_strs);
 	pytrace_respool_strs = NULL;
-	if (pytrace_events_dump) {
-		fclose(pytrace_events_dump);
-		pytrace_events_dump = NULL;
-	} else {
-		zclose(events_fd);
-	}
+	chunker_finalize(&pytrace_chunker);	/* closes and untracks the event stream */
 	if (pytrace_respool_dump) {
 		fclose(pytrace_respool_dump);
 		pytrace_respool_dump = NULL;
 	} else {
 		zclose(respool_fd);
 	}
+	zclose(events_fd);
 	return err;
 }
 
@@ -454,7 +440,7 @@ static int pytrace_session_teardown(void)
 {
 	int err = 0;
 
-	if (!pytrace_events_dump)
+	if (!pytrace_chunker.cur)
 		return 0;
 
 	/* Uninstall profiler */
@@ -462,11 +448,7 @@ static int pytrace_session_teardown(void)
 	pytrace_uninstall_profiler();
 
 	/* finalize the headerless event stream: just flush and close */
-	inj_untrack_dump_fd(fileno(pytrace_events_dump));
-	fflush(pytrace_events_dump);
-	fsync(fileno(pytrace_events_dump));
-	fclose(pytrace_events_dump);
-	pytrace_events_dump = NULL;
+	chunker_finalize(&pytrace_chunker);
 
 	/* write the resource pool: header, code map, then the string pool */
 	const char *strs = strset__data(pytrace_respool_strs);
@@ -520,7 +502,7 @@ static int pytrace_session_teardown(void)
 
 	/* Update run_ctx stats */
 	if (run_ctx) {
-		run_ctx->pytrace_event_cnt = pytrace_event_cnt;
+		run_ctx->pytrace_event_cnt = pytrace_chunker.total_event_cnt;
 		run_ctx->pytrace_code_cache_cnt = pytrace_code_cnt;
 	}
 
@@ -539,7 +521,7 @@ static int pytrace_session_teardown(void)
 #endif
 
 	vlog("PyTrace session finalized: %llu events, %u code objects, %zu string bytes\n",
-	     pytrace_event_cnt, pytrace_code_cnt, strs_sz);
+	     pytrace_chunker.total_event_cnt, pytrace_code_cnt, strs_sz);
 
 	/* Cleanup */
 	hashmap__free(pytrace_code_cache);
