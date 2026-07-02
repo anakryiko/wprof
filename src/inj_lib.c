@@ -574,15 +574,16 @@ static int handle_msg(struct inj_msg *msg, int *fds, int fd_cnt)
 		break;
 	}
 	case INJ_MSG_PYTORCH_SETUP: {
-		if (fd_cnt != 1) {
-			elog("Received PYTORCH_SETUP with unexpected FD count %d (want 1)!\n", fd_cnt);
+		if (fd_cnt != 2) {
+			elog("Received PYTORCH_SETUP with unexpected FD count %d (want 2)!\n", fd_cnt);
 			return -EPROTO;
 		}
-		int dump_fd = fds[0];
+		int events_fd = fds[0];		/* headerless event dump */
+		int respool_fd = fds[1];	/* resource pool */
 
 		vlog("Setting up PyTorch feature...\n");
 
-		err = pytorch_session_setup(dump_fd, msg->pytorch_setup.pytorch_sym_addrs,
+		err = pytorch_session_setup(events_fd, respool_fd, msg->pytorch_setup.pytorch_sym_addrs,
 					    ARRAY_SIZE(msg->pytorch_setup.pytorch_sym_addrs));
 		if (err) {
 			elog("Failed to setup PyTorch feature: %d\n", err);

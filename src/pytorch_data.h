@@ -16,14 +16,10 @@ enum wpytorch_what {
 struct wpytorch_data_hdr {
 	char magic[6]; /* "WPYTO\0" */
 	u16 hdr_sz;
-	u64 flags;		/* WPYTORCH_DATA_FLAG_INCOMPLETE during recording, cleared on finalization */
+	u64 flags;
 	u64 sess_start_ns;
 	u64 sess_end_ns;
-	u64 events_off;
-	u64 events_sz;
-	u64 event_cnt;
-	u64 strs_off;
-	u64 strs_sz;
+	u64 strs_sz;		/* string pool immediately follows this header */
 } __attribute__((aligned(8)));
 
 /*
@@ -39,7 +35,7 @@ struct wpytorch_event {
 
 static inline const char *wpytorch_str(struct wpytorch_data_hdr *hdr, u32 off)
 {
-	return (void *)hdr + hdr->hdr_sz + hdr->strs_off + off;
+	return (void *)hdr + hdr->hdr_sz + off;
 }
 
 /* WPYTORCH_EVENT ITERATOR */
@@ -55,13 +51,11 @@ struct wpytorch_event_iter {
 	struct wpytorch_event_record rec;
 };
 
-static inline struct wpytorch_event_iter wpytorch_event_iter_new(void *data)
+static inline struct wpytorch_event_iter wpytorch_event_iter_new(void *data, size_t sz)
 {
-	struct wpytorch_data_hdr *hdr = data;
-
 	return (struct wpytorch_event_iter) {
-		.next = data + hdr->hdr_sz + hdr->events_off,
-		.last = data + hdr->hdr_sz + hdr->events_off + hdr->events_sz,
+		.next = data,
+		.last = data + sz,
 	};
 }
 
@@ -79,8 +73,8 @@ static inline struct wpytorch_event_record *wpytorch_event_iter_next(struct wpyt
 	return &it->rec;
 }
 
-#define wpytorch_for_each_event(rec, data) for (					\
-	struct wpytorch_event_iter it = wpytorch_event_iter_new(data);			\
+#define wpytorch_for_each_event(rec, data, sz) for (					\
+	struct wpytorch_event_iter it = wpytorch_event_iter_new(data, sz);		\
 	(rec = wpytorch_event_iter_next(&it));						\
 )
 

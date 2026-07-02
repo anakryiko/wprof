@@ -96,7 +96,7 @@ int pytrace_session_setup(int pytrace_dump_fd, int version_minor,
 			  unsigned long *sym_addrs, int sym_addr_cnt);
 int pytrace_session_finalize(void);
 
-int pytorch_session_setup(int pytorch_dump_fd, unsigned long *sym_addrs, int sym_addr_cnt);
+int pytorch_session_setup(int events_fd, int respool_fd, unsigned long *sym_addrs, int sym_addr_cnt);
 int pytorch_session_finalize(void);
 
 #endif /* __INJ_H_ */
