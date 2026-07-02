@@ -159,6 +159,22 @@ static inline const char *inj_msg_str(enum inj_msg_kind kind)
 	}
 }
 
+/* Human-readable single feature for logs: "<name> (<int>)", "???" if unknown. */
+static inline const char *inj_feature_str(enum inj_feature feature)
+{
+	static __thread char buf[24];
+	const char *name;
+
+	switch (feature) {
+	case INJ_FEAT_CUDA: name = "CUDA"; break;
+	case INJ_FEAT_PYTRACE: name = "PyTrace"; break;
+	case INJ_FEAT_PYTORCH: name = "PyTorch"; break;
+	default: name = "???"; break;
+	}
+	snprintf(buf, sizeof(buf), "%s (%d)", name, feature);
+	return buf;
+}
+
 struct inj_msg {
 	enum inj_msg_kind kind;
 

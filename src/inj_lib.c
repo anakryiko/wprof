@@ -211,6 +211,7 @@ static pthread_t worker_pthread;
 static pid_t inj_tid = -1;
 static void *stack = NULL;
 static int exit_fd = -1;
+static int chunk_handoff_efd = -1;	/* tracee threads bump this on chunk rotation to wake the worker */
 static pid_t worker_tid; /* for clone() and futex() only */
 static int epoll_fd = -1;
 static int session_timer_fd = -1;
@@ -221,6 +222,7 @@ enum epoll_kind {
 	EK_EXIT,
 	EK_UDS,
 	EK_TIMER_SESSION,
+	EK_CHUNK_HANDOFF,		/* a chunker rotated; hand its completed chunk to wprof */
 };
 
 static int epoll_add(int epoll_fd, int fd, __u32 epoll_events, enum epoll_kind kind)
@@ -250,31 +252,87 @@ static int epoll_del(int epoll_fd, int fd)
 	return 0;
 }
 
+/* Signal an eventfd (bump its counter); its epoll watcher wakes. */
+static void poke_eventfd(int fd)
+{
+	u64 one = 1;
+	(void)write(fd, &one, sizeof(one));
+}
+
+/* Consume an eventfd's counter after an epoll wakeup. */
+static void reset_eventfd(int fd)
+{
+	u64 v;
+	(void)read(fd, &v, sizeof(v));
+}
+
 static bool session_ended;
 
 /* ==================== Chunked data-stream writer ==================== */
+
+/*
+ * The active chunkers, one fixed slot per feature (chunker_slot()), so CHUNK_FD
+ * can install a spare into the right one and the worker can walk them for
+ * completed chunks. A feature that isn't set up leaves a NULL slot.
+ */
+#define INJ_CHUNKER_CNT 3
+static struct chunker *chunkers[INJ_CHUNKER_CNT];
+
+static int chunker_slot(enum inj_feature feature)
+{
+	switch (feature) {
+	case INJ_FEAT_CUDA: return 0;
+	case INJ_FEAT_PYTRACE: return 1;
+	case INJ_FEAT_PYTORCH: return 2;
+	}
+	return -1;
+}
+
+/*
+ * Allocate a chunk around fd: fdopen + buffer + track it for fork safety (the
+ * atfork child redirects tracked dump fds to /dev/null). Consumes fd on success;
+ * on failure returns NULL and leaves fd to the caller.
+ */
+static struct chunk *chunk_new(int fd, size_t buf_sz)
+{
+	struct chunk *c = calloc(1, sizeof(*c));
+	if (!c)
+		return NULL;
+
+	c->f = fdopen(fd, "w");
+	if (!c->f) {
+		free(c);
+		return NULL;
+	}
+	setvbuf(c->f, NULL, _IOFBF, buf_sz);
+	inj_track_dump_fd(fd);
+	return c;
+}
+
+/* Untrack, close (flushing the stdio buffer to the fd), and free a chunk. */
+static void chunk_free(struct chunk *c)
+{
+	inj_untrack_dump_fd(fileno(c->f));
+	fclose(c->f);
+	free(c);
+}
 
 /* On success takes ownership of events_fd (via fdopen); on failure the caller keeps it. */
 int chunker_init(struct chunker *chunker, int events_fd, enum inj_feature feature, size_t buf_sz)
 {
 	memset(chunker, 0, sizeof(*chunker));
 	chunker->feature = feature;
+	chunker->buf_sz = buf_sz;
 
 	/* data stream is headerless: records are written from offset 0 */
-	chunker->cur = fdopen(events_fd, "w");
+	chunker->cur = chunk_new(events_fd, buf_sz);
 	if (!chunker->cur) {
 		int err = -errno;
-		elog("Failed to create FILE wrapper around event FD %d: %d\n", events_fd, err);
+		elog("Failed to create initial data chunk (FD %d): %d\n", events_fd, err);
 		return err;
 	}
-	setvbuf(chunker->cur, NULL, _IOFBF, buf_sz);
 	pthread_mutex_init(&chunker->lock, NULL);
-
-	/*
-	 * Track before any events can be written so a fork can't race an untracked
-	 * fd (the atfork child redirects tracked dump fds to /dev/null).
-	 */
-	inj_track_dump_fd(events_fd);
+	chunkers[chunker_slot(feature)] = chunker;
 	return 0;
 }
 
@@ -282,36 +340,142 @@ int chunker_init(struct chunker *chunker, int events_fd, enum inj_feature featur
  * The event write path runs on many tracee threads, so serialize the write and
  * accounting under the lock. fwrite_unlocked is safe here since we hold the lock
  * (fwrite already serialized writes per FILE, so this just moves that point).
+ *
+ * In flight-recorder mode (run_ctx->fr_chunk_size set), once the current chunk
+ * fills and a spare is in hand, rotate onto it and publish the completed chunk
+ * for the worker to hand off. With no spare the current chunk just keeps growing
+ * (overshoot, never blocks the tracee thread).
  */
 int chunker_write(struct chunker *chunker, const void *rec, size_t sz, u64 ts)
 {
+	bool rotated = false;
 	int err = 0;
 
 	pthread_mutex_lock(&chunker->lock);
-	if (fwrite_unlocked(rec, sz, 1, chunker->cur) == 1) {
-		chunker->bytes += sz;
-		chunker->event_cnt++;
+	struct chunk *c = chunker->cur;
+	if (fwrite_unlocked(rec, sz, 1, c->f) == 1) {
+		c->byte_sz += sz;
+		c->event_cnt++;
 		chunker->total_event_cnt++;
 		chunker->total_byte_sz += sz;
-		if (ts > chunker->end_ts)
-			chunker->end_ts = ts;
+		if (ts > c->end_ts)
+			c->end_ts = ts;
+
+		/*
+		 * handoff != NULL means the worker hasn't taken the previous chunk yet;
+		 * the load is racy (the worker clears it lock-free), which is fine -- a
+		 * stale "still pending" just delays this rotation and we overshoot. The
+		 * completed chunk is published as a single atomic store: its stats
+		 * travel with the pointer, so the worker reads them coherently.
+		 */
+		u64 chunk_size = run_ctx->fr_chunk_size;
+		if (chunk_size && c->byte_sz >= chunk_size &&
+		    chunker->spare && !atomic_load(&chunker->handoff)) {
+			atomic_store(&chunker->handoff, c);
+			chunker->cur = chunker->spare;
+			chunker->spare = NULL;
+			rotated = true;
+		}
 	} else {
 		err = -errno;
 	}
 	pthread_mutex_unlock(&chunker->lock);
+
+	if (rotated)
+		poke_eventfd(chunk_handoff_efd);	/* wake the worker to hand off the chunk */
 	return err;
 }
 
-/* Flush and close the current chunk. The resource pool is finalized separately. */
+/* Install a freshly received chunk fd (CHUNK_FD) as feature's next spare. Consumes fd. */
+static int chunker_install_spare(enum inj_feature feature, int fd)
+{
+	int slot = chunker_slot(feature);
+	struct chunker *chunker = slot >= 0 ? chunkers[slot] : NULL;
+
+	/* !cur means the feature never set up or was already finalized */
+	if (!chunker || !chunker->cur) {
+		elog("CHUNK_FD for unknown/inactive feature %s\n", inj_feature_str(feature));
+		zclose(fd);
+		return -ENOENT;
+	}
+
+	struct chunk *c = chunk_new(fd, chunker->buf_sz);
+	if (!c) {
+		int err = -errno;
+		elog("Failed to create spare chunk (fd %d): %d\n", fd, err);
+		zclose(fd);	/* chunk_new left it to us on failure */
+		return err;
+	}
+
+	/* wprof replenishes 1:1, so the spare is guaranteed NULL here */
+	pthread_mutex_lock(&chunker->lock);
+	chunker->spare = c;
+	pthread_mutex_unlock(&chunker->lock);
+	return 0;
+}
+
+/*
+ * Worker thread: hand each completed chunk off to wprof (CHUNK_DONE). Lock-free
+ * against the tracee writers: atomic-xchg the pointer to claim the chunk (NULL if
+ * nothing is pending), then read its bundled stats (ordered by the xchg acquire).
+ */
+static void chunkers_handoff(void)
+{
+	for (int i = 0; i < INJ_CHUNKER_CNT; i++) {
+		struct chunker *chunker = chunkers[i];
+
+		if (!chunker)
+			continue;
+
+		struct chunk *c = atomic_xchg(&chunker->handoff, NULL);
+		if (!c)
+			continue;
+
+		struct inj_msg msg = {
+			.kind = INJ_MSG_CHUNK_DONE,
+			.chunk_done = {
+				.feature = chunker->feature,
+				.end_ts = c->end_ts,
+				.byte_sz = c->byte_sz,
+				.event_cnt = c->event_cnt,
+			},
+		};
+		chunk_free(c);	/* no more tracee writes it: flush + close */
+
+		/* best-effort: the chunk is on disk and wprof reads it by path regardless */
+		if (send(setup_ctx->uds_fd, &msg, sizeof(msg), MSG_NOSIGNAL) != sizeof(msg))
+			elog("Failed to send CHUNK_DONE for feature %s: %d\n", inj_feature_str(chunker->feature), -errno);
+	}
+}
+
+/*
+ * Flush and close the current chunk (plus any spare / undrained completed chunk).
+ * Called on the worker thread once the feature's event source is stopped and its
+ * callbacks are drained, so no tracee thread writes and no handoff races -- this
+ * is worker-exclusive and needs no lock.
+ */
 int chunker_finalize(struct chunker *chunker)
 {
 	if (!chunker->cur)
 		return 0;
 
-	inj_untrack_dump_fd(fileno(chunker->cur));
-	fflush(chunker->cur);
-	fsync(fileno(chunker->cur));
-	fclose(chunker->cur);
+	/*
+	 * A completed chunk the worker never drained is still on disk and owned by
+	 * wprof (which reads it by path at merge), so just release it here. The spare
+	 * was never written; drop it too.
+	 */
+	if (chunker->handoff) {
+		chunk_free(chunker->handoff);
+		chunker->handoff = NULL;
+	}
+	if (chunker->spare) {
+		chunk_free(chunker->spare);
+		chunker->spare = NULL;
+	}
+
+	fflush(chunker->cur->f);
+	fsync(fileno(chunker->cur->f));
+	chunk_free(chunker->cur);
 	chunker->cur = NULL;
 	pthread_mutex_destroy(&chunker->lock);
 	return 0;
@@ -683,6 +847,19 @@ static int handle_msg(struct inj_msg *msg, int *fds, int fd_cnt)
 
 		vlog("Shutdown completed successfully.\n");
 		return -ESHUTDOWN;
+	case INJ_MSG_CHUNK_FD: {
+		if (fd_cnt != 1) {
+			elog("Received CHUNK_FD with unexpected FD count %d (want 1)!\n", fd_cnt);
+			return -EPROTO;
+		}
+		err = chunker_install_spare(msg->chunk_fd.feature, fds[0]);
+		if (err) {
+			elog("Failed to install spare chunk for feature %s: %d\n",
+			     inj_feature_str(msg->chunk_fd.feature), err);
+			return err;
+		}
+		break;
+	}
 	default:
 		elog("Unexpected message %s!\n", inj_msg_str(msg->kind));
 		return -EINVAL;
@@ -711,6 +888,8 @@ static int worker_thread_func(void *arg)
 	if ((err = epoll_add(epoll_fd, exit_fd, EPOLLIN, EK_EXIT)) < 0)
 		goto cleanup;
 	if ((err = epoll_add(epoll_fd, setup_ctx->uds_fd, EPOLLIN, EK_UDS)) < 0)
+		goto cleanup;
+	if ((err = epoll_add(epoll_fd, chunk_handoff_efd, EPOLLIN, EK_CHUNK_HANDOFF)) < 0)
 		goto cleanup;
 
 	vlog("Waiting commands or exit signal...\n");
@@ -829,8 +1008,7 @@ event_loop:
 			break;
 		}
 		case EK_EXIT:
-			long long unsigned tmp;
-			(void)read(exit_fd, &tmp, sizeof(tmp));
+			reset_eventfd(exit_fd);
 
 			err = handle_session_end();
 			if (err) {
@@ -838,9 +1016,13 @@ event_loop:
 				goto cleanup;
 			}
 
-			vlog("Worker thread received exit signal (value %llu)\n", tmp);
+			vlog("Worker thread received exit signal\n");
 			err = 0;
 			goto cleanup;
+		case EK_CHUNK_HANDOFF:
+			reset_eventfd(chunk_handoff_efd);
+			chunkers_handoff();
+			break;
 		default:
 			elog("Unrecognized epoll event from FD %d, exiting...\n", evs[i].data.fd);
 			err = -EINVAL;
@@ -862,6 +1044,7 @@ cleanup:
 	vlog("Worker thread exiting...\n");
 
 	zclose(exit_fd);
+	zclose(chunk_handoff_efd);
 	zclose(setup_ctx->uds_fd);
 	zclose(run_ctx_memfd);
 	zclose(epoll_fd);
@@ -900,6 +1083,14 @@ static int start_worker_thread(void)
 	if (exit_fd < 0) {
 		err = -errno;
 		elog("Failed to create exit-command eventfd: %d\n", err);
+		goto err_out;
+	}
+
+	/* eventfd tracee threads bump on chunk rotation to wake the worker */
+	chunk_handoff_efd = eventfd(0, EFD_CLOEXEC);
+	if (chunk_handoff_efd < 0) {
+		err = -errno;
+		elog("Failed to create chunk-rotation eventfd: %d\n", err);
 		goto err_out;
 	}
 
@@ -950,14 +1141,14 @@ err_out:
 	if (stack && stack != MAP_FAILED)
 		(void)munmap(stack, WORKER_STACK_SIZE);
 	zclose(exit_fd);
+	zclose(chunk_handoff_efd);
 	return err;
 }
 
 /* Stop worker thread */
 static void stop_worker_thread(void)
 {
-	int err = 0, ret;
-	long long unsigned tmp;
+	int ret;
 
 	if ((use_pthread && worker_pthread == 0) || (!use_pthread && inj_tid < 0)) {
 		elog("No worker thread to stop...\n");
@@ -971,13 +1162,7 @@ static void stop_worker_thread(void)
 		return;
 	}
 
-	/* Signal worker thread via eventfd */
-	tmp = 1;
-	ret = write(exit_fd, &tmp, sizeof(tmp));
-	if (ret != sizeof(tmp)) {
-		err = -errno;
-		elog("Failed to write to eventfd: %d\n", err);
-	}
+	poke_eventfd(exit_fd);	/* signal the worker thread to exit */
 
 	vlog("Waiting for worker thread to exit...\n");
 
