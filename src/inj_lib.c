@@ -610,13 +610,18 @@ static int handle_msg(struct inj_msg *msg, int *fds, int fd_cnt)
 			break;
 		}
 
-		if ((err = setup_session_timer(&session_timer_fd, sess_timeout_ms, EK_TIMER_SESSION)) < 0) {
-			elog("Failed to set up session timer: %d\n", err);
-			return err;
+		if (sess_timeout_ms != 0) {
+			if ((err = setup_session_timer(&session_timer_fd, sess_timeout_ms, EK_TIMER_SESSION)) < 0) {
+				elog("Failed to set up session timer: %d\n", err);
+				return err;
+			}
 		}
 
 		run_ctx->setup_state = INJ_SETUP_READY;
-		vlog("Session started (timeout %3ldms from now).\n", sess_timeout_ms);
+		if (sess_timeout_ms != 0)
+			vlog("Session started (timeout %3ldms from now).\n", sess_timeout_ms);
+		else
+			vlog("Session started (flight recorder mode).\n");
 		break;
 	}
 	case INJ_MSG_SHUTDOWN:
