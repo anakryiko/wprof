@@ -86,25 +86,30 @@ static inline u32 inj_gettid(void)
 #define atomic_load(p) __atomic_load_n((p), __ATOMIC_SEQ_CST)
 #define atomic_xchg(p, v) __atomic_exchange_n((p), v, __ATOMIC_SEQ_CST)
 
+struct chunk {
+	FILE *f;
+	u64 byte_sz;
+	u64 event_cnt;
+	u64 end_ts;		/* max event ts written to this chunk */
+};
+
 /*
- * Per-feature data-stream writer: wraps the current chunk FILE* with a lock
- * and per-chunk accounting. With chunk_size == 0 it is a plain single file; a
- * later change rotates into a spare chunk once chunk_size bytes have been
- * written. The event write path runs on many tracee threads, so the lock
- * serializes writes + accounting (fwrite already serialized per FILE).
+ * Per-feature data-stream writer. In flight-recorder mode (run_ctx->fr_chunk_size
+ * set) it rotates the current chunk onto a pre-received spare once it fills and
+ * hands the completed chunk to the worker thread; otherwise it is a plain single
+ * file. Event writes run on many tracee threads, so a lock serializes the write +
+ * accounting; the completed chunk is handed off as a single atomic pointer, so
+ * its stats travel with it and no lock is shared with the worker.
  */
 struct chunker {
 	pthread_mutex_t lock;
 	enum inj_feature feature;
-	u64 chunk_size;		/* rotate every N bytes; 0 = never (single file) */
-	FILE *cur;		/* current chunk being written */
-	u64 total_event_cnt;	/* cumulative across chunks, for run_ctx stats */
-	u64 total_byte_sz;	/* cumulative across chunks, for run_ctx stats */
-	int seq;		/* current chunk sequence number */
-
-	u64 bytes;		/* current chunk: bytes written */
-	u64 event_cnt;		/* current chunk: events written */
-	u64 end_ts;		/* current chunk: max event ts */
+	size_t buf_sz;			/* stdio buffer size, reused when opening spares */
+	struct chunk *cur;		/* current chunk being written */
+	struct chunk *spare;		/* pre-received next chunk (CHUNK_FD), or NULL */
+	struct chunk *handoff;		/* completed chunk awaiting the worker (atomic), or NULL */
+	u64 total_event_cnt;		/* cumulative across chunks, for run_ctx stats */
+	u64 total_byte_sz;		/* cumulative across chunks, for run_ctx stats */
 } __aligned(64);
 
 int chunker_init(struct chunker *chunker, int events_fd, enum inj_feature feature, size_t buf_sz);
