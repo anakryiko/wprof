@@ -356,12 +356,13 @@ static int handle_rb_event(void *ctx, void *data, size_t size)
 
 	char chunk_path[PATH_MAX];
 	snprintf(chunk_path, sizeof(chunk_path), "%s/bpf-rb.%03d.%d.chunk",
-		 fr->workdir, old->worker_idx, old->seq + 1);
+		 fr->workdir, old->src_idx, old->seq + 1);
 
 	struct fr_chunk *new = calloc(1, sizeof(*new));
 	new->path = strdup(chunk_path);
 	new->f = fopen_buffered(chunk_path, "w+");
-	new->worker_idx = old->worker_idx;
+	new->src = old->src;
+	new->src_idx = old->src_idx;
 	new->seq = old->seq + 1;
 	if (!new->f) {
 		int err = -errno;
@@ -2364,7 +2365,8 @@ int main(int argc, char **argv)
 		struct fr_chunk *chunk = calloc(1, sizeof(*chunk));
 		chunk->path = strdup(chunk_path);
 		chunk->f = fopen_buffered(chunk_path, "w+");
-		chunk->worker_idx = i;
+		chunk->src = FR_SRC_BPF_RB;
+		chunk->src_idx = i;
 		if (!chunk->f) {
 			err = -errno;
 			eprintf("Failed to create data dump at '%s': %d\n", chunk_path, err);

@@ -602,8 +602,8 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers,
 	while (fr_pq && !wppq_empty(fr_pq)) {
 		struct fr_chunk *c = wppq_pop(fr_pq);
 
-		c->next = fr_lists[c->worker_idx];
-		fr_lists[c->worker_idx] = c;
+		c->next = fr_lists[c->src_idx];
+		fr_lists[c->src_idx] = c;
 	}
 
 	/* Collect and symbolize stack traces, dump to separate file */
