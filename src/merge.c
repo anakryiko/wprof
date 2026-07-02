@@ -799,6 +799,9 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers,
 		} else if (inj->state == INJECTEE_SHUTDOWN_TIMEOUT) {
 			eprintf("%s timed out its shutdown, but we'll try to collect its data nevertheless!..\n",
 				injectee_str(inj));
+		} else if (inj->state == INJECTEE_DIED) {
+			eprintf("%s died mid-session, collecting whatever partial data it produced...\n",
+				injectee_str(inj));
 		} else if (inj->state == INJECTEE_IGNORED) {
 			/* expected uninteresting case, don't pollute logs */
 			continue;

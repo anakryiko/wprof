@@ -625,6 +625,33 @@ static void injmgr_dump_tracee_log(struct injectee *inj)
 	inj->log_fd = -1;
 }
 
+bool injmgr_handle_uds(int injectee_idx)
+{
+	struct injectee *inj = &env.injectees[injectee_idx];
+	struct inj_msg msg;
+	int ret = uds_recv_data(inj->uds_fd, &msg, sizeof(msg));
+
+	if (ret <= 0) {
+		/*
+		 * EOF (0) or error: the injectee closed its UDS end, i.e. it exited or
+		 * crashed mid-session. Log loudly, mark it, and let the caller drop it
+		 * from the watch set -- the session and other injectees carry on.
+		 */
+		eprintf("!!! %s died mid-session (UDS %s); dropping it and carrying on!\n",
+			injectee_str(inj), ret == 0 ? "EOF" : "error");
+		if (inj->state == INJECTEE_ACTIVE)
+			inj->state = INJECTEE_DIED;
+		return true;
+	}
+
+	/*
+	 * No injectee->wprof messages are defined yet (chunk handoff lands later),
+	 * so anything received here is unexpected; note it and keep watching.
+	 */
+	vprintf("Ignoring unexpected UDS message %s from %s\n", inj_msg_str(msg.kind), injectee_str(inj));
+	return false;
+}
+
 void injmgr_deactivate(void)
 {
 	if (env.injectees_deactivated)
@@ -643,6 +670,13 @@ void injmgr_deactivate(void)
 		}
 
 		if (inj->state == INJECTEE_SETUP_FAILED || inj->state == INJECTEE_SETUP_TIMEOUT) {
+			zclose(inj->uds_fd);
+			injmgr_dump_tracee_log(inj);
+			continue;
+		}
+
+		if (inj->state == INJECTEE_DIED) {
+			/* already gone (detected mid-session): nothing to signal */
 			zclose(inj->uds_fd);
 			injmgr_dump_tracee_log(inj);
 			continue;

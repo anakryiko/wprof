@@ -12,6 +12,8 @@ const char *sig_name(int sig);
 #define MAX_UDS_FD_CNT 16
 #endif
 int uds_send_data(int uds_fd, void *data, size_t data_len, int *fds, int fd_cnt);
+/* Receive one datagram; returns bytes read (0 = peer closed / EOF), or -errno. */
+int uds_recv_data(int uds_fd, void *data, size_t data_len);
 
 int delete_dir(const char *path);
 

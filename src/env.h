@@ -80,8 +80,12 @@ enum sess_state {
 	SESS_DONE,	/* leave loop -> post-processing */
 };
 
-/* epoll event tags, stored in epoll_event.data.u32 to identify the ready fd */
-enum epoll_tag { CTL_PREP_TIMER, CTL_ACTIVATE_TIMER, CTL_END_TIMER, CTL_SIGNAL };
+/*
+ * Session-control epoll tags, stored in epoll_event.data.u32 to identify the
+ * ready fd. The fixed timers/signal come first; each watched injectee UDS is
+ * tagged CTLS_INJECTEE_UDS_BASE + its injectee index.
+ */
+enum epoll_tag { CTL_PREP_TIMER, CTL_ACTIVATE_TIMER, CTL_END_TIMER, CTL_SIGNAL, CTLS_INJECTEE_UDS_BASE };
 
 struct sess_ctl {
 	int epoll_fd;

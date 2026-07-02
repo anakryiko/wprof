@@ -25,6 +25,7 @@ enum injectee_state {
 	INJECTEE_SETUP_TIMEOUT,
 	INJECTEE_SETUP_FAILED,
 	INJECTEE_IGNORED,
+	INJECTEE_DIED,			/* exited/crashed mid-session (UDS EOF) */
 	INJECTEE_SHUTDOWN_TIMEOUT,
 	INJECTEE_SHUTDOWN_FAILED,
 };
@@ -40,6 +41,7 @@ static inline const char *injectee_state_str(enum injectee_state state)
 	case INJECTEE_SETUP_TIMEOUT: return "SETUP_TIMEOUT";
 	case INJECTEE_SETUP_FAILED: return "SETUP_FAILED";
 	case INJECTEE_IGNORED: return "IGNORED";
+	case INJECTEE_DIED: return "DIED";
 	case INJECTEE_SHUTDOWN_TIMEOUT: return "SHUTDOWN_TIMEOUT";
 	case INJECTEE_SHUTDOWN_FAILED: return "SHUTDOWN_FAILED";
 	default: return "???";
@@ -90,6 +92,13 @@ struct injectee {
 
 const char *inj_proc_str(int pid, int ns_pid, const char *name);
 const char *injectee_str(const struct injectee *inj);
+
+/*
+ * Process one readiness event on an active injectee's UDS (main epoll loop).
+ * Returns true if the injectee died (UDS EOF/error) — the caller then drops its
+ * fd from the watch set; the session and other injectees carry on regardless.
+ */
+bool injmgr_handle_uds(int injectee_idx);
 
 int injmgr_setup(int workdir_fd);	/* enumerate, detect, inject once per PID */
 int injmgr_prepare(int workdir_fd, long sess_timeout_ms);

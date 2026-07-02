@@ -2519,12 +2519,35 @@ int main(int argc, char **argv)
 					env.sess_ctl.sess_end_target_ts = env.sess_end_ts;
 					arm_timer_abs(env.sess_ctl.sess_end_tfd, env.sess_ctl.sess_end_target_ts);
 				}
+				/*
+				 * Watch each active injectee's UDS: an EOF means it died
+				 * mid-session (handled below), and later this carries the
+				 * chunk-handoff protocol. Only synchronous UDS traffic happens
+				 * before this point and after the loop exits, so the single
+				 * epoll reader never races those.
+				 */
+				for (int j = 0; j < env.injectee_cnt; j++) {
+					struct injectee *inj = &env.injectees[j];
+					if (inj->state == INJECTEE_ACTIVE && inj->uds_fd >= 0)
+						ctl_epoll_add(env.sess_ctl.epoll_fd, inj->uds_fd, CTLS_INJECTEE_UDS_BASE + j);
+				}
 				break;
 			case CTL_END_TIMER:
 				drain_fd(env.sess_ctl.sess_end_tfd);
 				env.sess_ctl.session_complete = true;
 				env.sess_ctl.state = SESS_DONE;
 				break;
+			default: {
+				/* CTLS_INJECTEE_UDS_BASE + injectee index: an injectee's UDS is ready */
+				int idx = evs[i].data.u32 - CTLS_INJECTEE_UDS_BASE;
+				if (idx < 0 || idx >= env.injectee_cnt) {
+					BUG("session-control epoll tag %u out of range (injectee_cnt %d)!\n",
+					    evs[i].data.u32, env.injectee_cnt);
+				}
+				if (injmgr_handle_uds(idx)) /* died: stop watching its now-EOF UDS */
+					epoll_ctl(env.sess_ctl.epoll_fd, EPOLL_CTL_DEL, env.injectees[idx].uds_fd, NULL);
+				break;
+			}
 			}
 		}
 	}
