@@ -80,8 +80,10 @@ struct injectee {
 	char *pytrace_dump_path;
 
 	unsigned long pytorch_sym_addrs[PYTORCH_SYM_CNT];
-	int pytorch_dump_fd;
-	char *pytorch_dump_path;
+	int pytorch_events_fd;		/* headerless event dump */
+	char *pytorch_events_path;
+	int pytorch_respool_fd;		/* resource pool (header + strs) */
+	char *pytorch_respool_path;
 };
 
 const char *inj_proc_str(int pid, int ns_pid, const char *name);
