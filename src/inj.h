@@ -92,7 +92,7 @@ int init_cupti_activities(void);
 int start_cupti_activities(void);
 void finalize_cupti_activities(void);
 
-int pytrace_session_setup(int pytrace_dump_fd, int version_minor,
+int pytrace_session_setup(int events_fd, int respool_fd, int version_minor,
 			  unsigned long *sym_addrs, int sym_addr_cnt);
 int pytrace_session_finalize(void);
 

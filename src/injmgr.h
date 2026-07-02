@@ -76,8 +76,10 @@ struct injectee {
 
 	int py_version_minor;
 	unsigned long py_sym_addrs[PYTRACE_SYM_CNT];
-	int pytrace_dump_fd;
-	char *pytrace_dump_path;
+	int pytrace_events_fd;		/* headerless event dump */
+	char *pytrace_events_path;
+	int pytrace_respool_fd;		/* resource pool (header + code map + strs) */
+	char *pytrace_respool_path;
 
 	unsigned long pytorch_sym_addrs[PYTORCH_SYM_CNT];
 	int pytorch_events_fd;		/* headerless event dump */

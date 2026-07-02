@@ -761,8 +761,10 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers,
 	int wcuda_cnt = 0;
 
 	struct wpytrace_state {
-		struct wpytrace_data_hdr *dump_hdr;
-		size_t dump_sz;
+		struct wpytrace_data_hdr *respool_hdr;	/* mmap of the pool/meta file */
+		size_t respool_sz;
+		void *events_mem;			/* mmap of the headerless event file */
+		size_t events_sz;
 		const char *strs;
 		struct wpytrace_code_entry *code_map;
 		u64 code_map_cnt;
@@ -875,38 +877,70 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers,
 		}
 skip_cuda:
 
-		/* PyTrace (Python call/return) event stream */
-		if (inj->pytrace_dump_fd >= 0) {
+		/* PyTrace event stream: headerless event file + resource pool (header + code map + strs) file */
+		if (inj->pytrace_respool_fd >= 0) {
 			struct wpytrace_state *wpy = &wpytraces[wpytrace_cnt];
 
-			if (fstat(inj->pytrace_dump_fd, &st) < 0) {
+			if (fstat(inj->pytrace_respool_fd, &st) < 0) {
 				err = -errno;
-				eprintf("Failed to fstat() PyTrace data dump for %s at '%s': %d\n",
-					injectee_str(inj), inj->pytrace_dump_path, err);
+				eprintf("Failed to fstat() PyTrace resource pool for %s at '%s': %d\n",
+					injectee_str(inj), inj->pytrace_respool_path, err);
 				goto skip_pytrace;
 			}
-			wpy->dump_sz = st.st_size;
-			wpy->dump_hdr = mmap(NULL, wpy->dump_sz, PROT_READ | PROT_WRITE, MAP_SHARED, inj->pytrace_dump_fd, 0);
-			if (wpy->dump_hdr == MAP_FAILED) {
-				err = -errno;
-				eprintf("Failed to mmap() PyTrace data dump for %s at '%s': %d\n",
-					injectee_str(inj), inj->pytrace_dump_path, err);
-				wpy->dump_hdr = NULL;
+			if (st.st_size < sizeof(struct wpytrace_data_hdr)) {
+				/* injectee never finalized (e.g. died mid-session): skip its PyTrace data, carry on */
+				eprintf("!!! PyTrace data for %s is incomplete (resource pool not finalized), skipping it!\n",
+					injectee_str(inj));
 				goto skip_pytrace;
+			}
+			wpy->respool_sz = st.st_size;
+			wpy->respool_hdr = mmap(NULL, wpy->respool_sz, PROT_READ | PROT_WRITE, MAP_SHARED, inj->pytrace_respool_fd, 0);
+			if (wpy->respool_hdr == MAP_FAILED) {
+				err = -errno;
+				eprintf("Failed to mmap() PyTrace resource pool for %s at '%s': %d\n",
+					injectee_str(inj), inj->pytrace_respool_path, err);
+				wpy->respool_hdr = NULL;
+				goto skip_pytrace;
+			}
+			wpy->strs = (void *)wpy->respool_hdr + wpy->respool_hdr->hdr_sz + wpy->respool_hdr->strs_off;
+			wpy->code_map = (void *)wpy->respool_hdr + wpy->respool_hdr->hdr_sz + wpy->respool_hdr->code_map_off;
+			wpy->code_map_cnt = wpy->respool_hdr->code_map_cnt;
+			qsort(wpy->code_map, wpy->code_map_cnt, sizeof(*wpy->code_map), wpytrace_code_entry_cmp);
+
+			if (fstat(inj->pytrace_events_fd, &st) < 0) {
+				err = -errno;
+				eprintf("Failed to fstat() PyTrace event dump for %s at '%s': %d\n",
+					injectee_str(inj), inj->pytrace_events_path, err);
+				goto skip_pytrace;
+			}
+			wpy->events_sz = st.st_size;
+			if (wpy->events_sz > 0) {
+				wpy->events_mem = mmap(NULL, wpy->events_sz, PROT_READ | PROT_WRITE, MAP_SHARED,
+						       inj->pytrace_events_fd, 0);
+				if (wpy->events_mem == MAP_FAILED) {
+					err = -errno;
+					eprintf("Failed to mmap() PyTrace event dump for %s at '%s': %d\n",
+						injectee_str(inj), inj->pytrace_events_path, err);
+					wpy->events_mem = NULL;
+					goto skip_pytrace;
+				}
 			}
 
-			wpy->strs = (void *)wpy->dump_hdr + wpy->dump_hdr->hdr_sz + wpy->dump_hdr->strs_off;
-			wpy->code_map = (void *)wpy->dump_hdr + wpy->dump_hdr->hdr_sz + wpy->dump_hdr->code_map_off;
-			wpy->code_map_cnt = wpy->dump_hdr->code_map_cnt;
-			qsort(wpy->code_map, wpy->code_map_cnt, sizeof(*wpy->code_map), wpytrace_code_entry_cmp);
 			wpy->tracee_idx = i;
 			wpy->rec_idx = 0;
-			wpy->rec_cnt = wpy->dump_hdr->event_cnt;
+
+			/* headerless event stream: count records first, then size and fill */
+			struct wpytrace_event_record *py_rec;
+			wpy->rec_cnt = 0;
+			wpytrace_for_each_event(py_rec, wpy->events_mem, wpy->events_sz) {
+				wpy->rec_cnt++;
+			}
 			wpy->recs = calloc(wpy->rec_cnt, sizeof(*wpy->recs));
 
-			struct wpytrace_event_record *py_rec;
-			wpytrace_for_each_event(py_rec, wpy->dump_hdr)
-				wpy->recs[py_rec->idx] = (struct wrust_ts_ptr){ .ts = py_rec->e->ts, .ptr = py_rec->e };
+			u64 idx = 0;
+			wpytrace_for_each_event(py_rec, wpy->events_mem, wpy->events_sz) {
+				wpy->recs[idx++] = (struct wrust_ts_ptr){ .ts = py_rec->e->ts, .ptr = py_rec->e };
+			}
 
 			wrust_sort_events_by_ts(wpy->recs, wpy->rec_cnt);
 			wpy->next_rec = wpy->rec_cnt > 0 ? &wpy->recs[0] : NULL;
@@ -1247,12 +1281,16 @@ skip_pytorch:
 	for (int i = 0; i < wpytrace_cnt; i++) {
 		struct wpytrace_state *wpy = &wpytraces[i];
 
-		if (wpy->dump_hdr)
-			munmap(wpy->dump_hdr, wpy->dump_sz);
+		if (wpy->respool_hdr)
+			munmap(wpy->respool_hdr, wpy->respool_sz);
+		if (wpy->events_mem)
+			munmap(wpy->events_mem, wpy->events_sz);
 
 		free(wpy->recs);
-		wpy->dump_hdr = NULL;
-		wpy->dump_sz = 0;
+		wpy->respool_hdr = NULL;
+		wpy->respool_sz = 0;
+		wpy->events_mem = NULL;
+		wpy->events_sz = 0;
 	}
 	for (int i = 0; i < wpytorch_cnt; i++) {
 		struct wpytorch_state *wtorch = &wpytorches[i];
@@ -1279,8 +1317,10 @@ skip_pytorch:
 			unlink(inj->cuda_events_path);
 		if (!env.keep_workdir && inj->cuda_respool_path)
 			unlink(inj->cuda_respool_path);
-		if (!env.keep_workdir && inj->pytrace_dump_path)
-			unlink(inj->pytrace_dump_path);
+		if (!env.keep_workdir && inj->pytrace_events_path)
+			unlink(inj->pytrace_events_path);
+		if (!env.keep_workdir && inj->pytrace_respool_path)
+			unlink(inj->pytrace_respool_path);
 		if (!env.keep_workdir && inj->pytorch_events_path)
 			unlink(inj->pytorch_events_path);
 		if (!env.keep_workdir && inj->pytorch_respool_path)
@@ -1290,8 +1330,10 @@ skip_pytorch:
 		inj->cuda_events_path = NULL;
 		free(inj->cuda_respool_path);
 		inj->cuda_respool_path = NULL;
-		free(inj->pytrace_dump_path);
-		inj->pytrace_dump_path = NULL;
+		free(inj->pytrace_events_path);
+		inj->pytrace_events_path = NULL;
+		free(inj->pytrace_respool_path);
+		inj->pytrace_respool_path = NULL;
 		free(inj->pytorch_events_path);
 		inj->pytorch_events_path = NULL;
 		free(inj->pytorch_respool_path);
@@ -1299,7 +1341,8 @@ skip_pytorch:
 
 		zclose(inj->cuda_events_fd);
 		zclose(inj->cuda_respool_fd);
-		zclose(inj->pytrace_dump_fd);
+		zclose(inj->pytrace_events_fd);
+		zclose(inj->pytrace_respool_fd);
 		zclose(inj->pytorch_events_fd);
 		zclose(inj->pytorch_respool_fd);
 	}

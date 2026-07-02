@@ -74,7 +74,8 @@ static bool pytrace_active;
 /* Dump file state */
 #define PYTRACE_DUMP_BUF_SZ (256 * 1024)
 #define PYTRACE_DUMP_MAX_STRS_SZ (16 * 1024 * 1024)
-static FILE *pytrace_dump;
+static FILE *pytrace_events_dump;	/* headerless event stream */
+static FILE *pytrace_respool_dump;	/* resource pool (header + code map + string pool), written at finalize */
 static u64 pytrace_event_cnt;
 
 #ifdef DEBUG
@@ -87,12 +88,12 @@ static struct {
 static int pytrace_thread_stats_cnt;
 #endif
 
-struct strset *pytrace_dump_strs;
+struct strset *pytrace_respool_strs;
 
 /* Code object cache: PyCodeObject* -> cached info */
 struct pytrace_code_info {
-	u32 func_name_off;	/* offset into pytrace_dump_strs */
-	u32 file_name_off;	/* offset into pytrace_dump_strs */
+	u32 func_name_off;	/* offset into pytrace_respool_strs */
+	u32 file_name_off;	/* offset into pytrace_respool_strs */
 	u32 lineno;
 };
 
@@ -197,8 +198,8 @@ static u32 pytrace_cache_code(u64 code_key, PyCodeObject *code)
 
 	idx = pytrace_code_cnt;
 	pytrace_code_keys[idx] = code_key;
-	int func_off = strset__add_str(pytrace_dump_strs, func_name);
-	int file_off = strset__add_str(pytrace_dump_strs, file_name);
+	int func_off = strset__add_str(pytrace_respool_strs, func_name);
+	int file_off = strset__add_str(pytrace_respool_strs, file_name);
 	pytrace_code_entries[idx].func_name_off = func_off < 0 ? 0 : func_off;
 	pytrace_code_entries[idx].file_name_off = file_off < 0 ? 0 : file_off;
 	pytrace_code_entries[idx].lineno = lineno;
@@ -263,7 +264,7 @@ static int pytrace_profile_callback(PyObject *obj, PyFrameObject *frame, int wha
 		.code_key = code_key,
 	};
 
-	if (fwrite(&ev, sizeof(ev), 1, pytrace_dump) != 1) {
+	if (fwrite(&ev, sizeof(ev), 1, pytrace_events_dump) != 1) {
 		elog("Failed to write PyTrace event: %d\n", -errno);
 		return 0;
 	}
@@ -279,34 +280,8 @@ static void init_wpytrace_header(struct wpytrace_data_hdr *hdr)
 	hdr->hdr_sz = sizeof(*hdr);
 }
 
-static int init_wpytrace_data(FILE *dump)
-{
-	int err;
-
-	err = fseek(dump, 0, SEEK_SET);
-	if (err) {
-		err = -errno;
-		elog("Failed to fseek(0) PyTrace data dump: %d\n", err);
-		return err;
-	}
-
-	struct wpytrace_data_hdr hdr;
-	init_wpytrace_header(&hdr);
-	hdr.flags = WPYTRACE_DATA_FLAG_INCOMPLETE;
-
-	if (fwrite(&hdr, sizeof(hdr), 1, dump) != 1) {
-		err = -errno;
-		elog("Failed to fwrite() PyTrace data dump header: %d\n", err);
-		return err;
-	}
-
-	fflush(dump);
-	fsync(fileno(dump));
-	return 0;
-}
-
-/* Always consumes pytrace_dump_fd: keeps it via fdopen on success, closes it on failure. */
-int pytrace_session_setup(int pytrace_dump_fd, int version_minor,
+/* Always consumes events_fd and respool_fd: keeps them via fdopen on success, closes them on failure. */
+int pytrace_session_setup(int events_fd, int respool_fd, int version_minor,
 			  unsigned long *sym_addrs, int sym_addr_cnt)
 {
 	int err = 0;
@@ -316,7 +291,8 @@ int pytrace_session_setup(int pytrace_dump_fd, int version_minor,
 
 	if (sym_addr_cnt != PYTRACE_SYM_CNT) {
 		elog("BUG: PyTrace sym_addr_cnt:%d != PYTRACE_SYM_CNT:%d\n", sym_addr_cnt, PYTRACE_SYM_CNT);
-		zclose(pytrace_dump_fd);
+		zclose(events_fd);
+		zclose(respool_fd);
 		return -EINVAL;
 	}
 
@@ -327,31 +303,36 @@ int pytrace_session_setup(int pytrace_dump_fd, int version_minor,
 			vlog("  %s = %p\n", pytrace_sym_names[i], (void *)sym_addrs[i]);
 	}
 
-	/* Runs before any PyTrace allocations, so it can return after just closing the fd. */
+	/* Runs before any PyTrace allocations, so it can return after just closing the fds. */
 	if (!py_is_initialized()) {
 		elog("Python interpreter not initialized, skipping PyTrace\n");
-		zclose(pytrace_dump_fd);
+		zclose(events_fd);
+		zclose(respool_fd);
 		return -ENOENT;
 	}
 
-	/* Set up dump file */
-	pytrace_dump_strs = strset__new(PYTRACE_DUMP_MAX_STRS_SZ, "", 1);
-	if (!pytrace_dump_strs) {
+	/* Set up dump files */
+	pytrace_respool_strs = strset__new(PYTRACE_DUMP_MAX_STRS_SZ, "", 1);
+	if (!pytrace_respool_strs) {
 		elog("Failed to create PyTrace string set\n");
-		err = -ENOMEM;
-		goto cleanup; /* unwind a PyTorch subscription that may already be live */
+		zclose(events_fd);
+		zclose(respool_fd);
+		return -ENOMEM;
 	}
 
-	pytrace_dump = fdopen(pytrace_dump_fd, "w");
-	if (!pytrace_dump) {
+	/* event stream is headerless: records are written from offset 0 */
+	pytrace_events_dump = fdopen(events_fd, "w");
+	if (!pytrace_events_dump) {
 		err = -errno;
-		elog("Failed to create FILE wrapper around PyTrace dump FD %d: %d\n", pytrace_dump_fd, err);
+		elog("Failed to create FILE wrapper around PyTrace event FD %d: %d\n", events_fd, err);
 		goto cleanup;
 	}
-	setvbuf(pytrace_dump, NULL, _IOFBF, PYTRACE_DUMP_BUF_SZ);
+	setvbuf(pytrace_events_dump, NULL, _IOFBF, PYTRACE_DUMP_BUF_SZ);
 
-	if ((err = init_wpytrace_data(pytrace_dump)) < 0) {
-		elog("Failed to init PyTrace dump: %d\n", err);
+	pytrace_respool_dump = fdopen(respool_fd, "w");
+	if (!pytrace_respool_dump) {
+		err = -errno;
+		elog("Failed to create FILE wrapper around PyTrace resource pool FD %d: %d\n", respool_fd, err);
 		goto cleanup;
 	}
 
@@ -369,7 +350,8 @@ int pytrace_session_setup(int pytrace_dump_fd, int version_minor,
 	 * Track before installing the profiler so a fork can't race an untracked fd
 	 * while callbacks are already firing. Untracked again in cleanup on failure.
 	 */
-	inj_track_dump_fd(pytrace_dump_fd);
+	inj_track_dump_fd(events_fd);
+	inj_track_dump_fd(respool_fd);
 
 	PyGILState_STATE gstate = py_gilstate_ensure();
 
@@ -415,18 +397,25 @@ int pytrace_session_setup(int pytrace_dump_fd, int version_minor,
 
 cleanup:
 	pytrace_active = false;
-	inj_untrack_dump_fd(pytrace_dump_fd);
+	inj_untrack_dump_fd(events_fd);
+	inj_untrack_dump_fd(respool_fd);
 	if (pytrace_code_cache) {
 		hashmap__free(pytrace_code_cache);
 		pytrace_code_cache = NULL;
 	}
-	strset__free(pytrace_dump_strs);
-	pytrace_dump_strs = NULL;
-	if (pytrace_dump) {
-		fclose(pytrace_dump);
-		pytrace_dump = NULL;
+	strset__free(pytrace_respool_strs);
+	pytrace_respool_strs = NULL;
+	if (pytrace_events_dump) {
+		fclose(pytrace_events_dump);
+		pytrace_events_dump = NULL;
 	} else {
-		zclose(pytrace_dump_fd);
+		zclose(events_fd);
+	}
+	if (pytrace_respool_dump) {
+		fclose(pytrace_respool_dump);
+		pytrace_respool_dump = NULL;
+	} else {
+		zclose(respool_fd);
 	}
 	return err;
 }
@@ -465,26 +454,44 @@ static int pytrace_session_teardown(void)
 {
 	int err = 0;
 
-	if (!pytrace_dump)
+	if (!pytrace_events_dump)
 		return 0;
-
-	inj_untrack_dump_fd(fileno(pytrace_dump));
 
 	/* Uninstall profiler */
 	pytrace_active = false;
 	pytrace_uninstall_profiler();
 
-	fflush(pytrace_dump);
+	/* finalize the headerless event stream: just flush and close */
+	inj_untrack_dump_fd(fileno(pytrace_events_dump));
+	fflush(pytrace_events_dump);
+	fsync(fileno(pytrace_events_dump));
+	fclose(pytrace_events_dump);
+	pytrace_events_dump = NULL;
 
-	long events_end = ftell(pytrace_dump);
-	if (events_end < 0) {
+	/* write the resource pool: header, code map, then the string pool */
+	const char *strs = strset__data(pytrace_respool_strs);
+	size_t strs_sz = strset__data_size(pytrace_respool_strs);
+	long code_map_sz = pytrace_code_cnt * sizeof(struct wpytrace_code_entry);
+
+	struct wpytrace_data_hdr hdr;
+	init_wpytrace_header(&hdr);
+	hdr.sess_start_ns = run_ctx->sess_start_ts;
+	hdr.sess_end_ns = run_ctx->sess_end_ts;
+	hdr.code_map_off = 0;			/* code map immediately follows the header */
+	hdr.code_map_sz = code_map_sz;
+	hdr.code_map_cnt = pytrace_code_cnt;
+	hdr.strs_off = code_map_sz;		/* string pool follows the code map */
+	hdr.strs_sz = strs_sz;
+
+	inj_untrack_dump_fd(fileno(pytrace_respool_dump));
+
+	if (fwrite(&hdr, sizeof(hdr), 1, pytrace_respool_dump) != 1) {
 		err = -errno;
-		elog("Failed to get PyTrace dump file position: %d\n", err);
+		elog("Failed to fwrite() PyTrace resource pool header: %d\n", err);
 		return err;
 	}
 
 	/* Write code object map */
-	long code_map_off = events_end - sizeof(struct wpytrace_data_hdr);
 	for (u32 i = 0; i < pytrace_code_cnt; i++) {
 		struct wpytrace_code_entry entry = {
 			.code_key = pytrace_code_keys[i],
@@ -492,57 +499,24 @@ static int pytrace_session_teardown(void)
 			.file_name_off = pytrace_code_entries[i].file_name_off,
 			.lineno = pytrace_code_entries[i].lineno,
 		};
-		if (fwrite(&entry, sizeof(entry), 1, pytrace_dump) != 1) {
+		if (fwrite(&entry, sizeof(entry), 1, pytrace_respool_dump) != 1) {
 			err = -errno;
 			elog("Failed to write PyTrace code map entry: %d\n", err);
 			return err;
 		}
 	}
-	long code_map_sz = pytrace_code_cnt * sizeof(struct wpytrace_code_entry);
 
 	/* Write string table */
-	const char *strs = strset__data(pytrace_dump_strs);
-	size_t strs_sz = strset__data_size(pytrace_dump_strs);
-
-	long strs_off = ftell(pytrace_dump) - sizeof(struct wpytrace_data_hdr);
-	if (strs_sz > 0 && fwrite(strs, 1, strs_sz, pytrace_dump) != strs_sz) {
+	if (strs_sz > 0 && fwrite(strs, 1, strs_sz, pytrace_respool_dump) != strs_sz) {
 		err = -errno;
-		elog("Failed to write PyTrace strings: %d\n", err);
+		elog("Failed to write strings to PyTrace resource pool: %d\n", err);
 		return err;
 	}
 
-	fsync(fileno(pytrace_dump));
-
-	/* Finalize header */
-	struct wpytrace_data_hdr hdr;
-	init_wpytrace_header(&hdr);
-
-	hdr.sess_start_ns = run_ctx->sess_start_ts;
-	hdr.sess_end_ns = run_ctx->sess_end_ts;
-	hdr.events_off = 0;
-	hdr.events_sz = events_end - sizeof(struct wpytrace_data_hdr);
-	hdr.event_cnt = pytrace_event_cnt;
-	hdr.code_map_off = code_map_off;
-	hdr.code_map_sz = code_map_sz;
-	hdr.code_map_cnt = pytrace_code_cnt;
-	hdr.strs_off = strs_off;
-	hdr.strs_sz = strs_sz;
-
-	err = fseek(pytrace_dump, 0, SEEK_SET);
-	if (err) {
-		err = -errno;
-		elog("Failed to fseek(0) PyTrace dump: %d\n", err);
-		return err;
-	}
-
-	if (fwrite(&hdr, sizeof(hdr), 1, pytrace_dump) != 1) {
-		err = -errno;
-		elog("Failed to fwrite() PyTrace dump header: %d\n", err);
-		return err;
-	}
-
-	fflush(pytrace_dump);
-	fsync(fileno(pytrace_dump));
+	fflush(pytrace_respool_dump);
+	fsync(fileno(pytrace_respool_dump));
+	fclose(pytrace_respool_dump);
+	pytrace_respool_dump = NULL;
 
 	/* Update run_ctx stats */
 	if (run_ctx) {
@@ -567,9 +541,6 @@ static int pytrace_session_teardown(void)
 	vlog("PyTrace session finalized: %llu events, %u code objects, %zu string bytes\n",
 	     pytrace_event_cnt, pytrace_code_cnt, strs_sz);
 
-	fclose(pytrace_dump);
-	pytrace_dump = NULL;
-
 	/* Cleanup */
 	hashmap__free(pytrace_code_cache);
 	pytrace_code_cache = NULL;
@@ -579,8 +550,8 @@ static int pytrace_session_teardown(void)
 	pytrace_code_keys = NULL;
 	pytrace_code_cnt = 0;
 	pytrace_code_cap = 0;
-	strset__free(pytrace_dump_strs);
-	pytrace_dump_strs = NULL;
+	strset__free(pytrace_respool_strs);
+	pytrace_respool_strs = NULL;
 
 	return 0;
 }
