@@ -203,10 +203,8 @@ void *dyn_resolve_sym(const char *sym_name, void *dlopen_handle)
 #define WORKER_STACK_SIZE (256 * 1024)
 #define UDS_MAX_MSG_LEN 1024
 
-typedef unsigned long int pthread_t;
-
-static int (*pthread_create)(pthread_t *thread, const void *attr, typeof(void *(void *)) *start_routine, void *arg);
-static int (*pthread_join)(pthread_t thread, void **retval);
+static int (*inj_pthread_create)(pthread_t *thread, const void *attr, typeof(void *(void *)) *start_routine, void *arg);
+static int (*inj_pthread_join)(pthread_t thread, void **retval);
 static bool use_pthread;
 static pthread_t worker_pthread;
 
@@ -254,24 +252,86 @@ static int epoll_del(int epoll_fd, int fd)
 
 static bool session_ended;
 
+/* ==================== Chunked data-stream writer ==================== */
+
+/* On success takes ownership of events_fd (via fdopen); on failure the caller keeps it. */
+int chunker_init(struct chunker *chunker, int events_fd, enum inj_feature feature, size_t buf_sz)
+{
+	memset(chunker, 0, sizeof(*chunker));
+	chunker->feature = feature;
+
+	/* data stream is headerless: records are written from offset 0 */
+	chunker->cur = fdopen(events_fd, "w");
+	if (!chunker->cur) {
+		int err = -errno;
+		elog("Failed to create FILE wrapper around event FD %d: %d\n", events_fd, err);
+		return err;
+	}
+	setvbuf(chunker->cur, NULL, _IOFBF, buf_sz);
+	pthread_mutex_init(&chunker->lock, NULL);
+
+	/*
+	 * Track before any events can be written so a fork can't race an untracked
+	 * fd (the atfork child redirects tracked dump fds to /dev/null).
+	 */
+	inj_track_dump_fd(events_fd);
+	return 0;
+}
+
+/*
+ * The event write path runs on many tracee threads, so serialize the write and
+ * accounting under the lock. fwrite_unlocked is safe here since we hold the lock
+ * (fwrite already serialized writes per FILE, so this just moves that point).
+ */
+int chunker_write(struct chunker *chunker, const void *rec, size_t sz, u64 ts)
+{
+	int err = 0;
+
+	pthread_mutex_lock(&chunker->lock);
+	if (fwrite_unlocked(rec, sz, 1, chunker->cur) == 1) {
+		chunker->bytes += sz;
+		chunker->event_cnt++;
+		chunker->total_event_cnt++;
+		if (ts > chunker->end_ts)
+			chunker->end_ts = ts;
+	} else {
+		err = -errno;
+	}
+	pthread_mutex_unlock(&chunker->lock);
+	return err;
+}
+
+/* Flush and close the current chunk. The resource pool is finalized separately. */
+int chunker_finalize(struct chunker *chunker)
+{
+	if (!chunker->cur)
+		return 0;
+
+	inj_untrack_dump_fd(fileno(chunker->cur));
+	fflush(chunker->cur);
+	fsync(fileno(chunker->cur));
+	fclose(chunker->cur);
+	chunker->cur = NULL;
+	pthread_mutex_destroy(&chunker->lock);
+	return 0;
+}
+
+/* ==================== CUDA event dump ==================== */
+
 #define CUDA_DUMP_BUF_SZ (256 * 1024)
-static FILE *cuda_events_dump;		/* headerless event stream */
+static struct chunker cuda_chunker;
 static FILE *cuda_respool_dump;		/* resource pool (header + string pool), written at finalize */
-/* not persisted in the dump; tracked for future per-chunk CHUNK_DONE reporting */
-static u64 cuda_event_cnt;
 
 #define CUDA_DUMP_MAX_STRS_SZ (1024 * 1024 * 1024)
 struct strset *cuda_respool_strs;
 
 int cuda_dump_event(struct wcuda_event *e)
 {
-	if (fwrite(e, sizeof(*e), 1, cuda_events_dump) != 1) {
-		int err = -errno;
+	int err = chunker_write(&cuda_chunker, e, sizeof(*e), e->ts);
+	if (err) {
 		elog("Failed to fwrite() CUDA event: %d\n", err);
 		return err;
 	}
-
-	cuda_event_cnt++;
 	return 0;
 }
 
@@ -287,18 +347,14 @@ static void init_wcuda_header(struct wcuda_data_hdr *hdr)
 
 static int cuda_dump_setup(int events_fd, int respool_fd)
 {
-	int err = 0;
+	int err;
 
 	cuda_respool_strs = strset__new(CUDA_DUMP_MAX_STRS_SZ, "", 1);
 
-	/* event stream is headerless: records are written from offset 0 */
-	cuda_events_dump = fdopen(events_fd, "w");
-	if (!cuda_events_dump) {
-		err = -errno;
-		elog("Failed to create FILE wrapper around CUDA event FD %d: %d\n", events_fd, err);
+	err = chunker_init(&cuda_chunker, events_fd, INJ_FEAT_CUDA, CUDA_DUMP_BUF_SZ);
+	if (err)
 		goto cleanup;
-	}
-	setvbuf(cuda_events_dump, NULL, _IOFBF, CUDA_DUMP_BUF_SZ);
+	events_fd = -1;		/* the chunker owns it now */
 
 	cuda_respool_dump = fdopen(respool_fd, "w");
 	if (!cuda_respool_dump) {
@@ -307,26 +363,21 @@ static int cuda_dump_setup(int events_fd, int respool_fd)
 		goto cleanup;
 	}
 
-	inj_track_dump_fd(events_fd);
 	inj_track_dump_fd(respool_fd);
 
 	return 0;
 
 cleanup:
+	chunker_finalize(&cuda_chunker);
 	strset__free(cuda_respool_strs);
 	cuda_respool_strs = NULL;
-	if (cuda_events_dump) {
-		fclose(cuda_events_dump);
-		cuda_events_dump = NULL;
-	} else {
-		zclose(events_fd);
-	}
 	if (cuda_respool_dump) {
 		fclose(cuda_respool_dump);
 		cuda_respool_dump = NULL;
 	} else {
 		zclose(respool_fd);
 	}
+	zclose(events_fd);
 	return err;
 }
 
@@ -334,15 +385,11 @@ int cuda_dump_finalize(void)
 {
 	int err = 0;
 
-	if (!cuda_events_dump)
+	if (!cuda_chunker.cur)
 		return 0;
 
-	/* finalize the headerless event stream: just flush and close */
-	inj_untrack_dump_fd(fileno(cuda_events_dump));
-	fflush(cuda_events_dump);
-	fsync(fileno(cuda_events_dump));
-	fclose(cuda_events_dump);
-	cuda_events_dump = NULL;
+	/* finalize the headerless data stream: just flush and close */
+	chunker_finalize(&cuda_chunker);
 
 	/* write the resource pool: header followed by the string pool */
 	const char *strs = strset__data(cuda_respool_strs);
@@ -392,7 +439,7 @@ static int handle_session_end(void)
 
 	finalize_cupti_activities();
 
-	if (cuda_events_dump) {
+	if (cuda_chunker.cur) {
 		ret = cuda_dump_finalize();
 		if (ret) {
 			/* keep going so the other features still get finalized */
@@ -855,14 +902,14 @@ static int start_worker_thread(void)
 		goto err_out;
 	}
 
-	pthread_create = dyn_resolve_sym("pthread_create", NULL);
-	pthread_join = dyn_resolve_sym("pthread_join", NULL);
-	use_pthread = pthread_create && pthread_join;
+	inj_pthread_create = dyn_resolve_sym("pthread_create", NULL);
+	inj_pthread_join = dyn_resolve_sym("pthread_join", NULL);
+	use_pthread = inj_pthread_create && inj_pthread_join;
 
 	vlog("Using %s to manage worker thread!\n", use_pthread ? "libpthread" : "clone() syscall");
 
 	if (use_pthread) {
-		err = pthread_create(&worker_pthread, NULL, worker_pthread_func, NULL);
+		err = inj_pthread_create(&worker_pthread, NULL, worker_pthread_func, NULL);
 		if (err) {
 			elog("Failed to create worker thread using libpthread: %d (errno %d)!\n", err, errno);
 			goto err_out;
@@ -937,7 +984,7 @@ static void stop_worker_thread(void)
 		void *worker_retval;
 
 		vlog("Waiting for pthread_join() to return...\n");
-		ret = pthread_join(worker_pthread, &worker_retval);
+		ret = inj_pthread_join(worker_pthread, &worker_retval);
 		if (ret)
 			elog("pthread_join() returned error: %d (errno %d)\n", ret, errno);
 
