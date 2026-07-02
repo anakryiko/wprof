@@ -178,6 +178,8 @@ enum wprof_stat_id {
 	 * Per-tracee, like the other PyTrace stats: total + py_cnt entries.
 	 */
 	WSTAT_PYTORCH_EVENT_CNT,
+	WSTAT_PYTRACE_DATA_SZ,
+	WSTAT_PYTORCH_DATA_SZ,
 
 	/* BPF-side resource stat, appended for compat (global + per-cpu) */
 	WSTAT_TASK_STORAGE_FALLBACKS,
