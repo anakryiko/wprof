@@ -726,10 +726,12 @@ void injmgr_deactivate(void)
 			if (inj->avail_feats & INJ_FEAT_CUDA)
 				vprintf("CUDA: %s shut down cleanly: %ld records.\n", injectee_str(inj), inj->ctx->cupti_rec_cnt);
 			if (inj->avail_feats & INJ_FEAT_PYTORCH)
-				vprintf("PyTorch: %s shut down cleanly: %ld events.\n", injectee_str(inj), inj->ctx->pytorch_event_cnt);
+				vprintf("PyTorch: %s shut down cleanly: %ld events, %ld bytes.\n",
+					injectee_str(inj), inj->ctx->pytorch_event_cnt, inj->ctx->pytorch_byte_sz);
 			if (inj->avail_feats & INJ_FEAT_PYTRACE) {
-				vprintf("PyTrace: %s shut down cleanly: %ld events, %ld code objects cached.\n",
-					injectee_str(inj), inj->ctx->pytrace_event_cnt, inj->ctx->pytrace_code_cache_cnt);
+				vprintf("PyTrace: %s shut down cleanly: %ld events, %ld bytes, %ld code objects cached.\n",
+					injectee_str(inj), inj->ctx->pytrace_event_cnt, inj->ctx->pytrace_byte_sz,
+					inj->ctx->pytrace_code_cache_cnt);
 			}
 			inj->state = INJECTEE_INACTIVE;
 		} else {
