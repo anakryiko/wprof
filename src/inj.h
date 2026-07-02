@@ -99,6 +99,7 @@ struct chunker {
 	u64 chunk_size;		/* rotate every N bytes; 0 = never (single file) */
 	FILE *cur;		/* current chunk being written */
 	u64 total_event_cnt;	/* cumulative across chunks, for run_ctx stats */
+	u64 total_byte_sz;	/* cumulative across chunks, for run_ctx stats */
 	int seq;		/* current chunk sequence number */
 
 	u64 bytes;		/* current chunk: bytes written */

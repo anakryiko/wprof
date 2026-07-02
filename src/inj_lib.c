@@ -292,6 +292,7 @@ int chunker_write(struct chunker *chunker, const void *rec, size_t sz, u64 ts)
 		chunker->bytes += sz;
 		chunker->event_cnt++;
 		chunker->total_event_cnt++;
+		chunker->total_byte_sz += sz;
 		if (ts > chunker->end_ts)
 			chunker->end_ts = ts;
 	} else {

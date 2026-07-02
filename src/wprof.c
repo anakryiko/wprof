@@ -529,11 +529,14 @@ skip_rusage:
 		}
 		if (env.verbose || env.emit_stats) {
 			if (env.capture_pytorch == TRUE)
-				eprintf("PyTorch %s: %llu events.\n", name, wstat(s, WSTAT_PYTORCH_EVENT_CNT, 1 + i));
+				eprintf("PyTorch %s: %llu events, %.3lfMBs.\n", name,
+					wstat(s, WSTAT_PYTORCH_EVENT_CNT, 1 + i),
+					wstat(s, WSTAT_PYTORCH_DATA_SZ, 1 + i) / 1024.0 / 1024.0);
 			if (env.capture_pytrace == TRUE) {
-				eprintf("PyTrace %s: %llu events, %llu code objects cached.\n",
+				eprintf("PyTrace %s: %llu events, %.3lfMBs, %llu code objects cached.\n",
 					name,
 					wstat(s, WSTAT_PYTRACE_EVENT_CNT, 1 + i),
+					wstat(s, WSTAT_PYTRACE_DATA_SZ, 1 + i) / 1024.0 / 1024.0,
 					wstat(s, WSTAT_PYTRACE_CODE_CACHE_CNT, 1 + i));
 			}
 		}

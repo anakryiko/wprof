@@ -503,6 +503,7 @@ static int pytrace_session_teardown(void)
 	/* Update run_ctx stats */
 	if (run_ctx) {
 		run_ctx->pytrace_event_cnt = pytrace_chunker.total_event_cnt;
+		run_ctx->pytrace_byte_sz = pytrace_chunker.total_byte_sz;
 		run_ctx->pytrace_code_cache_cnt = pytrace_code_cnt;
 	}
 
