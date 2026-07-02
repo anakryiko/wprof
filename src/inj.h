@@ -13,6 +13,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <time.h>
+#include <pthread.h>
 #include <sys/syscall.h>
 
 #include "inj_common.h"
@@ -84,6 +85,30 @@ static inline u32 inj_gettid(void)
 #define atomic_store(p, v) __atomic_store_n((p), (v), __ATOMIC_SEQ_CST)
 #define atomic_load(p) __atomic_load_n((p), __ATOMIC_SEQ_CST)
 #define atomic_xchg(p, v) __atomic_exchange_n((p), v, __ATOMIC_SEQ_CST)
+
+/*
+ * Per-feature data-stream writer: wraps the current chunk FILE* with a lock
+ * and per-chunk accounting. With chunk_size == 0 it is a plain single file; a
+ * later change rotates into a spare chunk once chunk_size bytes have been
+ * written. The event write path runs on many tracee threads, so the lock
+ * serializes writes + accounting (fwrite already serialized per FILE).
+ */
+struct chunker {
+	pthread_mutex_t lock;
+	enum inj_feature feature;
+	u64 chunk_size;		/* rotate every N bytes; 0 = never (single file) */
+	FILE *cur;		/* current chunk being written */
+	u64 total_event_cnt;	/* cumulative across chunks, for run_ctx stats */
+	int seq;		/* current chunk sequence number */
+
+	u64 bytes;		/* current chunk: bytes written */
+	u64 event_cnt;		/* current chunk: events written */
+	u64 end_ts;		/* current chunk: max event ts */
+} __aligned(64);
+
+int chunker_init(struct chunker *chunker, int events_fd, enum inj_feature feature, size_t buf_sz);
+int chunker_write(struct chunker *chunker, const void *rec, size_t sz, u64 ts);
+int chunker_finalize(struct chunker *chunker);
 
 int cuda_dump_event(struct wcuda_event *e);
 int cuda_dump_finalize(void);
