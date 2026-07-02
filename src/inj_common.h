@@ -93,6 +93,7 @@ struct inj_run_ctx {
 	bool use_usdts;
 	long sess_start_ts;
 	long sess_end_ts;
+	u64 fr_chunk_size;	/* flight recorder: rotate data chunks every N bytes (0 = off) */
 
 	enum inj_setup_state setup_state;	/* overall; set by START_SESSION */
 	enum inj_feat_state cuda_feat_state;	/* set by CUDA_SETUP */
@@ -133,6 +134,8 @@ enum inj_msg_kind {
 	INJ_MSG_PYTORCH_SETUP = 4,
 	INJ_MSG_START_SESSION = 5,
 	INJ_MSG_SHUTDOWN = 6,
+	INJ_MSG_CHUNK_DONE = 7,		/* injectee -> wprof: a rotated data chunk is complete */
+	INJ_MSG_CHUNK_FD = 8,		/* wprof -> injectee: a fresh data chunk fd (spare) */
 };
 
 static inline const char *inj_msg_str(enum inj_msg_kind kind)
@@ -144,6 +147,8 @@ static inline const char *inj_msg_str(enum inj_msg_kind kind)
 	case INJ_MSG_PYTORCH_SETUP: return "PYTORCH_SETUP";
 	case INJ_MSG_START_SESSION: return "START_SESSION";
 	case INJ_MSG_SHUTDOWN: return "SHUTDOWN";
+	case INJ_MSG_CHUNK_DONE: return "CHUNK_DONE";
+	case INJ_MSG_CHUNK_FD: return "CHUNK_FD";
 	default: {
 		static __thread char buf[24];
 		snprintf(buf, sizeof(buf), "UNKNOWN(%d)", kind);
@@ -175,6 +180,15 @@ struct inj_msg {
 		} start_session;
 		struct inj_msg_shutdown {
 		} shutdown;
+		struct inj_msg_chunk_done {
+			enum inj_feature feature;	/* which feature's data chunk completed */
+			u64 end_ts;			/* max event ts in the chunk */
+			u64 byte_sz;			/* bytes written to the chunk */
+			u64 event_cnt;			/* events written to the chunk */
+		} chunk_done;
+		struct inj_msg_chunk_fd {
+			enum inj_feature feature;	/* feature the new chunk fd (ancillary data) is for */
+		} chunk_fd;
 	};
 };
 

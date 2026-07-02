@@ -563,7 +563,8 @@ int injmgr_activate(long sess_start_ts, long sess_end_ts)
 			continue;
 
 		inj->ctx->sess_end_ts = sess_end_ts;
-		inj->ctx->sess_start_ts = sess_start_ts;
+		inj->ctx->fr_chunk_size = env.flightrec ? env.fr_chunk_size : 0;
+		inj->ctx->sess_start_ts = sess_start_ts;	/* the "go" gate: set last */
 	}
 
 	return 0;
