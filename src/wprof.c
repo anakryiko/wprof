@@ -1613,10 +1613,18 @@ static int do_prepare(struct bpf_state *bpf, struct worker_state *workers, int n
 	 * Injected agents auto-retract if wprof dies without tearing them down.
 	 * Size that timeout to cover the whole window from now to the planned
 	 * session end (the wait for activation plus the run duration), with margin.
+	 *
+	 * Flight recorder has no planned end (runs until Ctrl-C), so pass 0 to
+	 * disable the injectee watchdog.
 	 */
-	u64 activate_at = env.sess_ctl.activate_target_ts ?: ktime_now_ns();
-	long sess_timeout_ms = (s64)(activate_at + env.duration_ns - ktime_now_ns()) / 1000000 +
-			       LIBWPROFINJ_SESSION_TIMEOUT_MS;
+	long sess_timeout_ms;
+	if (env.flightrec) {
+		sess_timeout_ms = 0;
+	} else {
+		u64 activate_at = env.sess_ctl.activate_target_ts ?: ktime_now_ns();
+		sess_timeout_ms = (s64)(activate_at + env.duration_ns - ktime_now_ns()) / 1000000 +
+				  LIBWPROFINJ_SESSION_TIMEOUT_MS;
+	}
 
 	err = setup_bpf(bpf, workers, num_cpus, workdir_fd);
 	if (err) {

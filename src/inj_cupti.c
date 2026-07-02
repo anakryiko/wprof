@@ -166,11 +166,9 @@ static void CUPTIAPI buffer_requested(uint8_t **buffer, size_t *size, size_t *ma
 
 static bool rec_within_session(u64 rec_start_ts, u64 rec_end_ts, u64 sess_start_ts, u64 sess_end_ts)
 {
-	if (sess_start_ts == 0)
+	if (sess_start_ts == 0 || ts_before(rec_end_ts, sess_start_ts))
 		return false;
-	if (ts_before(rec_end_ts, sess_start_ts))
-		return false;
-	if (ts_after(rec_start_ts, sess_end_ts))
+	if (sess_end_ts && ts_after(rec_start_ts, sess_end_ts))
 		return false;
 	return true;
 }
