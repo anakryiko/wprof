@@ -19,6 +19,8 @@
 #define DEFAULT_FR_KEEP_TIME_NS (1000000000LL)	/* 1s */
 #define DEFAULT_FR_KEEP_SIZE (1LL << 30)	/* 1 GiB */
 #define DEFAULT_TASK_STATE_SZ (32 * 1024)
+/* task_states hash capacity when it only backs task-local storage fallbacks */
+#define TASK_STATE_FALLBACK_SZ (4 * 1024)
 
 #define DEFAULT_TIMER_FREQ_HZ 100
 #define DEFAULT_PMU_EVENT_FREQ_HZ 1000
@@ -203,6 +205,7 @@ struct env {
 	bool keep_workdir;
 	bool raw_stacks;
 	bool no_tsidx;		/* replay: ignore the timestamp index, force full walk */
+	bool no_task_storage;	/* force per-task state into the hash map, not task-local storage */
 
 	/* FILTERING */
 	char **allow_pnames, **deny_pnames;
