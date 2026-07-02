@@ -775,8 +775,10 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers,
 	int wpytrace_cnt = 0;
 
 	struct wpytorch_state {
-		struct wpytorch_data_hdr *dump_hdr;
-		size_t dump_sz;
+		struct wpytorch_data_hdr *respool_hdr;	/* mmap of the pool/meta file */
+		size_t respool_sz;
+		void *events_mem;			/* mmap of the headerless event file */
+		size_t events_sz;
 		const char *strs;
 		struct wrust_ts_ptr *recs;
 		const struct wrust_ts_ptr *next_rec;
@@ -912,35 +914,68 @@ skip_cuda:
 		}
 skip_pytrace:
 
-		/* PyTorch (RecordFunction) event stream */
-		if (inj->pytorch_dump_fd >= 0) {
+		/* PyTorch event stream: headerless event file + resource pool (header + strs) file */
+		if (inj->pytorch_respool_fd >= 0) {
 			struct wpytorch_state *wtorch = &wpytorches[wpytorch_cnt];
 
-			if (fstat(inj->pytorch_dump_fd, &st) < 0) {
+			if (fstat(inj->pytorch_respool_fd, &st) < 0) {
 				err = -errno;
-				eprintf("Failed to fstat() PyTorch data dump for %s at '%s': %d\n",
-					injectee_str(inj), inj->pytorch_dump_path, err);
+				eprintf("Failed to fstat() PyTorch resource pool for %s at '%s': %d\n",
+					injectee_str(inj), inj->pytorch_respool_path, err);
 				goto skip_pytorch;
 			}
-			wtorch->dump_sz = st.st_size;
-			wtorch->dump_hdr = mmap(NULL, wtorch->dump_sz, PROT_READ | PROT_WRITE, MAP_SHARED, inj->pytorch_dump_fd, 0);
-			if (wtorch->dump_hdr == MAP_FAILED) {
-				err = -errno;
-				eprintf("Failed to mmap() PyTorch data dump for %s at '%s': %d\n",
-					injectee_str(inj), inj->pytorch_dump_path, err);
-				wtorch->dump_hdr = NULL;
+			if (st.st_size < sizeof(struct wpytorch_data_hdr)) {
+				/* injectee never finalized (e.g. died mid-session): skip its PyTorch data, carry on */
+				eprintf("!!! PyTorch data for %s is incomplete (resource pool not finalized), skipping it!\n",
+					injectee_str(inj));
 				goto skip_pytorch;
+			}
+			wtorch->respool_sz = st.st_size;
+			wtorch->respool_hdr = mmap(NULL, wtorch->respool_sz, PROT_READ | PROT_WRITE, MAP_SHARED, inj->pytorch_respool_fd, 0);
+			if (wtorch->respool_hdr == MAP_FAILED) {
+				err = -errno;
+				eprintf("Failed to mmap() PyTorch resource pool for %s at '%s': %d\n",
+					injectee_str(inj), inj->pytorch_respool_path, err);
+				wtorch->respool_hdr = NULL;
+				goto skip_pytorch;
+			}
+			wtorch->strs = (void *)wtorch->respool_hdr + wtorch->respool_hdr->hdr_sz;
+
+			if (fstat(inj->pytorch_events_fd, &st) < 0) {
+				err = -errno;
+				eprintf("Failed to fstat() PyTorch event dump for %s at '%s': %d\n",
+					injectee_str(inj), inj->pytorch_events_path, err);
+				goto skip_pytorch;
+			}
+			wtorch->events_sz = st.st_size;
+			if (wtorch->events_sz > 0) {
+				wtorch->events_mem = mmap(NULL, wtorch->events_sz, PROT_READ | PROT_WRITE, MAP_SHARED,
+							  inj->pytorch_events_fd, 0);
+				if (wtorch->events_mem == MAP_FAILED) {
+					err = -errno;
+					eprintf("Failed to mmap() PyTorch event dump for %s at '%s': %d\n",
+						injectee_str(inj), inj->pytorch_events_path, err);
+					wtorch->events_mem = NULL;
+					goto skip_pytorch;
+				}
 			}
 
-			wtorch->strs = (void *)wtorch->dump_hdr + wtorch->dump_hdr->hdr_sz + wtorch->dump_hdr->strs_off;
 			wtorch->tracee_idx = i;
 			wtorch->rec_idx = 0;
-			wtorch->rec_cnt = wtorch->dump_hdr->event_cnt;
+
+			/* headerless event stream: count records first, then size and fill */
+			struct wpytorch_event_record *torch_rec;
+			wtorch->rec_cnt = 0;
+			wpytorch_for_each_event(torch_rec, wtorch->events_mem, wtorch->events_sz) {
+				wtorch->rec_cnt++;
+			}
 			wtorch->recs = calloc(wtorch->rec_cnt, sizeof(*wtorch->recs));
 
-			struct wpytorch_event_record *torch_rec;
-			wpytorch_for_each_event(torch_rec, wtorch->dump_hdr)
-				wtorch->recs[torch_rec->idx] = (struct wrust_ts_ptr){ .ts = torch_rec->e->ts, .ptr = torch_rec->e };
+			/* re-sort because RecordFunction fires on many threads, so events aren't fully ordered */
+			u64 idx = 0;
+			wpytorch_for_each_event(torch_rec, wtorch->events_mem, wtorch->events_sz) {
+				wtorch->recs[idx++] = (struct wrust_ts_ptr){ .ts = torch_rec->e->ts, .ptr = torch_rec->e };
+			}
 
 			wrust_sort_events_by_ts(wtorch->recs, wtorch->rec_cnt);
 			wtorch->next_rec = wtorch->rec_cnt > 0 ? &wtorch->recs[0] : NULL;
@@ -1222,12 +1257,16 @@ skip_pytorch:
 	for (int i = 0; i < wpytorch_cnt; i++) {
 		struct wpytorch_state *wtorch = &wpytorches[i];
 
-		if (wtorch->dump_hdr)
-			munmap(wtorch->dump_hdr, wtorch->dump_sz);
+		if (wtorch->respool_hdr)
+			munmap(wtorch->respool_hdr, wtorch->respool_sz);
+		if (wtorch->events_mem)
+			munmap(wtorch->events_mem, wtorch->events_sz);
 
 		free(wtorch->recs);
-		wtorch->dump_hdr = NULL;
-		wtorch->dump_sz = 0;
+		wtorch->respool_hdr = NULL;
+		wtorch->respool_sz = 0;
+		wtorch->events_mem = NULL;
+		wtorch->events_sz = 0;
 	}
 	free(wpytraces);
 	free(wpytorches);
@@ -1242,8 +1281,10 @@ skip_pytorch:
 			unlink(inj->cuda_respool_path);
 		if (!env.keep_workdir && inj->pytrace_dump_path)
 			unlink(inj->pytrace_dump_path);
-		if (!env.keep_workdir && inj->pytorch_dump_path)
-			unlink(inj->pytorch_dump_path);
+		if (!env.keep_workdir && inj->pytorch_events_path)
+			unlink(inj->pytorch_events_path);
+		if (!env.keep_workdir && inj->pytorch_respool_path)
+			unlink(inj->pytorch_respool_path);
 
 		free(inj->cuda_events_path);
 		inj->cuda_events_path = NULL;
@@ -1251,13 +1292,16 @@ skip_pytorch:
 		inj->cuda_respool_path = NULL;
 		free(inj->pytrace_dump_path);
 		inj->pytrace_dump_path = NULL;
-		free(inj->pytorch_dump_path);
-		inj->pytorch_dump_path = NULL;
+		free(inj->pytorch_events_path);
+		inj->pytorch_events_path = NULL;
+		free(inj->pytorch_respool_path);
+		inj->pytorch_respool_path = NULL;
 
 		zclose(inj->cuda_events_fd);
 		zclose(inj->cuda_respool_fd);
 		zclose(inj->pytrace_dump_fd);
-		zclose(inj->pytorch_dump_fd);
+		zclose(inj->pytorch_events_fd);
+		zclose(inj->pytorch_respool_fd);
 	}
 
 	/*
