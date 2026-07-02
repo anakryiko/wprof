@@ -46,7 +46,7 @@ struct env env = {
 	.data_path = "wprof.data",
 	.ringbuf_sz = DEFAULT_RINGBUF_SZ,
 	.ringbuf_cnt = 0,
-	.task_state_sz = DEFAULT_TASK_STATE_SZ,
+	.task_state_sz = -1,	/* resolved to a backend-specific default in setup_bpf() */
 	.requested_stack_traces = ST_UNSET,
 	.capture_ipis = UNSET,
 	.capture_requests = UNSET,
@@ -122,7 +122,7 @@ enum {
 static const struct argp_option opts[] = {
 	{ "verbose", 'v', NULL, 0, "Verbose output" },
 	{ "stats", OPT_STATS, NULL, 0, "Print various wprof stats (BPF, resource usage, etc.)" },
-	{ "debug", OPT_DEBUG, "FEAT", 0, "Debug features (pb-debug-interns, pb-disable-interns, keep-workdir, raw-stacks, no-tsidx, fr-chunk-size=SIZE)"},
+	{ "debug", OPT_DEBUG, "FEAT", 0, "Debug features (pb-debug-interns, pb-disable-interns, keep-workdir, raw-stacks, no-tsidx, no-task-storage, fr-chunk-size=SIZE)"},
 	{ "log", OPT_LOG, "LOG", 0, "Debug logging subset selector (libbpf, usdt, topology, inject, tracee, discovery)"},
 	{ "dur", 'd', "DURATION", 0, "Limit running duration; accepts time units s/ms/us/ns/m/h, bare number is ms (default: 1000ms)" },
 	{ "dur-ms", 0, 0, OPTION_ALIAS },
@@ -265,6 +265,8 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			env.raw_stacks = true;
 		} else if (strcasecmp(arg, "no-tsidx") == 0) {
 			env.no_tsidx = true;
+		} else if (strcasecmp(arg, "no-task-storage") == 0) {
+			env.no_task_storage = true;
 		} else if (strncasecmp(arg, "fr-chunk-size=", 14) == 0) {
 			const char *val = arg + 14;
 

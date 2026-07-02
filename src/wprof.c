@@ -897,6 +897,15 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 		}
 	}
 
+	/*
+	 * task_states is the per-task state map. With task-local storage on it only
+	 * backs rare allocation-failure fallbacks (e.g. hard/soft-irq context) so it
+	 * can stay small; without storage it is the sole backend and needs the full
+	 * size. Either default is overridable; resolve before its first use.
+	 */
+	if (env.task_state_sz < 0)
+		env.task_state_sz = env.no_task_storage ? DEFAULT_TASK_STATE_SZ : TASK_STATE_FALLBACK_SZ;
+
 	if (env.req_binaries) {
 		bpf_program__set_autoload(skel->progs.wprof_req_ctx, true);
 		bpf_program__set_autoload(skel->progs.wprof_req_task_enqueue, true);
@@ -1017,6 +1026,12 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 	skel->rodata->rb_cnt = env.ringbuf_cnt;
 	bpf_map__set_max_entries(skel->maps.rbs, env.ringbuf_cnt);
 	bpf_map__set_max_entries(skel->maps.task_states, env.task_state_sz);
+
+	/* Per-task state uses BPF task-local storage by default; --debug=no-task-storage opts out to the hash. */
+	if (env.no_task_storage) {
+		skel->rodata->use_task_storage = false;
+		bpf_map__set_autocreate(skel->maps.task_states_storage, false);
+	}
 
 	/* FILTERING */
 	struct {
