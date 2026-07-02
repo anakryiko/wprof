@@ -7,15 +7,17 @@
 
 #define WPYTRACE_DATA_FLAG_INCOMPLETE 0xffffffffffffffffULL
 
+/*
+ * PyTrace resource pool: this header followed by the code map and the string
+ * pool. Both are located via their offsets from the end of the header; the
+ * event stream lives in a separate headerless file.
+ */
 struct wpytrace_data_hdr {
 	char magic[6]; /* "WPYTR\0" */
 	u16 hdr_sz;
-	u64 flags;		/* WPYTRACE_DATA_FLAG_INCOMPLETE during recording, cleared on finalization */
+	u64 flags;
 	u64 sess_start_ns;
 	u64 sess_end_ns;
-	u64 events_off;
-	u64 events_sz;
-	u64 event_cnt;
 	u64 strs_off;
 	u64 strs_sz;
 	u64 code_map_off;
@@ -61,13 +63,11 @@ struct wpytrace_event_iter {
 	struct wpytrace_event_record rec;
 };
 
-static inline struct wpytrace_event_iter wpytrace_event_iter_new(void *data)
+static inline struct wpytrace_event_iter wpytrace_event_iter_new(void *data, size_t sz)
 {
-	struct wpytrace_data_hdr *hdr = data;
-
 	return (struct wpytrace_event_iter) {
-		.next = data + hdr->hdr_sz + hdr->events_off,
-		.last = data + hdr->hdr_sz + hdr->events_off + hdr->events_sz,
+		.next = data,
+		.last = data + sz,
 	};
 }
 
@@ -85,8 +85,8 @@ static inline struct wpytrace_event_record *wpytrace_event_iter_next(struct wpyt
 	return &it->rec;
 }
 
-#define wpytrace_for_each_event(rec, data) for (						\
-	struct wpytrace_event_iter it = wpytrace_event_iter_new(data);			\
+#define wpytrace_for_each_event(rec, data, sz) for (						\
+	struct wpytrace_event_iter it = wpytrace_event_iter_new(data, sz);		\
 	(rec = wpytrace_event_iter_next(&it));						\
 )
 

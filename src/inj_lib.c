@@ -549,21 +549,22 @@ static int handle_msg(struct inj_msg *msg, int *fds, int fd_cnt)
 		break;
 	}
 	case INJ_MSG_PYTRACE_SETUP: {
-		if (fd_cnt != 1) {
-			elog("Received PYTRACE_SETUP with unexpected FD count %d (want 1)!\n", fd_cnt);
+		if (fd_cnt != 2) {
+			elog("Received PYTRACE_SETUP with unexpected FD count %d (want 2)!\n", fd_cnt);
 			return -EPROTO;
 		}
-		int dump_fd = fds[0];
+		int events_fd = fds[0];		/* headerless event dump */
+		int respool_fd = fds[1];	/* resource pool */
 		int py_ver_minor = msg->pytrace_setup.py_version_minor;
 
 		vlog("Setting up PyTrace feature (Python 3.%d)...\n", py_ver_minor);
 
-		err = pytrace_session_setup(dump_fd, py_ver_minor,
+		err = pytrace_session_setup(events_fd, respool_fd, py_ver_minor,
 					    msg->pytrace_setup.sym_addrs,
 					    ARRAY_SIZE(msg->pytrace_setup.sym_addrs));
 		if (err) {
 			elog("Failed to setup PyTrace feature: %d\n", err);
-			/* pytrace_session_setup() consumes dump_fd on failure */
+			/* pytrace_session_setup() consumes both fds on failure */
 			run_ctx->pytrace_feat_state = FEAT_FAILED;
 			inj_set_feat_hint(run_ctx->pytrace_feat_hint, "Failed to set up PyTrace: %d", err);
 			return 0;
