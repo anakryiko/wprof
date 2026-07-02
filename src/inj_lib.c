@@ -509,7 +509,7 @@ static int handle_msg(struct inj_msg *msg, int *fds, int fd_cnt)
 			elog("Failed to setup CUDA data dump: %d\n", err);
 			run_ctx->cuda_feat_state = FEAT_FAILED;
 			inj_set_feat_hint(run_ctx->cuda_feat_hint, "Failed to set up CUDA data dump: %d", err);
-			/* cuda_dump_setup() closes dump_fd on failure */
+			/* cuda_dump_setup() closes both fds on failure */
 			return 0;
 		}
 
@@ -588,7 +588,7 @@ static int handle_msg(struct inj_msg *msg, int *fds, int fd_cnt)
 					    ARRAY_SIZE(msg->pytorch_setup.pytorch_sym_addrs));
 		if (err) {
 			elog("Failed to setup PyTorch feature: %d\n", err);
-			/* pytorch_session_setup() consumes dump_fd on failure */
+			/* pytorch_session_setup() consumes both fds on failure */
 			run_ctx->pytorch_feat_state = FEAT_FAILED;
 			inj_set_feat_hint(run_ctx->pytorch_feat_hint, "Failed to set up PyTorch: %d", err);
 			return 0;
