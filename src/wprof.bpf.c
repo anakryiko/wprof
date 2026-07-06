@@ -12,9 +12,6 @@
 
 #include "strobelight/bpf_lib/python/include/structs.h"
 
-int pystacks_read_stacks(void *bpf_ctx, struct task_struct *task,
-			 struct pystacks_message *py_msg_buffer);
-
 /* per-CPU scratch buffer for receiving pystacks data */
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
@@ -627,6 +624,17 @@ static int emit_pystacks(struct pystacks_message *pymsg, int py_sz, struct bpf_d
 	return bpf_dynptr_write(dptr, offset, pymsg, py_sz, 0);
 }
 
+int pystacks_read_stacks(void *bpf_ctx, struct task_struct *task,
+			 struct pystacks_message *py_msg_buffer);
+
+/* we want this to be verified as global func to isolate pystacks_read_stacks verification complexity */
+__weak int __pystacks_read_stacks(void *ctx __arg_ctx,
+				  struct task_struct *task __arg_trusted,
+				  struct pystacks_message *buf __arg_nonnull)
+{
+	return pystacks_read_stacks(ctx, task, buf);
+}
+
 static struct pystacks_message *capture_pystack(void *ctx, struct task_struct *task, int *py_sz)
 {
 	int key = 0;
@@ -636,9 +644,13 @@ static struct pystacks_message *capture_pystack(void *ctx, struct task_struct *t
 		return NULL;
 	}
 
-	*py_sz = pystacks_read_stacks(ctx, task, pymsg);
-	if (*py_sz > 0)
+	int sz = __pystacks_read_stacks(ctx, task, pymsg);
+	if (sz > 0) {
+		*py_sz = sz;
 		(void)inc_stat(pystacks_found);
+	} else {
+		*py_sz = 0;
+	}
 	return pymsg;
 }
 
@@ -681,7 +693,7 @@ int wprof_timer_tick(void *ctx)
 			emit_stack_trace(tr, tr_sz, dptr, fix_sz);
 			e->flags |= ST_TIMER;
 		}
-		if (pymsg && py_sz > 0) {
+		if (pymsg && py_sz) {
 			emit_pystacks(pymsg, py_sz, dptr, fix_sz + tr_sz);
 			e->flags |= EF_PYSTACK;
 		}
@@ -733,7 +745,7 @@ int wprof_pmu_event(struct bpf_perf_event_data *ctx)
 			emit_stack_trace(tr, tr_sz, dptr, fix_sz + pmu_sz);
 			e->flags |= ST_PMU;
 		}
-		if (pymsg && py_sz > 0) {
+		if (pymsg && py_sz) {
 			emit_pystacks(pymsg, py_sz, dptr, fix_sz + pmu_sz + tr_sz);
 			e->flags |= EF_PYSTACK;
 		}
@@ -839,7 +851,7 @@ int BPF_PROG(wprof_task_switch,
 			emit_stack_trace(tr_out, tr_out_sz, dptr, fix_sz + pmu_sz);
 			e->flags |= ST_OFFCPU;
 		}
-		if (pymsg && py_sz > 0) {
+		if (pymsg && py_sz) {
 			emit_pystacks(pymsg, py_sz, dptr, fix_sz + pmu_sz + tr_out_sz);
 			e->flags |= EF_PYSTACK;
 		}
