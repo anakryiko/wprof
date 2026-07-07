@@ -348,7 +348,7 @@ static bool should_trace_task(struct task_struct *tsk, u64 now_ts)
 	return true;
 }
 
-static void fill_task_name(struct task_struct *t, char *comm, int max_len)
+static inline void fill_task_name(struct task_struct *t, char *comm, int max_len)
 {
 	if (t->flags & PF_KTHREAD) {
 		struct kthread *k = bpf_core_cast(t->worker_private, struct kthread);
@@ -363,7 +363,7 @@ static void fill_task_name(struct task_struct *t, char *comm, int max_len)
 	}
 }
 
-static void fill_task_info(struct task_struct *t, struct wprof_thread *info)
+__weak int fill_task_info(struct task_struct *t __arg_trusted, struct wprof_thread *info __arg_nonnull)
 {
 	info->tid = t->pid;
 	if (info->tid == 0) /* idle thread */
@@ -372,6 +372,8 @@ static void fill_task_info(struct task_struct *t, struct wprof_thread *info)
 	info->flags = t->flags;
 	fill_task_name(t, info->comm, sizeof(info->comm));
 	__builtin_memcpy(info->pcomm, t->group_leader->comm, sizeof(info->pcomm));
+
+	return 0;
 }
 
 struct rb_ctx {
@@ -464,7 +466,8 @@ static void __rb_event_submit(void *arg)
 	bpf_ringbuf_submit_dynptr(&ctx->dptr, flags);
 }
 
-static size_t capture_perf_counters(struct perf_counters *c, struct perf_counters *prev_c, int cpu)
+__weak size_t capture_perf_counters(struct perf_counters *c __arg_nonnull,
+				    struct perf_counters *prev_c, int cpu)
 {
 	struct bpf_perf_event_value perf_val;
 
@@ -641,31 +644,25 @@ static void task_infos_add(struct task_infos *tis, struct task_struct *t, struct
 	tis->data_sz += sizeof(struct wprof_thread);
 }
 
-static u32 task_infos_emit(struct task_infos *tis, struct bpf_dynptr *dptr, u64 off)
+static u32 task_infos_emit(struct task_infos *tis __arg_nonnull, struct bpf_dynptr *dptr, u64 off)
 {
-	int n = 0;
 	struct wprof_thread *r;
+	u64 i;
 
-	for (u32 i = 0; i < tis->cnt; i++) {
-		struct task_struct *t = tis->tasks[i];
-		if (!t)
-			continue;
-
-		r = bpf_dynptr_data(dptr, off + n * sizeof(struct wprof_thread), sizeof(*r));
+	for (i = 0; i < tis->cnt; i++, off += sizeof(*r)) {
+		r = bpf_dynptr_data(dptr, off, sizeof(*r));
 		if (!r)
-			continue; /* can't happen */
+			return 0; /* can't happen */
 
-		fill_task_info(t, r);
+		fill_task_info(tis->tasks[i], r);
 
 		struct task_state *st = tis->states[i];
 		if (st) {
 			barrier_var(st);
 			st->flags |= WTASK_F_INFO_EMITTED;
 		}
-
-		n += 1;
 	}
-	return ((1 << n) - 1) << EF_TASK_INFO_SHIFT;
+	return ((1 << tis->cnt) - 1) << EF_TASK_INFO_SHIFT;
 }
 
 static int emit_pystacks(struct pystacks_message *pymsg, int py_sz, struct bpf_dynptr *dptr, size_t offset)
@@ -912,15 +909,10 @@ int BPF_PROG(wprof_task_switch,
 	task_infos_init(&tis);
 	task_infos_add(&tis, prev, sprev);
 	task_infos_add(&tis, next, snext);
-
-	/* the waker is known only by tid; resolve it and peek (never create) its
-	 * state so we don't leak state for a task that may already be gone.
-	 */
 	struct task_struct *waker = NULL;
-	if (waking_ts) {
-		waker = bpf_task_from_pid(snext->waker_tid);
-		if (waker)
-			task_infos_add(&tis, waker, task_state_peek(waker));
+	if (waking_ts && (waker = bpf_task_from_pid(snext->waker_tid))) {
+		struct task_state *waker_st = task_state_peek(waker);
+		task_infos_add(&tis, waker, waker_st);
 	}
 	size_t tasks_sz = tis.data_sz;
 
@@ -960,9 +952,9 @@ int BPF_PROG(wprof_task_switch,
 			e->flags |= task_infos_emit(&tis, dptr, fix_sz + pmu_sz + tr_out_sz + py_sz);
 	}
 
-	put_stack_trace(tr_out);
 	if (waker)
 		bpf_task_release(waker);
+	put_stack_trace(tr_out);
 
 	return 0;
 }
