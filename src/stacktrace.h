@@ -94,6 +94,31 @@ static inline u32 bpf_event_pystack_id(const struct wprof_event *e)
 	return pymsg->pystack_id;
 }
 
+static inline size_t bpf_event_pystack_sz(const struct wprof_event *e)
+{
+	const struct pystack_msg *pymsg = bpf_event_pystack(e);
+
+	return pymsg ? pymsg->len : 0;
+}
+
+/* trailing wprof_thread identity records; *cnt gets how many */
+static inline const struct wprof_thread *bpf_event_task_infos(const struct wprof_event *e, int *cnt)
+{
+	*cnt = __builtin_popcount(e->flags & EF_TASK_INFO_MSK);
+	if (!*cnt)
+		return NULL;
+	return (const void *)e + bpf_event_fix_sz(e) + bpf_event_pmu_vals_sz(e) +
+	       bpf_event_stack_traces_sz(e) + bpf_event_pystack_sz(e);
+}
+
+static inline size_t bpf_event_task_infos_sz(const struct wprof_event *e)
+{
+	int cnt;
+
+	bpf_event_task_infos(e, &cnt);
+	return cnt * sizeof(struct wprof_thread);
+}
+
 int process_stack_traces(struct worker_state *workers, int worker_cnt, FILE *stacks_file);
 int generate_stack_traces(struct worker_state *w);
 
