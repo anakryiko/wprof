@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause)
 OUTPUT := .output
 CLANG ?= clang
-CARGO ?= $(shell which cargo)
+CARGO ?= MAKEFLAGS= $(shell which cargo)
 AWK ?= awk
 DEBUG ?=
 BLAZESYM_DEBUG ?=
