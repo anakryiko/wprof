@@ -208,21 +208,76 @@ struct tid_cache_value {
 	char thread_name[16];
 };
 
+/* per-host-TID persist state: latest identity (interned on demand) plus CUDA join fields */
 struct persist_thread_state {
+	const struct wprof_thread *info;	/* latest identity record, points into the mmap'd dump */
+	int task_id;				/* interned id for `info` (0 = not yet interned) */
 	u32 cuda_corr_id;
 	u32 cuda_stack_id;
 };
 
+/* find-or-create the per-thread state for a host TID (calloc'd, so task_id starts at 0) */
+static struct persist_thread_state *persist_thread_state(struct persist_state *ps, long tid)
+{
+	struct persist_thread_state *st;
+
+	if (!hashmap__find(ps->thread_states, tid, &st)) {
+		st = calloc(1, sizeof(*st));
+		hashmap__add(ps->thread_states, tid, st);
+	}
+	return st;
+}
+
+/*
+ * Record the trailing self-identifying wprof_thread records an event carries,
+ * keyed by tid, so bare int refs on this and later events can resolve to them.
+ * Only the pointer (into the mmap'd dump, valid for the whole merge) is stored;
+ * interning is deferred to resolve_task_ref() so tasks that are only ever seen
+ * out of the session window (flight recorder) never get a dense id. A fresh
+ * record resets the cached id, so rename/exec identity changes are picked up.
+ */
+void persist_task_infos(struct persist_state *ps, const struct wprof_event *e)
+{
+	int cnt;
+	const struct wprof_thread *infos = bpf_event_task_infos(e, &cnt);
+
+	for (int i = 0; i < cnt; i++) {
+		struct persist_thread_state *st = persist_thread_state(ps, infos[i].tid);
+		st->info = &infos[i];
+		st->task_id = 0;
+	}
+}
+
+/*
+ * Resolve a bare task ref (the tid emitted in a raw wprof_event) to a dense
+ * task_id, interning the recorded identity on first use. A zero ref means "no
+ * task" (e.g. a switch with no waker). A task is normally recorded by a task-info
+ * record before it's referenced, but that's not guaranteed: in flight-recorder
+ * mode the identity record may have scrolled out of the retained window, or a
+ * ringbuf reserve may have dropped it. A missing mapping therefore resolves to
+ * the null task (0) rather than being fatal.
+ */
+static int resolve_task_ref(struct persist_state *ps, int tid)
+{
+	struct persist_thread_state *st;
+
+	if (!tid || !hashmap__find(ps->thread_states, (long)tid, &st) || !st->info)
+		return 0;
+	if (!st->task_id)
+		st->task_id = persist_task_id(ps, st->info);
+	return st->task_id;
+}
+
 int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, struct wevent *dst)
 {
-	int task_id = persist_task_id(ps, &e->task);
+	int task_id = resolve_task_ref(ps, e->task_id);
 
 	switch (e->kind) {
 	case EV_SWITCH: {
 		fill_wevent_hdr(dst, e, task_id, WEVENT_SZ(swtch));
 
-		dst->swtch.next_task_id = persist_task_id(ps, &e->swtch.next);
-		dst->swtch.waker_task_id = persist_task_id(ps, &e->swtch.waker);
+		dst->swtch.next_task_id = resolve_task_ref(ps, e->swtch.next_id);
+		dst->swtch.waker_task_id = resolve_task_ref(ps, e->swtch.waker_id);
 		dst->swtch.pmu_vals_id = persist_pmu_vals_id(ps, bpf_event_pmu_vals(e));
 		dst->swtch.waking_flags = e->swtch.waking_flags;
 		dst->swtch.waking_ts = e->swtch.waking_ts;
@@ -256,14 +311,14 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 	case EV_WAKING: {
 		fill_wevent_hdr(dst, e, task_id, WEVENT_SZ(waking));
 
-		dst->waking.wakee_task_id = persist_task_id(ps, &e->waking.wakee);
+		dst->waking.wakee_task_id = resolve_task_ref(ps, e->waking.wakee_id);
 		dst->waking.waker_stack_id = bpf_event_stack_id(e, ST_WAKER);
 		break;
 	}
 	case EV_WAKEUP_NEW: {
 		fill_wevent_hdr(dst, e, task_id, WEVENT_SZ(wakeup_new));
 
-		dst->wakeup_new.wakee_task_id = persist_task_id(ps, &e->wakeup_new.wakee);
+		dst->wakeup_new.wakee_task_id = resolve_task_ref(ps, e->wakeup_new.wakee_id);
 		dst->wakeup_new.waker_stack_id = bpf_event_stack_id(e, ST_WAKER);
 		break;
 	}
@@ -295,7 +350,7 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 	case EV_FORK: {
 		fill_wevent_hdr(dst, e, task_id, WEVENT_SZ(fork));
 
-		dst->fork.child_task_id = persist_task_id(ps, &e->fork.child);
+		dst->fork.child_task_id = resolve_task_ref(ps, e->fork.child_id);
 		break;
 	}
 	case EV_EXEC:
@@ -395,8 +450,9 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 
 		/* Walk BPF event trailing data using arg_len[] */
 		const void *dyn_data = (const void *)e + EV_SZ(utrace);
-		/* skip past stack trace data if present */
+		/* skip past stack trace and task-info records preceding the args */
 		dyn_data += bpf_event_stack_traces_sz(e);
+		dyn_data += bpf_event_task_infos_sz(e);
 
 		u32 *arg_refs = (u32 *)((void *)dst + WEVENT_SZ(utrace));
 		int dyn_off = 0;
@@ -441,13 +497,8 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 
 	/* ephemeral */
 	case EV_CUDA_CALL: {
-		long tid_key = e->task.tid;
-		struct persist_thread_state *st;
+		struct persist_thread_state *st = persist_thread_state(ps, e->task_id);
 
-		if (!hashmap__find(ps->thread_states, tid_key, &st)) {
-			st = calloc(1, sizeof(*st));
-			hashmap__add(ps->thread_states, tid_key, st);
-		}
 		st->cuda_corr_id = e->cuda_call.corr_id;
 		st->cuda_stack_id = bpf_event_stack_id(e, ST_CUDA);
 		return 0; /* consumed, no wevent to write */

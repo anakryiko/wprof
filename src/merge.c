@@ -968,6 +968,14 @@ skip_pytorch:
 			const struct wprof_event *r = wmerge->next_rec->ptr;
 
 			/*
+			 * Register self-identifying task info in global ts order, even
+			 * for clamped-out events: an in-window event may reference a task
+			 * whose identity was first (and only) emitted by an out-of-window
+			 * event, and lazy identity means it's carried there just once.
+			 */
+			persist_task_infos(&ps, r);
+
+			/*
 			 * Clamp output to the session window [sess_min_ts, sess_max_ts]:
 			 * events outside it are skipped -- advance the cursor as usual
 			 * but without writing the record. For non-flight-recorder these

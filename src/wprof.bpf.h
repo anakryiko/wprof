@@ -18,6 +18,7 @@
 
 enum wprof_task_flags {
 	WTASK_F_LOCAL_STORAGE = 0x1,	/* state lives in task-local storage, not the hash */
+	WTASK_F_INFO_EMITTED = 0x2,	/* task's wprof_thread identity already emitted (cleared on rename/exec) */
 };
 
 struct task_state {
@@ -26,7 +27,7 @@ struct task_state {
 	u16 waker_cpu;
 	u16 waker_numa_node;
 	u32 last_task_state;
-	struct wprof_thread waker_task;
+	int waker_tid;			/* task_id() of the waker/preemptor */
 	u64 softirq_ts;
 	u64 hardirq_ts;
 	u64 wq_ts;

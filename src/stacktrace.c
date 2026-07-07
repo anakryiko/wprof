@@ -660,10 +660,11 @@ static int process_stack_trace(struct symb_state *state, const struct wprof_even
 	const u64 *kaddrs = NULL, *uaddrs = NULL;
 	int ucnt = 0, kcnt = 0;
 	enum stack_trace_kind st_mask = e->flags & EF_STACK_TRACE_MSK;
-	u32 pid = e->task.pid;
 
 	struct stack_trace *tr = (void *)e + bpf_event_fix_sz(e) + bpf_event_pmu_vals_sz(e);
 	while (st_mask) {
+		u32 pid = tr->pid; /* tgid captured with the trace, for user symbolization */
+
 		kaddrs = NULL;
 		uaddrs = NULL;
 		kcnt = 0;

@@ -170,9 +170,25 @@ enum waking_flags {
 	WF_PREEMPTED,
 };
 
+/*
+ * Bit ranges hand-packed into the u16 wprof_event.flags:
+ *   bits 0-5   EF_STACK_TRACE_MSK  (ST_ALL; one bit per captured stack trace kind)
+ *   bits 6-8   free (headroom for more stack trace kinds)
+ *   bits 9-11  EF_TASK_INFO_MSK    (popcount = number of trailing wprof_thread records)
+ *   bit  12    EF_PMU_VALS
+ *   bit  13    EF_PYSTACK
+ *   bits 14-15 free
+ *
+ * These ranges are hand-assigned and share one word; re-check EF_STACK_TRACE_MSK,
+ * EF_TASK_INFO_MSK and the free-bit budget before adding a new stack trace kind
+ * or raising the max number of wprof_thread records appended per event.
+ */
 enum event_flags {
 	EF_NONE = 0x00,
-	EF_STACK_TRACE_MSK = ST_ALL,	/* bit mask of all captured stack traces */
+	EF_STACK_TRACE_MSK = ST_ALL,	/* bits 0-5: captured stack traces bitmask */
+	/* bits 9-11: popcount(flags & EF_TASK_INFO_MSK) = number of trailing wprof_thread records */
+	EF_TASK_INFO_SHIFT = 9,
+	EF_TASK_INFO_MSK = 0x7 << EF_TASK_INFO_SHIFT,
 	EF_PMU_VALS = 0x1000,		/* PMU counter values follow fixed event data */
 	EF_PYSTACK = 0x2000,		/* pystacks_message follows stack traces */
 };
@@ -247,14 +263,14 @@ struct wprof_event {
 
 	u16 cpu;
 	u16 numa_node;
-	struct wprof_thread task;
+	int task_id;
 
 	char __wprof_data[0]; /* marker field */
 
 	union {
 		struct wprof_switch {
-			struct wprof_thread next;
-			struct wprof_thread waker;
+			int next_id;
+			int waker_id;
 			u64 waking_ts;
 			u32 prev_task_state;
 			u32 last_next_task_state;
@@ -273,10 +289,10 @@ struct wprof_event {
 			u32 pmu_idx;		/* which -S pmu= event fired */
 		} pmu_event;
 		struct wprof_waking {
-			struct wprof_thread wakee;
+			int wakee_id;
 		} waking;
 		struct wprof_wakeup_new {
-			struct wprof_thread wakee;
+			int wakee_id;
 		} wakeup_new;
 		struct wprof_hardirq {
 			u64 hardirq_ts;
@@ -299,7 +315,7 @@ struct wprof_event {
 		struct wprof_task_free {
 		} task_free;
 		struct wprof_fork {
-			struct wprof_thread child;
+			int child_id;
 		} fork;
 		struct wprof_exec {
 			int old_tid;
