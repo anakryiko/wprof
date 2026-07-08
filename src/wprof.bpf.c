@@ -844,7 +844,6 @@ int BPF_PROG(wprof_task_switch,
 	u64 now_ts = bpf_ktime_get_ns();
 	struct task_state *sprev, *snext;
 	struct wprof_event *e;
-	u64 waking_ts;
 	int cpu = bpf_get_smp_processor_id();
 
 	if (!should_trace_task(prev, now_ts) && !should_trace_task(next, now_ts))
@@ -855,32 +854,10 @@ int BPF_PROG(wprof_task_switch,
 	if (!sprev || !snext)
 		return 0;
 
-	waking_ts = snext->waking_ts;
-
 	struct perf_counters pmu_vals;
 	size_t pmu_sz = capture_perf_counters(&pmu_vals, NULL, cpu);
 
-	/*
-	 * If prev was involuntarily preempted, mark this as the start of a
-	 * scheduling delay (waker = the task that bumped it). Otherwise leave
-	 * sprev->waking_ts alone: do NOT clear it, or we'd wipe a waker that
-	 * sched_waking just set for a task being switched out as "blocked" when
-	 * it was woken right as it went to sleep (wakeup-races-schedule) -- that
-	 * task's next on-cpu would then have no waker. A cleanly-blocking task
-	 * already has waking_ts==0 (cleared when it last ran), and the waker is
-	 * consumed+cleared on switch-in below, so there's nothing stale to clear.
-	 */
-	if (prev->__state == TASK_RUNNING && prev->pid) {
-		sprev->waking_ts = now_ts;
-		sprev->waking_flags = WF_PREEMPTED;
-		sprev->waker_cpu = cpu;
-		sprev->waker_numa_node = bpf_get_numa_node_id();
-		sprev->waker_tid = task_id(next->pid);
-	}
 	sprev->last_task_state = prev->__state;
-
-	/* next task was off-cpu since last checkpoint */
-	snext->waking_ts = 0;
 
 	struct bpf_dynptr *dptr;
 	struct stack_trace *tr_out = NULL;
@@ -909,11 +886,6 @@ int BPF_PROG(wprof_task_switch,
 	task_infos_init(&tis);
 	task_infos_add(&tis, prev, sprev);
 	task_infos_add(&tis, next, snext);
-	struct task_struct *waker = NULL;
-	if (waking_ts && (waker = bpf_task_from_pid(snext->waker_tid))) {
-		struct task_state *waker_st = task_state_peek(waker);
-		task_infos_add(&tis, waker, waker_st);
-	}
 	size_t tasks_sz = tis.data_sz;
 
 	emit_task_event_dyn(e, dptr, fix_sz, pmu_sz + tr_out_sz + py_sz + tasks_sz, EV_SWITCH, now_ts, prev) {
@@ -922,15 +894,6 @@ int BPF_PROG(wprof_task_switch,
 		e->swtch.prev_prio = prev->prio;
 		e->swtch.next_prio = next->prio;
 		e->swtch.next_id = task_id(next->pid);
-
-		e->swtch.waking_ts = waking_ts;
-		e->swtch.waker_id = 0;
-		if (waking_ts) {
-			e->swtch.waking_flags = snext->waking_flags;
-			e->swtch.waker_cpu = snext->waker_cpu;
-			e->swtch.waker_numa_node = snext->waker_numa_node;
-			e->swtch.waker_id = snext->waker_tid;
-		}
 
 		e->swtch.next_task_scx_layer_id = scx_layer_id;
 		e->swtch.next_task_scx_dsq_id = scx_dsq_id;
@@ -952,15 +915,12 @@ int BPF_PROG(wprof_task_switch,
 			e->flags |= task_infos_emit(&tis, dptr, fix_sz + pmu_sz + tr_out_sz + py_sz);
 	}
 
-	if (waker)
-		bpf_task_release(waker);
 	put_stack_trace(tr_out);
 
 	return 0;
 }
 
-SEC("?tp_btf/sched_waking")
-int BPF_PROG(wprof_task_waking, struct task_struct *p)
+static __always_inline int handle_waking(void *ctx, struct task_struct *p, enum event_kind kind)
 {
 	u64 now_ts = bpf_ktime_get_ns();
 	struct task_state *s;
@@ -972,20 +932,7 @@ int BPF_PROG(wprof_task_waking, struct task_struct *p)
 	s = task_state(p);
 	if (!s)
 		return 0;
-
-	if (s->waking_ts != 0)
-		return 0; /* there was an earlier wakeup */
-
-	s->waking_ts = now_ts;
-	s->waking_flags = WF_WOKEN;
-	s->waker_cpu = bpf_get_smp_processor_id();
-	s->waker_numa_node = bpf_get_numa_node_id();
-	s->last_task_state = p->__state;
 	task = bpf_get_current_task_btf();
-	s->waker_tid = task_id(task->pid);
-
-	if (!(requested_stack_traces & ST_WAKER))
-		goto skip_emit;
 
 	struct wprof_event *e;
 	struct bpf_dynptr *dptr;
@@ -993,9 +940,8 @@ int BPF_PROG(wprof_task_waking, struct task_struct *p)
 	size_t dyn_sz = 0;
 	size_t fix_sz = EV_SZ(waking);
 
-	tr = grab_stack_trace(ctx, NULL, ST_WAKER, &dyn_sz);
-	if (!tr)
-		goto skip_emit;
+	if (requested_stack_traces & ST_WAKER)
+		tr = grab_stack_trace(ctx, NULL, ST_WAKER, &dyn_sz);
 
 	struct task_infos tis;
 	task_infos_init(&tis);
@@ -1003,76 +949,33 @@ int BPF_PROG(wprof_task_waking, struct task_struct *p)
 	task_infos_add(&tis, p, s);
 	size_t tasks_sz = tis.data_sz;
 
-	emit_task_event_dyn(e, dptr, fix_sz, dyn_sz + tasks_sz, EV_WAKING, now_ts, task) {
+	emit_task_event_dyn(e, dptr, fix_sz, dyn_sz + tasks_sz, kind, now_ts, task) {
 		e->waking.wakee_id = task_id(p->pid);
-		emit_stack_trace(tr, dyn_sz, dptr, fix_sz);
-		e->flags |= ST_WAKER;
+		if (tr) {
+			emit_stack_trace(tr, dyn_sz, dptr, fix_sz);
+			e->flags |= ST_WAKER;
+		}
 		if (tasks_sz)
 			e->flags |= task_infos_emit(&tis, dptr, fix_sz + dyn_sz);
 	}
 
 	put_stack_trace(tr);
 
-skip_emit:
+	s->last_task_state = p->__state;
+
 	return 0;
+}
+
+SEC("?tp_btf/sched_waking")
+int BPF_PROG(wprof_task_waking, struct task_struct *p)
+{
+	return handle_waking(ctx, p, EV_WAKING);
 }
 
 SEC("?tp_btf/sched_wakeup_new")
 int BPF_PROG(wprof_task_wakeup_new, struct task_struct *p)
 {
-	u64 now_ts = bpf_ktime_get_ns();
-	struct task_struct *task;
-	struct task_state *s;
-
-	if (!should_trace_task(p, now_ts))
-		return 0;
-
-	s = task_state(p);
-	if (!s)
-		return 0;
-
-	if (s->waking_ts != 0)
-		goto skip_emit;
-
-	s->waking_ts = now_ts;
-	s->waking_flags = WF_WOKEN_NEW;
-	s->waker_cpu = bpf_get_smp_processor_id();
-	s->waker_numa_node = bpf_get_numa_node_id();
-	s->last_task_state = p->__state;
-	task = bpf_get_current_task_btf();
-	s->waker_tid = task_id(task->pid);
-
-	if (!(requested_stack_traces & ST_WAKER))
-		goto skip_emit;
-
-	struct wprof_event *e;
-	struct bpf_dynptr *dptr;
-	struct stack_trace *tr = NULL;
-	size_t dyn_sz = 0;
-	size_t fix_sz = EV_SZ(wakeup_new);
-
-	tr = grab_stack_trace(ctx, NULL, ST_WAKER, &dyn_sz);
-	if (!tr)
-		goto skip_emit;
-
-	struct task_infos tis;
-	task_infos_init(&tis);
-	task_infos_add(&tis, task, task_state(task));
-	task_infos_add(&tis, p, s);
-	size_t tasks_sz = tis.data_sz;
-
-	emit_task_event_dyn(e, dptr, fix_sz, dyn_sz + tasks_sz, EV_WAKEUP_NEW, now_ts, task) {
-		e->wakeup_new.wakee_id = task_id(p->pid);
-		emit_stack_trace(tr, dyn_sz, dptr, fix_sz);
-		e->flags |= ST_WAKER;
-		if (tasks_sz)
-			e->flags |= task_infos_emit(&tis, dptr, fix_sz + dyn_sz);
-	}
-
-	put_stack_trace(tr);
-
-skip_emit:
-	return 0;
+	return handle_waking(ctx, p, EV_WAKEUP_NEW);
 }
 
 /*

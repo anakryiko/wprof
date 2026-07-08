@@ -277,16 +277,11 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 		fill_wevent_hdr(dst, e, task_id, WEVENT_SZ(swtch));
 
 		dst->swtch.next_task_id = resolve_task_ref(ps, e->swtch.next_id);
-		dst->swtch.waker_task_id = resolve_task_ref(ps, e->swtch.waker_id);
 		dst->swtch.pmu_vals_id = persist_pmu_vals_id(ps, bpf_event_pmu_vals(e));
-		dst->swtch.waking_flags = e->swtch.waking_flags;
-		dst->swtch.waking_ts = e->swtch.waking_ts;
 		dst->swtch.prev_task_state = e->swtch.prev_task_state;
 		dst->swtch.last_next_task_state = e->swtch.last_next_task_state;
 		dst->swtch.prev_prio = e->swtch.prev_prio;
 		dst->swtch.next_prio = e->swtch.next_prio;
-		dst->swtch.waker_cpu = e->swtch.waker_cpu;
-		dst->swtch.waker_numa_node = e->swtch.waker_numa_node;
 		dst->swtch.next_task_scx_layer_id = e->swtch.next_task_scx_layer_id;
 		dst->swtch.next_task_scx_dsq_id = e->swtch.next_task_scx_dsq_id;
 		dst->swtch.offcpu_stack_id = bpf_event_stack_id(e, ST_OFFCPU);

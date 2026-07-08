@@ -270,15 +270,10 @@ struct wprof_event {
 	union {
 		struct wprof_switch {
 			int next_id;
-			int waker_id;
-			u64 waking_ts;
 			u32 prev_task_state;
 			u32 last_next_task_state;
 			u32 prev_prio;
 			u32 next_prio;
-			u16 waker_cpu;
-			u16 waker_numa_node;
-			enum waking_flags waking_flags;
 			int next_task_scx_layer_id; /* sched-ext specific */
 			int next_task_scx_dsq_id; /* sched-ext specific */
 		} swtch;

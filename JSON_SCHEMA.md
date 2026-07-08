@@ -124,7 +124,8 @@ These fields appear on every event:
 | `numa` | int    | *(optional)* NUMA node; present only when `-e numa` is enabled    |
 
 Most events include a `task` object identifying the associated thread. The
-`switch` event uses `prev` and `next` instead.
+`switch` event uses `prev` and `next`, and `waking`/`wakeup_new` use `waker`
+and `wakee`, instead.
 
 **Timestamp semantics:** For duration-based events (`hardirq`, `softirq`, `wq`,
 `ipi`, `scx_dsq`, and CUDA events), `ts` is the **end** timestamp and
@@ -187,6 +188,34 @@ Emitted when a thread is switched off-CPU and another is switched on.
   "pmus": [150000.0, 80000.0, 1.875]
 }
 ```
+
+#### `waking` — thread wakeup
+
+Emitted on every wakeup (`sched_waking`), including repeat wakeups before the
+woken thread runs. The same waker→wakee relationship is also reflected on the
+woken thread's subsequent `switch` (its `waker`/`waking_ts`/`waking_reason`).
+
+| Field            | Type | Description                                                               |
+|------------------|------|---------------------------------------------------------------------------|
+| `waker`          | task | Thread performing the wakeup (idle when woken from interrupt context)      |
+| `wakee`          | task | Thread being woken                                                         |
+| `waker_stack_id` | int  | *(optional)* Stack trace ID for the waker's stack (present with `-Swaker`) |
+
+```json
+{
+  "ts": 0.500100000,
+  "t": "waking",
+  "waker": {"tid": 9999, "pid": 5000, "comm": "scheduler"},
+  "wakee": {"tid": 5678, "pid": 5000, "comm": "myapp"},
+  "cpu": 7,
+  "waker_stack_id": 99
+}
+```
+
+#### `wakeup_new` — new thread wakeup
+
+Same as `waking`, but for a newly created thread's first wakeup
+(`sched_wakeup_new`); `t` is `"wakeup_new"` with the same fields.
 
 #### `timer` — on-CPU timer sample
 
