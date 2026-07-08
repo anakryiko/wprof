@@ -22,12 +22,7 @@ enum wprof_task_flags {
 };
 
 struct task_state {
-	u64 waking_ts;
-	u32 waking_flags;
-	u16 waker_cpu;
-	u16 waker_numa_node;
 	u32 last_task_state;
-	int waker_tid;			/* task_id() of the waker/preemptor */
 	u64 softirq_ts;
 	u64 hardirq_ts;
 	u64 wq_ts;

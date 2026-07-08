@@ -53,17 +53,12 @@ struct wevent {
 	union {
 		struct wevent_switch {
 			u32 next_task_id;
-			u32 waker_task_id;
 			u32 pmu_vals_id;
 			u32 offcpu_stack_id;
-			enum waking_flags waking_flags;
-			u64 waking_ts;
 			u32 prev_task_state;
 			u32 last_next_task_state;
 			u32 prev_prio;
 			u32 next_prio;
-			u16 waker_cpu;
-			u16 waker_numa_node;
 			u32 next_task_scx_layer_id; /* sched-ext specific */
 			u32 next_task_scx_dsq_id; /* sched-ext specific */
 			u32 pystack_id;

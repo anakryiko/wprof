@@ -11,7 +11,7 @@
 /* On-disk format version (hdr.version_major / hdr.version_minor). */
 enum wprof_data_version {
 	WPROF_DATA_MAJOR = 2,
-	WPROF_DATA_MINOR = 2,
+	WPROF_DATA_MINOR = 3,
 };
 
 /*

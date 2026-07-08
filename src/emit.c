@@ -80,7 +80,13 @@ struct task_state {
 	u64 oncpu_ts;
 	u64 offcpu_ts;
 	u64 req_id; /* active ongoing request ID */
+	/* waker info collected from EV_WAKING/EV_WAKING_NEW */
+	u64 waking_ts;
+	u32 waker_task_id;
 	u32 waker_callstack_id;
+	u16 waker_cpu;
+	u16 waker_numa_node;
+	enum waking_flags waking_flags;
 	/* perf counters */
 	const u64 *oncpu_ctrs;
 	u64 compound_delay_ns; /* scheduling/running delay, including dependency tasks' ones */
@@ -1604,6 +1610,11 @@ struct switch_ctx {
 	bool trace_waker, trace_prev, trace_next;
 	bool has_waking;
 	int waker_callstack_id;
+	u64 waking_ts;
+	u32 waker_task_id;
+	u16 waker_cpu;
+	u16 waker_numa_node;
+	enum waking_flags waking_flags;
 
 	struct task_state *prev_st;
 	bool prev_preempted;
@@ -1624,7 +1635,7 @@ static void emit_switch(struct worker_state *w, const struct wevent *e, struct s
 	struct wprof_data_hdr *hdr = w->dump_hdr;
 	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
 	struct wprof_task next = wevent_resolve_task(hdr, e->swtch.next_task_id);
-	struct wprof_task waker = wevent_resolve_task(hdr, e->swtch.waker_task_id);
+	struct wprof_task waker = wevent_resolve_task(hdr, s->waker_task_id);
 
 	if (!s->trace_waker)
 		goto skip_waker_task;
@@ -1633,13 +1644,13 @@ static void emit_switch(struct worker_state *w, const struct wevent *e, struct s
 
 	/* event on awaker's timeline */
 	pb_iid waker_ev_name, waker_ev_cat;
-	if (e->swtch.waking_flags == WF_PREEMPTED) {
+	if (s->waking_flags == WF_PREEMPTED) {
 		waker_ev_name = IID_NAME_PREEMPTOR;
 		waker_ev_cat = IID_CAT_PREEMPTOR;
-	} else if (e->swtch.waking_flags == WF_WOKEN) {
+	} else if (s->waking_flags == WF_WOKEN) {
 		waker_ev_name = IID_NAME_WAKER;
 		waker_ev_cat = IID_CAT_WAKER;
-	} else if (e->swtch.waking_flags == WF_WOKEN_NEW) {
+	} else if (s->waking_flags == WF_WOKEN_NEW) {
 		waker_ev_name = IID_NAME_WAKER_NEW;
 		waker_ev_cat = IID_CAT_WAKER_NEW;
 	} else {
@@ -1647,10 +1658,10 @@ static void emit_switch(struct worker_state *w, const struct wevent *e, struct s
 		waker_ev_cat = IID_CAT_WAKER_UNKN;
 	}
 	emit_instant(trackid_thread(&waker),
-		     e->swtch.waking_ts, waker_ev_name, waker_ev_cat) {
-		emit_kv_int(IID_ANNK_CPU, e->swtch.waker_cpu);
+		     s->waking_ts, waker_ev_name, waker_ev_cat) {
+		emit_kv_int(IID_ANNK_CPU, s->waker_cpu);
 		if (env.emit_numa)
-			emit_kv_int(IID_ANNK_NUMA_NODE, e->swtch.waker_numa_node);
+			emit_kv_int(IID_ANNK_NUMA_NODE, s->waker_numa_node);
 
 		emit_kv_str(IID_ANNK_WAKEE,
 			    iid_str(emit_intern_str(w, next.comm), next.comm));
@@ -1659,7 +1670,7 @@ static void emit_switch(struct worker_state *w, const struct wevent *e, struct s
 			emit_kv_int(IID_ANNK_WAKEE_PID, next.pid);
 		}
 
-		emit_flow_id(e->swtch.waking_ts);
+		emit_flow_id(s->waking_ts);
 
 		emit_callstack(w, s->waker_callstack_id);
 	}
@@ -1732,16 +1743,16 @@ skip_prev_task:
 	if (!s->has_waking)
 		goto skip_waking;
 
-	if (is_ts_in_range(e->swtch.waking_ts)/* && e->swtch.waker_cpu != e->cpu*/) {
+	if (is_ts_in_range(s->waking_ts)/* && s->waker_cpu != e->cpu*/) {
 		/* event on wakee's timeline */
 		pb_iid wakee_ev_name, wakee_ev_cat;
-		if (e->swtch.waking_flags == WF_PREEMPTED) {
+		if (s->waking_flags == WF_PREEMPTED) {
 			wakee_ev_name = IID_NAME_PREEMPTEE;
 			wakee_ev_cat = IID_CAT_PREEMPTEE;
-		} else if (e->swtch.waking_flags == WF_WOKEN) {
+		} else if (s->waking_flags == WF_WOKEN) {
 			wakee_ev_name = IID_NAME_WAKEE;
 			wakee_ev_cat = IID_CAT_WAKEE;
-		} else if (e->swtch.waking_flags == WF_WOKEN_NEW) {
+		} else if (s->waking_flags == WF_WOKEN_NEW) {
 			wakee_ev_name = IID_NAME_WAKEE_NEW;
 			wakee_ev_cat = IID_CAT_WAKEE_NEW;
 		} else {
@@ -1749,12 +1760,12 @@ skip_prev_task:
 			wakee_ev_cat = IID_CAT_WAKEE_UNKN;
 		}
 		emit_instant(trackid_thread(&next),
-			     e->swtch.waking_ts, wakee_ev_name, wakee_ev_cat) {
+			     s->waking_ts, wakee_ev_name, wakee_ev_cat) {
 			emit_kv_int(IID_ANNK_CPU, e->cpu);
 			if (env.emit_numa)
 				emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
 
-			emit_flow_id(e->swtch.waking_ts);
+			emit_flow_id(s->waking_ts);
 		}
 	}
 
@@ -1776,11 +1787,11 @@ skip_waking:
 				emit_kv_int(IID_ANNK_WAKER_PID, waker.pid);
 			}
 			emit_kv_str(IID_ANNK_WAKING_REASON,
-				    IID_ANNV_WAKING_REASON + wreason_enum(e->swtch.waking_flags));
-			emit_kv_int(IID_ANNK_WAKER_CPU, e->swtch.waker_cpu);
+				    IID_ANNV_WAKING_REASON + wreason_enum(s->waking_flags));
+			emit_kv_int(IID_ANNK_WAKER_CPU, s->waker_cpu);
 			if (env.emit_numa)
-				emit_kv_int(IID_ANNK_WAKER_NUMA_NODE, e->swtch.waker_numa_node);
-			emit_kv_float(IID_ANNK_WAKING_DELAY_US, "%.3lf", (e->ts - e->swtch.waking_ts) / 1000.0);
+				emit_kv_int(IID_ANNK_WAKER_NUMA_NODE, s->waker_numa_node);
+			emit_kv_float(IID_ANNK_WAKING_DELAY_US, "%.3lf", (e->ts - s->waking_ts) / 1000.0);
 		}
 
 		if (env.emit_sched_extras && s->next_st->compound_delay_ns) {
@@ -1800,8 +1811,8 @@ skip_waking:
 			emit_kv_int(IID_ANNK_SCX_DSQ_ID, e->swtch.next_task_scx_dsq_id);
 		}
 
-		if (s->has_waking && is_ts_in_range(e->swtch.waking_ts))
-			emit_flow_id(e->swtch.waking_ts);
+		if (s->has_waking && is_ts_in_range(s->waking_ts))
+			emit_flow_id(s->waking_ts);
 	}
 
 	if (env.emit_req_split && s->next_st->req_id) {
@@ -1831,9 +1842,9 @@ skip_next_task:
 	}
 
 	if (s->trace_waker) {
-		struct wpb_ftrace_event *fev = add_ftrace_event(w, e->swtch.waker_cpu, e->swtch.waking_ts,
+		struct wpb_ftrace_event *fev = add_ftrace_event(w, s->waker_cpu, s->waking_ts,
 								task_tid(&task));
-		fev->kind = e->swtch.waking_flags == WF_WOKEN_NEW
+		fev->kind = s->waking_flags == WF_WOKEN_NEW
 			? WPB_FTRACE_SCHED_WAKEUP_NEW : WPB_FTRACE_SCHED_WAKING;
 		fev->comm = wpb_str_from_cstr(0, next.comm);
 		fev->event_pid = task_tid(&next);
@@ -1851,7 +1862,7 @@ static void emit_switch_json(struct worker_state *w, const struct wevent *e, str
 	struct wprof_data_hdr *hdr = w->dump_hdr;
 	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
 	struct wprof_task next = wevent_resolve_task(hdr, e->swtch.next_task_id);
-	struct wprof_task waker = wevent_resolve_task(hdr, e->swtch.waker_task_id);
+	struct wprof_task waker = wevent_resolve_task(hdr, s->waker_task_id);
 
 	json_obj_start(j);
 	json_kv_ts(j, "ts", e->ts - env.sess_start_ts);
@@ -1865,11 +1876,11 @@ static void emit_switch_json(struct worker_state *w, const struct wevent *e, str
 	json_kv_int(j, "prev_prio", e->swtch.prev_prio);
 	json_kv_int(j, "next_prio", e->swtch.next_prio);
 	if (s->has_waking) {
-		if (is_ts_in_range(e->swtch.waking_ts))
-			json_kv_ts(j, "waking_ts", e->swtch.waking_ts - env.sess_start_ts);
-		json_kv_str(j, "waking_reason", wreason_str(e->swtch.waking_flags));
+		if (is_ts_in_range(s->waking_ts))
+			json_kv_ts(j, "waking_ts", s->waking_ts - env.sess_start_ts);
+		json_kv_str(j, "waking_reason", wreason_str(s->waking_flags));
 		json_task(j, "waker", &waker);
-		json_kv_int(j, "waking_cpu", e->swtch.waker_cpu);
+		json_kv_int(j, "waking_cpu", s->waker_cpu);
 	}
 	if (s->next_offcpu_dur_ns) {
 		json_kv_ts(j, "offcpu_dur", s->next_offcpu_dur_ns);
@@ -1895,37 +1906,40 @@ static int process_switch(struct worker_state *w, const struct wevent *e)
 	struct wprof_data_hdr *hdr = w->dump_hdr;
 	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
 	struct wprof_task next = wevent_resolve_task(hdr, e->swtch.next_task_id);
-	struct wprof_task waker = wevent_resolve_task(hdr, e->swtch.waker_task_id);
-
-	bool has_waking = e->swtch.waking_ts != 0;
-
-	/*
-	 * WAKER/WAKEE info is recorded by the sched_waking hook, so it is gated by
-	 * -f wakeup. Preemption (WF_PREEMPTED, recorded by the switch itself) is part
-	 * of context-switch tracking and is left untouched.
-	 */
-	bool waking_is_wakeup = e->swtch.waking_flags == WF_WOKEN ||
-				e->swtch.waking_flags == WF_WOKEN_NEW;
-	if (!env.capture_wakeup && waking_is_wakeup)
-		has_waking = false;
 
 	struct switch_ctx s = {
-		.has_waking = has_waking,
-		.trace_waker = has_waking && is_ts_in_range(e->swtch.waking_ts) &&
-			       should_trace_task(&waker),
 		.trace_prev = should_trace_task(&task),
 		.trace_next = should_trace_task(&next),
 	};
 
-	struct task_state *waker_st = NULL;
-	if (s.trace_waker) {
-		waker_st = task_state(w, &waker);
-		struct task_state *wakee_st = task_state_try_get(w, &next);
-		if (wakee_st) {
-			s.waker_callstack_id = wakee_st->waker_callstack_id;
-			wakee_st->waker_callstack_id = 0;
-		}
+	/*
+	 * Waker/wakee lands on the wakee's task_state -- from EV_WAKING for real
+	 * wakeups (gated by -f wakeup), or recorded below on the preemptee at
+	 * switch-out for preemption. Either way it's consumed here on switch-in.
+	 */
+	struct task_state *next_st = task_state_try_get(w, &next);
+	if (next_st && next_st->waking_ts != 0) {
+		s.has_waking = true;
+		s.waking_ts = next_st->waking_ts;
+		s.waker_task_id = next_st->waker_task_id;
+		s.waker_cpu = next_st->waker_cpu;
+		s.waker_numa_node = next_st->waker_numa_node;
+		s.waking_flags = next_st->waking_flags;
+		s.waker_callstack_id = next_st->waker_callstack_id;
+		next_st->waking_ts = 0;
+		next_st->waker_task_id = 0;
+		next_st->waker_cpu = 0;
+		next_st->waker_numa_node = 0;
+		next_st->waking_flags = 0;
+		next_st->waker_callstack_id = 0;
 	}
+
+	struct wprof_task waker = wevent_resolve_task(hdr, s.waker_task_id);
+	s.trace_waker = s.has_waking && is_ts_in_range(s.waking_ts) && should_trace_task(&waker);
+
+	struct task_state *waker_st = NULL;
+	if (s.trace_waker)
+		waker_st = task_state(w, &waker);
 
 	if (s.trace_prev) {
 		s.prev_st = task_state(w, &task);
@@ -1943,6 +1957,16 @@ static int process_switch(struct worker_state *w, const struct wevent *e)
 		s.prev_st->oncpu_ts = 0;
 		s.prev_st->offcpu_ts = e->ts;
 		s.prev_st->run_state = s.prev_preempted ? TASK_STATE_PREEMPTED : TASK_STATE_WAITING;
+
+		/* record preemption on the preemptee (waker = next); consumed at its switch-in */
+		if (s.prev_preempted && s.prev_st->waking_ts == 0) {
+			s.prev_st->waking_ts = e->ts;
+			s.prev_st->waker_task_id = e->swtch.next_task_id;
+			s.prev_st->waker_cpu = e->cpu;
+			s.prev_st->waker_numa_node = e->numa_node;
+			s.prev_st->waking_flags = WF_PREEMPTED;
+			s.prev_st->waker_callstack_id = 0;
+		}
 	}
 
 	if (s.trace_next) {
@@ -1954,12 +1978,12 @@ static int process_switch(struct worker_state *w, const struct wevent *e)
 		s.next_st->offcpu_ts = 0;
 
 		if (s.has_waking) {
-			if (e->swtch.waking_flags == WF_PREEMPTED) {
+			if (s.waking_flags == WF_PREEMPTED) {
 				/*
 				 * for preemption case, we just accummulate preempted time,
 				 * without paying attention to compound delay of our preemptor
 				 */
-				s.next_st->compound_delay_ns += e->ts - e->swtch.waking_ts;
+				s.next_st->compound_delay_ns += e->ts - s.waking_ts;
 				s.next_st->compound_chain_len += 1;
 			} else {
 				/*
@@ -1967,7 +1991,7 @@ static int process_switch(struct worker_state *w, const struct wevent *e)
 				 * and delay, and add our own wakeup delay to it to keep the
 				 * chain going
 				 */
-				s.next_st->compound_delay_ns = e->ts - e->swtch.waking_ts;
+				s.next_st->compound_delay_ns = e->ts - s.waking_ts;
 				s.next_st->compound_chain_len = 1;
 
 				s.next_st->compound_delay_ns += waker_st ? waker_st->compound_delay_ns : 0;
@@ -2311,44 +2335,8 @@ skip_emit:
 	return 0;
 }
 
-/* EV_WAKEUP_NEW */
-static void emit_wakeup_new(struct worker_state *w, const struct wevent *e)
-{
-	struct wprof_data_hdr *hdr = w->dump_hdr;
-	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
-
-	emit_track_descrs(w, &task);
-
-	struct wprof_task wakee = wevent_resolve_task(hdr, e->wakeup_new.wakee_task_id);
-	emit_track_descrs(w, &wakee);
-}
-
-static int process_wakeup_new(struct worker_state *w, const struct wevent *e)
-{
-	if (!env.capture_wakeup)
-		return 0;
-
-	struct wprof_data_hdr *hdr = w->dump_hdr;
-	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
-
-	if (!should_trace_task(&task))
-		return 0;
-
-	int tr_id = (env.requested_stack_traces & ST_WAKER) ? e->wakeup_new.waker_stack_id : 0;
-	if (tr_id <= 0)
-		return 0;
-
-	struct wprof_task wakee = wevent_resolve_task(hdr, e->wakeup_new.wakee_task_id);
-	struct task_state *wakee_st = task_state(w, &wakee);
-	wakee_st->waker_callstack_id = tr_id;
-
-	if (!env.json_path)
-		emit_wakeup_new(w, e);
-	return 0;
-}
-
-/* EV_WAKING */
-static void emit_waking(struct worker_state *w, const struct wevent *e)
+/* EV_WAKING / EV_WAKEUP_NEW (identical layout, distinguished by waking flag) */
+static void emit_waking(struct worker_state *w, const struct wevent *e, enum waking_flags flags)
 {
 	struct wprof_data_hdr *hdr = w->dump_hdr;
 	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);	/* the waker */
@@ -2359,17 +2347,18 @@ static void emit_waking(struct worker_state *w, const struct wevent *e)
 		emit_track_descrs(w, &wakee);
 
 	/*
-	 * With context switches the WAKER->WAKEE pair is rendered at the wakee's
-	 * switch (see EV_SWITCH), which consumes the waker stack stashed by
-	 * process_waking(). Under -f no-sched that switch never comes, so render a
-	 * standalone WAKER instant on the waker's track here instead.
+	 * With context switches the waker->wakee pair is rendered at the wakee's
+	 * switch (see EV_SWITCH). Under -f no-sched that switch never comes, so
+	 * render a standalone waker instant on the waker's track here instead.
 	 */
 	if (env.capture_sched)
 		return;
 
 	int tr_id = (env.requested_stack_traces & ST_WAKER) ? e->waking.waker_stack_id : 0;
+	pb_iid name = flags == WF_WOKEN_NEW ? IID_NAME_WAKER_NEW : IID_NAME_WAKER;
+	pb_iid cat = flags == WF_WOKEN_NEW ? IID_CAT_WAKER_NEW : IID_CAT_WAKER;
 
-	emit_instant(trackid_thread(&task), e->ts, IID_NAME_WAKER, IID_CAT_WAKER) {
+	emit_instant(trackid_thread(&task), e->ts, name, cat) {
 		emit_kv_int(IID_ANNK_CPU, e->cpu);
 		if (env.emit_numa)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
@@ -2382,31 +2371,58 @@ static void emit_waking(struct worker_state *w, const struct wevent *e)
 	}
 }
 
+static void emit_waking_json(struct worker_state *w, const struct wevent *e, enum waking_flags flags)
+{
+	struct json_state *j = &js;
+	struct wprof_data_hdr *hdr = w->dump_hdr;
+	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);	/* the waker */
+	struct wprof_task wakee = wevent_resolve_task(hdr, e->waking.wakee_task_id);
+
+	json_obj_start(j);
+	json_kv_ts(j, "ts", e->ts - env.sess_start_ts);
+	json_kv_str(j, "t", flags == WF_WOKEN_NEW ? "wakeup_new" : "waking");
+	json_task(j, "waker", &task);
+	json_task(j, "wakee", &wakee);
+	json_kv_int(j, "cpu", e->cpu);
+	if (env.emit_numa)
+		json_kv_int(j, "numa", e->numa_node);
+	if ((env.requested_stack_traces & ST_WAKER) && e->waking.waker_stack_id > 0)
+		json_kv_int(j, "waker_stack_id", e->waking.waker_stack_id);
+	json_obj_end(j);
+}
+
 static int process_waking(struct worker_state *w, const struct wevent *e)
 {
 	if (!env.capture_wakeup)
 		return 0;
 
+	enum waking_flags flags = e->kind == EV_WAKEUP_NEW ? WF_WOKEN_NEW : WF_WOKEN;
 	struct wprof_data_hdr *hdr = w->dump_hdr;
-	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
+	struct wprof_task wakee = wevent_resolve_task(hdr, e->waking.wakee_task_id);
 
-	if (!should_trace_task(&task))
-		return 0;
+	/* track first wake per off-cpu period on the wakee; consumed at its switch-in */
+	if (!should_trace_task(&wakee))
+		goto emit;
 
-	int tr_id = (env.requested_stack_traces & ST_WAKER) ? e->waking.waker_stack_id : 0;
-	if (tr_id <= 0)
-		return 0;
-
-	/* with context switches, stash the waker stack for the wakee's switch to render */
-	if (env.capture_sched) {
-		struct wprof_task wakee = wevent_resolve_task(hdr, e->waking.wakee_task_id);
-		struct task_state *wakee_st = task_state(w, &wakee);
-
-		wakee_st->waker_callstack_id = tr_id;
+	struct task_state *wakee_st = task_state(w, &wakee);
+	if (wakee_st->waking_ts == 0) {
+		wakee_st->waking_ts = e->ts;
+		wakee_st->waker_task_id = e->task_id;
+		wakee_st->waker_cpu = e->cpu;
+		wakee_st->waker_numa_node = e->numa_node;
+		wakee_st->waking_flags = flags;
+		wakee_st->waker_callstack_id = (env.requested_stack_traces & ST_WAKER) ? e->waking.waker_stack_id : 0;
 	}
 
-	if (!env.json_path)
-		emit_waking(w, e);
+emit:
+	;
+	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
+	if (!should_trace_task(&task))
+		return 0;
+	if (env.json_path)
+		emit_waking_json(w, e, flags);
+	else
+		emit_waking(w, e, flags);
 	return 0;
 }
 
@@ -4440,7 +4456,7 @@ static handle_event_fn emit_fns[] = {
 	[EV_TIMER] = process_timer,
 	[EV_PMU_EVENT] = process_pmu_event,
 	[EV_SWITCH] = process_switch,
-	[EV_WAKEUP_NEW] = process_wakeup_new,
+	[EV_WAKEUP_NEW] = process_waking,
 	[EV_WAKING] = process_waking,
 	[EV_HARDIRQ_EXIT] = process_hardirq_exit,
 	[EV_SOFTIRQ_EXIT] = process_softirq_exit,
