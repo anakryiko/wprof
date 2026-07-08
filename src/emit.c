@@ -1841,7 +1841,8 @@ skip_next_task:
 		fev->next_prio = e->swtch.next_prio;
 	}
 
-	if (s->trace_waker) {
+	/* preemption is not a wakeup -- don't fabricate a sched_waking ftrace for it */
+	if (s->trace_waker && s->waking_flags != WF_PREEMPTED) {
 		struct wpb_ftrace_event *fev = add_ftrace_event(w, s->waker_cpu, s->waking_ts,
 								task_tid(&task));
 		fev->kind = s->waking_flags == WF_WOKEN_NEW
