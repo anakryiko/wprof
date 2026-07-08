@@ -614,10 +614,12 @@ static const struct addr_set *strip_set_for(const struct wprof_event *e,
 		switch (cfg->type) {
 		case UTRACE_KPROBE:         return &entry_set_kprobe;
 		case UTRACE_KRETPROBE:      return &entry_set_kretprobe;
+		case UTRACE_KPROBE_SPAN:    return (e->kind == EV_UTRACE_EXIT) ? &entry_set_kretprobe : &entry_set_kprobe;
 		case UTRACE_TRACEPOINT:     return &entry_set_tp;
 		case UTRACE_RAW_TRACEPOINT: return &entry_set_raw_tp;
 		case UTRACE_BPF_PROBE:      return &entry_set_bpf;
 		case UTRACE_BPF_RETPROBE:   return &entry_set_bpf;
+		case UTRACE_BPF_SPAN:       return &entry_set_bpf;
 		default:                    return NULL;
 		}
 	}
