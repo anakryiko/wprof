@@ -363,7 +363,7 @@ static inline void fill_task_name(struct task_struct *t, char *comm, int max_len
 	}
 }
 
-__weak int fill_task_info(struct task_struct *t __arg_trusted, struct wprof_thread *info __arg_nonnull)
+static int fill_task_info(struct task_struct *t, struct wprof_thread *info)
 {
 	info->tid = t->pid;
 	if (info->tid == 0) /* idle thread */
@@ -466,7 +466,7 @@ static void __rb_event_submit(void *arg)
 	bpf_ringbuf_submit_dynptr(&ctx->dptr, flags);
 }
 
-__weak size_t capture_perf_counters(struct perf_counters *c __arg_nonnull,
+static size_t capture_perf_counters(struct perf_counters *c,
 				    struct perf_counters *prev_c, int cpu)
 {
 	struct bpf_perf_event_value perf_val;
@@ -644,7 +644,7 @@ static void task_infos_add(struct task_infos *tis, struct task_struct *t, struct
 	tis->data_sz += sizeof(struct wprof_thread);
 }
 
-static u32 task_infos_emit(struct task_infos *tis __arg_nonnull, struct bpf_dynptr *dptr, u64 off)
+static u32 task_infos_emit(struct task_infos *tis, struct bpf_dynptr *dptr, u64 off)
 {
 	struct wprof_thread *r;
 	u64 i;
@@ -678,14 +678,6 @@ static int emit_pystacks(struct pystacks_message *pymsg, int py_sz, struct bpf_d
 int pystacks_read_stacks(void *bpf_ctx, struct task_struct *task,
 			 struct pystacks_message *py_msg_buffer);
 
-/* we want this to be verified as global func to isolate pystacks_read_stacks verification complexity */
-__weak int __pystacks_read_stacks(void *ctx __arg_ctx,
-				  struct task_struct *task __arg_trusted,
-				  struct pystacks_message *buf __arg_nonnull)
-{
-	return pystacks_read_stacks(ctx, task, buf);
-}
-
 static struct pystacks_message *capture_pystack(void *ctx, struct task_struct *task, int *py_sz)
 {
 	int key = 0;
@@ -695,7 +687,7 @@ static struct pystacks_message *capture_pystack(void *ctx, struct task_struct *t
 		return NULL;
 	}
 
-	int sz = __pystacks_read_stacks(ctx, task, pymsg);
+	int sz = pystacks_read_stacks(ctx, task, pymsg);
 	if (sz > 0) {
 		*py_sz = sz;
 		(void)inc_stat(pystacks_found);
