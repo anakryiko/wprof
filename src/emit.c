@@ -3986,6 +3986,17 @@ static int process_pytrace(struct worker_state *w, const struct wevent *e)
 
 static void emit_pytorch_event(struct worker_state *w, const struct wevent *e)
 {
+	/*
+	 * HACK: ## GpuTracer ## RecordFunctions straddle ProfilerStep#N
+	 * boundaries (born in one step, closed in the next), violating the LIFO
+	 * slice nesting on the shared pytrace track and truncating the long
+	 * ProfilerStep slice. Drop them from the emitted trace; they remain in the
+	 * JSON output path.
+	 */
+	const char *rf_name = e->rf.name_stroff ? wevent_str(w->dump_hdr, e->rf.name_stroff) : "";
+	if (strcmp(rf_name, "## GpuTracer ##") == 0)
+		return;
+
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
 	struct task_state *st = task_state(w, &task);
 
