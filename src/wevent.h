@@ -59,7 +59,7 @@ struct wevent {
 			u32 last_next_task_state;
 			u32 prev_prio;
 			u32 next_prio;
-			u32 next_task_scx_layer_id; /* sched-ext specific */
+			int next_task_scx_layer_id; /* sched-ext specific; -1 if no layer */
 			u32 next_task_scx_dsq_id; /* sched-ext specific */
 			u32 pystack_id;
 		} swtch;
