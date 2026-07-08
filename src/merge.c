@@ -587,6 +587,10 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers,
 		fsync(fileno(w->dump));
 
 		w->dump_sz = pos;
+		if (w->dump_sz == 0) {
+			w->dump_mem = NULL;
+			continue;
+		}
 		w->dump_mem = mmap(NULL, w->dump_sz, PROT_READ | PROT_WRITE, MAP_SHARED, fileno(w->dump), 0);
 		if (w->dump_mem == MAP_FAILED) {
 			err = -errno;
@@ -1131,7 +1135,8 @@ skip_pytorch:
 		struct worker_state *w = &workers[i];
 		struct wmerge_state *wmerge = &wmerges[i];
 
-		munmap(w->dump_mem, w->dump_sz);
+		if (w->dump_mem)
+			munmap(w->dump_mem, w->dump_sz);
 		fclose(w->dump);
 		if (!env.keep_workdir)
 			unlink(w->dump_path);
