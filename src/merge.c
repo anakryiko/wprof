@@ -18,6 +18,7 @@
 #include "wprof.h"
 #include "data.h"
 #include "env.h"
+#include "flightrec.h"
 #include "pmu.h"
 #include "cuda_data.h"
 #include "pytrace.h"
