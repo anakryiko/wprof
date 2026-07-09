@@ -13,6 +13,7 @@
 
 #define FILEPATH_LEN 64
 #define REQ_NAME_LEN 64
+#define HARDIRQ_NAME_LEN 32
 
 #define TASK_COMM_FULL_LEN (2 * TASK_COMM_LEN + 4)
 
@@ -292,7 +293,7 @@ struct wprof_event {
 		struct wprof_hardirq {
 			u64 hardirq_ts;
 			int irq;
-			char name[WORKER_DESC_LEN + TASK_COMM_LEN];
+			char name[HARDIRQ_NAME_LEN];
 		} hardirq;
 		struct wprof_softirq {
 			u64 softirq_ts;
