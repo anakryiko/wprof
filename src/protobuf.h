@@ -230,6 +230,8 @@ enum pb_static_iid {
 		IID_ANNK_REQ_TASK_ID,				/* task_id */
 		IID_ANNK_REQ_WAIT_TIME_NS,			/* wait_time_ns */
 		IID_ANNK_CUDA_DEVICE_ID,			/* device_id */
+		IID_ANNK_CUDA_SRC_DEVICE_ID,			/* src_device_id */
+		IID_ANNK_CUDA_DST_DEVICE_ID,			/* dst_device_id */
 		IID_ANNK_CUDA_STREAM_ID,			/* stream_id */
 		IID_ANNK_CUDA_BLOCK_X,				/* block_x */
 		IID_ANNK_CUDA_BLOCK_Y,				/* block_y */

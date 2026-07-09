@@ -229,6 +229,36 @@ static int handle_cupti_record(CUpti_Activity *rec)
 				.dst_kind = r->dstKind,
 				.corr_id = r->correlationId,
 				.device_id = r->deviceId,
+				.src_device_id = r->deviceId,
+				.dst_device_id = r->deviceId,
+				.stream_id = r->streamId,
+				.ctx_id = r->contextId,
+			},
+		};
+		return cuda_dump_event(&e);
+	}
+	case CUPTI_ACTIVITY_KIND_MEMCPY2: {
+		CUpti_ActivityMemcpyPtoP *r = (CUpti_ActivityMemcpyPtoP *)rec;
+
+		u64 start_ts = gpu_to_cpu_time_ns(r->start);
+		u64 end_ts = gpu_to_cpu_time_ns(r->end);
+		if (!rec_within_session(start_ts, end_ts, run_ctx->sess_start_ts, run_ctx->sess_end_ts))
+			return -ENODATA;
+
+		struct wcuda_event e = {
+			.sz = sizeof(e),
+			.kind = WCK_CUDA_MEMCPY,
+			.ts = start_ts,
+			.cuda_memcpy = {
+				.end_ts = end_ts,
+				.byte_cnt = r->bytes,
+				.copy_kind = r->copyKind,
+				.src_kind = r->srcKind,
+				.dst_kind = r->dstKind,
+				.corr_id = r->correlationId,
+				.device_id = r->deviceId,
+				.src_device_id = r->srcDeviceId,
+				.dst_device_id = r->dstDeviceId,
 				.stream_id = r->streamId,
 				.ctx_id = r->contextId,
 			},
@@ -454,6 +484,7 @@ static bool cupti_lazy_init(void)
 static CUpti_ActivityKind cupti_act_kinds[] = {
 	CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL,
 	CUPTI_ACTIVITY_KIND_MEMCPY,
+	CUPTI_ACTIVITY_KIND_MEMCPY2,
 	CUPTI_ACTIVITY_KIND_DRIVER,
 	CUPTI_ACTIVITY_KIND_RUNTIME,
 	CUPTI_ACTIVITY_KIND_MEMSET,
@@ -463,6 +494,7 @@ static CUpti_ActivityKind cupti_act_kinds[] = {
 static const char *cupti_act_kind_strs[] = {
 	[CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL] = "CONCURRENT_KERNEL",
 	[CUPTI_ACTIVITY_KIND_MEMCPY] = "MEMCPY",
+	[CUPTI_ACTIVITY_KIND_MEMCPY2] = "MEMCPY2",
 	[CUPTI_ACTIVITY_KIND_DRIVER] = "DRIVER",
 	[CUPTI_ACTIVITY_KIND_RUNTIME] = "RUNTIME",
 	[CUPTI_ACTIVITY_KIND_MEMSET] = "MEMSET",

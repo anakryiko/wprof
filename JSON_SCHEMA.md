@@ -589,17 +589,24 @@ the host process that owns the GPU context, not a thread running on the CPU.
 
 #### `cuda_memcpy` — GPU memory copy
 
-| Field       | Type   | Description                                  |
-|-------------|--------|----------------------------------------------|
-| `task`      | task   | Host process owning the GPU context          |
-| `dur`       | float  | Transfer duration                            |
-| `byte_cnt`  | int    | Bytes transferred                            |
-| `kind`      | string | Copy direction (e.g., `"HtoD"`, `"DtoH"`)   |
-| `src_kind`  | string | Source memory kind                           |
-| `dst_kind`  | string | Destination memory kind                      |
-| `device_id` | int    | GPU device ID                                |
-| `stream_id` | int    | CUDA stream ID                               |
-| `corr_id`   | int    | Correlation ID (links to host API)           |
+Covers both regular copies and peer-to-peer (device-to-device, e.g. NVLink)
+copies. For peer-to-peer copies, `kind` is `"PtoP"` and `src_device_id` /
+`dst_device_id` identify the source and destination GPUs; for regular copies
+both equal `device_id`.
+
+| Field           | Type   | Description                                  |
+|-----------------|--------|----------------------------------------------|
+| `task`          | task   | Host process owning the GPU context          |
+| `dur`           | float  | Transfer duration                            |
+| `byte_cnt`      | int    | Bytes transferred                            |
+| `kind`          | string | Copy direction (e.g., `"HtoD"`, `"DtoH"`, `"PtoP"`) |
+| `src_kind`      | string | Source memory kind                           |
+| `dst_kind`      | string | Destination memory kind                      |
+| `device_id`     | int    | GPU device ID the copy is attributed to      |
+| `src_device_id` | int    | Source GPU device ID (== `device_id` unless peer-to-peer) |
+| `dst_device_id` | int    | Destination GPU device ID (== `device_id` unless peer-to-peer) |
+| `stream_id`     | int    | CUDA stream ID                               |
+| `corr_id`       | int    | Correlation ID (links to host API)           |
 
 ```json
 {
@@ -613,6 +620,8 @@ the host process that owns the GPU context, not a thread running on the CPU.
   "src_kind": "pageable",
   "dst_kind": "device",
   "device_id": 0,
+  "src_device_id": 0,
+  "dst_device_id": 0,
   "stream_id": 7,
   "corr_id": 501
 }

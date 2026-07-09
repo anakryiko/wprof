@@ -196,6 +196,8 @@ struct wevent {
 			u64 byte_cnt;
 			u32 corr_id;
 			u32 device_id;
+			u32 src_device_id; /* for peer-to-peer (MEMCPY2) copies; else == device_id */
+			u32 dst_device_id; /* for peer-to-peer (MEMCPY2) copies; else == device_id */
 			u32 ctx_id;
 			u32 stream_id;
 			u8 copy_kind;
