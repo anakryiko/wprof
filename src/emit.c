@@ -83,7 +83,6 @@ struct task_state {
 	/* waker info collected from EV_WAKING/EV_WAKING_NEW */
 	u64 waking_ts;
 	u32 waker_task_id;
-	u32 waker_callstack_id;
 	u16 waker_cpu;
 	u16 waker_numa_node;
 	enum waking_flags waking_flags;
@@ -1609,7 +1608,6 @@ static struct wpb_ftrace_event *add_ftrace_event(struct worker_state *w, int cpu
 struct switch_ctx {
 	bool trace_waker, trace_prev, trace_next;
 	bool has_waking;
-	int waker_callstack_id;
 	u64 waking_ts;
 	u32 waker_task_id;
 	u16 waker_cpu;
@@ -1637,45 +1635,31 @@ static void emit_switch(struct worker_state *w, const struct wevent *e, struct s
 	struct wprof_task next = wevent_resolve_task(hdr, e->swtch.next_task_id);
 	struct wprof_task waker = wevent_resolve_task(hdr, s->waker_task_id);
 
-	if (!s->trace_waker)
-		goto skip_waker_task;
+	/*
+	 * Preemptor side: prev (task) was preempted -- went off-CPU still runnable
+	 * -- by next; render on next's timeline at the switch. Real wakeups render
+	 * their waker instant at EV_WAKING instead. The matching preemptee instant
+	 * is rendered at prev's next switch-in, paired by flow id.
+	 */
+	if (s->trace_next && e->swtch.prev_task_state == TASK_RUNNING) {
+		emit_track_descrs(w, &next);
 
-	emit_track_descrs(w, &waker);
+		emit_instant(trackid_thread(&next), e->ts, IID_NAME_PREEMPTOR, IID_CAT_PREEMPTOR) {
+			emit_kv_int(IID_ANNK_CPU, e->cpu);
+			if (env.emit_numa)
+				emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
 
-	/* event on awaker's timeline */
-	pb_iid waker_ev_name, waker_ev_cat;
-	if (s->waking_flags == WF_PREEMPTED) {
-		waker_ev_name = IID_NAME_PREEMPTOR;
-		waker_ev_cat = IID_CAT_PREEMPTOR;
-	} else if (s->waking_flags == WF_WOKEN) {
-		waker_ev_name = IID_NAME_WAKER;
-		waker_ev_cat = IID_CAT_WAKER;
-	} else if (s->waking_flags == WF_WOKEN_NEW) {
-		waker_ev_name = IID_NAME_WAKER_NEW;
-		waker_ev_cat = IID_CAT_WAKER_NEW;
-	} else {
-		waker_ev_name = IID_NAME_WAKER_UNKN;
-		waker_ev_cat = IID_CAT_WAKER_UNKN;
-	}
-	emit_instant(trackid_thread(&waker),
-		     s->waking_ts, waker_ev_name, waker_ev_cat) {
-		emit_kv_int(IID_ANNK_CPU, s->waker_cpu);
-		if (env.emit_numa)
-			emit_kv_int(IID_ANNK_NUMA_NODE, s->waker_numa_node);
+			emit_kv_str(IID_ANNK_WAKEE,
+				    iid_str(emit_intern_str(w, task.comm), task.comm));
+			if (env.emit_tidpid) {
+				emit_kv_int(IID_ANNK_WAKEE_TID, task_tid(&task));
+				emit_kv_int(IID_ANNK_WAKEE_PID, task.pid);
+			}
 
-		emit_kv_str(IID_ANNK_WAKEE,
-			    iid_str(emit_intern_str(w, next.comm), next.comm));
-		if (env.emit_tidpid) {
-			emit_kv_int(IID_ANNK_WAKEE_TID, task_tid(&next));
-			emit_kv_int(IID_ANNK_WAKEE_PID, next.pid);
+			emit_flow_id(e->ts);
 		}
-
-		emit_flow_id(s->waking_ts);
-
-		emit_callstack(w, s->waker_callstack_id);
 	}
 
-skip_waker_task:
 	if (!s->trace_prev)
 		goto skip_prev_task;
 
@@ -1889,8 +1873,6 @@ static void emit_switch_json(struct worker_state *w, const struct wevent *e, str
 	}
 	if ((env.requested_stack_traces & ST_OFFCPU) && e->swtch.offcpu_stack_id > 0)
 		json_kv_int(j, "offcpu_stack_id", e->swtch.offcpu_stack_id);
-	if (s->waker_callstack_id > 0)
-		json_kv_int(j, "waker_stack_id", s->waker_callstack_id);
 	if (s->next_st && s->next_st->compound_delay_ns) {
 		json_kv_ts(j, "compound_delay", s->next_st->compound_delay_ns);
 		json_kv_int(j, "compound_chain_len", s->next_st->compound_chain_len);
@@ -1926,13 +1908,11 @@ static int process_switch(struct worker_state *w, const struct wevent *e)
 		s.waker_cpu = next_st->waker_cpu;
 		s.waker_numa_node = next_st->waker_numa_node;
 		s.waking_flags = next_st->waking_flags;
-		s.waker_callstack_id = next_st->waker_callstack_id;
 		next_st->waking_ts = 0;
 		next_st->waker_task_id = 0;
 		next_st->waker_cpu = 0;
 		next_st->waker_numa_node = 0;
 		next_st->waking_flags = 0;
-		next_st->waker_callstack_id = 0;
 	}
 
 	struct wprof_task waker = wevent_resolve_task(hdr, s.waker_task_id);
@@ -1966,7 +1946,6 @@ static int process_switch(struct worker_state *w, const struct wevent *e)
 			s.prev_st->waker_cpu = e->cpu;
 			s.prev_st->waker_numa_node = e->numa_node;
 			s.prev_st->waking_flags = WF_PREEMPTED;
-			s.prev_st->waker_callstack_id = 0;
 		}
 	}
 
@@ -2348,13 +2327,11 @@ static void emit_waking(struct worker_state *w, const struct wevent *e, enum wak
 		emit_track_descrs(w, &wakee);
 
 	/*
-	 * With context switches the waker->wakee pair is rendered at the wakee's
-	 * switch (see EV_SWITCH). Under -f no-sched that switch never comes, so
-	 * render a standalone waker instant on the waker's track here instead.
+	 * Waker instant on the waker's timeline at wake time; its flow id (the wake
+	 * timestamp) pairs it with the wakee side rendered at that thread's
+	 * switch-in. Preemption has no EV_WAKING and is rendered at the switch
+	 * instead (see emit_switch).
 	 */
-	if (env.capture_sched)
-		return;
-
 	int tr_id = (env.requested_stack_traces & ST_WAKER) ? e->waking.waker_stack_id : 0;
 	pb_iid name = flags == WF_WOKEN_NEW ? IID_NAME_WAKER_NEW : IID_NAME_WAKER;
 	pb_iid cat = flags == WF_WOKEN_NEW ? IID_CAT_WAKER_NEW : IID_CAT_WAKER;
@@ -2368,6 +2345,7 @@ static void emit_waking(struct worker_state *w, const struct wevent *e, enum wak
 			emit_kv_int(IID_ANNK_WAKEE_TID, task_tid(&wakee));
 			emit_kv_int(IID_ANNK_WAKEE_PID, wakee.pid);
 		}
+		emit_flow_id(e->ts);
 		emit_callstack(w, tr_id);
 	}
 }
@@ -2412,7 +2390,6 @@ static int process_waking(struct worker_state *w, const struct wevent *e)
 		wakee_st->waker_cpu = e->cpu;
 		wakee_st->waker_numa_node = e->numa_node;
 		wakee_st->waking_flags = flags;
-		wakee_st->waker_callstack_id = (env.requested_stack_traces & ST_WAKER) ? e->waking.waker_stack_id : 0;
 	}
 
 emit:
