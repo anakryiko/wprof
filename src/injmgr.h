@@ -6,9 +6,9 @@
 #include <stdbool.h>
 #include "inj_common.h"		/* enum inj_feature, PYTRACE_SYM_CNT, PYTORCH_SYM_CNT */
 
-#define LIBWPROFINJ_SESSION_TIMEOUT_MS 15000
-#define LIBWPROFINJ_SETUP_TIMEOUT_MS 10000
-#define LIBWPROFINJ_TEARDOWN_TIMEOUT_MS 10000
+#define LIBWPROFINJ_SESSION_TIMEOUT_MS 60000
+#define LIBWPROFINJ_SETUP_TIMEOUT_MS 60000
+#define LIBWPROFINJ_TEARDOWN_TIMEOUT_MS 60000
 
 struct tracee_state;
 struct inj_run_ctx;
