@@ -160,7 +160,6 @@ Emitted when a thread is switched off-CPU and another is switched on.
 | `offcpu_dur`         | float          | *(optional)* How long `next` was off-CPU, in seconds                           |
 | `next_state`         | string         | *(optional)* `"preempted"` or `"blocked"` — why `next` was off-CPU previously  |
 | `offcpu_stack_id`    | int            | *(optional)* Stack trace ID for the off-CPU stack                              |
-| `waker_stack_id`     | int            | *(optional)* Stack trace ID for the waker's stack                              |
 | `compound_delay`     | float          | *(optional)* Accumulated wakeup chain delay, in seconds                        |
 | `compound_chain_len` | int            | *(optional)* Length of the waker-wakee chain                                   |
 | `pmus`               | array of float | *(optional)* PMU counter values, parallel to header `pmus`                     |
@@ -182,7 +181,6 @@ Emitted when a thread is switched off-CPU and another is switched on.
   "offcpu_dur": 0.005000000,
   "next_state": "blocked",
   "offcpu_stack_id": 42,
-  "waker_stack_id": 99,
   "compound_delay": 0.006500000,
   "compound_chain_len": 3,
   "pmus": [150000.0, 80000.0, 1.875]
