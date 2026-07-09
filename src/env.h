@@ -325,25 +325,7 @@ struct emit_feature {
 extern const struct emit_feature emit_features[];
 extern const int emit_feature_cnt;
 
-enum fr_chunk_src {
-	FR_SRC_BPF_RB,		/* BPF ringbuf worker */
-	FR_SRC_CUDA,		/* injectee CUDA event stream */
-	FR_SRC_PYTRACE,		/* injectee PyTrace event stream */
-	FR_SRC_PYTORCH,		/* injectee PyTorch event stream */
-};
-
-struct fr_chunk {
-	char *path;
-	FILE *f;
-	u64 end_ts;      /* max event ts written to this chunk */
-	u64 byte_sz;
-	u64 event_cnt;
-	enum fr_chunk_src src;
-	int src_idx;		/* FR_SRC_BPF_RB: ringbuf index; injectee sources: env.injectees[] index */
-	int seq;
-	struct fr_chunk *next;   /* link for the intrusive handoff list */
-	void *mmap;
-};
+struct fr_chunk;		/* flight-recorder chunk; see flightrec.h */
 
 struct worker_state {
 	int worker_id;

@@ -6,12 +6,14 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <pthread.h>
 #include <stdatomic.h>
 
 #include "injmgr.h"
 #include "proc.h"
 #include "env.h"
+#include "flightrec.h"
 #include "sys.h"
 #include "inj_common.h"
 #include "inject.h"
@@ -24,6 +26,11 @@
 #define LIBWPROFINJ_PYTRACE_RESPOOL_PATH_FMT "wprofinj-pytrace.%d.%d.respool"
 #define LIBWPROFINJ_PYTORCH_EVENTS_PATH_FMT "wprofinj-pytorch.%d.%d.events"
 #define LIBWPROFINJ_PYTORCH_RESPOOL_PATH_FMT "wprofinj-pytorch.%d.%d.respool"
+
+/* Flight-recorder rotated chunk files (per feature, sequence-numbered). */
+#define LIBWPROFINJ_CUDA_CHUNK_PATH_FMT "wprofinj-cuda.%d.%d.%03d.chunk"
+#define LIBWPROFINJ_PYTRACE_CHUNK_PATH_FMT "wprofinj-pytrace.%d.%d.%03d.chunk"
+#define LIBWPROFINJ_PYTORCH_CHUNK_PATH_FMT "wprofinj-pytorch.%d.%d.%03d.chunk"
 
 /* Upper bound on injection worker threads; injection is ptrace/IO-bound. */
 #define INJMGR_MAX_WORKERS 8
@@ -334,6 +341,119 @@ int injmgr_setup(int workdir_fd)
 	return 0;
 }
 
+/* One feature's dump plumbing, resolved from an inj_feature for the chunk protocol. */
+struct inj_feat_dump {
+	struct inj_fr_stream *fr;
+	enum fr_chunk_src src;
+	const char *chunk_fmt;		/* chunk filename template, per feature */
+	int *events_fd;			/* the *_SETUP event fd/path (chunk 0 in FR mode) */
+	char **events_path;
+};
+
+static struct inj_feat_dump injmgr_feat_dump(struct injectee *inj, enum inj_feature feat)
+{
+	switch (feat) {
+	case INJ_FEAT_CUDA:
+		return (struct inj_feat_dump){ &inj->cuda_fr, FR_SRC_CUDA, LIBWPROFINJ_CUDA_CHUNK_PATH_FMT,
+					       &inj->cuda_events_fd, &inj->cuda_events_path };
+	case INJ_FEAT_PYTRACE:
+		return (struct inj_feat_dump){ &inj->pytrace_fr, FR_SRC_PYTRACE, LIBWPROFINJ_PYTRACE_CHUNK_PATH_FMT,
+					       &inj->pytrace_events_fd, &inj->pytrace_events_path };
+	case INJ_FEAT_PYTORCH:
+		return (struct inj_feat_dump){ &inj->pytorch_fr, FR_SRC_PYTORCH, LIBWPROFINJ_PYTORCH_CHUNK_PATH_FMT,
+					       &inj->pytorch_events_fd, &inj->pytorch_events_path };
+	}
+	BUG("unknown injectee feature %d\n", feat);
+}
+
+/*
+ * FR mode: create the tracee's next spare chunk file, hand its fd over (CHUNK_FD),
+ * and record it as an fr_chunk. wprof owns the file exactly like a BPF chunk -- it
+ * stores the path (for reporting, eviction, and reopen-at-merge) but never writes
+ * it (f stays NULL; the tracee writes through its SCM_RIGHTS copy), so wprof closes
+ * its own fd once handed off. Returns the chunk, or NULL on error (the tracee then
+ * keeps writing its current chunk, never blocking).
+ */
+static struct fr_chunk *injmgr_hand_spare(struct injectee *inj, enum inj_feature feat, int injectee_idx)
+{
+	struct inj_feat_dump d = injmgr_feat_dump(inj, feat);
+	int seq = d.fr->next_seq;
+	char name[512], path[PATH_MAX];
+	snprintf(name, sizeof(name), d.chunk_fmt, getpid(), inj->pid, seq);
+	snprintf(path, sizeof(path), "%s/%s", fr_workdir(), name);
+
+	int fd = open(path, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
+	if (fd < 0) {
+		eprintf("Failed to create chunk '%s' for %s: %d\n", path, injectee_str(inj), -errno);
+		return NULL;
+	}
+
+	struct inj_msg msg = { .kind = INJ_MSG_CHUNK_FD, .chunk_fd = { .feature = feat } };
+	int err = uds_send_data(inj->uds_fd, &msg, sizeof(msg), &fd, 1);
+	close(fd);	/* the tracee holds its own copy; wprof reopens the chunk by path at merge */
+	if (err < 0) {
+		eprintf("Failed to send CHUNK_FD (%s) to %s: %d\n",
+			inj_feature_str(feat), injectee_str(inj), err);
+		unlink(path);
+		return NULL;
+	}
+
+	struct fr_chunk *c = calloc(1, sizeof(*c));
+	c->src = d.src;
+	c->src_idx = injectee_idx;
+	c->seq = seq;
+	c->path = strdup(path);
+	/* f == NULL: the tracee is the writer; stats arrive via CHUNK_DONE */
+
+	d.fr->next_seq = seq + 1;
+	return c;
+}
+
+/*
+ * FR mode: adopt the *_SETUP event file as chunk 0 of the stream and prime the
+ * first spare. Chunk 0 is a normal on-disk chunk like the spares: wprof keeps its
+ * path (from the *_SETUP name) and drops its events_fd (the tracee keeps writing
+ * its copy; merge reopens by path).
+ */
+static int injmgr_fr_arm(struct injectee *inj, enum inj_feature feat, int injectee_idx)
+{
+	struct inj_feat_dump d = injmgr_feat_dump(inj, feat);
+	struct fr_chunk *c = calloc(1, sizeof(*c));
+
+	c->src = d.src;
+	c->src_idx = injectee_idx;
+	c->seq = 0;
+	char full[PATH_MAX];
+	snprintf(full, sizeof(full), "%s/%s", fr_workdir(), *d.events_path);
+	c->path = strdup(full);
+	/* f == NULL: wprof only reads chunk 0 (at merge); the tracee wrote it */
+
+	zclose(*d.events_fd);		/* wprof reopens by path at merge, like every other chunk */
+	free(*d.events_path);
+	*d.events_path = NULL;		/* the stream's chunk owns the path now */
+
+	d.fr->cur = c;
+	d.fr->next_seq = 1;
+
+	d.fr->spare = injmgr_hand_spare(inj, feat, injectee_idx);	/* prime the first spare */
+	return d.fr->spare ? 0 : -EIO;
+}
+
+/* Free one feature stream's outstanding chunks (cur + spare); files go with the workdir. */
+static void injmgr_fr_stream_free(struct inj_fr_stream *s)
+{
+	struct fr_chunk *chunks[] = { s->cur, s->spare };
+
+	for (int i = 0; i < ARRAY_SIZE(chunks); i++) {
+		struct fr_chunk *c = chunks[i];
+		if (!c)
+			continue;
+		free(c->path);
+		free(c);
+	}
+	s->cur = s->spare = NULL;
+}
+
 static int injmgr_send_cuda_setup(struct injectee *inj, int workdir_fd)
 {
 	char events_path[512], respool_path[512];
@@ -562,6 +682,26 @@ int injmgr_activate(long sess_start_ts, long sess_end_ts)
 		if (inj->state != INJECTEE_ACTIVE)
 			continue;
 
+		/*
+		 * Flight-recorder: adopt each ready feature's event file as chunk 0 and
+		 * prime a spare before opening the gate, so the tracee can rotate as soon
+		 * as it starts writing. A failure here just means that feature won't
+		 * rotate (it keeps growing its current chunk) -- non-fatal, so carry on.
+		 */
+		if (env.flightrec) {
+			enum inj_feature feats[] = { INJ_FEAT_CUDA, INJ_FEAT_PYTRACE, INJ_FEAT_PYTORCH };
+
+			for (int f = 0; f < ARRAY_SIZE(feats); f++) {
+				if (!(inj->avail_feats & feats[f]))
+					continue;
+				int err = injmgr_fr_arm(inj, feats[f], i);
+				if (err) {
+					eprintf("!!! Failed to arm %s chunking for %s: %d; it will not rotate\n",
+						inj_feature_str(feats[f]), injectee_str(inj), err);
+				}
+			}
+		}
+
 		inj->ctx->sess_end_ts = sess_end_ts;
 		inj->ctx->fr_chunk_size = env.flightrec ? env.fr_chunk_size : 0;
 		inj->ctx->sess_start_ts = sess_start_ts;	/* the "go" gate: set last */
@@ -645,11 +785,38 @@ bool injmgr_handle_uds(int injectee_idx)
 		return true;
 	}
 
-	/*
-	 * No injectee->wprof messages are defined yet (chunk handoff lands later),
-	 * so anything received here is unexpected; note it and keep watching.
-	 */
-	vprintf("Ignoring unexpected UDS message %s from %s\n", inj_msg_str(msg.kind), injectee_str(inj));
+	switch (msg.kind) {
+	case INJ_MSG_CHUNK_DONE: {
+		enum inj_feature feat = msg.chunk_done.feature;
+		struct inj_feat_dump d = injmgr_feat_dump(inj, feat);
+
+		/*
+		 * The tracee rotated its current chunk onto the spare, so `cur` is the
+		 * just-completed chunk: stamp its stats and hand it to the FR thread,
+		 * promote the spare to current, and prime a fresh spare.
+		 */
+		struct fr_chunk *done = d.fr->cur;
+		done->end_ts = msg.chunk_done.end_ts;
+		done->byte_sz = msg.chunk_done.byte_sz;
+		done->event_cnt = msg.chunk_done.event_cnt;
+
+		d.fr->cur = d.fr->spare;
+		d.fr->spare = NULL;
+		fr_handoff(done);
+
+		/* Replenish the tracee's spare 1:1; on failure it keeps writing its current chunk. */
+		d.fr->spare = injmgr_hand_spare(inj, feat, injectee_idx);
+		if (!d.fr->spare) {
+			eprintf("!!! %s: failed to replenish %s chunk spare; it will not rotate further\n",
+				injectee_str(inj), inj_feature_str(feat));
+		}
+		break;
+	}
+	default:
+		eprintf("Unrecognized UDS message %s from %s\n", inj_msg_str(msg.kind), injectee_str(inj));
+		break;
+	}
+
 	return false;
 }
 
@@ -784,6 +951,11 @@ void injmgr_teardown(void)
 		zclose(inj->pytorch_events_fd);
 		zclose(inj->pytorch_respool_fd);
 		zclose(inj->log_fd);
+
+		/* Free any outstanding chunks merge didn't consume; files go with the workdir. */
+		injmgr_fr_stream_free(&inj->cuda_fr);
+		injmgr_fr_stream_free(&inj->pytrace_fr);
+		injmgr_fr_stream_free(&inj->pytorch_fr);
 
 		/*
 		 * Free the low-level ptrace state only here, at the very end: merge

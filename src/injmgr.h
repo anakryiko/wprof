@@ -14,6 +14,21 @@ struct tracee_state;
 struct inj_run_ctx;
 struct bpf_state;
 struct bpf_program;
+struct fr_chunk;
+
+/*
+ * Flight-recorder bookkeeping for one feature's event stream of one injectee.
+ * wprof creates every chunk file and hands its fd to the tracee, mirroring the
+ * tracee's own current/spare pair: `cur` is the chunk being written, `spare` the
+ * pre-handed next one. Neither is in the FR priority queue yet (no CHUNK_DONE),
+ * so merge reads them directly. On CHUNK_DONE `cur` is the completed chunk: it
+ * moves to the FR thread, `spare` becomes `cur`, and a fresh spare is handed out.
+ */
+struct inj_fr_stream {
+	int next_seq;			/* sequence number for the next chunk file */
+	struct fr_chunk *cur;		/* chunk the tracee is currently writing */
+	struct fr_chunk *spare;		/* pre-handed next chunk, or NULL */
+};
 
 /* Injectee lifecycle states, shared across features and persisted as stat values. */
 enum injectee_state {
@@ -88,6 +103,11 @@ struct injectee {
 	char *pytorch_events_path;
 	int pytorch_respool_fd;		/* resource pool (header + strs) */
 	char *pytorch_respool_path;
+
+	/* flight-recorder mode only: per-feature chunk-handoff state */
+	struct inj_fr_stream cuda_fr;
+	struct inj_fr_stream pytrace_fr;
+	struct inj_fr_stream pytorch_fr;
 };
 
 const char *inj_proc_str(int pid, int ns_pid, const char *name);

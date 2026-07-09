@@ -40,6 +40,7 @@
 #include "wprof.skel.h"
 
 #include "env.h"
+#include "flightrec.h"
 #include "protobuf.h"
 #include "emit.h"
 #include "stacktrace.h"
@@ -222,8 +223,11 @@ static void *fr_worker(void *ctx)
 		for (struct fr_chunk *c = batch; c; c = next) {
 			next = c->next;
 			c->next = NULL;
-			fclose(c->f); /* flush to disk; no fsync */
-			c->f = NULL;
+			if (c->f) {
+				fclose(c->f); /* flush to disk; no fsync */
+				c->f = NULL;
+			}
+			/* injectee chunks arrive already flushed+closed by the tracee (f == NULL) */
 			st->total_size += c->byte_sz;
 			st->rec_max_ts = ts_max(st->rec_max_ts, c->end_ts);
 			wppq_push(st->pq, c->end_ts, c);
@@ -315,6 +319,26 @@ static void fr_teardown(void)
 	fr = NULL;
 }
 
+/*
+ * Hand a completed chunk to the FR thread: prepend it to the incoming list and
+ * wake the thread. Called by BPF ring-buffer workers (on rotation) and by the
+ * main thread (for injectee chunks on CHUNK_DONE); fr->lock serializes producers.
+ */
+void fr_handoff(struct fr_chunk *c)
+{
+	pthread_mutex_lock(&fr->lock);
+	c->next = fr->incoming;
+	fr->incoming = c;
+	pthread_cond_signal(&fr->cond);
+	pthread_mutex_unlock(&fr->lock);
+}
+
+/* Directory where rotated chunk files live; NULL outside flight-recorder mode. */
+const char *fr_workdir(void)
+{
+	return fr ? fr->workdir : NULL;
+}
+
 /* Receive events from the ring buffer. */
 static int handle_rb_event(void *ctx, void *data, size_t size)
 {
@@ -378,11 +402,7 @@ static int handle_rb_event(void *ctx, void *data, size_t size)
 	w->dump = new->f;
 	w->dump_path = new->path;
 
-	pthread_mutex_lock(&fr->lock);
-	old->next = fr->incoming;
-	fr->incoming = old;
-	pthread_cond_signal(&fr->cond);
-	pthread_mutex_unlock(&fr->lock);
+	fr_handoff(old);
 
 	return 0;
 }
