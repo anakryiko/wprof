@@ -582,6 +582,8 @@ int persist_cuda_event(struct persist_state *ps, const struct wcuda_event *e, st
 		dst->cuda_memcpy.byte_cnt = e->cuda_memcpy.byte_cnt;
 		dst->cuda_memcpy.corr_id = e->cuda_memcpy.corr_id;
 		dst->cuda_memcpy.device_id = e->cuda_memcpy.device_id;
+		dst->cuda_memcpy.src_device_id = e->cuda_memcpy.src_device_id;
+		dst->cuda_memcpy.dst_device_id = e->cuda_memcpy.dst_device_id;
 		dst->cuda_memcpy.ctx_id = e->cuda_memcpy.ctx_id;
 		dst->cuda_memcpy.stream_id = e->cuda_memcpy.stream_id;
 		dst->cuda_memcpy.copy_kind = e->cuda_memcpy.copy_kind;

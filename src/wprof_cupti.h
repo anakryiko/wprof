@@ -175,6 +175,34 @@ typedef struct CUPTI_PACKED_ALIGNMENT {
 	void *reserved0;
 } CUpti_ActivityMemcpy;
 
+/*
+ * Peer-to-peer memory copy (CUPTI_ACTIVITY_KIND_MEMCPY2), record struct
+ * CUpti_ActivityMemcpyPtoP*. Only the prefix through correlationId is declared;
+ * the trailing pad/reserved0/graph fields are not needed and their layout
+ * depends on CUPTILP64.
+ */
+typedef struct CUPTI_PACKED_ALIGNMENT {
+	CUpti_ActivityKind kind;
+
+	uint8_t copyKind;
+	uint8_t srcKind;
+	uint8_t dstKind;
+	uint8_t flags;
+
+	uint64_t bytes;
+	uint64_t start;
+	uint64_t end;
+
+	uint32_t deviceId;
+	uint32_t contextId;
+	uint32_t streamId;
+	uint32_t srcDeviceId;
+	uint32_t srcContextId;
+	uint32_t dstDeviceId;
+	uint32_t dstContextId;
+	uint32_t correlationId;
+} CUpti_ActivityMemcpyPtoP;
+
 typedef struct CUPTI_PACKED_ALIGNMENT {
 	CUpti_ActivityKind kind;
 

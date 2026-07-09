@@ -3468,6 +3468,10 @@ static void emit_cuda_memcpy(struct worker_state *w, const struct wevent *e)
 		emit_kv_str(IID_ANNK_CUDA_DST_KIND, iid_str(dst_kind_iid, cuda_memory_kind_str(cu->dst_kind)));
 
 		emit_kv_int(IID_ANNK_CUDA_DEVICE_ID, cu->device_id);
+		if (cu->src_device_id != cu->dst_device_id) {
+			emit_kv_int(IID_ANNK_CUDA_SRC_DEVICE_ID, cu->src_device_id);
+			emit_kv_int(IID_ANNK_CUDA_DST_DEVICE_ID, cu->dst_device_id);
+		}
 		emit_kv_int(IID_ANNK_CUDA_STREAM_ID, cu->stream_id);
 		emit_kv_int(IID_ANNK_CUDA_CONTEXT_ID, cu->ctx_id);
 
@@ -3496,6 +3500,8 @@ static void emit_cuda_memcpy_json(struct worker_state *w, const struct wevent *e
 	json_kv_str(j, "src_kind", cuda_memory_kind_str(cu->src_kind));
 	json_kv_str(j, "dst_kind", cuda_memory_kind_str(cu->dst_kind));
 	json_kv_int(j, "device_id", cu->device_id);
+	json_kv_int(j, "src_device_id", cu->src_device_id);
+	json_kv_int(j, "dst_device_id", cu->dst_device_id);
 	json_kv_int(j, "stream_id", cu->stream_id);
 	json_kv_int(j, "corr_id", cu->corr_id);
 	json_obj_end(j);
