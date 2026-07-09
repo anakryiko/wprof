@@ -1422,7 +1422,6 @@ skip_pytorch:
 	struct wprof_data_hdr hdr;
 	init_data_header(&hdr);
 
-	hdr.flags |= WDF_CFG_SECTION;
 	hdr.cfg_off = cfg_off;
 	hdr.cfg_sz = cfg_sz;
 

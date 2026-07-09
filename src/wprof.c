@@ -2049,8 +2049,7 @@ int main(int argc, char **argv)
 			if (dump_hdr->blobs_sz)
 				wprintf("    %-*s%.3lfMB\n", w - 4, "Blobs:", dump_hdr->blobs_sz / MB);
 
-			if (wdata_has_tsidx(dump_hdr))
-				wprintf("    %-*s%.3lfMB (%llu entries)\n", w - 4, "Time index:", dump_hdr->tsidx_sz / MB, dump_hdr->tsidx_cnt);
+			wprintf("    %-*s%.3lfMB (%llu entries)\n", w - 4, "Time index:", dump_hdr->tsidx_sz / MB, dump_hdr->tsidx_cnt);
 			if (env.stats)
 				wprintf("    %-*s%u bytes\n", w - 4, "Stats:", env.stats->sz);
 

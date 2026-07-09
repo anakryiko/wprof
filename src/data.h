@@ -10,15 +10,13 @@
 
 /* On-disk format version (hdr.version_major / hdr.version_minor). */
 enum wprof_data_version {
-	WPROF_DATA_MAJOR = 2,
-	WPROF_DATA_MINOR = 3,
+	WPROF_DATA_MAJOR = 3,
+	WPROF_DATA_MINOR = 0,
 };
 
 /*
  * TODO(next major bump, breaking): clean up back-compat scaffolding once we're
  * free to drop pre-existing files:
- *   - Make config always a section and retire WDF_CFG_SECTION + the embedded-cfg
- *     legacy path in wprof_cfg()/wprof_cfg_sz() (always read from the section).
  *   - Widen struct wprof_extra_param with an extra u64 so extra params can carry
  *     a numeric argument (parameterization/extensibility) alongside the current
  *     stroff/bloboff/value union.
@@ -29,16 +27,10 @@ enum wprof_data_flag {
 	/*
 	 * All-ones sentinel written while a dump is being produced and cleared on
 	 * finalize; a file still carrying it is truncated/incomplete. Special-cased
-	 * (compared for equality, not tested as a bit) and distinct from the bit
-	 * flags below, which are only meaningful once the file is complete.
+	 * (compared for equality, not tested as a bit) and distinct from any bit
+	 * flags, which are only meaningful once the file is complete.
 	 */
 	WDF_INCOMPLETE = 0xffffffffffffffffULL,
-
-	/*
-	 * Config is stored in its own size-described section, not embedded in the
-	 * header; see wprof_cfg(). Absent on older files (cfg embedded inline).
-	 */
-	WDF_CFG_SECTION = 0x1,
 };
 
 /* Sparse timestamp index: one checkpoint per this much event-time (see merge.c). */
@@ -291,20 +283,10 @@ struct wprof_data_hdr {
 	/* Extra parameters section (persisted filters, etc.) */
 	u64 extras_off, extras_sz, extra_cnt;
 
-	/*
-	 * Config section (WPROF_DATA_FLAG_CFG_SECTION). Replaces the formerly
-	 * embedded `struct wprof_data_cfg cfg;` that lived at this exact offset,
-	 * so older files (flag clear) still have their cfg here inline; the bytes
-	 * are reinterpreted via wprof_cfg(). cfg_off MUST stay the first field
-	 * after the extras triple for that legacy aliasing to hold.
-	 */
+	/* Config section (size-described); see wprof_cfg(). */
 	u64 cfg_off, cfg_sz;
 
-	/*
-	 * Sparse timestamp index section. Written alongside the config section, so
-	 * it is only valid when WDF_CFG_SECTION is set — on older files these bytes
-	 * are part of the embedded cfg. Gate access on wdata_has_tsidx().
-	 */
+	/* Sparse timestamp index section (may be empty; see wdata_tsidx_lookup()). */
 	u64 tsidx_off, tsidx_sz, tsidx_cnt;
 } __attribute__((aligned(8)));
 
@@ -461,28 +443,7 @@ static inline struct wprof_extra_param *wevent_extra_param(struct wprof_data_hdr
 
 static inline struct wprof_data_cfg *wprof_cfg(struct wprof_data_hdr *hdr)
 {
-	if (hdr->flags & WDF_CFG_SECTION)
-		return (void *)hdr + hdr->hdr_sz + hdr->cfg_off;
-	return (void *)hdr + offsetof(struct wprof_data_hdr, cfg_off);
-}
-
-static inline u64 wprof_cfg_sz(struct wprof_data_hdr *hdr)
-{
-	if (hdr->flags & WDF_CFG_SECTION)
-		return hdr->cfg_sz;
-	/* legacy: embedded cfg runs from its offset to the end of the header */
-	return hdr->hdr_sz - offsetof(struct wprof_data_hdr, cfg_off);
-}
-
-/*
- * True if this file's format carries a timestamp index section, which is
- * written together with the config section. Older files (WDF_CFG_SECTION clear)
- * don't — their bytes there belong to the embedded cfg. The section may be
- * empty; wdata_tsidx_lookup() handles that.
- */
-static inline bool wdata_has_tsidx(const struct wprof_data_hdr *hdr)
-{
-	return hdr->flags & WDF_CFG_SECTION;
+	return (void *)hdr + hdr->hdr_sz + hdr->cfg_off;
 }
 
 static inline struct wprof_tsidx_ent *wdata_tsidx_ent(struct wprof_data_hdr *hdr, u32 idx)

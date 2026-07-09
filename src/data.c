@@ -71,7 +71,7 @@ struct wprof_tsidx_ent *wdata_tsidx_lookup(struct wprof_data_hdr *hdr, u64 start
 	struct wprof_tsidx_ent *idx;
 	int l, r, m;
 
-	if (env.no_tsidx || !wdata_has_tsidx(hdr) || hdr->tsidx_cnt == 0)
+	if (env.no_tsidx || hdr->tsidx_cnt == 0)
 		return NULL;
 
 	idx = wdata_tsidx_ent(hdr, 0);
