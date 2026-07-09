@@ -269,7 +269,7 @@ struct wprof_event {
 
 	union {
 		struct wprof_switch {
-			int next_id;
+			int next_task_id;
 			u32 prev_task_state;
 			u32 last_next_task_state;
 			u32 prev_prio;
@@ -284,10 +284,10 @@ struct wprof_event {
 			u32 pmu_idx;		/* which -S pmu= event fired */
 		} pmu_event;
 		struct wprof_waking {
-			int wakee_id;
+			int wakee_task_id;
 		} waking;
 		struct wprof_wakeup_new {
-			int wakee_id;
+			int wakee_task_id;
 		} wakeup_new;
 		struct wprof_hardirq {
 			u64 hardirq_ts;
@@ -310,7 +310,7 @@ struct wprof_event {
 		struct wprof_task_free {
 		} task_free;
 		struct wprof_fork {
-			int child_id;
+			int child_task_id;
 		} fork;
 		struct wprof_exec {
 			int old_tid;

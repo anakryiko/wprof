@@ -276,7 +276,7 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 	case EV_SWITCH: {
 		fill_wevent_hdr(dst, e, task_id, WEVENT_SZ(swtch));
 
-		dst->swtch.next_task_id = resolve_task_ref(ps, e->swtch.next_id);
+		dst->swtch.next_task_id = resolve_task_ref(ps, e->swtch.next_task_id);
 		dst->swtch.pmu_vals_id = persist_pmu_vals_id(ps, bpf_event_pmu_vals(e));
 		dst->swtch.prev_task_state = e->swtch.prev_task_state;
 		dst->swtch.last_next_task_state = e->swtch.last_next_task_state;
@@ -306,14 +306,14 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 	case EV_WAKING: {
 		fill_wevent_hdr(dst, e, task_id, WEVENT_SZ(waking));
 
-		dst->waking.wakee_task_id = resolve_task_ref(ps, e->waking.wakee_id);
+		dst->waking.wakee_task_id = resolve_task_ref(ps, e->waking.wakee_task_id);
 		dst->waking.waker_stack_id = bpf_event_stack_id(e, ST_WAKER);
 		break;
 	}
 	case EV_WAKEUP_NEW: {
 		fill_wevent_hdr(dst, e, task_id, WEVENT_SZ(wakeup_new));
 
-		dst->wakeup_new.wakee_task_id = resolve_task_ref(ps, e->wakeup_new.wakee_id);
+		dst->wakeup_new.wakee_task_id = resolve_task_ref(ps, e->wakeup_new.wakee_task_id);
 		dst->wakeup_new.waker_stack_id = bpf_event_stack_id(e, ST_WAKER);
 		break;
 	}
@@ -345,7 +345,7 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 	case EV_FORK: {
 		fill_wevent_hdr(dst, e, task_id, WEVENT_SZ(fork));
 
-		dst->fork.child_task_id = resolve_task_ref(ps, e->fork.child_id);
+		dst->fork.child_task_id = resolve_task_ref(ps, e->fork.child_task_id);
 		break;
 	}
 	case EV_EXEC:
