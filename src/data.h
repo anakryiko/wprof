@@ -14,14 +14,6 @@ enum wprof_data_version {
 	WPROF_DATA_MINOR = 0,
 };
 
-/*
- * TODO(next major bump, breaking): clean up back-compat scaffolding once we're
- * free to drop pre-existing files:
- *   - Widen struct wprof_extra_param with an extra u64 so extra params can carry
- *     a numeric argument (parameterization/extensibility) alongside the current
- *     stroff/bloboff/value union.
- */
-
 /* Flags stored in hdr.flags. */
 enum wprof_data_flag {
 	/*
@@ -115,6 +107,7 @@ struct wprof_extra_param {
 		u32 bloboff;	/* offset into the blob pool (stats) */
 		u32 value;	/* on/off value for -e options */
 	};
+	u64 arg;	/* optional numeric argument alongside the ref above; 0 if unused */
 };
 
 /*

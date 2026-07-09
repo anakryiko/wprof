@@ -114,12 +114,12 @@ int wprof_load_data_dump(struct worker_state *w)
 	return 0;
 }
 
-/* arg is the kind-specific union payload: a stroff, bloboff, or on/off value. */
+/* ref is the kind-specific union payload: a stroff, bloboff, or on/off value. */
 static void add_extra(struct wprof_extra_param **extras, u64 *cnt,
-		      enum wprof_extra_param_kind kind, u32 arg)
+		      enum wprof_extra_param_kind kind, u32 ref)
 {
 	*extras = realloc(*extras, (*cnt + 1) * sizeof(**extras));
-	(*extras)[*cnt] = (struct wprof_extra_param){ .kind = kind, .stroff = arg };
+	(*extras)[*cnt] = (struct wprof_extra_param){ .kind = kind, .stroff = ref };
 	*cnt += 1;
 }
 
