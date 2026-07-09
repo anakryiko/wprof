@@ -885,7 +885,7 @@ int BPF_PROG(wprof_task_switch,
 		e->swtch.last_next_task_state = snext->last_task_state;
 		e->swtch.prev_prio = prev->prio;
 		e->swtch.next_prio = next->prio;
-		e->swtch.next_id = task_id(next->pid);
+		e->swtch.next_task_id = task_id(next->pid);
 
 		e->swtch.next_task_scx_layer_id = scx_layer_id;
 		e->swtch.next_task_scx_dsq_id = scx_dsq_id;
@@ -942,7 +942,7 @@ static __always_inline int handle_waking(void *ctx, struct task_struct *p, enum 
 	size_t tasks_sz = tis.data_sz;
 
 	emit_task_event_dyn(e, dptr, fix_sz, dyn_sz + tasks_sz, kind, now_ts, task) {
-		e->waking.wakee_id = task_id(p->pid);
+		e->waking.wakee_task_id = task_id(p->pid);
 		if (tr) {
 			emit_stack_trace(tr, dyn_sz, dptr, fix_sz);
 			e->flags |= ST_WAKER;
@@ -1032,7 +1032,7 @@ int BPF_PROG(wprof_task_fork, struct task_struct *parent, struct task_struct *ch
 	size_t tasks_sz = tis.data_sz;
 
 	emit_task_event_dyn(e, dptr, fix_sz, tasks_sz, EV_FORK, now_ts, parent) {
-		e->fork.child_id = task_id(child->pid);
+		e->fork.child_task_id = task_id(child->pid);
 		if (tasks_sz)
 			e->flags |= task_infos_emit(&tis, dptr, fix_sz);
 	}
