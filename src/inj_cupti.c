@@ -94,9 +94,7 @@ static u64 gpu_time_now_ns(void)
 	return timestamp;
 }
 
-static u64 gpu_to_cpu_time_delta_ns;
-
-static void calibrate_gpu_clocks(void)
+static u64 calibrate_gpu_clocks(void)
 {
 	u64 best_gap = UINT64_MAX;
 	u64 best_gpu_ts = 0;
@@ -115,11 +113,21 @@ static void calibrate_gpu_clocks(void)
 		}
 	}
 
-	gpu_to_cpu_time_delta_ns = best_cpu_ts - best_gpu_ts;
+	return best_cpu_ts - best_gpu_ts;
 }
 
+/*
+ * cuptiGetTimestamp() only settles into its final clock domain once the tracee's
+ * CUDA stack is fully up, so we can't calibrate the GPU<->CPU offset back at
+ * feature-setup time. Calibrate lazily on the first conversion instead, by which
+ * point records are already flowing and the clock is stable. The unlocked check
+ * can race for the first few records, but every racer computes the same delta.
+ */
 static u64 gpu_to_cpu_time_ns(u64 gpu_ts)
 {
+	static u64 gpu_to_cpu_time_delta_ns;
+	if (gpu_to_cpu_time_delta_ns == 0)
+		gpu_to_cpu_time_delta_ns = calibrate_gpu_clocks();
 	return gpu_ts + gpu_to_cpu_time_delta_ns;
 }
 
@@ -521,8 +529,6 @@ int init_cupti_activities(void)
 	}
 
 	print_cupti_version();
-
-	calibrate_gpu_clocks();
 
 	vlog("CUPTI setup successfully initialized.\n");
 
