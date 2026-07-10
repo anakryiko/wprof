@@ -261,7 +261,7 @@ $(OUTPUT)/wprof_build_info.h: force_build_info | $(OUTPUT)
 	$(Q)cmp -s $@.tmp $@ 2>/dev/null || mv -f $@.tmp $@
 	$(Q)rm -f $@.tmp
 
-$(OUTPUT)/env.o: $(OUTPUT)/wprof_build_info.h
+$(OUTPUT)/wprof.o $(OUTPUT)/env.o: $(OUTPUT)/wprof_build_info.h
 
 # Build application binary
 wprof: $(WPROF_HDRS) $(WPROF_OBJS)								\
