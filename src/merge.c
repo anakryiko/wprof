@@ -592,12 +592,16 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers,
 		fsync(fileno(w->dump));
 
 		w->dump_sz = pos;
-		w->dump_mem = mmap(NULL, w->dump_sz, PROT_READ | PROT_WRITE, MAP_SHARED, fileno(w->dump), 0);
-		if (w->dump_mem == MAP_FAILED) {
-			err = -errno;
-			eprintf("Failed to mmap ringbuf #%d dump file '%s': %d\n", i, w->dump_path, err);
-			w->dump_mem = NULL;
-			return err;
+		w->dump_mem = NULL;
+		/* the current chunk can be empty (e.g. a quiet ringbuf at stop); mmap(0) is -EINVAL */
+		if (w->dump_sz > 0) {
+			w->dump_mem = mmap(NULL, w->dump_sz, PROT_READ | PROT_WRITE, MAP_SHARED, fileno(w->dump), 0);
+			if (w->dump_mem == MAP_FAILED) {
+				err = -errno;
+				eprintf("Failed to mmap ringbuf #%d dump file '%s': %d\n", i, w->dump_path, err);
+				w->dump_mem = NULL;
+				return err;
+			}
 		}
 	}
 
@@ -1238,7 +1242,8 @@ skip_pytorch:
 		struct worker_state *w = &workers[i];
 		struct wmerge_state *wmerge = &wmerges[i];
 
-		munmap(w->dump_mem, w->dump_sz);
+		if (w->dump_mem)
+			munmap(w->dump_mem, w->dump_sz);
 		fclose(w->dump);
 		if (!env.keep_workdir)
 			unlink(w->dump_path);
