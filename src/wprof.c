@@ -40,6 +40,7 @@
 #include "wprof.skel.h"
 
 #include "env.h"
+#include "wprof_build_info.h"
 #include "protobuf.h"
 #include "emit.h"
 #include "stacktrace.h"
@@ -1785,7 +1786,8 @@ int main(int argc, char **argv)
 	if (!env.replay && geteuid() != 0)
 		eprintf("WARNING: wprof is not running as root, data capture will most probably FAIL due to insufficient permissions!\n");
 
-	vprintf("wprof v%s (PID %d) started!\n", WPROF_VERSION, getpid());
+	vprintf("wprof v%s (%s) (PID %d) started! [build-id %s, libwprofinj.so build-id %s]\n",
+		WPROF_VERSION, WPROF_GIT_SHA, getpid(), elf_self_build_id(), wprof_injectee_build_id());
 
 	env.num_cpus = num_cpus = libbpf_num_possible_cpus();
 	if (num_cpus <= 0) {
