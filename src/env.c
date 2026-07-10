@@ -21,12 +21,13 @@
 #include "strs.h"
 #include "elf_utils.h"
 #include "inject.h"
+#include "wprof_build_info.h"
 
 const char *argp_program_version = "wprof v" WPROF_VERSION;
 
 static void wprof_print_version(FILE *stream, struct argp_state *state)
 {
-	fprintf(stream, "wprof v%s\n", WPROF_VERSION);
+	fprintf(stream, "wprof v%s (%s)\n", WPROF_VERSION, WPROF_GIT_SHA);
 	fprintf(stream, "  wprof build-id:          %s\n", elf_self_build_id());
 	fprintf(stream, "  libwprofinj.so build-id: %s\n", wprof_injectee_build_id());
 }
