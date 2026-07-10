@@ -566,6 +566,66 @@ static void finalize_stats(struct wprof_stats *s)
 	nivcsw[0] = ru.ru_nivcsw;
 }
 
+/*
+ * Size and mmap one event chunk read-only for the merge loop, keeping the mapping
+ * on c->mmap (released in cleanup). A chunk is either still open (c->f -- the
+ * non-flight-recorder single events file) or a completed chunk reopened by path.
+ * Either way the fd/FILE is closed once mapped (the mapping outlives it); the size
+ * comes from the file, since current/spare chunks were never CHUNK_DONE-stamped.
+ * An empty chunk (e.g. an untouched spare) maps to nothing.
+ */
+static int fr_chunk_map(struct fr_chunk *c)
+{
+	struct stat st;
+	int err = 0;
+	int fd = c->f ? fileno(c->f) : open(c->path, O_RDONLY);
+
+	if (c->f)
+		fflush(c->f);
+	if (fd < 0) {
+		err = -errno;
+		eprintf("Failed to open flight-recorder chunk '%s': %d\n", c->path, err);
+		return err;
+	}
+
+	if (fstat(fd, &st) < 0) {
+		err = -errno;
+		eprintf("Failed to fstat flight-recorder chunk: %d\n", err);
+		goto out;
+	}
+	c->byte_sz = st.st_size;
+	if (c->byte_sz > 0) {
+		c->mmap = mmap(NULL, c->byte_sz, PROT_READ, MAP_SHARED, fd, 0);
+		if (c->mmap == MAP_FAILED) {
+			err = -errno;
+			c->mmap = NULL;
+			eprintf("Failed to mmap flight-recorder chunk: %d\n", err);
+		}
+	}
+out:
+	if (c->f) {
+		fclose(c->f);
+		c->f = NULL;
+	} else {
+		close(fd);
+	}
+	return err;
+}
+
+/* Route a completed chunk to its per-source retained-chunk list by (src, src_idx). */
+static struct fr_chunk **fr_chunk_bucket(struct fr_chunk *c, struct fr_chunk **bpf,
+					 struct fr_chunk **cuda, struct fr_chunk **pytrace,
+					 struct fr_chunk **pytorch)
+{
+	switch (c->src) {
+	case FR_SRC_BPF_RB: return &bpf[c->src_idx];
+	case FR_SRC_CUDA: return &cuda[c->src_idx];
+	case FR_SRC_PYTRACE: return &pytrace[c->src_idx];
+	case FR_SRC_PYTORCH: return &pytorch[c->src_idx];
+	}
+	BUG("unknown flight-recorder chunk source %d\n", c->src);
+}
+
 int wprof_persist_data(const char *workdir_name, struct worker_state *workers,
 		       struct wppq *fr_pq, u64 sess_min_ts, u64 sess_max_ts)
 {
@@ -612,11 +672,41 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers,
 	 * NULL PQ, so fr_lists stays all-NULL and merge behaves as before.
 	 */
 	struct fr_chunk **fr_lists = calloc(env.ringbuf_cnt, sizeof(*fr_lists));
+	struct fr_chunk **cuda_fr_lists = calloc(env.injectee_cnt, sizeof(*cuda_fr_lists));
+	struct fr_chunk **pytrace_fr_lists = calloc(env.injectee_cnt, sizeof(*pytrace_fr_lists));
+	struct fr_chunk **pytorch_fr_lists = calloc(env.injectee_cnt, sizeof(*pytorch_fr_lists));
 	while (fr_pq && !wppq_empty(fr_pq)) {
 		struct fr_chunk *c = wppq_pop(fr_pq);
+		struct fr_chunk **list = fr_chunk_bucket(c, fr_lists, cuda_fr_lists,
+							 pytrace_fr_lists, pytorch_fr_lists);
+		c->next = *list;
+		*list = c;
+	}
 
-		c->next = fr_lists[c->src_idx];
-		fr_lists[c->src_idx] = c;
+	/*
+	 * The injectee's current + spare chunks were never handed to the FR thread
+	 * (no CHUNK_DONE), so they aren't in the PQ; fold them into their feature's
+	 * chunk list. Merge owns them from here (null them so injmgr teardown won't
+	 * double-free), and reads them like any retained chunk.
+	 */
+	for (int i = 0; i < env.injectee_cnt; i++) {
+		struct injectee *inj = &env.injectees[i];
+		struct inj_fr_stream *streams[] = { &inj->cuda_fr, &inj->pytrace_fr, &inj->pytorch_fr };
+		struct fr_chunk **lists[] = { &cuda_fr_lists[i], &pytrace_fr_lists[i], &pytorch_fr_lists[i] };
+
+		for (int f = 0; f < ARRAY_SIZE(streams); f++) {
+			struct inj_fr_stream *s = streams[f];
+			struct fr_chunk *outstanding[] = { s->cur, s->spare };
+
+			for (int k = 0; k < ARRAY_SIZE(outstanding); k++) {
+				struct fr_chunk *c = outstanding[k];
+				if (!c)
+					continue;
+				c->next = *lists[f];
+				*lists[f] = c;
+			}
+			s->cur = s->spare = NULL;
+		}
 	}
 
 	/* Collect and symbolize stack traces, dump to separate file */
@@ -762,8 +852,6 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers,
 	struct wcuda_state {
 		struct wcuda_data_hdr *respool_hdr;	/* mmap of the pool/meta file */
 		size_t respool_sz;
-		void *events_mem;			/* mmap of the headerless event file */
-		size_t events_sz;
 		const char *strs;
 		struct wrust_ts_ptr *recs;
 		const struct wrust_ts_ptr *next_rec;
@@ -776,8 +864,6 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers,
 	struct wpytrace_state {
 		struct wpytrace_data_hdr *respool_hdr;	/* mmap of the pool/meta file */
 		size_t respool_sz;
-		void *events_mem;			/* mmap of the headerless event file */
-		size_t events_sz;
 		const char *strs;
 		struct wpytrace_code_entry *code_map;
 		u64 code_map_cnt;
@@ -792,8 +878,6 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers,
 	struct wpytorch_state {
 		struct wpytorch_data_hdr *respool_hdr;	/* mmap of the pool/meta file */
 		size_t respool_sz;
-		void *events_mem;			/* mmap of the headerless event file */
-		size_t events_sz;
 		const char *strs;
 		struct wrust_ts_ptr *recs;
 		const struct wrust_ts_ptr *next_rec;
@@ -851,40 +935,38 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers,
 			}
 			wcuda->strs = (void *)wcuda->respool_hdr + wcuda->respool_hdr->hdr_sz;
 
-			if (fstat(inj->cuda_events_fd, &st) < 0) {
-				err = -errno;
-				eprintf("Failed to fstat() CUDA event dump for %s at '%s': %d\n",
-					injectee_str(inj), inj->cuda_events_path, err);
-				goto skip_cuda;
-			}
-			wcuda->events_sz = st.st_size;
-			if (wcuda->events_sz > 0) {
-				wcuda->events_mem = mmap(NULL, wcuda->events_sz, PROT_READ | PROT_WRITE, MAP_SHARED,
-							 inj->cuda_events_fd, 0);
-				if (wcuda->events_mem == MAP_FAILED) {
-					err = -errno;
-					eprintf("Failed to mmap() CUDA event dump for %s at '%s': %d\n",
-						injectee_str(inj), inj->cuda_events_path, err);
-					wcuda->events_mem = NULL;
-					goto skip_cuda;
-				}
-			}
-
 			wcuda->tracee_idx = i;
 			wcuda->rec_idx = 0;
+			wcuda->rec_cnt = 0;
+
+			/*
+			 * Non-flight-recorder: wrap the single open events file as this
+			 * feature's one chunk, so FR (cur + spare + retained) and non-FR
+			 * both read from one list.
+			 */
+			if (inj->cuda_events_fd >= 0) {
+				struct fr_chunk *c = calloc(1, sizeof(*c));
+				c->f = fdopen(inj->cuda_events_fd, "r");
+				inj->cuda_events_fd = -1;
+				cuda_fr_lists[i] = c;
+			}
 
 			/* headerless event stream: count records first, then size and fill */
 			struct wcuda_event_record *rec;
-			wcuda->rec_cnt = 0;
-			wcuda_for_each_event(rec, wcuda->events_mem, wcuda->events_sz) {
-				wcuda->rec_cnt++;
+			for (struct fr_chunk *c = cuda_fr_lists[i]; c; c = c->next) {
+				err = fr_chunk_map(c);
+				if (err)
+					goto skip_cuda;
+				wcuda_for_each_event(rec, c->mmap, c->byte_sz)
+					wcuda->rec_cnt++;
 			}
 			wcuda->recs = calloc(wcuda->rec_cnt, sizeof(*wcuda->recs));
 
 			/* re-sort CUDA events because they don't come completely ordered out of CUPTI */
 			u64 idx = 0;
-			wcuda_for_each_event(rec, wcuda->events_mem, wcuda->events_sz) {
-				wcuda->recs[idx++] = (struct wrust_ts_ptr){ .ts = rec->e->ts, .ptr = rec->e };
+			for (struct fr_chunk *c = cuda_fr_lists[i]; c; c = c->next) {
+				wcuda_for_each_event(rec, c->mmap, c->byte_sz)
+					wcuda->recs[idx++] = (struct wrust_ts_ptr){ .ts = rec->e->ts, .ptr = rec->e };
 			}
 
 			wrust_sort_events_by_ts(wcuda->recs, wcuda->rec_cnt);
@@ -923,39 +1005,33 @@ skip_cuda:
 			wpy->code_map_cnt = wpy->respool_hdr->code_map_cnt;
 			qsort(wpy->code_map, wpy->code_map_cnt, sizeof(*wpy->code_map), wpytrace_code_entry_cmp);
 
-			if (fstat(inj->pytrace_events_fd, &st) < 0) {
-				err = -errno;
-				eprintf("Failed to fstat() PyTrace event dump for %s at '%s': %d\n",
-					injectee_str(inj), inj->pytrace_events_path, err);
-				goto skip_pytrace;
-			}
-			wpy->events_sz = st.st_size;
-			if (wpy->events_sz > 0) {
-				wpy->events_mem = mmap(NULL, wpy->events_sz, PROT_READ | PROT_WRITE, MAP_SHARED,
-						       inj->pytrace_events_fd, 0);
-				if (wpy->events_mem == MAP_FAILED) {
-					err = -errno;
-					eprintf("Failed to mmap() PyTrace event dump for %s at '%s': %d\n",
-						injectee_str(inj), inj->pytrace_events_path, err);
-					wpy->events_mem = NULL;
-					goto skip_pytrace;
-				}
-			}
-
 			wpy->tracee_idx = i;
 			wpy->rec_idx = 0;
+			wpy->rec_cnt = 0;
+
+			/* non-FR: wrap the single open events file as this feature's one chunk */
+			if (inj->pytrace_events_fd >= 0) {
+				struct fr_chunk *c = calloc(1, sizeof(*c));
+				c->f = fdopen(inj->pytrace_events_fd, "r");
+				inj->pytrace_events_fd = -1;
+				pytrace_fr_lists[i] = c;
+			}
 
 			/* headerless event stream: count records first, then size and fill */
 			struct wpytrace_event_record *py_rec;
-			wpy->rec_cnt = 0;
-			wpytrace_for_each_event(py_rec, wpy->events_mem, wpy->events_sz) {
-				wpy->rec_cnt++;
+			for (struct fr_chunk *c = pytrace_fr_lists[i]; c; c = c->next) {
+				err = fr_chunk_map(c);
+				if (err)
+					goto skip_pytrace;
+				wpytrace_for_each_event(py_rec, c->mmap, c->byte_sz)
+					wpy->rec_cnt++;
 			}
 			wpy->recs = calloc(wpy->rec_cnt, sizeof(*wpy->recs));
 
 			u64 idx = 0;
-			wpytrace_for_each_event(py_rec, wpy->events_mem, wpy->events_sz) {
-				wpy->recs[idx++] = (struct wrust_ts_ptr){ .ts = py_rec->e->ts, .ptr = py_rec->e };
+			for (struct fr_chunk *c = pytrace_fr_lists[i]; c; c = c->next) {
+				wpytrace_for_each_event(py_rec, c->mmap, c->byte_sz)
+					wpy->recs[idx++] = (struct wrust_ts_ptr){ .ts = py_rec->e->ts, .ptr = py_rec->e };
 			}
 
 			wrust_sort_events_by_ts(wpy->recs, wpy->rec_cnt);
@@ -991,40 +1067,34 @@ skip_pytrace:
 			}
 			wtorch->strs = (void *)wtorch->respool_hdr + wtorch->respool_hdr->hdr_sz;
 
-			if (fstat(inj->pytorch_events_fd, &st) < 0) {
-				err = -errno;
-				eprintf("Failed to fstat() PyTorch event dump for %s at '%s': %d\n",
-					injectee_str(inj), inj->pytorch_events_path, err);
-				goto skip_pytorch;
-			}
-			wtorch->events_sz = st.st_size;
-			if (wtorch->events_sz > 0) {
-				wtorch->events_mem = mmap(NULL, wtorch->events_sz, PROT_READ | PROT_WRITE, MAP_SHARED,
-							  inj->pytorch_events_fd, 0);
-				if (wtorch->events_mem == MAP_FAILED) {
-					err = -errno;
-					eprintf("Failed to mmap() PyTorch event dump for %s at '%s': %d\n",
-						injectee_str(inj), inj->pytorch_events_path, err);
-					wtorch->events_mem = NULL;
-					goto skip_pytorch;
-				}
-			}
-
 			wtorch->tracee_idx = i;
 			wtorch->rec_idx = 0;
+			wtorch->rec_cnt = 0;
+
+			/* non-FR: wrap the single open events file as this feature's one chunk */
+			if (inj->pytorch_events_fd >= 0) {
+				struct fr_chunk *c = calloc(1, sizeof(*c));
+				c->f = fdopen(inj->pytorch_events_fd, "r");
+				inj->pytorch_events_fd = -1;
+				pytorch_fr_lists[i] = c;
+			}
 
 			/* headerless event stream: count records first, then size and fill */
 			struct wpytorch_event_record *torch_rec;
-			wtorch->rec_cnt = 0;
-			wpytorch_for_each_event(torch_rec, wtorch->events_mem, wtorch->events_sz) {
-				wtorch->rec_cnt++;
+			for (struct fr_chunk *c = pytorch_fr_lists[i]; c; c = c->next) {
+				err = fr_chunk_map(c);
+				if (err)
+					goto skip_pytorch;
+				wpytorch_for_each_event(torch_rec, c->mmap, c->byte_sz)
+					wtorch->rec_cnt++;
 			}
 			wtorch->recs = calloc(wtorch->rec_cnt, sizeof(*wtorch->recs));
 
 			/* re-sort because RecordFunction fires on many threads, so events aren't fully ordered */
 			u64 idx = 0;
-			wpytorch_for_each_event(torch_rec, wtorch->events_mem, wtorch->events_sz) {
-				wtorch->recs[idx++] = (struct wrust_ts_ptr){ .ts = torch_rec->e->ts, .ptr = torch_rec->e };
+			for (struct fr_chunk *c = pytorch_fr_lists[i]; c; c = c->next) {
+				wpytorch_for_each_event(torch_rec, c->mmap, c->byte_sz)
+					wtorch->recs[idx++] = (struct wrust_ts_ptr){ .ts = torch_rec->e->ts, .ptr = torch_rec->e };
 			}
 
 			wrust_sort_events_by_ts(wtorch->recs, wtorch->rec_cnt);
@@ -1123,6 +1193,18 @@ skip_pytorch:
 			const struct wcuda_event *r = wcuda->next_rec->ptr;
 			struct injectee *inj = &env.injectees[wcuda->tracee_idx];
 
+			/* Clamp to the session window [sess_min_ts, sess_max_ts]; see the BPF branch. */
+			if ((sess_min_ts && ts_before(wcuda->next_rec->ts, sess_min_ts)) ||
+			    (sess_max_ts && ts_after(wcuda->next_rec->ts, sess_max_ts))) {
+				wcuda->rec_idx++;
+				wcuda->next_rec = wcuda->rec_idx < wcuda->rec_cnt ? &wcuda->recs[wcuda->rec_idx] : NULL;
+				if (wcuda->next_rec)
+					wpq_replace_min(pq, wcuda->next_rec->ts, widx);
+				else
+					wpq_pop(pq);
+				continue;
+			}
+
 			wevent_sz = persist_cuda_event(&ps, r, &wevent_buf,
 						       inj->pid, inj->proc_name, wcuda->strs);
 			if (wevent_sz < 0) {
@@ -1143,6 +1225,18 @@ skip_pytorch:
 			struct wpytrace_state *wpy = &wpytraces[pidx];
 			const struct wpytrace_event *r = wpy->next_rec->ptr;
 			struct injectee *inj = &env.injectees[wpy->tracee_idx];
+
+			/* Clamp to the session window [sess_min_ts, sess_max_ts]; see the BPF branch. */
+			if ((sess_min_ts && ts_before(wpy->next_rec->ts, sess_min_ts)) ||
+			    (sess_max_ts && ts_after(wpy->next_rec->ts, sess_max_ts))) {
+				wpy->rec_idx++;
+				wpy->next_rec = wpy->rec_idx < wpy->rec_cnt ? &wpy->recs[wpy->rec_idx] : NULL;
+				if (wpy->next_rec)
+					wpq_replace_min(pq, wpy->next_rec->ts, widx);
+				else
+					wpq_pop(pq);
+				continue;
+			}
 
 			wevent_sz = persist_pytrace_event(&ps, r, &wevent_buf,
 							 inj->pid, inj->ns_pid, inj->proc_name,
@@ -1168,6 +1262,18 @@ skip_pytorch:
 			struct wpytorch_state *wtorch = &wpytorches[tidx];
 			const struct wpytorch_event *r = wtorch->next_rec->ptr;
 			struct injectee *inj = &env.injectees[wtorch->tracee_idx];
+
+			/* Clamp to the session window [sess_min_ts, sess_max_ts]; see the BPF branch. */
+			if ((sess_min_ts && ts_before(wtorch->next_rec->ts, sess_min_ts)) ||
+			    (sess_max_ts && ts_after(wtorch->next_rec->ts, sess_max_ts))) {
+				wtorch->rec_idx++;
+				wtorch->next_rec = wtorch->rec_idx < wtorch->rec_cnt ? &wtorch->recs[wtorch->rec_idx] : NULL;
+				if (wtorch->next_rec)
+					wpq_replace_min(pq, wtorch->next_rec->ts, widx);
+				else
+					wpq_pop(pq);
+				continue;
+			}
 
 			wevent_sz = persist_pytorch_event(&ps, r, &wevent_buf,
 							  inj->pid, inj->ns_pid, inj->proc_name, wtorch->strs);
@@ -1283,14 +1389,10 @@ skip_pytorch:
 
 		if (w->respool_hdr)
 			munmap(w->respool_hdr, w->respool_sz);
-		if (w->events_mem)
-			munmap(w->events_mem, w->events_sz);
 
 		free(w->recs);
 		w->respool_hdr = NULL;
 		w->respool_sz = 0;
-		w->events_mem = NULL;
-		w->events_sz = 0;
 	}
 	free(wcudas);
 
@@ -1300,31 +1402,49 @@ skip_pytorch:
 
 		if (wpy->respool_hdr)
 			munmap(wpy->respool_hdr, wpy->respool_sz);
-		if (wpy->events_mem)
-			munmap(wpy->events_mem, wpy->events_sz);
 
 		free(wpy->recs);
 		wpy->respool_hdr = NULL;
 		wpy->respool_sz = 0;
-		wpy->events_mem = NULL;
-		wpy->events_sz = 0;
 	}
 	for (int i = 0; i < wpytorch_cnt; i++) {
 		struct wpytorch_state *wtorch = &wpytorches[i];
 
 		if (wtorch->respool_hdr)
 			munmap(wtorch->respool_hdr, wtorch->respool_sz);
-		if (wtorch->events_mem)
-			munmap(wtorch->events_mem, wtorch->events_sz);
 
 		free(wtorch->recs);
 		wtorch->respool_hdr = NULL;
 		wtorch->respool_sz = 0;
-		wtorch->events_mem = NULL;
-		wtorch->events_sz = 0;
 	}
 	free(wpytraces);
 	free(wpytorches);
+
+	/*
+	 * Release the consumed injectee flight-recorder chunks (cur + spare +
+	 * retained): unmap (kept alive for the merge loop), unlink honoring
+	 * keep-workdir, then free. Mirrors the per-worker BPF chunk cleanup above.
+	 */
+	for (int i = 0; i < env.injectee_cnt; i++) {
+		struct fr_chunk **lists[] = { &cuda_fr_lists[i], &pytrace_fr_lists[i], &pytorch_fr_lists[i] };
+
+		for (int f = 0; f < ARRAY_SIZE(lists); f++) {
+			struct fr_chunk *next;
+			for (struct fr_chunk *c = *lists[f]; c; c = next) {
+				next = c->next;
+				if (c->mmap)
+					munmap(c->mmap, c->byte_sz);
+				/* the non-FR wrap chunk has no path (its file is unlinked via *_events_path) */
+				if (c->path && !env.keep_workdir)
+					unlink(c->path);
+				free(c->path);
+				free(c);
+			}
+		}
+	}
+	free(cuda_fr_lists);
+	free(pytrace_fr_lists);
+	free(pytorch_fr_lists);
 
 	/* Remove and close each injectee's per-feature dump files now they're merged. */
 	for (int i = 0; i < env.injectee_cnt; i++) {
