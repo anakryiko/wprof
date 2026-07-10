@@ -483,16 +483,13 @@ static struct tid_cache_value *resolve_cuda_host_tid(struct persist_state *ps,
 			/* negative cache this TID so we don't do expensive look ups again */
 			ti->host_tid = 0;
 			ti->thread_name[0] = '\0';
-			goto cache;
+			hashmap__add(ps->tid_cache, key, ti);
+			return ti;
 		}
 	}
 
 	(void)thread_name_by_tid(host_pid, ti->host_tid, ti->thread_name, sizeof(ti->thread_name));
-cache:
 	hashmap__add(ps->tid_cache, key, ti);
-
-	if (ti->host_tid <= 0)
-		return 0;
 
 	struct wprof_thread task = {
 		.tid = ti->host_tid,
@@ -636,10 +633,8 @@ int persist_pytrace_event(struct persist_state *ps, const struct wpytrace_event 
 			 const struct wpytrace_code_entry *code_map, u64 code_map_cnt,
 			 const char *pytrace_strs)
 {
-	/* resolve the (possibly namespaced) tid to a task; drop the event if we can't */
+	/* resolve the (possibly namespaced) tid to a task */
 	struct tid_cache_value *ti = resolve_cuda_host_tid(ps, host_pid, proc_name, ns_pid, e->tid);
-	if (!ti)
-		return 0;
 
 	dst->flags = 0;
 	dst->task_id = ti->task_id;
@@ -666,10 +661,8 @@ int persist_pytrace_event(struct persist_state *ps, const struct wpytrace_event 
 int persist_pytorch_event(struct persist_state *ps, const struct wpytorch_event *e, struct wevent *dst,
 			  int host_pid, int ns_pid, const char *proc_name, const char *strs)
 {
-	/* resolve the (possibly namespaced) tid to a task; drop the event if we can't */
+	/* resolve the (possibly namespaced) tid to a task */
 	struct tid_cache_value *ti = resolve_cuda_host_tid(ps, host_pid, proc_name, ns_pid, e->tid);
-	if (!ti)
-		return 0;
 
 	dst->flags = 0;
 	dst->task_id = ti->task_id;
