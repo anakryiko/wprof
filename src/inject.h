@@ -22,4 +22,7 @@ void tracee_free(struct tracee_state *tracee);
 
 const struct tracee_info *tracee_info(const struct tracee_state *tracee);
 
+/* GNU build-id (lowercase hex) of the embedded libwprofinj.so, or "unknown". Cached. */
+const char *wprof_injectee_build_id(void);
+
 #endif /* __INJECT_H_ */
