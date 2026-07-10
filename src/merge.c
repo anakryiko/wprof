@@ -595,7 +595,13 @@ static int fr_chunk_map(struct fr_chunk *c)
 	}
 	c->byte_sz = st.st_size;
 	if (c->byte_sz > 0) {
-		c->mmap = mmap(NULL, c->byte_sz, PROT_READ, MAP_SHARED, fd, 0);
+		/*
+		 * A still-open chunk (c->f, always O_RDWR-backed) may be written in
+		 * place -- BPF stack processing patches the current chunk's events -- so
+		 * map it writable; a reopened chunk (O_RDONLY) is read-only.
+		 */
+		int prot = c->f ? (PROT_READ | PROT_WRITE) : PROT_READ;
+		c->mmap = mmap(NULL, c->byte_sz, prot, MAP_SHARED, fd, 0);
 		if (c->mmap == MAP_FAILED) {
 			err = -errno;
 			c->mmap = NULL;
@@ -643,28 +649,6 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers,
 	for (int i = 0; i < env.pmu_event_cnt; i++)
 		persist_add_pmu_def(&ps, &env.pmu_events[i]);
 
-	/* Finalize and mmap() per-ringbuf dumps */
-	for (int i = 0; i < env.ringbuf_cnt; i++) {
-		struct worker_state *w = &workers[i];
-
-		long pos = ftell(w->dump);
-		fflush(w->dump);
-		fsync(fileno(w->dump));
-
-		w->dump_sz = pos;
-		w->dump_mem = NULL;
-		/* the current chunk can be empty (e.g. a quiet ringbuf at stop); mmap(0) is -EINVAL */
-		if (w->dump_sz > 0) {
-			w->dump_mem = mmap(NULL, w->dump_sz, PROT_READ | PROT_WRITE, MAP_SHARED, fileno(w->dump), 0);
-			if (w->dump_mem == MAP_FAILED) {
-				err = -errno;
-				eprintf("Failed to mmap ringbuf #%d dump file '%s': %d\n", i, w->dump_path, err);
-				w->dump_mem = NULL;
-				return err;
-			}
-		}
-	}
-
 	/*
 	 * Drain the flight-recorder's retained chunks into per-worker buckets,
 	 * chained intrusively via c->next. Each worker's events then come from
@@ -707,6 +691,32 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers,
 			}
 			s->cur = s->spare = NULL;
 		}
+	}
+
+	/*
+	 * The ringbuf worker's current chunk isn't in the PQ either; fold it into
+	 * the worker's chunk list and map every chunk up front. The current chunk
+	 * is still open (fr_chunk_map flushes, maps, and closes it); merge owns them
+	 * all now, so clear the worker aliases to keep teardown from double-freeing.
+	 * dump_mem/dump_sz keep pointing at the current chunk's map for the stack
+	 * processing below.
+	 */
+	for (int i = 0; i < env.ringbuf_cnt; i++) {
+		struct worker_state *w = &workers[i];
+		struct fr_chunk *cur = w->cur_chunk;
+
+		cur->next = fr_lists[i];
+		fr_lists[i] = cur;
+		for (struct fr_chunk *c = fr_lists[i]; c; c = c->next) {
+			err = fr_chunk_map(c);
+			if (err)
+				return err;
+		}
+		w->dump_mem = cur->mmap;
+		w->dump_sz = cur->byte_sz;
+		w->cur_chunk = NULL;
+		w->dump = NULL;
+		w->dump_path = NULL;
 	}
 
 	/* Collect and symbolize stack traces, dump to separate file */
@@ -781,65 +791,30 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers,
 	} *wmerges = calloc(env.ringbuf_cnt, sizeof(*wmerges));
 
 	for (int i = 0; i < env.ringbuf_cnt; i++) {
-		struct worker_state *w = &workers[i];
 		struct wmerge_state *wmerge = &wmerges[i];
 
-		void *data = w->dump_mem;
-		size_t data_sz = w->dump_sz;
-
-		/*
-		 * re-sort events by timestamp, they can be a bit out of order.
-		 * Size from the current chunk's own event count, not the worker's
-		 * cumulative rb_handled_cnt: with flight-recorder rotation only the
-		 * current chunk is mmap()ed here, so rb_handled_cnt over-counts (it
-		 * spans handed-off chunks too). Without rotation the two are equal,
-		 * so non-flightrec output is unchanged.
-		 *
-		 * With flight-recorder, also fold in the completed chunks the FR
-		 * thread retained for this worker; size recs[] by the summed
-		 * per-chunk event_cnt.
-		 */
+		/* The worker's chunks (current + retained) are already mapped above. */
 		wmerge->rec_idx = 0;
-		wmerge->rec_cnt = w->cur_chunk->event_cnt;
-		for (struct fr_chunk *c = fr_lists[i]; c; c = c->next)
-			wmerge->rec_cnt += c->event_cnt;
-		wmerge->recs = calloc(wmerge->rec_cnt, sizeof(*wmerge->recs));
+		wmerge->rec_cnt = 0;
 
 		const struct bpf_event_record *rec;
-		u64 idx = 0;
-		for_each_bpf_event(rec, data, data_sz) {
-			wmerge->recs[idx++] = (struct wrust_ts_ptr){ .ts = rec->e->ts, .ptr = rec->e };
-		}
-
-		/*
-		 * Completed chunks are headerless raw event streams, same format as
-		 * the current chunk. mmap each read-only and read its events; keep
-		 * the mapping alive (c->mmap) because recs[].ptr points into it --
-		 * the merge loop below dereferences those pointers. Unmapped in the
-		 * cleanup loop.
-		 */
 		for (struct fr_chunk *c = fr_lists[i]; c; c = c->next) {
-			int fd = open(c->path, O_RDONLY);
-			if (fd < 0) {
-				err = -errno;
-				eprintf("Failed to open flight-recorder chunk '%s': %d\n", c->path, err);
-				return err;
-			}
+			for_each_bpf_event(rec, c->mmap, c->byte_sz)
+				wmerge->rec_cnt++;
+		}
+		wmerge->recs = calloc(wmerge->rec_cnt, sizeof(*wmerge->recs));
 
-			c->mmap = mmap(NULL, c->byte_sz, PROT_READ, MAP_SHARED, fd, 0);
-			close(fd);
-			if (c->mmap == MAP_FAILED) {
-				err = -errno;
-				eprintf("Failed to mmap flight-recorder chunk '%s': %d\n", c->path, err);
-				c->mmap = NULL;
-				return err;
-			}
-
+		u64 idx = 0;
+		for (struct fr_chunk *c = fr_lists[i]; c; c = c->next) {
 			for_each_bpf_event(rec, c->mmap, c->byte_sz)
 				wmerge->recs[idx++] = (struct wrust_ts_ptr){ .ts = rec->e->ts, .ptr = rec->e };
 		}
 
-		/* chunks are NOT time-disjoint, so sort the combined stream */
+		/*
+		 * Events come off the ring buffer a bit out of timestamp order, and with
+		 * flight-recorder the per-worker chunks are not time-disjoint either, so
+		 * sort the combined stream.
+		 */
 		wrust_sort_events_by_ts(wmerge->recs, wmerge->rec_cnt);
 		wmerge->next_rec = wmerge->rec_cnt > 0 ? &wmerge->recs[0] : NULL;
 	}
@@ -1345,27 +1320,13 @@ skip_pytorch:
 
 	/* Cleanup BPF ringbuf dumps */
 	for (int i = 0; i < env.ringbuf_cnt; i++) {
-		struct worker_state *w = &workers[i];
 		struct wmerge_state *wmerge = &wmerges[i];
 
-		if (w->dump_mem)
-			munmap(w->dump_mem, w->dump_sz);
-		fclose(w->dump);
-		if (!env.keep_workdir)
-			unlink(w->dump_path);
-
-		w->dump = NULL;
-		free(w->dump_path);
-		w->dump_path = NULL;
-		w->dump_sz = 0;
-		w->dump_mem = NULL;
-		w->dump_hdr = NULL;
-
 		/*
-		 * Release the consumed flight-recorder chunks: unmap (kept alive
-		 * for the merge loop), unlink honoring keep-workdir, then free. The
-		 * PQ is already empty (all popped above), so fr_teardown's later
-		 * drain is a no-op.
+		 * Release the worker's chunks (current + retained, all in fr_lists[i]):
+		 * unmap (kept alive for the merge loop), unlink honoring keep-workdir,
+		 * then free. The PQ is already empty (all popped above), so fr_teardown's
+		 * later drain is a no-op.
 		 */
 		struct fr_chunk *next;
 		for (struct fr_chunk *c = fr_lists[i]; c; c = next) {
