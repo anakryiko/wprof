@@ -68,6 +68,11 @@ ALL_CFLAGS := $(CFLAGS) $(EXTRA_CFLAGS) -fno-omit-frame-pointer					\
 	      $(if $(DEBUG),-DDEBUG)
 ALL_LDFLAGS := $(LDFLAGS) $(EXTRA_LDFLAGS) -lrt -ldl -lpthread -lm
 
+# Git revision baked into --version (see the wprof_build_info.h rule below).
+# Falls back to "unknown" if git is missing or this isn't a repo; never fails the build.
+GIT ?= git
+GIT_SHA := $(shell $(GIT) -C $(CURDIR) describe --always --dirty --abbrev=12 2>/dev/null || echo unknown)
+
 # Get Clang's default includes on this system. We'll explicitly add these dirs
 # to the includes list when compiling with `-target bpf` because otherwise some
 # architecture-specific dirs will be "missing" on some architectures/distros -
@@ -248,6 +253,16 @@ $(OUTPUT)/json_schema_embed.o: ../JSON_SCHEMA.md
 		--defsym json_schema_start=_binary____JSON_SCHEMA_md_start			\
 		--defsym json_schema_end=_binary____JSON_SCHEMA_md_end
 
+# Regenerate the git-revision header every build, but only rewrite it (and thus
+# rebuild env.o) when the revision actually changes.
+.PHONY: force_build_info
+$(OUTPUT)/wprof_build_info.h: force_build_info | $(OUTPUT)
+	$(Q)printf '#define WPROF_GIT_SHA "%s"\n' '$(GIT_SHA)' > $@.tmp
+	$(Q)cmp -s $@.tmp $@ 2>/dev/null || mv -f $@.tmp $@
+	$(Q)rm -f $@.tmp
+
+$(OUTPUT)/env.o: $(OUTPUT)/wprof_build_info.h
+
 # Build application binary
 wprof: $(WPROF_HDRS) $(WPROF_OBJS)								\
 		$(OUTPUT)/libwprofinj_embed.o							\
@@ -259,7 +274,7 @@ wprof: $(WPROF_HDRS) $(WPROF_OBJS)								\
 .PHONY: clean
 clean:
 	$(call msg,CLEAN)
-	$(Q)rm -rf $(OUTPUT)/*.o $(OUTPUT)/libwprofinj.* wprof $(LIBWPB_OBJ) $(LIBWRUST_OBJ) 	\
+	$(Q)rm -rf $(OUTPUT)/*.o $(OUTPUT)/libwprofinj.* $(OUTPUT)/wprof_build_info.h wprof $(LIBWPB_OBJ) $(LIBWRUST_OBJ) 	\
 		$(LIBWPB_SRC)/target $(LIBWRUST_SRC)/target
 
 .PHONY: clean-all
