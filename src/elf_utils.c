@@ -7,6 +7,7 @@
 #include <gelf.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <link.h>
 
 #include "elf_utils.h"
 #include "utils.h"
@@ -519,4 +520,87 @@ int elf_find_usdt(const char *binary_path, const char *provider, const char *nam
 
 	elf_close(&ef);
 	return -ENOENT;
+}
+
+static bool build_id_from_notes(const void *notes, size_t notes_sz, char *buf, size_t buf_sz)
+{
+	static const char hex[] = "0123456789abcdef";
+	const unsigned char *p = notes, *end = p + notes_sz;
+
+	while (p + sizeof(Elf64_Nhdr) <= end) {
+		const Elf64_Nhdr *nh = (const void *)p;
+		const unsigned char *name = p + sizeof(*nh);
+		const unsigned char *desc = name + ((nh->n_namesz + 3) & ~3u);
+		const unsigned char *next = desc + ((nh->n_descsz + 3) & ~3u);
+
+		if (next > end)
+			break;
+		if (nh->n_type == NT_GNU_BUILD_ID && nh->n_namesz == 4 &&
+		    memcmp(name, "GNU", 4) == 0 && nh->n_descsz > 0 &&
+		    (size_t)nh->n_descsz * 2 + 1 <= buf_sz) {
+			for (uint32_t i = 0; i < nh->n_descsz; i++) {
+				buf[i * 2] = hex[desc[i] >> 4];
+				buf[i * 2 + 1] = hex[desc[i] & 0xf];
+			}
+			buf[nh->n_descsz * 2] = '\0';
+			return true;
+		}
+		p = next;
+	}
+	return false;
+}
+
+const char *elf_image_build_id(const void *mem, size_t sz, char *buf, size_t buf_sz)
+{
+	const Elf64_Ehdr *eh = mem;
+
+	if (sz < sizeof(*eh) || memcmp(eh->e_ident, ELFMAG, SELFMAG) != 0)
+		return "unknown";
+
+	const Elf64_Phdr *ph = (const void *)((const char *)mem + eh->e_phoff);
+	for (unsigned i = 0; i < eh->e_phnum; i++) {
+		if (ph[i].p_type != PT_NOTE || ph[i].p_offset + ph[i].p_filesz > sz)
+			continue;
+		if (build_id_from_notes((const char *)mem + ph[i].p_offset, ph[i].p_filesz, buf, buf_sz))
+			return buf;
+	}
+	return "unknown";
+}
+
+struct self_build_id_ctx {
+	char *buf;
+	size_t buf_sz;
+	bool found;
+};
+
+static int self_build_id_cb(struct dl_phdr_info *info, size_t size, void *data)
+{
+	struct self_build_id_ctx *ctx = data;
+
+	for (unsigned i = 0; i < info->dlpi_phnum; i++) {
+		const Elf64_Phdr *ph = &info->dlpi_phdr[i];
+
+		if (ph->p_type != PT_NOTE)
+			continue;
+		if (build_id_from_notes((const void *)(info->dlpi_addr + ph->p_vaddr),
+					ph->p_memsz, ctx->buf, ctx->buf_sz)) {
+			ctx->found = true;
+			break;
+		}
+	}
+	return 1; /* only the main executable, which is the first object */
+}
+
+const char *elf_self_build_id(void)
+{
+	static char buf[2 * 64 + 1];
+	static bool done;
+
+	if (!done) {
+		struct self_build_id_ctx ctx = { .buf = buf, .buf_sz = sizeof(buf) };
+
+		dl_iterate_phdr(self_build_id_cb, &ctx);
+		done = true;
+	}
+	return buf[0] ? buf : "unknown";
 }

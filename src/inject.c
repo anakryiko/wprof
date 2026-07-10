@@ -95,6 +95,16 @@ extern const char libwprofinj_so_start[];
 extern const char libwprofinj_so_end[];
 #define libwprofinj_so_sz ((size_t)(libwprofinj_so_end - libwprofinj_so_start))
 
+const char *wprof_injectee_build_id(void)
+{
+	static char buf[2 * 64 + 1];
+	static const char *res;
+
+	if (!res)
+		res = elf_image_build_id(libwprofinj_so_start, libwprofinj_so_sz, buf, sizeof(buf));
+	return res;
+}
+
 extern char __inj_call[];
 extern char __inj_call_end[];
 extern char __inj_trap[];
@@ -980,6 +990,7 @@ struct tracee_state *tracee_inject(int pid)
 		goto cleanup;
 	}
 	dlog("Injection init %s() call succeeded!\n", LIBWPROFINJ_SETUP_SYM_NAME);
+	dlog("libwprofinj.so build-id: %s\n", wprof_injectee_build_id());
 
 	/* 
 	 * Prepare for execution of the original intercepted syscall

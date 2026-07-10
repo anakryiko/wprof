@@ -19,8 +19,18 @@
 #include "requests.h"
 #include "utrace_cfg.h"
 #include "strs.h"
+#include "elf_utils.h"
+#include "inject.h"
 
 const char *argp_program_version = "wprof v" WPROF_VERSION;
+
+static void wprof_print_version(FILE *stream, struct argp_state *state)
+{
+	fprintf(stream, "wprof v%s\n", WPROF_VERSION);
+	fprintf(stream, "  wprof build-id:          %s\n", elf_self_build_id());
+	fprintf(stream, "  libwprofinj.so build-id: %s\n", wprof_injectee_build_id());
+}
+void (*argp_program_version_hook)(FILE *stream, struct argp_state *state) = wprof_print_version;
 
 const char *argp_program_bug_address = "Andrii Nakryiko <andrii@kernel.org>";
 const char argp_program_doc[] =

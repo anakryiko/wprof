@@ -69,4 +69,13 @@ struct usdt_info {
 int elf_find_usdt(const char *binary_path, const char *provider, const char *name,
 		  struct usdt_info *info);
 
+/* GNU build-id (lowercase hex) of the running wprof executable, or "unknown". Cached. */
+const char *elf_self_build_id(void);
+
+/*
+ * GNU build-id (lowercase hex) of the ELF file image in [mem, mem + sz), written
+ * into buf (64 bytes is plenty). Returns buf on success, or "unknown".
+ */
+const char *elf_image_build_id(const void *mem, size_t sz, char *buf, size_t buf_sz);
+
 #endif /* __ELF_UTILS_H__ */
