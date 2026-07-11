@@ -2120,35 +2120,51 @@ int main(int argc, char **argv)
 		if (err)
 			goto cleanup;
 
-		/* Restore persisted capture-time filters (additive with CLI filters) */
+		/*
+		 * Restore persisted capture-time filters; a CLI process/thread
+		 * filter overrides the recorded process/thread filters.
+		 */
+		bool cli_proc_thread_filter =
+			env.allow_pid_cnt || env.deny_pid_cnt ||
+			env.allow_tid_cnt || env.deny_tid_cnt ||
+			env.allow_pname_cnt || env.deny_pname_cnt ||
+			env.allow_tname_cnt || env.deny_tname_cnt;
 		for (u64 i = 0; i < dump_hdr->extra_cnt; i++) {
 			struct wprof_extra_param *ep = wevent_extra_param(dump_hdr, i);
 			const char *val = ep->stroff ? wevent_str(dump_hdr, ep->stroff) : "";
 
 			switch (ep->kind) {
 			case WEXTRA_FILTER_PID_ALLOW:
-				err = append_num(&env.allow_pids, &env.allow_pid_cnt, val);
+				if (!cli_proc_thread_filter)
+					err = append_num(&env.allow_pids, &env.allow_pid_cnt, val);
 				break;
 			case WEXTRA_FILTER_PID_DENY:
-				err = append_num(&env.deny_pids, &env.deny_pid_cnt, val);
+				if (!cli_proc_thread_filter)
+					err = append_num(&env.deny_pids, &env.deny_pid_cnt, val);
 				break;
 			case WEXTRA_FILTER_TID_ALLOW:
-				err = append_num(&env.allow_tids, &env.allow_tid_cnt, val);
+				if (!cli_proc_thread_filter)
+					err = append_num(&env.allow_tids, &env.allow_tid_cnt, val);
 				break;
 			case WEXTRA_FILTER_TID_DENY:
-				err = append_num(&env.deny_tids, &env.deny_tid_cnt, val);
+				if (!cli_proc_thread_filter)
+					err = append_num(&env.deny_tids, &env.deny_tid_cnt, val);
 				break;
 			case WEXTRA_FILTER_PNAME_ALLOW:
-				err = append_str(&env.allow_pnames, &env.allow_pname_cnt, val);
+				if (!cli_proc_thread_filter)
+					err = append_str(&env.allow_pnames, &env.allow_pname_cnt, val);
 				break;
 			case WEXTRA_FILTER_PNAME_DENY:
-				err = append_str(&env.deny_pnames, &env.deny_pname_cnt, val);
+				if (!cli_proc_thread_filter)
+					err = append_str(&env.deny_pnames, &env.deny_pname_cnt, val);
 				break;
 			case WEXTRA_FILTER_TNAME_ALLOW:
-				err = append_str(&env.allow_tnames, &env.allow_tname_cnt, val);
+				if (!cli_proc_thread_filter)
+					err = append_str(&env.allow_tnames, &env.allow_tname_cnt, val);
 				break;
 			case WEXTRA_FILTER_TNAME_DENY:
-				err = append_str(&env.deny_tnames, &env.deny_tname_cnt, val);
+				if (!cli_proc_thread_filter)
+					err = append_str(&env.deny_tnames, &env.deny_tname_cnt, val);
 				break;
 			case WEXTRA_FILTER_IDLE_ALLOW:
 				env.allow_idle = true;
