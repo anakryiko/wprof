@@ -1865,7 +1865,8 @@ static void emit_switch_json(struct worker_state *w, const struct wevent *e, str
 	json_kv_int(j, "prev_prio", e->swtch.prev_prio);
 	json_kv_int(j, "next_prio", e->swtch.next_prio);
 	if (s->has_waking) {
-		json_kv_ts(j, "waking_ts", e->swtch.waking_ts - env.sess_start_ts);
+		if (is_ts_in_range(e->swtch.waking_ts))
+			json_kv_ts(j, "waking_ts", e->swtch.waking_ts - env.sess_start_ts);
 		json_kv_str(j, "waking_reason", wreason_str(e->swtch.waking_flags));
 		json_task(j, "waker", &waker);
 		json_kv_int(j, "waking_cpu", e->swtch.waker_cpu);
