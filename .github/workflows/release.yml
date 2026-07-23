@@ -30,7 +30,7 @@ jobs:
           sudo apt-get install -y cargo llvm libelf-dev zlib1g-dev libzstd-dev
 
       - name: Checkout wprof code
-        uses: actions/checkout@8f4b7f84864484a7bf31766abe9204da3cbe65b3 # v3.5.0
+        uses: actions/checkout@v5
         with:
           submodules: recursive
           path: 'wprof'
@@ -53,7 +53,7 @@ jobs:
               grep -q 'not a dynamic executable'
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ${{ format('wprof_{0}', matrix.arch) }}
           path: wprof/src/wprof
@@ -66,7 +66,7 @@ jobs:
       contents: write
     steps:
       - name: Download artifacts from build
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
 
       - name: Rename binaries and compress
         run: |
@@ -78,7 +78,7 @@ jobs:
           sha256sum "${archive_arm64}" > "${archive_arm64}.sha256sum"
 
       - name: Checkout wprof and submodules code
-        uses: actions/checkout@8f4b7f84864484a7bf31766abe9204da3cbe65b3 # v3.5.0
+        uses: actions/checkout@v5
         with:
           submodules: recursive
           path: 'wprof'
