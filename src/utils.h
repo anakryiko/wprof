@@ -199,6 +199,7 @@ static inline uint64_t timespec_to_ns(struct timespec *ts)
 }
 
 s64 parse_time_units(const char *arg);
+int parse_freq(const char *arg, int *hz_out);
 const char *fmt_time_units(u64 ns);
 
 enum size_unit { SZ_NONE = 0, SZ_B, SZ_KB, SZ_MB, SZ_GB, SZ_TB };

@@ -144,7 +144,7 @@ static const struct argp_option opts[] = {
 	  "disables a dimension. Mutually exclusive with -d." },
 	{ "prepare", OPT_PREPARE, "WHEN", 0, "Delayed tracing setup, syntax: @now, @<ISO time>, +<dur>, /<dur> (align to next period). Default: at startup" },
 	{ "activate", OPT_ACTIVATE, "WHEN", 0, "Delayed data capture activation; same syntax as --prepare. Default: immediately after prepare" },
-	{ "timer-freq", OPT_TIMER_FREQ, "HZ", 0, "On-CPU timer interrupt frequency (default: 100Hz, i.e., every 10ms)" },
+	{ "timer-freq", OPT_TIMER_FREQ, "HZ", 0, "Deprecated: use -Stimer=<freq>hz or -Stimer=<period>. On-CPU timer interrupt frequency (default: 100Hz)" },
 
 	{ "data", 'D', "FILE", 0, "Data dump path (defaults to 'wprof.data' in current directory)" },
 	{ "trace", 'T', "FILE", 0, "Emit Perfetto trace to specified file (use '-' for stdout)" },
@@ -160,7 +160,7 @@ static const struct argp_option opts[] = {
 	{ "replay-info", 'I', NULL, 0, "Print recorded data information" },
 
 	{ "stacks", 'S', "KIND", OPTION_ARG_OPTIONAL,
-	  "Capture stack traces. Kinds: timer, offcpu, waker, cuda, req, utrace, pmu=<event>[@<rate>], or all (default = timer + offcpu). Repeatable." },
+	  "Capture stack traces. Kinds: timer[=<freq>hz|<period>], offcpu, waker, cuda, req, utrace, pmu=<event>[@<rate>], or all (default = timer + offcpu). Repeatable." },
 	{ "no-stacks", OPT_NO_STACK_TRACES, "KIND", OPTION_ARG_OPTIONAL, "Don't capture or emit stack traces" },
 	{ "symbolize-frugal", OPT_SYMBOLIZE_FRUGALLY, NULL, 0, "Symbolize frugally (slower, but less memory hungry)" },
 
@@ -468,6 +468,16 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		} else if (arg && strcasecmp(arg, "pmu") == 0) {
 			eprintf("PMU sampling requires an event: use -Spmu=<event>[@<rate>]\n");
 			return -EINVAL;
+		} else if (arg && strncasecmp(arg, "timer=", 6) == 0) {
+			if (env.timer_freq_hz != 0) {
+				eprintf("-Stimer frequency specified more than once; use a single -Stimer=<rate> or --timer-freq\n");
+				return -EINVAL;
+			}
+			if (parse_freq(arg + 6, &env.timer_freq_hz)) {
+				eprintf("Invalid -Stimer rate '%s': use <freq>hz (e.g. 100hz) or a period (e.g. 10ms)\n", arg + 6);
+				return -EINVAL;
+			}
+			kinds = ST_TIMER;
 		} else {
 			kinds = parse_stack_kinds(arg);
 			if (kinds < 0)
@@ -790,6 +800,11 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	/* TUNING */
 	case OPT_TIMER_FREQ:
+		if (env.timer_freq_hz != 0) {
+			eprintf("timer frequency specified more than once; use a single -Stimer=<rate> or --timer-freq\n");
+			return -EINVAL;
+		}
+		wprintf("warning: --timer-freq is deprecated; use -Stimer=<freq>hz or -Stimer=<period> (e.g. -Stimer=100hz, -Stimer=10ms)\n");
 		errno = 0;
 		env.timer_freq_hz = strtol(arg, NULL, 0);
 		if (errno || env.timer_freq_hz <= 0) {

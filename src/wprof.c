@@ -153,6 +153,7 @@ const char *extra_param_str(struct wprof_data_hdr *hdr, const struct wprof_extra
 	case WEXTRA_PREPARE_SPEC:		return sfmt("--prepare %s", wevent_str(hdr, e->stroff));
 	case WEXTRA_ACTIVATE_SPEC:		return sfmt("--activate %s", wevent_str(hdr, e->stroff));
 	case WEXTRA_PMU_EVENT:			return sfmt("--stacks=pmu=%s", wevent_str(hdr, e->stroff));
+	case WEXTRA_TIMER_FREQ:			return sfmt("--stacks=timer=%uhz", e->value);
 	case WEXTRA_FR_SPEC:			return sfmt("--flight-record=%s", wevent_str(hdr, e->stroff));
 	default:
 		BUG("unknown extra param kind %d\n", e->kind);
@@ -1929,7 +1930,7 @@ int main(int argc, char **argv)
 			if (cfg->captured_stack_traces) {
 				wprintf("%-*s\n", w, "Stack traces:");
 				if (cfg->captured_stack_traces & ST_TIMER)
-					wprintf("    --stacks timer\n");
+					wprintf("    --stacks timer=%dhz\n", cfg->timer_freq_hz);
 				if (cfg->captured_stack_traces & ST_OFFCPU)
 					wprintf("    --stacks offcpu\n");
 				if (cfg->captured_stack_traces & ST_WAKER)
@@ -1974,21 +1975,18 @@ int main(int argc, char **argv)
 					struct wprof_extra_param *e = wevent_extra_param(dump_hdr, i);
 					if (e->kind == WEXTRA_METADATA) {
 						has_metadata = true;
-					} else if (e->kind == WEXTRA_STATS || e->kind == WEXTRA_PMU_EVENT) {
+					} else if (e->kind == WEXTRA_STATS || e->kind == WEXTRA_PMU_EVENT ||
+						   e->kind == WEXTRA_TIMER_FREQ) {
 						/* excluded from extras printing */
 					} else {
 						has_extras = true;
 					}
 				}
-				if (env.stats || (cfg->captured_stack_traces & ST_TIMER)) {
+				if (env.stats) {
 					wprintf("%-*s\n", w, "Config:");
-					if (env.stats) {
-						wprintf("    %-*s%u\n", w - 4, "CPUs:", env.stats->cpu_cnt);
-						wprintf("    %-*s%u x %uMB\n", w - 4, "Ringbufs:", env.stats->rb_cnt, env.stats->ringbuf_sz / 1024 / 1024);
-						wprintf("    %-*s%u\n", w - 4, "Tasks capacity:", env.stats->task_state_sz);
-					}
-					if (cfg->captured_stack_traces & ST_TIMER)
-						wprintf("    %-*s%dHz\n", w - 4, "Timer frequency:", cfg->timer_freq_hz);
+					wprintf("    %-*s%u\n", w - 4, "CPUs:", env.stats->cpu_cnt);
+					wprintf("    %-*s%u x %uMB\n", w - 4, "Ringbufs:", env.stats->rb_cnt, env.stats->ringbuf_sz / 1024 / 1024);
+					wprintf("    %-*s%u\n", w - 4, "Tasks capacity:", env.stats->task_state_sz);
 				}
 				if (has_metadata) {
 					wprintf("%-*s\n", w, "Metadata:");
@@ -2009,7 +2007,7 @@ int main(int argc, char **argv)
 					for (u64 i = 0; i < dump_hdr->extra_cnt; i++) {
 						struct wprof_extra_param *e = wevent_extra_param(dump_hdr, i);
 						if (e->kind == WEXTRA_METADATA || e->kind == WEXTRA_STATS ||
-						    e->kind == WEXTRA_PMU_EVENT)
+						    e->kind == WEXTRA_PMU_EVENT || e->kind == WEXTRA_TIMER_FREQ)
 							continue;
 						wprintf("    %s\n", extra_param_str(dump_hdr, e));
 					}
@@ -2218,6 +2216,7 @@ int main(int argc, char **argv)
 			case WEXTRA_ACTIVATE_SPEC:
 			case WEXTRA_PMU_EVENT:
 			case WEXTRA_FR_SPEC:
+			case WEXTRA_TIMER_FREQ:
 				/* capture-time only; informational at replay (see cmdline reconstruction) */
 				break;
 			default:
