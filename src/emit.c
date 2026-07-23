@@ -1639,9 +1639,10 @@ static void emit_switch(struct worker_state *w, const struct wevent *e, struct s
 	 * Preemptor side: prev (task) was preempted -- went off-CPU still runnable
 	 * -- by next; render on next's timeline at the switch. Real wakeups render
 	 * their waker instant at EV_WAKING instead. The matching preemptee instant
-	 * is rendered at prev's next switch-in, paired by flow id.
+	 * is rendered at prev's next switch-in, paired by flow id. The idle task is
+	 * always runnable, so exclude it -- it is never actually preempted.
 	 */
-	if (s->trace_next && e->swtch.prev_task_state == TASK_RUNNING) {
+	if (s->trace_next && task.pid != 0 && e->swtch.prev_task_state == TASK_RUNNING) {
 		emit_track_descrs(w, &next);
 
 		emit_instant(trackid_thread(&next), e->ts, IID_NAME_PREEMPTOR, IID_CAT_PREEMPTOR) {
@@ -1924,7 +1925,7 @@ static int process_switch(struct worker_state *w, const struct wevent *e)
 
 	if (s.trace_prev) {
 		s.prev_st = task_state(w, &task);
-		s.prev_preempted = e->swtch.prev_task_state == TASK_RUNNING;
+		s.prev_preempted = task.pid != 0 && e->swtch.prev_task_state == TASK_RUNNING;
 		/* take into account task rename for switched-out task to maintain consistently named trace slice */
 		s.prev_name = s.prev_st->rename_ts ? s.prev_st->old_comm : s.prev_st->comm;
 		s.prev_name_iid = s.prev_st->rename_ts ? s.prev_st->old_name_iid : s.prev_st->name_iid;
