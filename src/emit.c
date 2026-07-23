@@ -4476,22 +4476,22 @@ static void emit_header_json(struct worker_state *w)
 	json_kv_fmt(j, "version", "%d.%d", hdr->version_major, hdr->version_minor);
 	json_kv_str(j, "timestamp", fmt_timestamp_ns(cfg->realtime_start_ns));
 	json_kv_float(j, "dur", "%.9lf", (env.sess_end_ts - env.sess_start_ts) / 1e9);
-	json_kv_int(j, "timer_freq_hz", cfg->timer_freq_hz);
+	json_kv_int(j, "timer_freq_hz", env.timer_freq_hz);
 	for (int i = 0; i < capture_feature_cnt; i++) {
 		const struct capture_feature *f = &capture_features[i];
 		json_kv_bool(j, f->json_key, cfg_has_feat(cfg->capture_features, f));
 	}
 
 	json_subarr_start(j, "stacks");
-	if (cfg->captured_stack_traces & ST_TIMER)
+	if (env.requested_stack_traces & ST_TIMER)
 		json_arr_str(j, "timer");
-	if (cfg->captured_stack_traces & ST_OFFCPU)
+	if (env.requested_stack_traces & ST_OFFCPU)
 		json_arr_str(j, "offcpu");
-	if (cfg->captured_stack_traces & ST_WAKER)
+	if (env.requested_stack_traces & ST_WAKER)
 		json_arr_str(j, "waker");
-	if (cfg->captured_stack_traces & ST_CUDA)
+	if (env.requested_stack_traces & ST_CUDA)
 		json_arr_str(j, "cuda");
-	if (cfg->captured_stack_traces & ST_UTRACE)
+	if (env.requested_stack_traces & ST_UTRACE)
 		json_arr_str(j, "utrace");
 	json_arr_end(j);
 

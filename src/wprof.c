@@ -152,8 +152,17 @@ const char *extra_param_str(struct wprof_data_hdr *hdr, const struct wprof_extra
 	case WEXTRA_EMIT_EMBED_STACKS:		return e->value ? "-e embed-stacks" : "-e no-embed-stacks";
 	case WEXTRA_PREPARE_SPEC:		return sfmt("--prepare %s", wevent_str(hdr, e->stroff));
 	case WEXTRA_ACTIVATE_SPEC:		return sfmt("--activate %s", wevent_str(hdr, e->stroff));
-	case WEXTRA_PMU_EVENT:			return sfmt("--stacks=pmu=%s", wevent_str(hdr, e->stroff));
-	case WEXTRA_TIMER_FREQ:			return sfmt("--stacks=timer=%uhz", e->value);
+	case WEXTRA_STACK_CAPTURE:
+		switch (e->arg) {
+		case ST_TIMER:		return sfmt("--stacks=timer=%uhz", e->value);
+		case ST_PMU:		return sfmt("--stacks=pmu=%s", wevent_str(hdr, e->stroff));
+		case ST_OFFCPU:		return "--stacks=offcpu";
+		case ST_WAKER:		return "--stacks=waker";
+		case ST_CUDA:		return "--stacks=cuda";
+		case ST_REQ:		return "--stacks=req";
+		case ST_UTRACE:		return "--stacks=utrace";
+		default:		return sfmt("--stacks=!!unknown!!(%llu)", e->arg);
+		}
 	case WEXTRA_FR_SPEC:			return sfmt("--flight-record=%s", wevent_str(hdr, e->stroff));
 	default:
 		BUG("unknown extra param kind %d\n", e->kind);
@@ -1855,13 +1864,19 @@ int main(int argc, char **argv)
 		const struct wprof_data_cfg *cfg = wprof_cfg(dump_hdr);
 		env.data_hdr = dump_hdr;
 
+		enum stack_trace_kind captured_stack_traces = 0;
 		for (u64 i = 0; i < dump_hdr->extra_cnt; i++) {
 			struct wprof_extra_param *ep = wevent_extra_param(dump_hdr, i);
 			if (ep->kind == WEXTRA_STATS) {
 				env.stats = wevent_blob(dump_hdr, ep->bloboff);
-				break;
+			} else if (ep->kind == WEXTRA_STACK_CAPTURE) {
+				captured_stack_traces |= ep->arg;
+				if (ep->arg == ST_TIMER)
+					env.timer_freq_hz = ep->value;
 			}
 		}
+		if (env.timer_freq_hz)
+			env.timer_period_ns = 1000000000ULL / env.timer_freq_hz;
 
 		/*
 		 * Restore captured feature flags into env from the recorded config so
@@ -1927,23 +1942,25 @@ int main(int argc, char **argv)
 			wprintf("%-*s%s\n", w, "Timestamp:", fmt_timestamp_ns(cfg->realtime_start_ns + env.replay_start_offset_ns));
 			wprintf("%-*s%.3lfs\n", w, "Duration:", env.duration_ns / S);
 			wprintf("%-*s%u.%u\n", w, "Data version:", dump_hdr->version_major, dump_hdr->version_minor);
-			if (cfg->captured_stack_traces) {
+			if (captured_stack_traces) {
 				wprintf("%-*s\n", w, "Stack traces:");
-				if (cfg->captured_stack_traces & ST_TIMER)
-					wprintf("    --stacks timer=%dhz\n", cfg->timer_freq_hz);
-				if (cfg->captured_stack_traces & ST_OFFCPU)
+				if (captured_stack_traces & ST_TIMER)
+					wprintf("    --stacks timer=%dhz\n", env.timer_freq_hz);
+				if (captured_stack_traces & ST_OFFCPU)
 					wprintf("    --stacks offcpu\n");
-				if (cfg->captured_stack_traces & ST_WAKER)
+				if (captured_stack_traces & ST_WAKER)
 					wprintf("    --stacks waker\n");
-				if (cfg->captured_stack_traces & ST_CUDA)
+				if (captured_stack_traces & ST_CUDA)
 					wprintf("    --stacks cuda\n");
-				if (cfg->captured_stack_traces & ST_UTRACE)
+				if (captured_stack_traces & ST_REQ)
+					wprintf("    --stacks req\n");
+				if (captured_stack_traces & ST_UTRACE)
 					wprintf("    --stacks utrace\n");
-				if (cfg->captured_stack_traces & ST_PMU) {
+				if (captured_stack_traces & ST_PMU) {
 					/* one -S pmu= sampled event per stored spec, with its rate */
 					for (u64 i = 0; i < dump_hdr->extra_cnt; i++) {
 						struct wprof_extra_param *e = wevent_extra_param(dump_hdr, i);
-						if (e->kind == WEXTRA_PMU_EVENT)
+						if (e->kind == WEXTRA_STACK_CAPTURE && e->arg == ST_PMU)
 							wprintf("    --stacks pmu=%s\n", wevent_str(dump_hdr, e->stroff));
 					}
 				}
@@ -1975,8 +1992,7 @@ int main(int argc, char **argv)
 					struct wprof_extra_param *e = wevent_extra_param(dump_hdr, i);
 					if (e->kind == WEXTRA_METADATA) {
 						has_metadata = true;
-					} else if (e->kind == WEXTRA_STATS || e->kind == WEXTRA_PMU_EVENT ||
-						   e->kind == WEXTRA_TIMER_FREQ) {
+					} else if (e->kind == WEXTRA_STATS || e->kind == WEXTRA_STACK_CAPTURE) {
 						/* excluded from extras printing */
 					} else {
 						has_extras = true;
@@ -2007,7 +2023,7 @@ int main(int argc, char **argv)
 					for (u64 i = 0; i < dump_hdr->extra_cnt; i++) {
 						struct wprof_extra_param *e = wevent_extra_param(dump_hdr, i);
 						if (e->kind == WEXTRA_METADATA || e->kind == WEXTRA_STATS ||
-						    e->kind == WEXTRA_PMU_EVENT || e->kind == WEXTRA_TIMER_FREQ)
+						    e->kind == WEXTRA_STACK_CAPTURE)
 							continue;
 						wprintf("    %s\n", extra_param_str(dump_hdr, e));
 					}
@@ -2059,7 +2075,7 @@ int main(int argc, char **argv)
 			}
 			if (unknown_cnt)
 				wprintf("        %-*s%.3lfMB (%llu records)\n", w - 8, "UNKNOWN", unknown_sz / MB, unknown_cnt);
-			if (cfg->captured_stack_traces) {
+			if (captured_stack_traces) {
 				const struct wstack_hdr *shdr = wstack_hdr(dump_hdr);
 				wprintf("    %-*s%.3lfMB (%u unique stacks)\n", w - 4, "Stack traces:", dump_hdr->stacks_sz / MB, shdr->stack_cnt);
 				wprintf("        %-*s%.3lfMB (%u entries)\n", w - 8, "Call stacks:", shdr->stack_cnt * sizeof(struct wstack_trace) / MB, shdr->stack_cnt);
@@ -2089,9 +2105,6 @@ int main(int argc, char **argv)
 			goto cleanup;
 		}
 
-		env.timer_freq_hz = cfg->timer_freq_hz;
-		env.timer_period_ns = 1000000000ULL / env.timer_freq_hz;
-
 		/* validate data capture config compatibility (flags already restored above) */
 		for (int i = 0; i < ARRAY_SIZE(capture_features); i++) {
 			const struct capture_feature *f = &capture_features[i];
@@ -2106,8 +2119,8 @@ int main(int argc, char **argv)
 		}
 
 		if (env.requested_stack_traces == ST_UNSET)
-			env.requested_stack_traces = cfg->captured_stack_traces;
-		if ((env.requested_stack_traces & cfg->captured_stack_traces) != env.requested_stack_traces) {
+			env.requested_stack_traces = captured_stack_traces;
+		if ((env.requested_stack_traces & captured_stack_traces) != env.requested_stack_traces) {
 			eprintf("replay: some of requested kinds of stack traces were not captured (check --replay-info)!\n");
 			err = -EINVAL;
 			goto cleanup;
@@ -2214,9 +2227,8 @@ int main(int argc, char **argv)
 			case WEXTRA_PMU:
 			case WEXTRA_PREPARE_SPEC:
 			case WEXTRA_ACTIVATE_SPEC:
-			case WEXTRA_PMU_EVENT:
 			case WEXTRA_FR_SPEC:
-			case WEXTRA_TIMER_FREQ:
+			case WEXTRA_STACK_CAPTURE:
 				/* capture-time only; informational at replay (see cmdline reconstruction) */
 				break;
 			default:
