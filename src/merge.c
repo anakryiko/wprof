@@ -123,6 +123,15 @@ static void add_extra(struct wprof_extra_param **extras, u64 *cnt,
 	*cnt += 1;
 }
 
+/* arg holds the ST_XXX kind; the union holds its parameter (pmu spec stroff, or timer rate as value). */
+static void add_stack_capture(struct wprof_extra_param **extras, u64 *cnt,
+			      enum stack_trace_kind st_kind, u32 param)
+{
+	*extras = realloc(*extras, (*cnt + 1) * sizeof(**extras));
+	(*extras)[*cnt] = (struct wprof_extra_param){ .kind = WEXTRA_STACK_CAPTURE, .arg = st_kind, .stroff = param };
+	*cnt += 1;
+}
+
 static void collect_extras(struct persist_state *ps, struct wprof_extra_param **extras, u64 *cnt)
 {
 	for (int i = 0; i < env.allow_pid_cnt; i++)
@@ -170,13 +179,25 @@ static void collect_extras(struct persist_state *ps, struct wprof_extra_param **
 		if (env.pmu_derivs[i].spec)
 			add_extra(extras, cnt, WEXTRA_PMU, persist_stroff(ps, env.pmu_derivs[i].spec));
 	}
-	for (int i = 0; i < env.pmu_event_cnt; i++) {
-		if (env.pmu_events[i].spec)
-			add_extra(extras, cnt, WEXTRA_PMU_EVENT, persist_stroff(ps, env.pmu_events[i].spec));
-	}
-
+	/* one WEXTRA_STACK_CAPTURE per enabled kind; arg = per-kind param (0 if none) */
 	if (env.requested_stack_traces & ST_TIMER)
-		add_extra(extras, cnt, WEXTRA_TIMER_FREQ, env.timer_freq_hz);
+		add_stack_capture(extras, cnt, ST_TIMER, env.timer_freq_hz);
+	if (env.requested_stack_traces & ST_OFFCPU)
+		add_stack_capture(extras, cnt, ST_OFFCPU, 0);
+	if (env.requested_stack_traces & ST_WAKER)
+		add_stack_capture(extras, cnt, ST_WAKER, 0);
+	if (env.requested_stack_traces & ST_CUDA)
+		add_stack_capture(extras, cnt, ST_CUDA, 0);
+	if (env.requested_stack_traces & ST_REQ)
+		add_stack_capture(extras, cnt, ST_REQ, 0);
+	if (env.requested_stack_traces & ST_UTRACE)
+		add_stack_capture(extras, cnt, ST_UTRACE, 0);
+	if (env.requested_stack_traces & ST_PMU) {
+		for (int i = 0; i < env.pmu_event_cnt; i++) {
+			if (env.pmu_events[i].spec)
+				add_stack_capture(extras, cnt, ST_PMU, persist_stroff(ps, env.pmu_events[i].spec));
+		}
+	}
 
 	if (env.prepare_spec_str)
 		add_extra(extras, cnt, WEXTRA_PREPARE_SPEC, persist_stroff(ps, env.prepare_spec_str));
@@ -1274,8 +1295,6 @@ skip_pytorch:
 		.ktime_start_ns = env.ktime_start_ns,
 		.realtime_start_ns = env.realtime_start_ns,
 		.duration_ns = env.duration_ns,
-		.captured_stack_traces = env.requested_stack_traces,
-		.timer_freq_hz = env.timer_freq_hz,
 	};
 	for (int i = 0; i < capture_feature_cnt; i++) {
 		const struct capture_feature *f = &capture_features[i];

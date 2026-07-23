@@ -51,10 +51,6 @@ struct wprof_data_cfg {
 	u64 duration_ns;
 
 	u64 capture_features;
-
-	enum stack_trace_kind captured_stack_traces;
-
-	int timer_freq_hz;
 };
 
 /*
@@ -96,9 +92,8 @@ enum wprof_extra_param_kind {
 	WEXTRA_EMIT_EMBED_STACKS	= 25,
 	WEXTRA_PREPARE_SPEC		= 26,
 	WEXTRA_ACTIVATE_SPEC		= 27,
-	WEXTRA_PMU_EVENT		= 28,
-	WEXTRA_FR_SPEC			= 29,
-	WEXTRA_TIMER_FREQ		= 30,
+	WEXTRA_FR_SPEC			= 28,
+	WEXTRA_STACK_CAPTURE		= 29,
 };
 
 struct wprof_extra_param {
