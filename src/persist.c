@@ -261,7 +261,7 @@ static int resolve_task_ref(struct persist_state *ps, int tid)
 {
 	struct persist_thread_state *st;
 
-	if (!tid || !hashmap__find(ps->thread_states, (long)tid, &st) || !st->info)
+	if (!tid || !hashmap__find(ps->thread_states, (long)(u32)tid, &st) || !st->info)
 		return 0;
 	if (!st->task_id)
 		st->task_id = persist_task_id(ps, st->info);
