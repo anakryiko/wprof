@@ -425,6 +425,34 @@ s64 parse_time_units(const char *arg)
 	return -EINVAL;
 }
 
+int parse_freq(const char *arg, int *hz_out)
+{
+	int len = strlen(arg);
+
+	/* frequency form: "<N>hz" */
+	if (len > 2 && strcasecmp(arg + len - 2, "hz") == 0) {
+		char *end;
+		long hz;
+
+		errno = 0;
+		hz = strtol(arg, &end, 10);
+		if (errno || hz <= 0 || end != arg + len - 2)
+			return -EINVAL;
+		*hz_out = hz;
+		return 0;
+	}
+
+	/* otherwise a period, which must carry a time unit (no bare numbers) */
+	if (len == 0 || !isalpha((unsigned char)arg[len - 1]))
+		return -EINVAL;
+
+	s64 period_ns = parse_time_units(arg);
+	if (period_ns <= 0)
+		return -EINVAL;
+	*hz_out = 1000000000LL / period_ns;
+	return *hz_out > 0 ? 0 : -EINVAL;
+}
+
 static enum size_unit size_unit_from_str(const char *s)
 {
 	if (strcasecmp(s, "b") == 0)

@@ -175,6 +175,9 @@ static void collect_extras(struct persist_state *ps, struct wprof_extra_param **
 			add_extra(extras, cnt, WEXTRA_PMU_EVENT, persist_stroff(ps, env.pmu_events[i].spec));
 	}
 
+	if (env.requested_stack_traces & ST_TIMER)
+		add_extra(extras, cnt, WEXTRA_TIMER_FREQ, env.timer_freq_hz);
+
 	if (env.prepare_spec_str)
 		add_extra(extras, cnt, WEXTRA_PREPARE_SPEC, persist_stroff(ps, env.prepare_spec_str));
 	if (env.activate_spec_str)
