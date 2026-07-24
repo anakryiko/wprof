@@ -633,15 +633,27 @@ static void task_infos_init(struct task_infos *tis)
 	tis->data_sz = 0;
 }
 
-static void task_infos_add(struct task_infos *tis, struct task_struct *t, struct task_state *st)
+static void __task_infos_add(struct task_infos *tis, struct task_struct *t, struct task_state *st, bool force)
 {
-	if (st && (st->flags & WTASK_F_INFO_EMITTED))
+	if (!force && st && (st->flags & WTASK_F_INFO_EMITTED))
 		return;
 
 	tis->tasks[tis->cnt] = t;
 	tis->states[tis->cnt] = st;
 	tis->cnt += 1;
 	tis->data_sz += sizeof(struct wprof_thread);
+}
+
+/* Add a task's identity, unless it was already emitted (the common, deduped case). */
+static void task_infos_add(struct task_infos *tis, struct task_struct *t, struct task_state *st)
+{
+	__task_infos_add(tis, t, st, false);
+}
+
+/* Add a task's identity unconditionally, even if already emitted (e.g. exec's new identity). */
+static void task_infos_force_add(struct task_infos *tis, struct task_struct *t, struct task_state *st)
+{
+	__task_infos_add(tis, t, st, true);
 }
 
 static u32 task_infos_emit(struct task_infos *tis, struct bpf_dynptr *dptr, u64 off)
@@ -991,6 +1003,8 @@ int BPF_PROG(wprof_task_rename, struct task_struct *task, const char *comm)
 {
 	u64 now_ts = bpf_ktime_get_ns();
 	struct wprof_event *e;
+	struct bpf_dynptr *dptr;
+	size_t fix_sz = EV_SZ(rename);
 
 	if (!should_trace_task(task, now_ts))
 		return 0;
@@ -998,16 +1012,31 @@ int BPF_PROG(wprof_task_rename, struct task_struct *task, const char *comm)
 	if (task->flags & (PF_KTHREAD | PF_WQ_WORKER))
 		return 0;
 
-	/* identity changed; force re-emit of task info on the next referencing event */
 	struct task_state *s = task_state(task);
 	if (!s)
 		return 0;
 
-	__sync_fetch_and_and(&s->flags, ~WTASK_F_INFO_EMITTED);
+	/*
+	 * At the task_rename tracepoint task->comm still holds the OLD name, so
+	 * emit the task's (old) identity with the event. This makes the rename
+	 * self-identifying even when the task is first seen here (e.g. a process
+	 * exec'd from a parent forked before the session) rather than resolving to
+	 * the null/idle task. task_infos_add is a no-op if the old identity was
+	 * already emitted.
+	 */
+	struct task_infos tis;
+	task_infos_init(&tis);
+	task_infos_add(&tis, task, s);
+	size_t tasks_sz = tis.data_sz;
 
-	emit_task_event(e, EV_SZ(rename), 0, EV_TASK_RENAME, now_ts, task) {
+	emit_task_event_dyn(e, dptr, fix_sz, tasks_sz, EV_TASK_RENAME, now_ts, task) {
 		bpf_probe_read_kernel_str(e->rename.new_comm, sizeof(e->rename.new_comm), comm);
+		if (tasks_sz)
+			e->flags |= task_infos_emit(&tis, dptr, fix_sz);
 	}
+
+	/* identity changed; force re-emit of task info (new name) on the next event */
+	__sync_fetch_and_and(&s->flags, ~WTASK_F_INFO_EMITTED);
 
 	return 0;
 }
@@ -1045,20 +1074,31 @@ int BPF_PROG(wprof_task_exec, struct task_struct *p, int old_pid, struct linux_b
 {
 	u64 now_ts = bpf_ktime_get_ns();
 	struct wprof_event *e;
+	struct bpf_dynptr *dptr;
+	size_t fix_sz = EV_SZ(exec);
 
 	if (!should_trace_task(p, now_ts))
 		return 0;
 
-	/* identity changed; force re-emit of task info on the next referencing event */
 	struct task_state *s = task_state(p);
 	if (!s)
 		return 0;
 
-	__sync_fetch_and_and(&s->flags, ~WTASK_F_INFO_EMITTED);
+	/*
+	 * p->comm is already the new (post-exec) name here, so force-emit the task's
+	 * new identity inline: self-identifying (even on first sight) and the current
+	 * identity going forward, without racily clearing the emitted flag first.
+	 */
+	struct task_infos tis;
+	task_infos_init(&tis);
+	task_infos_force_add(&tis, p, s);
+	size_t tasks_sz = tis.data_sz;
 
-	emit_task_event(e, EV_SZ(exec), 0, EV_EXEC, now_ts, p) {
+	emit_task_event_dyn(e, dptr, fix_sz, tasks_sz, EV_EXEC, now_ts, p) {
 		e->exec.old_tid = old_pid;
 		bpf_probe_read_kernel_str(e->exec.filename, sizeof(e->exec.filename), bprm->filename);
+		if (tasks_sz)
+			e->flags |= task_infos_emit(&tis, dptr, fix_sz);
 	}
 
 	return 0;
@@ -1105,8 +1145,24 @@ int BPF_PROG(wprof_task_free, struct task_struct *p)
 	/* always free the task_state entry; only emit the event when enabled */
 	if (capture_task_life) {
 		struct wprof_event *e;
+		struct bpf_dynptr *dptr;
+		size_t fix_sz = EV_SZ(task_free);
 
-		emit_task_event(e, EV_SZ(task_free), 0, EV_TASK_FREE, now_ts, p);
+		/*
+		 * Carry the task's identity so the free event is self-identifying even
+		 * for a task first seen here (e.g. pre-existing and never scheduled
+		 * in-window) rather than resolving to the null/idle task. No-op if the
+		 * identity was already emitted.
+		 */
+		struct task_infos tis;
+		task_infos_init(&tis);
+		task_infos_add(&tis, p, s);
+		size_t tasks_sz = tis.data_sz;
+
+		emit_task_event_dyn(e, dptr, fix_sz, tasks_sz, EV_TASK_FREE, now_ts, p) {
+			if (tasks_sz)
+				e->flags |= task_infos_emit(&tis, dptr, fix_sz);
+		}
 	}
 
 cleanup:
