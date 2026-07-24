@@ -1240,6 +1240,8 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 		return err;
 	}
 
+	skel->rodata->fr_enabled = env.flightrec;
+
 	err = utrace_setup(skel);
 	if (err) {
 		eprintf("Failed to setup utrace: %d\n", err);

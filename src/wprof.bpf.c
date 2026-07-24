@@ -129,9 +129,17 @@ const volatile int deny_tname_cnt;
 
 const volatile u32 perf_ctr_cnt = 1; /* for veristat, reset in user space */
 
-u32 rb_cpu_map[1] SEC(".data.rb_cpu_map");
-const volatile u64 rb_cpu_map_mask;
-const volatile u64 rb_cnt;
+u32 rb_cpu_map[2] SEC(".data.rb_cpu_map");
+const volatile u64 rb_cpu_map_mask = 0x1;
+const volatile u64 rb_cnt = 1;
+
+/*
+ * In flight-recorder mode we emit each event's task identities inline on every
+ * event, so every retained chunk is self-contained and resolves no matter which
+ * older chunks were evicted. Outside flight-recorder mode a task's identity is
+ * emitted once (WTASK_F_INFO_EMITTED); fr_enabled selects between the two.
+ */
+const volatile bool fr_enabled = false;
 
 const volatile u64 rb_submit_threshold_bytes;
 
@@ -383,7 +391,6 @@ struct rb_ctx {
 	u64 has_dptr;
 };
 
-
 static __always_inline void *pick_rescue_rb()
 {
 	u32 rb_slot;
@@ -606,16 +613,16 @@ static __always_inline bool init_wprof_event(struct wprof_event *e, u32 sz, enum
 }
 
 #define emit_task_event(e, fix_sz, dyn_sz, kind, ts, task)					\
-	for (struct rb_ctx __cleanup(__rb_event_submit) __ctx =					\
+	for (struct rb_ctx __cleanup(__rb_event_submit) rb_ctx =					\
 			__rb_event_reserve(task, fix_sz, dyn_sz, (void **)&(e), NULL);		\
-	     e && __ctx.ev && init_wprof_event(e, fix_sz + dyn_sz, kind, ts, task);		\
-	     __ctx.ev = NULL)
+	     e && rb_ctx.ev && init_wprof_event(e, fix_sz + dyn_sz, kind, ts, task);		\
+	     rb_ctx.ev = NULL)
 
 #define emit_task_event_dyn(e, dptr, fix_sz, dyn_sz, kind, ts, task)				\
-	for (struct rb_ctx __cleanup(__rb_event_submit) __ctx =					\
+	for (struct rb_ctx __cleanup(__rb_event_submit) rb_ctx =					\
 			__rb_event_reserve(task, fix_sz, dyn_sz, (void **)&(e), &(dptr));	\
-	     e && __ctx.ev && init_wprof_event(e, fix_sz + dyn_sz, kind, ts, task);		\
-	     __ctx.ev = NULL)
+	     e && rb_ctx.ev && init_wprof_event(e, fix_sz + dyn_sz, kind, ts, task);		\
+	     rb_ctx.ev = NULL)
 
 #define MAX_TASK_INFO 3	/* bounded by the EF_TASK_INFO_MSK width */
 
@@ -626,7 +633,6 @@ struct task_infos {
 	u32 data_sz;
 };
 
-
 static void task_infos_init(struct task_infos *tis)
 {
 	tis->cnt = 0;
@@ -635,7 +641,12 @@ static void task_infos_init(struct task_infos *tis)
 
 static void __task_infos_add(struct task_infos *tis, struct task_struct *t, struct task_state *st, bool force)
 {
-	if (!force && st && (st->flags & WTASK_F_INFO_EMITTED))
+	/*
+	 * Outside flight-recorder mode a task's identity is emitted just once. In
+	 * flight-recorder mode we emit it on every event so each chunk is
+	 * self-contained. force overrides both (e.g. exec's new identity).
+	 */
+	if (!force && !fr_enabled && st && (st->flags & WTASK_F_INFO_EMITTED))
 		return;
 
 	tis->tasks[tis->cnt] = t;
@@ -644,7 +655,6 @@ static void __task_infos_add(struct task_infos *tis, struct task_struct *t, stru
 	tis->data_sz += sizeof(struct wprof_thread);
 }
 
-/* Add a task's identity, unless it was already emitted (the common, deduped case). */
 static void task_infos_add(struct task_infos *tis, struct task_struct *t, struct task_state *st)
 {
 	__task_infos_add(tis, t, st, false);

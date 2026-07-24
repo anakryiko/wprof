@@ -22,6 +22,7 @@ enum wprof_task_flags {
 };
 
 struct task_state {
+	u32 flags;
 	u32 last_task_state;
 	u64 softirq_ts;
 	u64 hardirq_ts;
@@ -31,7 +32,6 @@ struct task_state {
 	struct perf_counters ctrs;
 	/* SCX-related fields, used by scx.bpf.c */
 	struct wprof_scx_dsq scx_dsq;
-	u32 flags;
 };
 
 __hidden int glob_match(const char *pat, size_t pat_sz, const char *str, size_t str_sz);
