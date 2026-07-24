@@ -86,6 +86,27 @@ static bool has_pyruntime_sym(const char *binary_path)
 }
 
 /*
+ * Derive the CPython minor version from the ABI tag (e.g. "cpython-312") in a
+ * loaded extension module's soname. Returns the minor version (e.g. 12), or -1
+ * if no tagged module is mapped.
+ */
+static int py_minor_from_abi_tag(int pid)
+{
+	struct vma_info *vma;
+
+	wprof_for_each(vma, vma, pid, VMA_QUERY_FILE_BACKED_VMA | VMA_QUERY_VMA_EXECUTABLE) {
+		const char *tag = strstr(vma->vma_name, ".cpython-3");
+		int minor, n = 0;
+
+		/* whole soname: <mod>.cpython-3<minor>[flags]-<platform>.so; tag[n]=='\0' confirms ".so" matched */
+		if (tag && sscanf(tag, ".cpython-3%d%*[^.].so%n", &minor, &n) == 1 && tag[n] == '\0')
+			return minor;
+	}
+
+	return -1;
+}
+
+/*
  * Find the Python binary for a process by scanning executable VMAs for
  * Py_Version (3.11+) or _PyRuntime (3.10) symbols. Checks both the main
  * executable (statically-linked Python) and libpython*.so shared libraries.
@@ -131,13 +152,24 @@ int py_find_binary(int pid, struct py_binary_info *bi)
 		bi->vma_end = vma->vma_end;
 		bi->vma_offset = vma->vma_offset;
 
-		/* assume 3.10, unless we find elf version symbol */
+		/* assume 3.10, refined via Py_Version or the ABI tag below */
 		bi->py_major = 3;
 		bi->py_minor = 10;
 
-		if (py_read_elf_version(bi->host_path, &bi->py_major, &bi->py_minor) < 0 &&
-				!has_pyruntime_sym(bi->host_path))
+		if (py_read_elf_version(bi->host_path, &bi->py_major, &bi->py_minor) == 0)
+			return 0;
+
+		/* Py_Version absent (e.g. stripped by LTO); it's Python only if _PyRuntime is here */
+		if (!has_pyruntime_sym(bi->host_path))
 			continue;
+
+		int minor = py_minor_from_abi_tag(pid);
+		if (minor > 0) {
+			bi->py_minor = minor;
+		} else {
+			wprintf("PID %d (%s): could not determine Python version, assuming %d.%d\n",
+				pid, proc_name(pid), bi->py_major, bi->py_minor);
+		}
 		return 0;
 	}
 
