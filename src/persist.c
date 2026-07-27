@@ -256,13 +256,36 @@ void persist_task_infos(struct persist_state *ps, const struct wprof_event *e)
  * mode the identity record may have scrolled out of the retained window, or a
  * ringbuf reserve may have dropped it. A missing mapping therefore resolves to
  * the null task (0) rather than being fatal.
+ *
+ * Idle tasks are the exception: BPF does not emit their identity, so a negative
+ * ref -- the CPU encoded as -(cpu + 1) -- is resolved by fabricating a
+ * "swapper/N" record on first sighting.
  */
 static int resolve_task_ref(struct persist_state *ps, int tid)
 {
 	struct persist_thread_state *st;
 
-	if (!tid || !hashmap__find(ps->thread_states, (long)(u32)tid, &st) || !st->info)
+	if (!tid)
 		return 0;
+
+	if (hashmap__find(ps->thread_states, (long)(u32)tid, &st) && st->info)
+		goto persist;
+
+	if (tid >= 0)
+		return 0;
+
+	/* synthesize idle task info */
+	st = persist_thread_state(ps, (long)(u32)tid);
+	if (!st->info) {
+		struct wprof_thread *idle = calloc(1, sizeof(*idle));
+		idle->tid = tid;
+		idle->flags = PF_KTHREAD;
+		snprintf(idle->comm, sizeof(idle->comm), "swapper/%d", -(tid + 1));
+		snprintf(idle->pcomm, sizeof(idle->pcomm), "swapper/%d", -(tid + 1));
+
+		st->info = idle;
+	}
+persist:
 	if (!st->task_id)
 		st->task_id = persist_task_id(ps, st->info);
 	return st->task_id;

@@ -641,6 +641,10 @@ static void task_infos_init(struct task_infos *tis)
 
 static void __task_infos_add(struct task_infos *tis, struct task_struct *t, struct task_state *st, bool force)
 {
+	/* idle task info is synthesized in user space as a special case */
+	if (t->pid == 0)
+		return;
+
 	/*
 	 * Outside flight-recorder mode a task's identity is emitted just once. In
 	 * flight-recorder mode we emit it on every event so each chunk is
