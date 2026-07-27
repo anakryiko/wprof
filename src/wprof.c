@@ -939,9 +939,24 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 			eprintf("Trace injection setup failed: %d\n", err);
 			return err;
 		}
-		if (want_cuda && (env.requested_stack_traces & ST_CUDA))
-			bpf_program__set_autoload(skel->progs.wprof_cuda_call, true);
 	}
+
+	/*
+	 * ST_CUDA (e.g. pulled in by -Sall) needs an actual CUDA-using injectee to
+	 * capture from; if none was detected, drop it so nothing downstream attaches
+	 * CUDA USDTs or reports CUDA.
+	 */
+	bool have_cuda_injectee = false;
+	for (int i = 0; i < env.injectee_cnt; i++) {
+		if (env.injectees[i].detect_feats & INJ_FEAT_CUDA)
+			have_cuda_injectee = true;
+	}
+	if (!have_cuda_injectee) {
+		env.requested_stack_traces &= ~ST_CUDA;
+		env.capture_cuda = false;
+	}
+	if (env.requested_stack_traces & ST_CUDA)
+		bpf_program__set_autoload(skel->progs.wprof_cuda_call, true);
 
 	/*
 	 * Expand `-p nv-smi` / `-P nv-smi` into concrete PIDs from nvidia-smi.
