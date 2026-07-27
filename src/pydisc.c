@@ -182,7 +182,7 @@ int py_find_binary(int pid, struct py_binary_info *bi)
 static int setup_pid(const struct py_binary_info *bi, struct wprof_bpf *skel)
 {
 	int pid = bi->pid;
-	PyPidData pid_data = {};
+	struct PyPidData pid_data = {};
 	int err;
 
 	err = pyoffsets_for_version(bi->py_major, bi->py_minor, &pid_data.offsets);
