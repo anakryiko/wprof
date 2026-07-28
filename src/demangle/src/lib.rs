@@ -78,7 +78,9 @@ pub unsafe extern "C" fn demangle_symbol(
         return -ENOENT;
     };
 
-    let opts = cpp_demangle::DemangleOptions::default();
+    // Drop the return type: for template instantiations cpp_demangle prefixes it
+    // (e.g. "void ns::f<...>(...)"), which is noise for a display name.
+    let opts = cpp_demangle::DemangleOptions::default().no_return_type();
     if sym.structured_demangle(&mut writer, &opts).is_err() {
         return if writer.overflow { -E2BIG } else { -ENOENT };
     }

@@ -3359,7 +3359,12 @@ static void simplify_demangled_name(char *name)
 	int i, j, nest_lvl = 0;
 
 	for (i = 0, j = 0; name[i]; i++) {
-		/* blah<whatever> -> blah (handles nested templates) */
+		/* skip the (anonymous namespace) marker wholesale, wherever it appears */
+		if (name[i] == '(' && strncmp(&name[i], "(anonymous namespace)", 21) == 0) {
+			i += 20; /* the loop's i++ steps past the rest of the marker */
+			continue;
+		}
+		/* blah<whatever> -> blah (nesting tracked only by <>) */
 		if (name[i] == '<') {
 			nest_lvl++;
 			continue;
@@ -3368,20 +3373,10 @@ static void simplify_demangled_name(char *name)
 			nest_lvl--;
 			continue;
 		}
-		/* ::(anonymous namespace):: -> :::: */
-		if (i >= 2 && name[i] == '(' && name[i - 1] == ':' && name[i - 2] == ':') {
-			nest_lvl++;
-			continue;
-		}
-		if (name[i] == ')' && name[i + 1] == ':' && name[i + 2] == ':') {
-			nest_lvl--;
-			continue;
-		}
 
 		/* func(args...) -> func (stop at top-level opening paren) */
-		if (nest_lvl == 0 && name[i] == '(') {
+		if (nest_lvl == 0 && name[i] == '(')
 			break;
-		}
 
 		if (nest_lvl == 0) {
 			name[j] = name[i];
