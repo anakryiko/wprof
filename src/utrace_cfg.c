@@ -581,6 +581,28 @@ void utrace_compile_fmt(const char *fmt, const struct utrace_param *params, int 
 	*out_seg_cnt = seg_cnt;
 }
 
+/*
+ * Compile the cfg's name-format template into name_segs, resolving placeholders
+ * against the (entry-side) arg params. Runs both at capture (after arg types are
+ * resolved) and on replay (after re-parsing the persisted definition), so that
+ * replayed traces reproduce templated event names rather than the bare probe
+ * name.
+ */
+void utrace_cfg_compile_name(struct utrace_cfg *cfg)
+{
+	const struct utrace_param *params;
+	int param_cnt;
+	if (cfg->type == UTRACE_SPAN) {
+		params = cfg->span.entry->params;
+		param_cnt = cfg->span.entry->param_cnt;
+	} else {
+		params = cfg->params;
+		param_cnt = cfg->param_cnt;
+	}
+	utrace_compile_fmt(cfg->settings.name_fmt, params, param_cnt,
+			   &cfg->settings.name_segs, &cfg->settings.name_seg_cnt);
+}
+
 static int parse_probe_def(struct sview orig, struct sview def, struct utrace_cfg *cfg)
 {
 	struct sview params;
