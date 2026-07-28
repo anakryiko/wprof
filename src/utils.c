@@ -677,7 +677,11 @@ u64 resolve_timespec(const struct timespec_spec *spec, u64 start_ktime_ns)
 {
 	switch (spec->kind) {
 	case TS_NOW:
-		return ktime_now_ns();
+		/* "now" means immediately; 0 is the caller's "as soon as possible"
+		 * sentinel. Resolving to a literal ktime_now_ns() here would be a hair
+		 * in the past by the time the caller re-reads the clock to range-check it.
+		 */
+		return 0;
 	case TS_REL:
 		return start_ktime_ns + spec->val;
 	case TS_ABS:
