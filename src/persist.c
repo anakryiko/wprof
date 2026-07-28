@@ -271,8 +271,15 @@ static int resolve_task_ref(struct persist_state *ps, int tid)
 	if (hashmap__find(ps->thread_states, (long)(u32)tid, &st) && st->info)
 		goto persist;
 
-	if (tid >= 0)
-		return 0;
+	if (tid >= 0) {
+		struct wprof_thread synth = {};
+
+		synth.pid = 0;
+		synth.tid = tid;
+		snprintf(synth.comm, sizeof(synth.comm), "TID %d", tid);
+		snprintf(synth.pcomm, sizeof(synth.pcomm), "<unknown>");
+		return persist_task_id(ps, &synth);
+	}
 
 	/* synthesize idle task info */
 	st = persist_thread_state(ps, (long)(u32)tid);

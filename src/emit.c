@@ -146,6 +146,8 @@ enum track_special {
 
 	TKS_REQUESTS = 4,
 	TKS_CUDA = 5,
+
+	TKS_UNRESOLVED = 6,
 };
 
 #define TRACK_UUID(kind, id) (((u64)(id) * TK_MULT) + (u64)kind)
@@ -155,6 +157,7 @@ enum track_special {
 #define TRACK_UUID_REQUESTS	TRACK_UUID(TK_SPECIAL, TKS_REQUESTS)
 #define TRACK_UUID_CUDA		TRACK_UUID(TK_SPECIAL, TKS_CUDA)
 #define TRACK_UUID_SESSION	TRACK_UUID(TK_SPECIAL, TKS_SESSION)
+#define TRACK_UUID_UNRESOLVED	TRACK_UUID(TK_SPECIAL, TKS_UNRESOLVED)
 
 enum dyn_track_kind {
 	__DTK_GAP = TK_MULT - 1,	/* we need to not overlap with enum track_kind */
@@ -166,6 +169,8 @@ enum dyn_track_kind {
 	DTK_CUDA_PROC,			/* CUDA-using process track (id1 = pid) */
 	DTK_CUDA_PROC_GPU,		/* CUDA-using process's GPU track (id1 = pid, id2 = gpu_id) */
 	DTK_CUDA_PROC_STREAM,		/* CUDA-using process's GPU stream track (id1 = pid, id2 = stream_id) */
+
+	DTK_UNRESOLVED,			/* unresolved-ref task track (id1 = tid), child of the UNRESOLVED folder */
 
 	/*
 	 * Children of the thread track, in desired display order. The enum value
@@ -232,6 +237,7 @@ static size_t track_state_size(enum dyn_track_kind kind)
 	case DTK_CUDA_PROC_GPU:
 	case DTK_CUDA_PROC_STREAM:
 	case DTK_THREAD_CUDA:
+	case DTK_UNRESOLVED:
 		return offsetof(struct track_state, req);
 	default:
 		BUG("unknown dynamic track kind %d\n", kind);
@@ -590,24 +596,35 @@ enum task_kind {
 	TASK_NORMAL,
 	TASK_IDLE,
 	TASK_KERNEL,
+	TASK_UNRESOLVED,	/* synthesized "TID N" task for an unresolvable ref */
 };
 
 #define TRACK_RANK_IDLE		-2
 #define TRACK_RANK_KERNEL	-1
 
+static bool is_idle_task(const struct wprof_task *t)
+{
+	/*
+	 * idle carries a synthetic negative tid (-(cpu + 1)); an unresolvable ref
+	 * is synthesized with its real, positive tid, so both have pid 0.
+	 */
+	return t->pid == 0 && (int)t->tid < 0;
+}
+
 static enum task_kind task_kind(const struct wprof_task *t)
 {
-	if (t->pid == 0)
+	if (is_idle_task(t))
 		return TASK_IDLE;
-	else if (t->flags & (PF_KTHREAD | PF_WQ_WORKER))
+	if (t->pid == 0)		/* pid 0 but not idle: an unresolvable ref */
+		return TASK_UNRESOLVED;
+	if (t->flags & (PF_KTHREAD | PF_WQ_WORKER))
 		return TASK_KERNEL;
-	else
-		return TASK_NORMAL;
+	return TASK_NORMAL;
 }
 
 static int task_tid(const struct wprof_task *t)
 {
-	return t->pid ? t->tid : 0;
+	return is_idle_task(t) ? 0 : t->tid;
 }
 
 static int track_tid(const struct wprof_task *t)
@@ -618,7 +635,7 @@ static int track_tid(const struct wprof_task *t)
 	 * need to avoid having any thread with TID 0, so swapper/N have N+1
 	 * TID...
 	 */
-	return t->pid ? t->tid : -t->tid;
+	return is_idle_task(t) ? -t->tid : t->tid;
 }
 
 #define TRACK_PID_IDLE		2000000000ULL
@@ -663,6 +680,7 @@ static int track_process_rank(const struct wprof_task *t)
 
 #define TRACK_NAME_IDLE "IDLE"
 #define TRACK_NAME_KERNEL "KERNEL"
+#define TRACK_NAME_UNRESOLVED "UNRESOLVED"
 
 static const char *track_pcomm(const struct wprof_task *t)
 {
@@ -742,10 +760,14 @@ static uint64_t trackid_thread_meta(const struct wprof_task *t)
 
 static uint64_t trackid_thread(const struct wprof_task *t)
 {
-	if (task_kind(t) == TASK_IDLE)
+	switch (task_kind(t)) {
+	case TASK_IDLE:
 		return TRACK_UUID(TK_IDLE, track_tid(t));
-	else
+	case TASK_UNRESOLVED:
+		return track_state_get_or_add(DTK_UNRESOLVED, t->tid, 0)->track_id;
+	default:
 		return TRACK_UUID(TK_THREAD, track_tid(t));
+	}
 }
 
 static uint64_t trackid_process(const struct wprof_task *t)
@@ -892,6 +914,7 @@ static struct emit_rec emit_counter_pre(u64 ts, const struct wprof_task *t,
 static bool kind_track_emitted[] = {
 	[TASK_IDLE] = false,
 	[TASK_KERNEL] = false,
+	[TASK_UNRESOLVED] = false,
 };
 
 static void emit_kind_track_descr(enum task_kind k)
@@ -1173,6 +1196,21 @@ static void emit_track_descrs(struct worker_state *w, const struct wprof_task *t
 {
 	enum task_kind tkind = task_kind(t);
 
+	if (tkind == TASK_UNRESOLVED) {
+		if (!kind_track_emitted[TASK_UNRESOLVED]) {
+			emit_track_descr_explicit(TRACK_UUID_UNRESOLVED, TRACK_UUID_SESSION,
+						  TRACK_NAME_UNRESOLVED, TKS_UNRESOLVED);
+			kind_track_emitted[TASK_UNRESOLVED] = true;
+		}
+
+		struct track_state *s = track_state_get_or_add(DTK_UNRESOLVED, t->tid, 0);
+		if (!s->exists) {
+			emit_track_descr(s->track_id, TRACK_UUID_UNRESOLVED, sfmt("TID %d", t->tid), 0);
+			s->exists = true;
+		}
+		return;
+	}
+
 	if (tkind == TASK_NORMAL) {
 		if (!track_descr_emitted(TDK_PROCESS, t->pid)) {
 			track_descr_mark_emitted(TDK_PROCESS, t->pid);
@@ -1216,7 +1254,7 @@ static bool should_trace_task(const struct wprof_task *task)
 	for (int i = 0; i < env.deny_tname_cnt; i++)
 		if (wprof_glob_match(env.deny_tnames[i], task->comm))
 			return false;
-	if (env.deny_idle && task->pid == 0)
+	if (env.deny_idle && is_idle_task(task)) /* real idle, not an unresolved ref */
 		return false;
 	if (env.deny_kthread && (task->flags & PF_KTHREAD))
 		return false;
@@ -1247,7 +1285,7 @@ static bool should_trace_task(const struct wprof_task *task)
 		needs_match = true;
 	}
 	if (env.allow_idle) {
-		if (task->pid == 0)
+		if (is_idle_task(task))
 			return true;
 		needs_match = true;
 	}
@@ -1642,7 +1680,7 @@ static void emit_switch(struct worker_state *w, const struct wevent *e, struct s
 	 * is rendered at prev's next switch-in, paired by flow id. The idle task is
 	 * always runnable, so exclude it -- it is never actually preempted.
 	 */
-	if (s->trace_next && task.pid != 0 && e->swtch.prev_task_state == TASK_RUNNING) {
+	if (s->trace_next && !is_idle_task(&task) && e->swtch.prev_task_state == TASK_RUNNING) {
 		emit_track_descrs(w, &next);
 
 		emit_instant(trackid_thread(&next), e->ts, IID_NAME_PREEMPTOR, IID_CAT_PREEMPTOR) {
@@ -1688,7 +1726,7 @@ static void emit_switch(struct worker_state *w, const struct wevent *e, struct s
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
 
 		/* IDLE threads always go off-cpu to run something else */
-		if (s->prev_st->pid != 0)
+		if (!is_idle_task(&task))
 			emit_kv_str(IID_ANNK_OFFCPU_REASON, s->prev_preempted ? IID_ANNV_OFFCPU_PREEMPTED : IID_ANNV_OFFCPU_BLOCKED);
 
 		emit_kv_str(IID_ANNK_SWITCH_TO,
@@ -1817,11 +1855,11 @@ skip_next_task:
 		struct wpb_ftrace_event *fev = add_ftrace_event(w, e->cpu, e->ts, task_tid(&task));
 
 		fev->kind = WPB_FTRACE_SCHED_SWITCH;
-		fev->prev_comm = task.pid ? wpb_str_from_cstr(0, task.comm) : wpb_no_str();
+		fev->prev_comm = is_idle_task(&task) ? wpb_no_str() : wpb_str_from_cstr(0, task.comm);
 		fev->prev_pid = task_tid(&task);
 		fev->prev_prio = e->swtch.prev_prio;
 		fev->prev_state = e->swtch.prev_task_state;
-		fev->next_comm = next.pid ? wpb_str_from_cstr(0, next.comm) : wpb_no_str();
+		fev->next_comm = is_idle_task(&next) ? wpb_no_str() : wpb_str_from_cstr(0, next.comm);
 		fev->next_pid = task_tid(&next);
 		fev->next_prio = e->swtch.next_prio;
 	}
@@ -1925,7 +1963,7 @@ static int process_switch(struct worker_state *w, const struct wevent *e)
 
 	if (s.trace_prev) {
 		s.prev_st = task_state(w, &task);
-		s.prev_preempted = task.pid != 0 && e->swtch.prev_task_state == TASK_RUNNING;
+		s.prev_preempted = !is_idle_task(&task) && e->swtch.prev_task_state == TASK_RUNNING;
 		/* take into account task rename for switched-out task to maintain consistently named trace slice */
 		s.prev_name = s.prev_st->rename_ts ? s.prev_st->old_comm : s.prev_st->comm;
 		s.prev_name_iid = s.prev_st->rename_ts ? s.prev_st->old_name_iid : s.prev_st->name_iid;
