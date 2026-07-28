@@ -36,7 +36,7 @@ sleep 1
 # Step 1: Capture raw data
 echo ""
 echo "=== Step 1: Capturing (2s)... ==="
-"$WPROF" -f py-trace=$PYTRACE_PID -d2000 -vv --log=pytrace --log=tracee --log=inject -D "$DATA_OUT" 2>&1
+"$WPROF" -f py-trace=$PYTRACE_PID -d2000 -vv --log=tracee --log=inject -D "$DATA_OUT" 2>&1
 
 kill $PYTRACE_PID 2>/dev/null || true
 wait $PYTRACE_PID 2>/dev/null || true
