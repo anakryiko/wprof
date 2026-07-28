@@ -213,7 +213,7 @@ WPROF_SRCS := wprof.c utils.c env.c protobuf.c data.c emit.c stacktrace.c pmu.c	
 	      cupti_driver_cbid_map.gen.c cupti_runtime_cbid_map.gen.c				\
 	      pystacks.c pydisc.c pysym.c pyline.c pytrace.c utrace_cfg.c utrace.c blobset.c	\
 	      ksyms.c injmgr.c
-WPROF_HDRS := wprof.h utils.h env.h protobuf.h data.h emit.h stacktrace.h topology.h pmu.h	\
+WPROF_HDRS := wprof.h utils.h env.h protobuf.h data.h emit.h json.h stacktrace.h topology.h pmu.h	\
 	      proc.h requests.h inj_common.h inject.h sys.h elf_utils.h cuda_data.h 	\
 	      wprof_types.h demangle.h merge.h wevent.h persist.h				\
 	      pystacks.h pyoffsets.h pydisc.h pysym.h pyline.h pytrace.h pytrace_data.h		\
