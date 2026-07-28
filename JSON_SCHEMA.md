@@ -14,7 +14,9 @@ in a fixed order:
   `%.9lf`). Timestamps are relative to session start (i.e., first event is
   near 0.0).
 - **Task objects** represent a thread or process identity. The `tid` field is
-  omitted for idle threads (pid 0).
+  omitted for idle threads (`pid` 0, comm `swapper/N`). An unresolved task
+  reference — one whose identity was never recorded — appears as `pid` 0 with a
+  present positive `tid`, comm `"TID N"`, and pcomm `"<unknown>"`.
   ```json
   {"tid": 1234, "pid": 1000, "comm": "myapp"}
   ```
@@ -29,7 +31,7 @@ The first line contains session metadata. Example:
 
 ```json
 {
-  "version": "2.0",
+  "version": "3.0",
   "dur": 1.000000000,
   "timer_freq_hz": 997,
   "capture_ipis": false,
