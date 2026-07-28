@@ -20,7 +20,7 @@ struct json_state {
 
 #define JSON_STATE_INIT(file) { .f = (file), .lvl = -1 }
 
-static void json_obj_start(struct json_state *js)
+static inline void json_obj_start(struct json_state *js)
 {
 	++js->lvl;
 	js->scope[js->lvl] = JSON_OBJ;
@@ -28,7 +28,7 @@ static void json_obj_start(struct json_state *js)
 	fprintf(js->f, "{");
 }
 
-static void json_obj_end(struct json_state *js)
+static inline void json_obj_end(struct json_state *js)
 {
 	js->cnt[js->lvl] = 0;
 	js->lvl--;
@@ -38,26 +38,26 @@ static void json_obj_end(struct json_state *js)
 		fprintf(js->f, "}");
 }
 
-static void json_key(struct json_state *js, const char *key)
+static inline void json_key(struct json_state *js, const char *key)
 {
 	fprintf(js->f, "%s\"%s\":", js->cnt[js->lvl] ? "," : "", key);
 	js->cnt[js->lvl]++;
 }
 
-static void json_subobj_start(struct json_state *js, const char *key)
+static inline void json_subobj_start(struct json_state *js, const char *key)
 {
 	json_key(js, key);
 	json_obj_start(js);
 }
 
-static void json_kv_str(struct json_state *js, const char *key, const char *value)
+static inline void json_kv_str(struct json_state *js, const char *key, const char *value)
 {
 	json_key(js, key);
 	fprintf(js->f, "\"%s\"", value);
 }
 
 __attribute__((format(printf, 3, 4)))
-static void json_kv_fmt(struct json_state *js, const char *key, const char *fmt, ...)
+static inline void json_kv_fmt(struct json_state *js, const char *key, const char *fmt, ...)
 {
 	json_key(js, key);
 	fprintf(js->f, "\"");
@@ -70,30 +70,30 @@ static void json_kv_fmt(struct json_state *js, const char *key, const char *fmt,
 	fprintf(js->f, "\"");
 }
 
-static void json_kv_int(struct json_state *js, const char *key, long long value)
+static inline void json_kv_int(struct json_state *js, const char *key, long long value)
 {
 	json_key(js, key);
 	fprintf(js->f, "%lld", value);
 }
 
-static void json_kv_float(struct json_state *js, const char *key, const char *fmt, double value)
+static inline void json_kv_float(struct json_state *js, const char *key, const char *fmt, double value)
 {
 	json_key(js, key);
 	fprintf(js->f, fmt, value);
 }
 
-static void json_kv_ts(struct json_state *js, const char *key, u64 ns)
+static inline void json_kv_ts(struct json_state *js, const char *key, u64 ns)
 {
 	json_kv_float(js, key, "%.9lf", ns / 1e9);
 }
 
-static void json_kv_bool(struct json_state *js, const char *key, bool value)
+static inline void json_kv_bool(struct json_state *js, const char *key, bool value)
 {
 	json_key(js, key);
 	fprintf(js->f, "%s", value ? "true" : "false");
 }
 
-static void json_arr_start(struct json_state *js)
+static inline void json_arr_start(struct json_state *js)
 {
 	++js->lvl;
 	js->scope[js->lvl] = JSON_ARR;
@@ -101,34 +101,34 @@ static void json_arr_start(struct json_state *js)
 	fprintf(js->f, "[");
 }
 
-static void json_arr_end(struct json_state *js)
+static inline void json_arr_end(struct json_state *js)
 {
 	js->cnt[js->lvl] = 0;
 	js->lvl--;
 	fprintf(js->f, "]");
 }
 
-static void json_subarr_start(struct json_state *js, const char *key)
+static inline void json_subarr_start(struct json_state *js, const char *key)
 {
 	json_key(js, key);
 	json_arr_start(js);
 }
 
-static void json_arr_elem(struct json_state *js)
+static inline void json_arr_elem(struct json_state *js)
 {
 	if (js->cnt[js->lvl])
 		fprintf(js->f, ",");
 	js->cnt[js->lvl]++;
 }
 
-static void json_arr_str(struct json_state *js, const char *value)
+static inline void json_arr_str(struct json_state *js, const char *value)
 {
 	json_arr_elem(js);
 	fprintf(js->f, "\"%s\"", value);
 }
 
 __attribute__((format(printf, 2, 3)))
-static void json_arr_fmt(struct json_state *js, const char *fmt, ...)
+static inline void json_arr_fmt(struct json_state *js, const char *fmt, ...)
 {
 	json_arr_elem(js);
 	fprintf(js->f, "\"");
@@ -142,13 +142,13 @@ static void json_arr_fmt(struct json_state *js, const char *fmt, ...)
 }
 
 __unused
-static void json_arr_int(struct json_state *js, long long value)
+static inline void json_arr_int(struct json_state *js, long long value)
 {
 	json_arr_elem(js);
 	fprintf(js->f, "%lld", value);
 }
 
-static void json_arr_float(struct json_state *js, const char *fmt, double value)
+static inline void json_arr_float(struct json_state *js, const char *fmt, double value)
 {
 	json_arr_elem(js);
 	fprintf(js->f, fmt, value);

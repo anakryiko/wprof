@@ -22,7 +22,7 @@
 #include "requests.h"
 #include "utrace_cfg.h"
 
-#include "json.c"
+#include "json.h"
 
 static __thread struct json_state js;
 
