@@ -4497,7 +4497,6 @@ static void emit_header_json(struct worker_state *w)
 	json_arr_end(j);
 
 	json_kv_int(j, "stack_cnt", stack_cnt);
-	json_kv_int(j, "event_cnt", hdr->event_cnt);
 
 	json_subarr_start(j, "pmus");
 	int pmu_total = hdr->pmu_def_real_cnt + hdr->pmu_def_deriv_cnt;

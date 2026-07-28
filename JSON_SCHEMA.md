@@ -41,7 +41,6 @@ The first line contains session metadata. Example:
   "capture_pytorch": false,
   "stacks": ["timer", "offcpu"],
   "stack_cnt": 42,
-  "event_cnt": 100000,
   "pmus": ["instructions", "cycles", "IPC"]
 }
 ```
@@ -61,7 +60,6 @@ The first line contains session metadata. Example:
 | `capture_utrace`   | bool            | Whether user-defined tracing (utrace) was enabled                    |
 | `stacks`           | array of string | Stack trace kinds captured (e.g., `["timer","offcpu"]`, `[]` if none)|
 | `stack_cnt`        | int             | Number of stack trace lines that follow (0 if none)                  |
-| `event_cnt`        | int             | Total number of event lines that follow                              |
 | `pmus`             | array of string | PMU counter names (e.g., `["instructions","cycles"]`, `[]` if none)  |
 | `extras`           | array of string | *(optional)* Extra config (e.g., `--utrace` definitions)             |
 
