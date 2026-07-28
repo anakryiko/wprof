@@ -4509,13 +4509,14 @@ static void emit_header_json(struct worker_state *w)
 	struct wprof_data_cfg *cfg = wprof_cfg(hdr);
 
 	struct wstack_hdr *shdr = wstack_hdr(hdr);
-	int stack_cnt = shdr ? shdr->stack_cnt - 1 : 0; /* exclude the dummy zero-entry */
+	/* exclude the dummy zero-entry; report 0 when stacks aren't emitted (--no-stacks) */
+	int stack_cnt = (shdr && env.requested_stack_traces) ? shdr->stack_cnt - 1 : 0;
 
 	json_obj_start(j);
 	json_kv_fmt(j, "version", "%d.%d", hdr->version_major, hdr->version_minor);
 	json_kv_str(j, "timestamp", fmt_timestamp_ns(cfg->realtime_start_ns));
 	json_kv_float(j, "dur", "%.9lf", (env.sess_end_ts - env.sess_start_ts) / 1e9);
-	json_kv_int(j, "timer_freq_hz", env.timer_freq_hz);
+	json_kv_int(j, "timer_freq_hz", (env.requested_stack_traces & ST_TIMER) ? env.timer_freq_hz : 0);
 	for (int i = 0; i < capture_feature_cnt; i++) {
 		const struct capture_feature *f = &capture_features[i];
 		json_kv_bool(j, f->json_key, cfg_has_feat(cfg->capture_features, f));
