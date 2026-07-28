@@ -2571,7 +2571,7 @@ int main(int argc, char **argv)
 	 */
 	if (env.prepare_spec.kind) {
 		env.sess_ctl.prepare_target_ts = resolve_timespec(&env.prepare_spec, env.actual_start_ts);
-		if (ts_before(env.sess_ctl.prepare_target_ts, ktime_now_ns())) {
+		if (env.sess_ctl.prepare_target_ts && ts_before(env.sess_ctl.prepare_target_ts, ktime_now_ns())) {
 			eprintf("Preparation time (--prepare) is in the past!\n");
 			err = -EINVAL;
 			goto cleanup;
@@ -2579,7 +2579,7 @@ int main(int argc, char **argv)
 	}
 	if (env.activate_spec.kind) {
 		env.sess_ctl.activate_target_ts = resolve_timespec(&env.activate_spec, env.actual_start_ts);
-		if (ts_before(env.sess_ctl.activate_target_ts, ktime_now_ns())) {
+		if (env.sess_ctl.activate_target_ts && ts_before(env.sess_ctl.activate_target_ts, ktime_now_ns())) {
 			eprintf("Activation time (--activate) is in the past!\n");
 			err = -EINVAL;
 			goto cleanup;
