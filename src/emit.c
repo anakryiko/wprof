@@ -169,6 +169,7 @@ enum dyn_track_kind {
 	DTK_CUDA_PROC,			/* CUDA-using process track (id1 = pid) */
 	DTK_CUDA_PROC_GPU,		/* CUDA-using process's GPU track (id1 = pid, id2 = gpu_id) */
 	DTK_CUDA_PROC_STREAM,		/* CUDA-using process's GPU stream track (id1 = pid, id2 = stream_id) */
+	DTK_CUDA_PROC_STREAM_SYNC,	/* per-stream sync sub-track, merged with the stream (id1 = pid, id2 = stream_id) */
 
 	DTK_UNRESOLVED,			/* unresolved-ref task track (id1 = tid), child of the UNRESOLVED folder */
 
@@ -216,6 +217,11 @@ struct track_state {
 			u32 last_tr_id;
 			int active_depth;
 		} cs;
+
+		/* DTK_CUDA_PROC_STREAM */
+		struct {
+			u64 gpu_track_id;	/* parent GPU track, so the sync sub-track can share it */
+		} stream;
 	};
 };
 
@@ -226,6 +232,8 @@ static size_t track_state_size(enum dyn_track_kind kind)
 		return offsetofend(struct track_state, req);
 	case DTK_TIMER_CALLSTACK:
 		return offsetofend(struct track_state, cs);
+	case DTK_CUDA_PROC_STREAM:
+		return offsetofend(struct track_state, stream);
 	case DTK_PROC_REQS:
 	case DTK_REQ_THREAD:
 	case DTK_REQ_THREAD_EMBED:
@@ -235,7 +243,7 @@ static size_t track_state_size(enum dyn_track_kind kind)
 	case DTK_PMU_EVENT:
 	case DTK_CUDA_PROC:
 	case DTK_CUDA_PROC_GPU:
-	case DTK_CUDA_PROC_STREAM:
+	case DTK_CUDA_PROC_STREAM_SYNC:
 	case DTK_THREAD_CUDA:
 	case DTK_UNRESOLVED:
 		return offsetof(struct track_state, req);
@@ -3291,11 +3299,32 @@ static u64 ensure_cuda_proc_stream_track(int pid, u32 gpu_id, u32 stream_id, con
 
 	if (!s->exists) {
 		struct track_state *gpu = track_state_find(DTK_CUDA_PROC_GPU, pid, gpu_id);
-		emit_track_descr(s->track_id, gpu->track_id,
-				 sfmt("Stream #%u (%s %d)", stream_id, proc_name, pid), 0);
+		s->stream.gpu_track_id = gpu->track_id;
+		emit_track_descr_impl(s->track_id, gpu->track_id,
+				      sfmt("Stream #%u (%s %d)", stream_id, proc_name, pid), 0,
+				      CHILD_ORDER_CHRONO, MERGE_BY_NAME);
 		s->exists = true;
 	}
 	return s->track_id;
+}
+
+/*
+ * A sync's CPU-side wait spans multiple GPU ops, so it can't live on the stream
+ * track without crossing them. Put it on a same-named sibling under the same GPU
+ * so Perfetto merges the two into one row.
+ */
+static u64 ensure_cuda_proc_stream_sync_track(int pid, u32 stream_id, const char *proc_name)
+{
+	struct track_state *sync = track_state_get_or_add(DTK_CUDA_PROC_STREAM_SYNC, pid, stream_id);
+
+	if (!sync->exists) {
+		struct track_state *stream = track_state_find(DTK_CUDA_PROC_STREAM, pid, stream_id);
+		emit_track_descr_impl(sync->track_id, stream->stream.gpu_track_id,
+				      sfmt("Stream #%u (%s %d)", stream_id, proc_name, pid), 0,
+				      CHILD_ORDER_CHRONO, MERGE_BY_NAME);
+		sync->exists = true;
+	}
+	return sync->track_id;
 }
 
 static u64 ensure_cuda_api_track(int tid, const char *comm)
@@ -3643,7 +3672,6 @@ static void emit_cuda_sync(struct worker_state *w, const struct wevent *e)
 	const struct wevent_cuda_sync *cu = &e->cuda_sync;
 	struct wprof_data_hdr *hdr = w->dump_hdr;
 	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
-	struct track_state *st = NULL;
 	u64 track_uuid;
 
 	if ((int)cu->stream_id == -1 /* CUPTI_SYNCHRONIZATION_INVALID_VALUE */) {
@@ -3652,13 +3680,14 @@ static void emit_cuda_sync(struct worker_state *w, const struct wevent *e)
 		 * so we put them on "global" (CUDA) process track
 		 */
 		track_uuid = ensure_cuda_proc_track(task.pid, task.pcomm);
-	} else if ((st = track_state_find(DTK_CUDA_PROC_STREAM, task.pid, cu->stream_id))) {
+	} else if (track_state_find(DTK_CUDA_PROC_STREAM, task.pid, cu->stream_id)) {
 		/*
 		 * SYNC events don't record device ID (only in CUDA 13+, which we don't take
-		 * advantage of just yet), so put SYNC onto stream track if we already previously
-		 * emitted a properly structured track descriptor that belongs to a specific GPU
+		 * advantage of just yet), so we can't build the GPU->stream structure from
+		 * scratch here; reuse the existing stream track's GPU parent and put SYNC on
+		 * its dedicated sync sub-track (UI-merged with the stream, no op crossing).
 		 */
-		track_uuid = st->track_id;
+		track_uuid = ensure_cuda_proc_stream_sync_track(task.pid, cu->stream_id, task.pcomm);
 	} else {
 		/*
 		 * otherwise we don't have GPU ID to ensure proper track structure, so put this
