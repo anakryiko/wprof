@@ -119,6 +119,44 @@ int persist_bloboff(struct persist_state *ps, const void *data, size_t len, size
 	return blobset__add_blob(ps->blobs, data, len, align);
 }
 
+static void persist_update_task_slot(struct persist_state *ps, int task_id, const struct wprof_thread *task)
+{
+	struct wevent_task *entry = &ps->threads.entries[task_id];
+
+	entry->tid = task->tid;
+	entry->pid = task->pid;
+	entry->flags = task->flags;
+	entry->comm_stroff = persist_stroff(ps, task->comm);
+	entry->pcomm_stroff = persist_stroff(ps, task->pcomm);
+}
+
+static int persist_alloc_task_slot(struct persist_state *ps)
+{
+	if (ps->threads.count >= ps->threads.capacity) {
+		size_t new_cap = ps->threads.capacity * 3 / 2;
+
+		ps->threads.entries = realloc(ps->threads.entries, new_cap * sizeof(*ps->threads.entries));
+		ps->threads.capacity = new_cap;
+	}
+
+	return ps->threads.count++;
+}
+
+static void persist_update_lookup_index(struct persist_state *ps, const struct wprof_thread *task, int task_id)
+{
+	/* allocate key for hashmap (needs to persist) */
+	struct thread_key *pkey = malloc(sizeof(*pkey));
+
+	pkey->tid = task->tid;
+	pkey->pid = task->pid;
+	snprintf(pkey->comm, sizeof(pkey->comm), "%s", task->comm);
+	snprintf(pkey->pcomm, sizeof(pkey->pcomm), "%s", task->pcomm);
+
+	/* already interned elsewhere (e.g. the CUDA/Python join)? keep it, drop the dup */
+	if (hashmap__add(ps->threads.lookup, pkey, (long)task_id))
+		free(pkey);
+}
+
 int persist_task_id(struct persist_state *ps, const struct wprof_thread *task)
 {
 	struct thread_key key;
@@ -132,31 +170,11 @@ int persist_task_id(struct persist_state *ps, const struct wprof_thread *task)
 	if (hashmap__find(ps->threads.lookup, &key, &task_id))
 		return task_id;
 
-	if (ps->threads.count >= ps->threads.capacity) {
-		size_t new_cap = ps->threads.capacity * 3 / 2;
+	task_id = persist_alloc_task_slot(ps);
+	persist_update_task_slot(ps, task_id, task);
+	persist_update_lookup_index(ps, task, task_id);
 
-		ps->threads.entries = realloc(ps->threads.entries, new_cap * sizeof(*ps->threads.entries));
-		ps->threads.capacity = new_cap;
-	}
-
-	task_id = ps->threads.count;
-	struct wevent_task *entry = &ps->threads.entries[task_id];
-
-	entry->tid = task->tid;
-	entry->pid = task->pid;
-	entry->flags = task->flags;
-	entry->comm_stroff = persist_stroff(ps, task->comm);
-	entry->pcomm_stroff = persist_stroff(ps, task->pcomm);
-
-	/* allocate key for hashmap (needs to persist) */
-	struct thread_key *pkey = malloc(sizeof(key));
-	*pkey = key;
-
-	hashmap__add(ps->threads.lookup, pkey, task_id);
-
-	ps->threads.count += 1;
-
-	return (int)task_id;
+	return task_id;
 }
 
 int persist_pmu_vals_id(struct persist_state *ps, const u64 *vals)
@@ -212,6 +230,7 @@ struct tid_cache_value {
 struct persist_thread_state {
 	const struct wprof_thread *info;	/* latest identity record, points into the mmap'd dump */
 	int task_id;				/* interned id for `info` (0 = not yet interned) */
+	int backref_task_id;		/* slot of a synthesized "TID N" task, awaiting backpatch (0 = none) */
 	u32 cuda_corr_id;
 	u32 cuda_stack_id;
 };
@@ -231,10 +250,13 @@ static struct persist_thread_state *persist_thread_state(struct persist_state *p
 /*
  * Record the trailing self-identifying wprof_thread records an event carries,
  * keyed by tid, so bare int refs on this and later events can resolve to them.
- * Only the pointer (into the mmap'd dump, valid for the whole merge) is stored;
- * interning is deferred to resolve_task_ref() so tasks that are only ever seen
+ * The pointer (into the mmap'd dump, valid for the whole merge) is stored;
+ * interning is otherwise deferred to resolve_task_ref() so tasks only ever seen
  * out of the session window (flight recorder) never get a dense id. A fresh
  * record resets the cached id, so rename/exec identity changes are picked up.
+ *
+ * If the tid already has a synthesized "TID N" backref slot, rewrite that slot
+ * in place with the real identity here.
  */
 void persist_task_infos(struct persist_state *ps, const struct wprof_event *e)
 {
@@ -243,6 +265,13 @@ void persist_task_infos(struct persist_state *ps, const struct wprof_event *e)
 
 	for (int i = 0; i < cnt; i++) {
 		struct persist_thread_state *st = persist_thread_state(ps, infos[i].tid);
+
+		if (st->backref_task_id) {
+			persist_update_task_slot(ps, st->backref_task_id, &infos[i]);
+			persist_update_lookup_index(ps, &infos[i], st->backref_task_id);
+			st->backref_task_id = 0;
+		}
+
 		st->info = &infos[i];
 		st->task_id = 0;
 	}
@@ -272,13 +301,19 @@ static int resolve_task_ref(struct persist_state *ps, int tid)
 		goto persist;
 
 	if (tid >= 0) {
-		struct wprof_thread synth = {};
+		st = persist_thread_state(ps, (long)(u32)tid);
+		if (!st->backref_task_id) {
+			struct wprof_thread synth = {};
 
-		synth.pid = 0;
-		synth.tid = tid;
-		snprintf(synth.comm, sizeof(synth.comm), "TID %d", tid);
-		snprintf(synth.pcomm, sizeof(synth.pcomm), "<unknown>");
-		return persist_task_id(ps, &synth);
+			synth.pid = 0;
+			synth.tid = tid;
+			snprintf(synth.comm, sizeof(synth.comm), "TID %d", tid);
+			snprintf(synth.pcomm, sizeof(synth.pcomm), "<unknown>");
+
+			st->backref_task_id = persist_alloc_task_slot(ps);
+			persist_update_task_slot(ps, st->backref_task_id, &synth);
+		}
+		return st->backref_task_id;
 	}
 
 	/* synthesize idle task info */
