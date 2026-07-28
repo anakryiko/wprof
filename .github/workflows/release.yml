@@ -30,7 +30,7 @@ jobs:
           sudo apt-get install -y cargo llvm libelf-dev zlib1g-dev libzstd-dev
 
       - name: Checkout wprof code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           submodules: recursive
           path: 'wprof'
@@ -53,7 +53,7 @@ jobs:
               grep -q 'not a dynamic executable'
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ format('wprof_{0}', matrix.arch) }}
           path: wprof/src/wprof
@@ -66,7 +66,7 @@ jobs:
       contents: write
     steps:
       - name: Download artifacts from build
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
 
       - name: Rename binaries and compress
         run: |
@@ -78,7 +78,7 @@ jobs:
           sha256sum "${archive_arm64}" > "${archive_arm64}.sha256sum"
 
       - name: Checkout wprof and submodules code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           submodules: recursive
           path: 'wprof'
@@ -92,7 +92,7 @@ jobs:
           base-repo: wprof
 
       - name: Create draft release and add artifacts
-        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v0.1.15
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           draft: true
           files: |
