@@ -5,7 +5,7 @@ per line) describing a profiling session. The output consists of three sections
 in a fixed order:
 
 1. **Header** — exactly 1 line, session metadata
-2. **Stacks** — exactly `stack_cnt` lines (0 if stack traces were not captured)
+2. **Stacks** — exactly `stack_cnt` lines (0 if stack traces are not emitted)
 3. **Events** — remaining lines, time-ordered trace events
 
 ## Conventions
@@ -51,7 +51,7 @@ The first line contains session metadata. Example:
 |--------------------|-----------------|----------------------------------------------------------------------|
 | `version`          | string          | Format version (`"major.minor"`)                                     |
 | `dur`              | float           | Session duration in seconds                                          |
-| `timer_freq_hz`    | int             | On-CPU timer interrupt frequency                                     |
+| `timer_freq_hz`    | int             | On-CPU timer interrupt frequency (0 if timer stacks are not emitted) |
 | `capture_ipis`     | bool            | Whether IPI events were captured                                     |
 | `capture_requests` | bool            | Whether request tracing was enabled                                  |
 | `capture_scx`      | bool            | Whether sched-ext events were captured                               |
@@ -60,7 +60,7 @@ The first line contains session metadata. Example:
 | `capture_pytrace`   | bool            | Whether Python function tracing was captured                         |
 | `capture_pytorch`   | bool            | Whether PyTorch RecordFunction tracing was captured                   |
 | `capture_utrace`   | bool            | Whether user-defined tracing (utrace) was enabled                    |
-| `stacks`           | array of string | Stack trace kinds captured (e.g., `["timer","offcpu"]`, `[]` if none)|
+| `stacks`           | array of string | Stack trace kinds emitted (e.g., `["timer","offcpu"]`, `[]` if none) |
 | `stack_cnt`        | int             | Number of stack trace lines that follow (0 if none)                  |
 | `pmus`             | array of string | PMU counter names (e.g., `["instructions","cycles"]`, `[]` if none)  |
 | `extras`           | array of string | *(optional)* Extra config (e.g., `--utrace` definitions)             |
