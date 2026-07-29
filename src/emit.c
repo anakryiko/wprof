@@ -46,13 +46,10 @@ enum track_merge_behavior {
 };
 
 /*
- * Deferred-emit state for one PyTorch RecordFunction slice. RecordFunction
- * slices share the Python (pytrace) thread track, but their C++ lifetimes do
- * not nest with the Python frames that create/destroy them: a
- * `with record_function()` is born deep inside __enter__ and dies deep inside
- * __exit__, so a naive begin/end straddles the surrounding pytrace frames and
- * Perfetto closes it early. We therefore defer each RF and re-anchor its
- * begin/end to the pytrace depth it actually brackets (see emit_pytorch_event).
+ * Best-effort nesting state for -e py-combine. RecordFunction callbacks can
+ * cross Python frame boundaries, while Perfetto requires slices on one track
+ * to be LIFO. Defer and re-anchor PyTorch slices to a compatible PyTrace depth
+ * where possible (see emit_pytorch_event_combined()).
  */
 enum uscope_state {
 	USCOPE_PENDING_ENTRY_EMIT,	/* begin not emitted yet (still re-parentable) */
@@ -90,8 +87,9 @@ struct task_state {
 	const u64 *oncpu_ctrs;
 	u64 compound_delay_ns; /* scheduling/running delay, including dependency tasks' ones */
 	u64 compound_chain_len; /* length of continuous waker-wakee chain */
-	/* PyTorch RecordFunction deferred-nesting state */
+	/* PyTrace/PyTorch slice nesting state */
 	int pytrace_depth;
+	int pytorch_depth;
 	struct uscope_entry *uscope;
 	int uscope_cnt, uscope_cap;
 };
@@ -185,6 +183,7 @@ enum dyn_track_kind {
 	DTK_TIMER_CALLSTACK,		/* per-thread embedded timer callstack slice track (id1 = tid) */
 	DTK_PMU_EVENT,			/* per-thread sampled PMU-event track (id1 = tid, id2 = pmu_idx) */
 	DTK_PYTRACE,			/* Python-traced thread track (by TID) */
+	DTK_PYTORCH,			/* PyTorch RecordFunction thread track (by TID) */
 	DTK_REQ_THREAD_EMBED,		/* first-event-per-thread tracking for embed mode (id1 = tid, id2 = req_id) */
 	DTK_UTRACE,			/* utrace per-config track (id1 = tid, id2 = utrace_id) */
 };
@@ -238,6 +237,7 @@ static size_t track_state_size(enum dyn_track_kind kind)
 	case DTK_REQ_THREAD:
 	case DTK_REQ_THREAD_EMBED:
 	case DTK_PYTRACE:
+	case DTK_PYTORCH:
 	case DTK_UTRACE:
 	case DTK_TIMER:
 	case DTK_PMU_EVENT:
@@ -806,6 +806,11 @@ static inline u64 trackid_process_reqs(const struct wprof_task *t)
 static inline u64 trackid_pytrace_thread(int tid)
 {
 	return track_state_get_or_add(DTK_PYTRACE, tid, 0)->track_id;
+}
+
+static inline u64 trackid_pytorch_thread(int tid)
+{
+	return track_state_get_or_add(DTK_PYTORCH, tid, 0)->track_id;
 }
 
 enum instant_scope {
@@ -3895,6 +3900,21 @@ static u64 ensure_pytrace_thread_track(int tid, const char *comm)
 	return track_uuid;
 }
 
+static u64 ensure_pytorch_thread_track(int tid)
+{
+	struct track_state *s = track_state_get_or_add(DTK_PYTORCH, tid, 0);
+	u64 track_uuid = trackid_pytorch_thread(tid);
+
+	if (!s->exists) {
+		emit_track_descr_impl(track_uuid,
+				      TRACK_UUID(TK_THREAD, tid),
+				      "PyTorch", s->kind,
+				      CHILD_ORDER_CHRONO, MERGE_NONE);
+		s->exists = true;
+	}
+	return track_uuid;
+}
+
 static struct uscope_entry *uscope_push(struct task_state *st)
 {
 	if (st->uscope_cnt == st->uscope_cap) {
@@ -4048,7 +4068,7 @@ static int process_pytrace(struct worker_state *w, const struct wevent *e)
 	return 0;
 }
 
-static void emit_pytorch_event(struct worker_state *w, const struct wevent *e)
+static void emit_pytorch_event_combined(struct worker_state *w, const struct wevent *e)
 {
 	/*
 	 * HACK: ## GpuTracer ## RecordFunctions straddle ProfilerStep#N
@@ -4057,7 +4077,7 @@ static void emit_pytorch_event(struct worker_state *w, const struct wevent *e)
 	 * ProfilerStep slice. Drop them from the emitted trace; they remain in the
 	 * JSON output path.
 	 */
-	const char *rf_name = e->rf.name_stroff ? wevent_str(w->dump_hdr, e->rf.name_stroff) : "";
+	const char *rf_name = e->rf.name_stroff ? wevent_str(w->dump_hdr, e->rf.name_stroff) : "?";
 	if (strcmp(rf_name, "## GpuTracer ##") == 0)
 		return;
 
@@ -4115,6 +4135,29 @@ static void emit_pytorch_event(struct worker_state *w, const struct wevent *e)
 	}
 }
 
+static void emit_pytorch_event_split(struct worker_state *w, const struct wevent *e)
+{
+	struct wprof_data_hdr *hdr = w->dump_hdr;
+	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
+	struct task_state *st = task_state(w, &task);
+
+	emit_track_descrs(w, &task);
+	u64 track_uuid = ensure_pytorch_thread_track(task.tid);
+	const char *name = e->rf.name_stroff ? wevent_str(hdr, e->rf.name_stroff) : "?";
+	pb_iid name_iid = emit_intern_str(w, name);
+
+	if (e->kind == EV_PYTORCH_ENTRY) {
+		emit_slice_begin(track_uuid, e->ts, iid_str(name_iid, name), IID_CAT_PYTORCH);
+		st->pytorch_depth++;
+	} else {
+		if (st->pytorch_depth == 0)
+			emit_slice_begin(track_uuid, env.sess_start_ts, iid_str(name_iid, name), IID_CAT_PYTORCH);
+		emit_slice_end(track_uuid, e->ts, "", IID_CAT_PYTORCH);
+		if (st->pytorch_depth > 0)
+			st->pytorch_depth--;
+	}
+}
+
 static void emit_pytorch_event_json(struct worker_state *w, const struct wevent *e)
 {
 	struct json_state *j = &js;
@@ -4145,8 +4188,10 @@ static int process_pytorch(struct worker_state *w, const struct wevent *e)
 
 	if (env.json_path)
 		emit_pytorch_event_json(w, e);
+	else if (env.emit_py_combine)
+		emit_pytorch_event_combined(w, e);
 	else
-		emit_pytorch_event(w, e);
+		emit_pytorch_event_split(w, e);
 	return 0;
 }
 

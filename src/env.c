@@ -82,6 +82,7 @@ struct env env = {
 	.emit_req_split = UNSET,
 	.emit_req_embed = UNSET,
 	.emit_embed_stacks = UNSET,
+	.emit_py_combine = UNSET,
 	.pmu_real_cnt = -1,
 	.pmu_deriv_cnt = -1,
 	.pmu_unresolved_cnt = -1,
@@ -188,7 +189,7 @@ static const struct argp_option opts[] = {
 	/* trace emitting options */
 	{ "emit-feature", 'e', "FEAT", 0,
 	  "Trace visualization feature, any can be negated with a 'no-' prefix. Supported: sched, sched-extras, "
-	  "numa, tidpid, timer-ticks, py-stacks-only, req-split (on by default), req-embed, embed-stacks" },
+	  "numa, tidpid, timer-ticks, py-stacks-only, req-split (on by default), req-embed, embed-stacks, py-combine" },
 
 	/* tuning */
 	{ "ringbuf-size", OPT_RINGBUF_SZ, "SIZE", 0, "BPF ringbuf size; accepts units b/kb/mb/gb, bare number is KB" },
@@ -709,6 +710,8 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			flag = &env.emit_req_embed;
 		} else if (strcasecmp(arg, "embed-stacks") == 0) {
 			flag = &env.emit_embed_stacks;
+		} else if (strcasecmp(arg, "py-combine") == 0) {
+			flag = &env.emit_py_combine;
 		} else {
 			fprintf(stderr, "Unrecognized emit feature '%s'!\n", arg);
 			return -EINVAL;
