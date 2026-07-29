@@ -114,6 +114,7 @@ const struct emit_feature emit_features[] = {
 	{WEXTRA_EMIT_REQ_SPLIT, offsetof(struct env, emit_req_split), DEFAULT_EMIT_REQ_SPLIT},
 	{WEXTRA_EMIT_REQ_EMBED, offsetof(struct env, emit_req_embed), DEFAULT_EMIT_REQ_EMBED},
 	{WEXTRA_EMIT_EMBED_STACKS, offsetof(struct env, emit_embed_stacks), DEFAULT_EMIT_EMBED_STACKS},
+	{WEXTRA_EMIT_PY_COMBINE, offsetof(struct env, emit_py_combine), DEFAULT_EMIT_PY_COMBINE},
 };
 
 const int emit_feature_cnt = ARRAY_SIZE(emit_features);
@@ -151,6 +152,7 @@ const char *extra_param_str(struct wprof_data_hdr *hdr, const struct wprof_extra
 	case WEXTRA_EMIT_REQ_SPLIT:		return e->value ? "-e req-split" : "-e no-req-split";
 	case WEXTRA_EMIT_REQ_EMBED:		return e->value ? "-e req-embed" : "-e no-req-embed";
 	case WEXTRA_EMIT_EMBED_STACKS:		return e->value ? "-e embed-stacks" : "-e no-embed-stacks";
+	case WEXTRA_EMIT_PY_COMBINE:		return e->value ? "-e py-combine" : "-e no-py-combine";
 	case WEXTRA_PREPARE_SPEC:		return sfmt("--prepare %s", wevent_str(hdr, e->stroff));
 	case WEXTRA_ACTIVATE_SPEC:		return sfmt("--activate %s", wevent_str(hdr, e->stroff));
 	case WEXTRA_STACK_CAPTURE:
@@ -2270,6 +2272,9 @@ int main(int argc, char **argv)
 				break;
 			case WEXTRA_EMIT_EMBED_STACKS:
 				env.emit_embed_stacks = env.emit_embed_stacks != UNSET ? env.emit_embed_stacks : ep->value;
+				break;
+			case WEXTRA_EMIT_PY_COMBINE:
+				env.emit_py_combine = env.emit_py_combine != UNSET ? env.emit_py_combine : ep->value;
 				break;
 			case WEXTRA_METADATA:
 			case WEXTRA_STATS:

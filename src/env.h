@@ -50,6 +50,7 @@
 #define DEFAULT_EMIT_REQ_SPLIT TRUE
 #define DEFAULT_EMIT_REQ_EMBED FALSE
 #define DEFAULT_EMIT_EMBED_STACKS FALSE
+#define DEFAULT_EMIT_PY_COMBINE FALSE
 
 extern bool env_verbose;
 extern int env_debug_level;
@@ -167,6 +168,7 @@ struct env {
 	enum tristate emit_req_split;
 	enum tristate emit_req_embed;
 	enum tristate emit_embed_stacks;
+	enum tristate emit_py_combine;
 
 	int timer_freq_hz;
 	u64 timer_period_ns;	/* derived from timer_freq_hz */
