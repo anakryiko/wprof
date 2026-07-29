@@ -731,9 +731,10 @@ static int setup_perf_timer_ticks(struct bpf_state *st, int num_cpus)
 static int setup_perf_counters(struct bpf_state *st, int num_cpus)
 {
 	struct perf_event_attr attr;
-	bool warned[env.pmu_real_cnt] = {};
+	bool warned[env.pmu_real_cnt];
 	int err;
 
+	memset(warned, 0, sizeof(warned));
 	st->perf_counter_fds = calloc(st->perf_counter_fd_cnt, sizeof(int));
 	for (int i = 0; i < num_cpus; i++) {
 		for (int j = 0; j < env.pmu_real_cnt; j++)
