@@ -178,12 +178,12 @@ enum dyn_track_kind {
 	 * (DTK_UTRACE + utrace_id) for their rank to differentiate the multiple
 	 * per-thread tracks under the same kind.
 	 */
-	DTK_THREAD_CUDA,		/* per-thread CUDA API calls track (id1 = tid) */
 	DTK_TIMER,			/* per-thread timer track (id1 = tid) */
 	DTK_TIMER_CALLSTACK,		/* per-thread embedded timer callstack slice track (id1 = tid) */
 	DTK_PMU_EVENT,			/* per-thread sampled PMU-event track (id1 = tid, id2 = pmu_idx) */
 	DTK_PYTRACE,			/* Python-traced thread track (by TID) */
 	DTK_PYTORCH,			/* PyTorch RecordFunction thread track (by TID) */
+	DTK_THREAD_CUDA,		/* per-thread CUDA API calls track (id1 = tid) */
 	DTK_REQ_THREAD_EMBED,		/* first-event-per-thread tracking for embed mode (id1 = tid, id2 = req_id) */
 	DTK_UTRACE,			/* utrace per-config track (id1 = tid, id2 = utrace_id) */
 };
@@ -3816,16 +3816,14 @@ static void emit_cuda_api(struct worker_state *w, const struct wevent *e)
 
 	emit_slice_end(track_uuid, clamp_ts(e->cuda_api.end_ts), iid_str(name_iid, name), IID_CAT_CUDA_API);
 
-	if (env.capture_pytrace) {
-		struct track_state *pf = track_state_get_or_add(DTK_PYTRACE, task.tid, 0);
-		if (pf->exists) {
-			u64 pf_track = trackid_pytrace_thread(task.tid);
-			emit_slice_begin(pf_track, clamp_ts(e->ts), iid_str(name_iid, name), IID_CAT_CUDA_API) {
-				emit_callstack(w, stack_id);
-				emit_flow_id(((u64)task.pid << 32) | e->cuda_api.corr_id);
-			}
-			emit_slice_end(pf_track, clamp_ts(e->cuda_api.end_ts), iid_str(name_iid, name), IID_CAT_CUDA_API);
+	enum dyn_track_kind py_kind = env.capture_pytorch && !env.emit_py_combine ? DTK_PYTORCH : DTK_PYTRACE;
+	struct track_state *py = track_state_find(py_kind, task.tid, 0);
+	if (py && py->exists) {
+		emit_slice_begin(py->track_id, clamp_ts(e->ts), iid_str(name_iid, name), IID_CAT_CUDA_API) {
+			emit_callstack(w, stack_id);
+			emit_flow_id(((u64)task.pid << 32) | e->cuda_api.corr_id);
 		}
+		emit_slice_end(py->track_id, clamp_ts(e->cuda_api.end_ts), iid_str(name_iid, name), IID_CAT_CUDA_API);
 	}
 }
 
