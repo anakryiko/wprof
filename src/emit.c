@@ -3885,7 +3885,7 @@ static int process_cuda_api(struct worker_state *w, const struct wevent *e)
 
 /* PYTRACE (Python function tracing) */
 
-static u64 ensure_pytrace_thread_track(int tid, const char *comm)
+static u64 ensure_pytrace_thread_track(int tid)
 {
 	struct track_state *s = track_state_get_or_add(DTK_PYTRACE, tid, 0);
 	u64 track_uuid = trackid_pytrace_thread(tid);
@@ -3893,7 +3893,7 @@ static u64 ensure_pytrace_thread_track(int tid, const char *comm)
 	if (!s->exists) {
 		emit_track_descr_impl(track_uuid,
 				      TRACK_UUID(TK_THREAD, tid),
-				      comm, s->kind,
+				      "PYTRACE", s->kind,
 				      CHILD_ORDER_CHRONO, MERGE_NONE);
 		s->exists = true;
 	}
@@ -3908,7 +3908,7 @@ static u64 ensure_pytorch_thread_track(int tid)
 	if (!s->exists) {
 		emit_track_descr_impl(track_uuid,
 				      TRACK_UUID(TK_THREAD, tid),
-				      "PyTorch", s->kind,
+				      "PYTORCH", s->kind,
 				      CHILD_ORDER_CHRONO, MERGE_NONE);
 		s->exists = true;
 	}
@@ -3929,7 +3929,7 @@ static void uscope_emit_begin(struct worker_state *w, struct uscope_entry *u)
 	const struct wevent *e = u->entry;
 	struct wprof_data_hdr *hdr = w->dump_hdr;
 	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
-	u64 track_uuid = ensure_pytrace_thread_track(task.tid, task.comm);
+	u64 track_uuid = ensure_pytrace_thread_track(task.tid);
 	const char *name = e->rf.name_stroff ? wevent_str(hdr, e->rf.name_stroff) : "?";
 	pb_iid name_iid = emit_intern_str(w, name);
 
@@ -3939,7 +3939,7 @@ static void uscope_emit_begin(struct worker_state *w, struct uscope_entry *u)
 static void uscope_emit_end(struct worker_state *w, const struct uscope_entry *u, u64 ts)
 {
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, u->entry->task_id);
-	u64 track_uuid = ensure_pytrace_thread_track(task.tid, task.comm);
+	u64 track_uuid = ensure_pytrace_thread_track(task.tid);
 
 	emit_slice_end(track_uuid, ts, "", IID_CAT_PYTORCH);
 }
@@ -3953,7 +3953,7 @@ static void emit_pytrace_event(struct worker_state *w, const struct wevent *e)
 	/* ensure parent task track exists */
 	emit_track_descrs(w, &task);
 
-	u64 track_uuid = ensure_pytrace_thread_track(task.tid, task.comm);
+	u64 track_uuid = ensure_pytrace_thread_track(task.tid);
 
 	const char *func_name = wevent_str(hdr, e->pytrace.func_name_stroff);
 	const char *file = e->pytrace.file_name_stroff ? wevent_str(hdr, e->pytrace.file_name_stroff) : NULL;
@@ -4188,7 +4188,7 @@ static int process_pytorch(struct worker_state *w, const struct wevent *e)
 
 	if (env.json_path)
 		emit_pytorch_event_json(w, e);
-	else if (env.emit_py_combine)
+	else if (env.emit_py_combine && env.capture_pytrace)
 		emit_pytorch_event_combined(w, e);
 	else
 		emit_pytorch_event_split(w, e);
