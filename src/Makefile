@@ -126,7 +126,7 @@ $(LIBBPF_OBJ): $(wildcard $(LIBBPF_SRC)/*.[ch] $(LIBBPF_SRC)/Makefile) | $(OUTPU
 $(BPFTOOL): | $(BPFTOOL_OUTPUT)
 	$(call msg,BPFTOOL,$@)
 	$(Q) [ -d ../bpftool/src ] || git submodule update --init --recursive
-	$(Q)CFLAGS= EXTRA_CFLAGS="$(CFLAGS) -Wno-sign-compare" 					\
+	$(Q)CFLAGS= HOST_EXTRACFLAGS="$(CFLAGS) -Wno-sign-compare" 				\
 		$(MAKE) ARCH= CROSS_COMPILE=							\
 			BPF_DIR=$(LIBBPF_SRC) OUTPUT=$(BPFTOOL_OUTPUT_ABS)/			\
 			-C $(BPFTOOL_SRC) bootstrap
