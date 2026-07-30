@@ -122,11 +122,13 @@ $(LIBBPF_OBJ): $(wildcard $(LIBBPF_SRC)/*.[ch] $(LIBBPF_SRC)/Makefile) | $(OUTPU
 		    EXTRA_CFLAGS="-g -O$(if $(DEBUG),0,2) -Wno-sign-compare"			\
 		    install
 
-# Build bpftool
+# Build bpftool.
+# bpftool filters -Wall/-Wformat* (but not -Werror=format-security) out of the flags it
+# hands to its bootstrap libbpf build, so drop it here: gcc errors out on the leftover.
 $(BPFTOOL): | $(BPFTOOL_OUTPUT)
 	$(call msg,BPFTOOL,$@)
 	$(Q) [ -d ../bpftool/src ] || git submodule update --init --recursive
-	$(Q)CFLAGS= HOST_EXTRACFLAGS="$(CFLAGS) -Wno-sign-compare" 				\
+	$(Q)CFLAGS= HOST_EXTRACFLAGS="$(filter-out -Werror=format-security,$(CFLAGS)) -Wno-sign-compare" \
 		$(MAKE) ARCH= CROSS_COMPILE=							\
 			BPF_DIR=$(LIBBPF_SRC) OUTPUT=$(BPFTOOL_OUTPUT_ABS)/			\
 			-C $(BPFTOOL_SRC) bootstrap
