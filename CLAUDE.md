@@ -25,12 +25,12 @@ sudo dnf -y install elfutils-devel zlib-devel
 # Initialize submodules (first time only)
 git submodule update --init --recursive
 
-# Build release version
+# Build release version (the default)
 cd src
-make RELEASE=1 -j$(nproc)
-
-# Build debug version
 make -j$(nproc)
+
+# Build debug version (-O0, -DDEBUG)
+make DEBUG=1 -j$(nproc)
 
 # Clean build artifacts
 make clean
