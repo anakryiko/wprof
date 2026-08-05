@@ -10,10 +10,34 @@ performance data with exactly the same original data. Wprof generates
 Perfetto-based traces and provides many options for filtering and
 narrowing down exact subset of data to be visualized.
 
-## Building wprof
+## Installing wprof
+
+
+### From distribution packages
+
+`wprof` can be installed using the package manager on some Linux distributions.
+
+[![Packaging status](
+https://repology.org/badge/vertical-allrepos/wprof.svg?exclude_unsupported=1
+)](https://repology.org/project/wprof/versions)
+
+### Building wprof
+
+First install the dependencies. On DNF-based systems (Fedora / Enterprise Linux):
 
 ```shell
 $ sudo dnf -y install elfutils-devel zlib-devel
+```
+
+On Debian/Ubuntu:
+
+```shell
+$ sudo apt install libelf-dev zlib1g-dev
+```
+
+Then get and build `wprof` itself:
+
+```shell
 $ # if you don't have Rust toolchain installed just yet
 $ # curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 $ git clone https://github.com/anakryiko/wprof.git
