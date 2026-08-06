@@ -101,6 +101,17 @@ static const struct {
 	{ "raw_tp:",  UTRACE_RAW_TRACEPOINT },
 };
 
+static bool sv_is_ident(struct sview v)
+{
+	if (sv_is_empty(v) || (!isalpha(v.s[0]) && v.s[0] != '_'))
+		return false;
+	for (int i = 1; i < v.len; i++) {
+		if (!isalnum(v.s[i]) && v.s[i] != '_')
+			return false;
+	}
+	return true;
+}
+
 static int arg_map_cmp(const void *a, const void *b)
 {
 	const struct utrace_arg_map *x = a, *y = b;
@@ -186,13 +197,26 @@ static int parse_arg_modifier(struct sview orig, struct sview mod, struct utrace
 			return utrace_err(orig, mod, "'map' requires (KEY=LABEL,...)\n");
 		return parse_arg_map(orig, sv_trim(inner), p);
 	}
+	if (sv_eq(name, "name")) {
+		struct sview display_name;
+
+		if (!has_inner)
+			return utrace_err(orig, mod, "'name' requires (DISPLAY_NAME)\n");
+		display_name = sv_trim(inner);
+		if (!sv_is_ident(display_name))
+			return utrace_err(orig, display_name, "invalid argument display name\n");
+		if (p->arg.name)
+			return utrace_err(orig, mod, "duplicate name modifier\n");
+		p->arg.name = sv_strdup(display_name);
+		return 0;
+	}
 	return utrace_err(orig, name, "unknown arg modifier '%.*s'\n", name.len, name.s);
 }
 
-/* parse "IDX[:TYPE][->NAME][/MOD...]" arg definition without "arg:" prefix */
+/* parse "IDX[:TYPE][/MOD...]" arg definition without "arg:" prefix */
 static int parse_arg_param(struct sview orig, struct sview def, struct utrace_param *p)
 {
-	struct sview name, arg, arg_type, mods;
+	struct sview arg, arg_type, mods;
 	enum utrace_arg_type atype = UTRACE_ARG_UNKNOWN;
 	long idx;
 
@@ -204,14 +228,6 @@ static int parse_arg_param(struct sview orig, struct sview def, struct utrace_pa
 
 	/* peel trailing "/MOD" render modifiers (paren-aware, so map(a,b) is intact) */
 	def = sv_split_top(def, "/", &mods);
-
-	/* split off optional "->name" suffix */
-	def = sv_split(def, "->", &name);
-	if (!sv_is_empty(name)) {
-		name = sv_trim(sv_consume_left(name, 2));
-		if (sv_is_empty(name))
-			return utrace_err(orig, name, "empty arg name after '->'\n");
-	}
 
 	/* split "idx[:type]" */
 	arg = sv_trim(sv_split(def, ":", &arg_type));
@@ -237,7 +253,6 @@ static int parse_arg_param(struct sview orig, struct sview def, struct utrace_pa
 	p->type = UTRACE_PARAM_ARG;
 	p->arg.arg_idx = idx;
 	p->arg.arg_type = atype;
-	p->arg.name = sv_is_empty(name) ? NULL : sv_strdup(name);
 
 	/* render modifiers: "/name" or "/name(args)", e.g. /x, /map(0=a,1=b) */
 	while (!sv_is_empty(mods)) {
@@ -936,7 +951,7 @@ static void format_probe(const struct utrace_cfg *cfg, struct sbuf *sb)
 				if (p->arg.arg_type != UTRACE_ARG_UNKNOWN)
 					sbuf_appendf(sb, ":%s", arg_type_str(p->arg.arg_type));
 				if (p->arg.name)
-					sbuf_appendf(sb, "->%s", p->arg.name);
+					sbuf_appendf(sb, "/name(%s)", p->arg.name);
 				if (p->arg.hex)
 					sbuf_appendf(sb, "/x");
 				if (p->arg.map_cnt) {

@@ -12,7 +12,7 @@ definitions in a file (one per line, `#` for comments) and pass
 
 ```bash
 # trace a user function, capture first two args
-wprof -U 'u:process_request (arg:0:u32->id, arg:1:str->name, pid:1234)'
+wprof -U 'u:process_request (arg:0:u32/name(id), arg:1:str/name(name), pid:1234)'
 
 # trace a kernel function with all args from BTF
 wprof -U 'k:vfs_write (arg:*)'
@@ -27,10 +27,10 @@ wprof -U 'usdt:myapp:request_start (arg:0:s32, arg:1:str, path:./myapp, pid:1234
 wprof -U 'raw_tp:sys_enter (arg:id) | name:"syscall #{id}" |'
 
 # decode an integer arg: map syscall numbers (x86-64) to names
-wprof -U 'raw_tp:sys_enter (arg:id->syscall/map(0=read,1=write,257=openat)) | name:"{syscall}" |'
+wprof -U 'raw_tp:sys_enter (arg:id/name(syscall)/map(0=read,1=write,257=openat)) | name:"{syscall}" |'
 
 # function span (entry + exit as a Perfetto slice)
-wprof -U 'uspan:do_work (arg:0->task_id, arg:ret->result, pid:1234, path:./worker)'
+wprof -U 'uspan:do_work (arg:0/name(task_id), arg:ret/name(result), pid:1234, path:./worker)'
 
 # generic span from two different probes
 wprof -U 'usdt:app:req_start (arg:0) ~~ usdt:app:req_end (arg:0)'
@@ -88,7 +88,7 @@ key-value pairs in JSON output, and can be used in `name:` templates
 to dynamically label events and spans.
 
 ```
-arg:<index-or-name>[:<type>][->display_name][/modifier...]
+arg:<index-or-name>[:<type>][/modifier...]
 ```
 
 **By index:** `arg:0`, `arg:1`, ..., `arg:ret`
@@ -126,14 +126,14 @@ tracepoints) or from ELF USDT note metadata (for USDTs). Falls back to
 
 ### Render modifiers
 
-Integer argument values can be reformatted for display with `/`-separated
-modifiers appended to the arg spec (after the optional `->display_name`).
+Arguments can use `/`-separated display modifiers appended to the arg spec.
 A modifier is either a bare name or `name(args)`:
 
-| Modifier        | Effect                                                     |
-|-----------------|----------------------------------------------------------|
-| `/x` (`/hex`)   | Render the integer as `0x...` hex instead of decimal      |
-| `/map(K=V,...)` | Map specific values to string labels                     |
+| Modifier          | Effect                                                     |
+|-------------------|------------------------------------------------------------|
+| `/name(NAME)`     | Assign the argument display name                           |
+| `/x` (`/hex`)     | Render the integer as `0x...` hex instead of decimal       |
+| `/map(K=V,...)`   | Map specific values to string labels                       |
 
 For `/map`, each `K` is a key (decimal or `0x` hex) and `V` a label; the
 label runs to the next `,` or the closing `)`. Modifiers **stack**: a value
@@ -142,15 +142,15 @@ is looked up in `/map` first, and on a miss falls back to the numeric format
 shown — `name:` templates, Perfetto annotations, and JSON output.
 
 ```
-arg:id->nr/x                              # value shown as 0x...
-arg:id->nr/map(0=read,1=write,257=openat) # mapped, else decimal
-arg:id->nr/x/map(202=futex)               # mapped label, else hex
+arg:id/name(nr)/x                              # value shown as 0x...
+arg:id/name(nr)/map(0=read,1=write,257=openat) # mapped, else decimal
+arg:id/name(nr)/x/map(202=futex)               # mapped label, else hex
 ```
 
 Example — label every syscall by number via the `sys_enter` raw tracepoint:
 
 ```bash
-wprof -U 'raw_tp:sys_enter (arg:id->syscall/map(0=read,1=write,16=ioctl,202=futex,257=openat)) | name:"{syscall}" |'
+wprof -U 'raw_tp:sys_enter (arg:id/name(syscall)/map(0=read,1=write,16=ioctl,202=futex,257=openat)) | name:"{syscall}" |'
 ```
 
 The syscall numbers above are x86-64 specific (they differ by architecture).
@@ -244,7 +244,7 @@ setting to customize this with argument substitution:
 -U 'raw_tp:sys_enter (arg:id) | name:"syscall #{id}" |'
 
 # each span shows the request ID
--U 'uspan:handle_request (arg:0->req_id) | name:"request {req_id}" |'
+-U 'uspan:handle_request (arg:0/name(req_id)) | name:"request {req_id}" |'
 ```
 
 Placeholders use `{...}` syntax and can reference arguments by their
