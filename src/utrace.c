@@ -1009,11 +1009,47 @@ static int bpf_prog_func_arg_cnt(const struct utrace_cfg *cfg)
 	return btf_vlen(proto);
 }
 
+/*
+ * Does the probed function return void? 1 = yes, 0 = no, -1 = unknown or not
+ * applicable (no BTF, or a probe type with no resolvable return type).
+ */
+static int utrace_func_returns_void(const struct utrace_cfg *cfg, const struct btf *btf)
+{
+	const struct btf_type *proto = NULL;
+
+	switch (cfg->type) {
+	case UTRACE_KRETPROBE:
+	case UTRACE_KPROBE_SPAN:
+		proto = btf ? btf_find_func_proto(btf, cfg->kprobe.name) : NULL;
+		break;
+	case UTRACE_BPF_RETPROBE:
+	case UTRACE_BPF_SPAN: {
+		const struct btf *rbtf = cfg->bpf_prog.btf;
+		const struct btf_type *f = rbtf ? btf__type_by_id(rbtf, cfg->bpf_prog.btf_func_id) : NULL;
+
+		if (f && btf_is_func(f)) {
+			proto = btf__type_by_id(rbtf, f->type);
+			if (proto && !btf_is_func_proto(proto))
+				proto = NULL;
+		}
+		break;
+	}
+	default:
+		return -1;
+	}
+	if (!proto)
+		return -1;
+	return proto->type == 0 ? 1 : 0;
+}
+
 /* Expand wildcard_args into individual arg params */
 static void expand_wildcard_args(struct utrace_cfg *cfg, const struct btf *btf)
 {
 	int arg_cnt;
 	bool has_ret = cfg_is_ret_probe(cfg->type) || cfg_is_native_span(cfg->type);
+
+	if (has_ret && utrace_func_returns_void(cfg, btf) == 1)
+		has_ret = false;
 
 	if (cfg_is_ret_probe(cfg->type)) {
 		/* ret probes only get arg:ret, no positional args */
@@ -1379,6 +1415,19 @@ static int augment_cfg_args(struct utrace_cfg *cfg, const struct btf *vmlinux_bt
 				return utrace_acc_err(p, NULL,
 						      "argument index %d out of range (probe has %d argument%s)\n",
 						      p->arg.arg_idx, arg_count, arg_count == 1 ? "" : "s");
+		}
+	}
+
+	/* reject arg:ret on void-returning functions (no meaningful return value) */
+	if (utrace_func_returns_void(cfg, btf) == 1) {
+		const char *fname = cfg_is_bpf_type(cfg) ? cfg->bpf_prog.name : cfg->kprobe.name;
+
+		for (int j = 0; j < cfg->param_cnt; j++) {
+			struct utrace_param *p = &cfg->params[j];
+
+			if (p->type == UTRACE_PARAM_ARG && p->arg.arg_idx == UTRACE_ARG_RET)
+				return utrace_acc_err(p, NULL,
+						      "function '%s' returns void; arg:ret is not available\n", fname);
 		}
 	}
 
