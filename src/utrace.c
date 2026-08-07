@@ -388,7 +388,7 @@ static bool utrace_ref_ptr(struct utrace_type_ref ref, struct utrace_type_ref *p
 	if (!ref.id || !ref.btf)
 		return false;
 	const struct btf_type *t = btf_skip_modifiers(ref.btf, ref.id, NULL);
-	if (!t || !btf_is_ptr(t))
+	if (!btf_is_ptr(t))
 		return false;
 	if (pointee)
 		*pointee = UTRACE_TYPE_REF(ref.btf, t->type);
@@ -403,7 +403,7 @@ static bool utrace_ref_is_char(struct utrace_type_ref ref)
 	if (!t || !btf_is_int(t) || t->size != 1)
 		return false;
 	name = btf__name_by_offset(ref.btf, t->name_off);
-	return name && strcmp(name, "char") == 0;
+	return strcmp(name, "char") == 0;
 }
 
 static bool utrace_refs_compatible(struct utrace_type_ref a, struct utrace_type_ref b, int depth)
@@ -429,7 +429,7 @@ static bool utrace_refs_compatible(struct utrace_type_ref a, struct utrace_type_
 		return false;
 	aname = btf__name_by_offset(a.btf, at->name_off);
 	bname = btf__name_by_offset(b.btf, bt->name_off);
-	return aname && bname && aname[0] && strcmp(aname, bname) == 0;
+	return aname[0] && strcmp(aname, bname) == 0;
 }
 
 static int utrace_find_member(struct utrace_type_ref container, struct sview name,
@@ -449,7 +449,7 @@ static int utrace_find_member(struct utrace_type_ref container, struct sview nam
 		const char *member_name = btf__name_by_offset(btf, m->name_off);
 		__u32 bit_offset = btf_member_bit_offset(t, i);
 
-		if (member_name && member_name[0] && sv_eq(name, member_name)) {
+		if (member_name[0] && sv_eq(name, member_name)) {
 			if (btf_member_bitfield_size(t, i) || bit_offset % 8)
 				return -ENOTSUP;
 			*out = (struct utrace_member_info){
@@ -458,7 +458,7 @@ static int utrace_find_member(struct utrace_type_ref container, struct sview nam
 			};
 			return 0;
 		}
-		if (member_name && member_name[0])
+		if (member_name[0])
 			continue;
 
 		struct utrace_type_ref nested = UTRACE_TYPE_REF(btf, m->type);
@@ -532,24 +532,14 @@ static __s32 btf_find_ptr_to(const struct btf *btf, __u32 target_id)
 	return -ENOENT;
 }
 
-static int utrace_resolve_type(const struct btf *btf, const struct utrace_param *p,
-			       const struct utrace_accessor *acc, struct utrace_type_ref *out)
+/* Resolve a cast type name to a BTF id in one BTF: >=1 found, 0 for void, -1 not found. */
+static __s32 utrace_lookup_type(const struct btf *btf, struct sview tname)
 {
-	struct sview tname, lookup;
-	bool is_ptr;
-	int err = normalize_cast_type(acc->args[0], &tname, &is_ptr);
-	if (err)
-		return utrace_acc_err(p, acc, "invalid cast type\n");
-	if (tname.len && tname.s[tname.len - 1] == '*')
-		return utrace_acc_err(p, acc, "pointer-to-pointer casts are not supported\n");
-	if (!is_ptr && sv_eq(tname, "void"))
-		return utrace_acc_err(p, acc, "cannot cast to void\n");
-
+	struct sview lookup = tname;
 	int kind = 0;
 	char name[128];
 	__s32 id;
 
-	lookup = tname;
 	if (sv_starts_with(tname, "struct ")) {
 		lookup = sv_trim(sv_consume_left(tname, 7));
 		kind = BTF_KIND_STRUCT;
@@ -566,22 +556,52 @@ static int utrace_resolve_type(const struct btf *btf, const struct utrace_param 
 		id = btf__find_by_name_kind(btf, name, BTF_KIND_ENUM);
 		if (id < 0)
 			id = btf__find_by_name_kind(btf, name, BTF_KIND_ENUM64);
-	} else if (kind) {
-		id = btf__find_by_name_kind(btf, name, kind);
-	} else if (sv_eq(tname, "void")) {
-		id = 0;
-	} else {
-		id = btf__find_by_name_kind(btf, name, BTF_KIND_TYPEDEF);
-		if (id < 0)
-			id = btf__find_by_name_kind(btf, name, BTF_KIND_INT);
-		if (id < 0)
-			id = btf__find_by_name_kind(btf, name, BTF_KIND_ENUM);
-		if (id < 0)
-			id = btf__find_by_name_kind(btf, name, BTF_KIND_ENUM64);
-		if (id < 0)
-			id = btf__find_by_name_kind(btf, name, BTF_KIND_STRUCT);
-		if (id < 0)
-			id = btf__find_by_name_kind(btf, name, BTF_KIND_UNION);
+		return id;
+	}
+	if (kind)
+		return btf__find_by_name_kind(btf, name, kind);
+	if (sv_eq(tname, "void"))
+		return 0;
+	id = btf__find_by_name_kind(btf, name, BTF_KIND_TYPEDEF);
+	if (id < 0)
+		id = btf__find_by_name_kind(btf, name, BTF_KIND_INT);
+	if (id < 0)
+		id = btf__find_by_name_kind(btf, name, BTF_KIND_ENUM);
+	if (id < 0)
+		id = btf__find_by_name_kind(btf, name, BTF_KIND_ENUM64);
+	if (id < 0)
+		id = btf__find_by_name_kind(btf, name, BTF_KIND_STRUCT);
+	if (id < 0)
+		id = btf__find_by_name_kind(btf, name, BTF_KIND_UNION);
+	return id;
+}
+
+/*
+ * Resolve a ::cast / ::container_of type. Kernel types are looked up in vmlinux
+ * first, so bpf chains reach the full kernel type namespace with correct layout;
+ * a program-local type then resolves in the program's own BTF. For kprobe/raw_tp
+ * the two BTFs are the same.
+ */
+static int utrace_resolve_type(const struct btf *prog_btf, const struct btf *vmlinux_btf,
+			       const struct utrace_param *p, const struct utrace_accessor *acc,
+			       struct utrace_type_ref *out)
+{
+	struct sview tname;
+	bool is_ptr;
+
+	if (normalize_cast_type(acc->args[0], &tname, &is_ptr))
+		return utrace_acc_err(p, acc, "invalid cast type\n");
+	if (tname.len && tname.s[tname.len - 1] == '*')
+		return utrace_acc_err(p, acc, "pointer-to-pointer casts are not supported\n");
+	if (!is_ptr && sv_eq(tname, "void"))
+		return utrace_acc_err(p, acc, "cannot cast to void\n");
+
+	const struct btf *btf = vmlinux_btf;
+	__s32 id = utrace_lookup_type(vmlinux_btf, tname);
+
+	if (id < 0 && prog_btf != vmlinux_btf) {
+		btf = prog_btf;
+		id = utrace_lookup_type(prog_btf, tname);
 	}
 	if (id < 0)
 		return utrace_acc_err(p, acc, "type '%.*s' not found\n", tname.len, tname.s);
@@ -589,14 +609,53 @@ static int utrace_resolve_type(const struct btf *btf, const struct utrace_param 
 	if (is_ptr) {
 		id = btf_find_ptr_to(btf, id);
 		if (id < 0)
-			return utrace_acc_err(p, acc, "no pointer-to-'%.*s' type in BTF\n", lookup.len, lookup.s);
+			return utrace_acc_err(p, acc, "no pointer-to-'%.*s' type in BTF\n", tname.len, tname.s);
 	}
 	*out = UTRACE_TYPE_REF(btf, id);
 	return 0;
 }
 
-static int utrace_compile_field(struct utrace_arg_state *state, struct utrace_param *p,
-				const struct utrace_accessor *acc)
+/*
+ * For a bpf chain a type initially comes from the program's own BTF, whose
+ * layout may not match the running kernel. Return the vmlinux definition of a
+ * named kernel type (matched by name+kind) so field offsets are correct; a
+ * program-local type with no vmlinux match, or a type already in vmlinux
+ * (kprobe/raw_tp), is returned unchanged.
+ */
+static struct utrace_type_ref utrace_canon_ref(const struct btf *vmlinux_btf, struct utrace_type_ref ref)
+{
+	const struct btf_type *t = btf_skip_modifiers(ref.btf, ref.id, NULL);
+	const char *name = btf__name_by_offset(ref.btf, t->name_off);
+	__s32 vid = -1;
+
+	if (ref.btf == vmlinux_btf || !name[0])
+		return ref;
+
+	switch (btf_kind(t)) {
+	case BTF_KIND_STRUCT:
+	case BTF_KIND_UNION:
+	case BTF_KIND_INT:
+	case BTF_KIND_FLOAT:
+		vid = btf__find_by_name_kind(vmlinux_btf, name, btf_kind(t));
+		break;
+	case BTF_KIND_ENUM:
+	case BTF_KIND_ENUM64:
+		vid = btf__find_by_name_kind(vmlinux_btf, name, BTF_KIND_ENUM);
+		if (vid < 0)
+			vid = btf__find_by_name_kind(vmlinux_btf, name, BTF_KIND_ENUM64);
+		break;
+	case BTF_KIND_FWD:
+		vid = btf__find_by_name_kind(vmlinux_btf, name,
+					     btf_kflag(t) ? BTF_KIND_UNION : BTF_KIND_STRUCT);
+		break;
+	default:
+		return ref;
+	}
+	return vid >= 0 ? UTRACE_TYPE_REF(vmlinux_btf, vid) : ref;
+}
+
+static int utrace_compile_field(struct utrace_arg_state *state, const struct btf *vmlinux_btf,
+				struct utrace_param *p, const struct utrace_accessor *acc)
 {
 	struct utrace_type_ref pointee;
 	struct utrace_member_info member;
@@ -621,6 +680,7 @@ static int utrace_compile_field(struct utrace_arg_state *state, struct utrace_pa
 		}
 	}
 
+	state->type = utrace_canon_ref(vmlinux_btf, state->type);
 	const struct btf_type *t = utrace_ref_type(state->type, NULL);
 	if (!t || !btf_is_composite(t))
 		return utrace_acc_err(p, acc, "cannot select field '%s' from a non-struct type\n", acc->field);
@@ -632,16 +692,17 @@ static int utrace_compile_field(struct utrace_arg_state *state, struct utrace_pa
 	if (err)
 		return utrace_acc_err(p, acc, "failed to resolve field '%s'\n", acc->field);
 	state->offset += member.byte_offset;
-	state->type = member.type;
+	state->type = utrace_canon_ref(vmlinux_btf, member.type);
 	return 0;
 }
 
 static int utrace_compile_container_of(struct utrace_arg_state *state, const struct btf *btf,
-				       struct utrace_param *p, const struct utrace_accessor *acc)
+				       const struct btf *vmlinux_btf, struct utrace_param *p,
+				       const struct utrace_accessor *acc)
 {
 	struct utrace_type_ref container, current;
 	struct utrace_member_info member;
-	int err = utrace_resolve_type(btf, p, acc, &container);
+	int err = utrace_resolve_type(btf, vmlinux_btf, p, acc, &container);
 	if (err)
 		return err;
 
@@ -799,22 +860,22 @@ static int utrace_compile_fallback_terminal(struct utrace_arg_state *state, stru
 }
 
 static int utrace_apply_accessors(struct utrace_arg_state *state, const struct btf *btf,
-				  struct utrace_param *p)
+				  const struct btf *vmlinux_btf, struct utrace_param *p)
 {
 	for (int i = 0; i < p->arg.accessor_cnt; i++) {
 		const struct utrace_accessor *acc = &p->arg.accessors[i];
 		int err;
 
 		if (acc->kind == UTRACE_ACC_FIELD) {
-			err = utrace_compile_field(state, p, acc);
+			err = utrace_compile_field(state, vmlinux_btf, p, acc);
 		} else if (strcmp(acc->op, "cast") == 0) {
 			if (acc->arg_cnt != 1)
 				return utrace_acc_err(p, acc, "operator 'cast' expects 1 argument, got %d\n", acc->arg_cnt);
-			err = utrace_resolve_type(btf, p, acc, &state->type);
+			err = utrace_resolve_type(btf, vmlinux_btf, p, acc, &state->type);
 		} else if (strcmp(acc->op, "container_of") == 0) {
 			if (acc->arg_cnt != 2)
 				return utrace_acc_err(p, acc, "operator 'container_of' expects 2 arguments, got %d\n", acc->arg_cnt);
-			err = utrace_compile_container_of(state, btf, p, acc);
+			err = utrace_compile_container_of(state, btf, vmlinux_btf, p, acc);
 		} else {
 			err = utrace_acc_err(p, acc, "unsupported accessor operator '%s'\n", acc->op);
 		}
@@ -1127,6 +1188,12 @@ static bool cfg_needs_btf(const struct utrace_cfg *cfg)
 		return cfg_needs_btf(cfg->span.entry) || cfg_needs_btf(cfg->span.exit);
 	if (cfg->type == UTRACE_RAW_TRACEPOINT)
 		return true;
+	if (cfg_is_bpf_type(cfg)) {
+		for (int i = 0; i < cfg->param_cnt; i++)
+			if (cfg->params[i].type == UTRACE_PARAM_ARG && cfg->params[i].arg.accessor_cnt > 0)
+				return true;
+		return false;
+	}
 	if (!cfg_is_kprobe_type(cfg))
 		return false;
 	if (cfg->wildcard_args)
@@ -1154,7 +1221,7 @@ static int resolve_arg_name(const struct utrace_cfg *cfg, const struct btf *btf,
 		const struct btf_param *p = btf_params(proto) + 1; /* skip void *__data */
 		for (int i = 1; i < btf_vlen(proto); i++, p++) {
 			const char *pname = btf__name_by_offset(btf, p->name_off);
-			if (pname && strcmp(pname, name) == 0)
+			if (strcmp(pname, name) == 0)
 				return i - 1;
 		}
 		break;
@@ -1175,7 +1242,7 @@ static int resolve_arg_name(const struct utrace_cfg *cfg, const struct btf *btf,
 		const struct btf_param *p = btf_params(proto);
 		for (int i = 0; i < btf_vlen(proto); i++, p++) {
 			const char *pname = btf__name_by_offset(resolve_btf, p->name_off);
-			if (pname && strcmp(pname, name) == 0)
+			if (strcmp(pname, name) == 0)
 				return i;
 		}
 		break;
@@ -1444,7 +1511,7 @@ static int augment_cfg_args(struct utrace_cfg *cfg, const struct btf *vmlinux_bt
 		int err = utrace_resolve_base(&state, cfg, btf, p);
 		if (err)
 			return err;
-		err = utrace_apply_accessors(&state, btf, p);
+		err = utrace_apply_accessors(&state, btf, vmlinux_btf, p);
 		if (err)
 			return err;
 		if (p->arg.accessor_cnt)
@@ -1724,9 +1791,6 @@ static int find_bpf_prog_by_name(const char *name, int *prog_fd_out,
 			if (!t)
 				continue;
 			const char *func_name = btf__name_by_offset(btf, t->name_off);
-			if (!func_name)
-				continue;
-
 			if (strcmp(func_name, name) != 0)
 				continue;
 
