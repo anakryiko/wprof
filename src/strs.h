@@ -102,11 +102,14 @@ static inline bool sv_exact_delim_at(struct sview v, int pos, const char *delim,
 
 /*
  * Like sv_split, but only matches an exact delim at the top level. Occurrences
- * inside balanced (...) are skipped; <...> nests only outside parentheses (for
- * ::op<...>), so angle brackets inside (...) are opaque and don't affect it.
+ * inside balanced (...) are skipped. When angle_aware is set, <...> also nests
+ * (only outside parentheses), so operator arguments like ::op<a, b> stay opaque
+ * to a top-level comma split. Free-form leaf content (e.g. /map labels) should
+ * pass angle_aware=false so a stray '<' in a label doesn't swallow delimiters.
  * *right starts at the delimiter, or is empty if none was found.
  */
-static inline struct sview sv_split_top(struct sview v, const char *delim, struct sview *right)
+static inline struct sview sv_split_top(struct sview v, const char *delim, bool angle_aware,
+					struct sview *right)
 {
 	int dlen = strlen(delim);
 	int paren = 0, angle = 0;
@@ -123,11 +126,11 @@ static inline struct sview sv_split_top(struct sview v, const char *delim, struc
 				paren--;
 			continue;
 		}
-		if (paren == 0 && c == '<') {
+		if (angle_aware && paren == 0 && c == '<') {
 			angle++;
 			continue;
 		}
-		if (paren == 0 && c == '>') {
+		if (angle_aware && paren == 0 && c == '>') {
 			if (angle > 0)
 				angle--;
 			continue;

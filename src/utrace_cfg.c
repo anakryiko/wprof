@@ -134,7 +134,7 @@ static int parse_arg_map(struct sview orig, struct sview def, struct utrace_para
 
 	while (!sv_is_empty(def)) {
 		struct sview rest, val;
-		struct sview ent = sv_trim(sv_split_top(def, ",", &rest));
+		struct sview ent = sv_trim(sv_split_top(def, ",", false, &rest));
 
 		def = sv_is_empty(rest) ? sv_empty() : sv_consume_left(rest, 1);
 		if (sv_is_empty(ent))
@@ -232,7 +232,7 @@ static int parse_op_args(struct sview orig, struct sview argdef, struct sview bo
 
 	while (!sv_is_empty(body)) {
 		struct sview rest;
-		struct sview arg = sv_trim(sv_split_top(body, ",", &rest));
+		struct sview arg = sv_trim(sv_split_top(body, ",", false, &rest));
 
 		if (sv_is_empty(arg))
 			return utrace_err(orig, body, "empty operator argument\n");
@@ -250,8 +250,8 @@ static int parse_op_args(struct sview orig, struct sview argdef, struct sview bo
 static struct sview sv_split_accessor(struct sview v, struct sview *rest)
 {
 	struct sview field_rest, op_rest;
-	struct sview field = sv_split_top(v, ".", &field_rest);
-	struct sview op = sv_split_top(v, "::", &op_rest);
+	struct sview field = sv_split_top(v, ".", false, &field_rest);
+	struct sview op = sv_split_top(v, "::", false, &op_rest);
 
 	if (!sv_is_empty(field_rest) && !sv_is_empty(op_rest)) {
 		if (field.len < op.len) {
@@ -359,10 +359,10 @@ static int parse_arg_param(struct sview orig, struct sview def, struct utrace_pa
 	p->arg.source = sv_strdup(argdef);
 
 	/* peel trailing "/MOD" render modifiers (paren-aware, so map(a,b) is intact) */
-	def = sv_split_top(def, "/", &mods);
+	def = sv_split_top(def, "/", false, &mods);
 
 	/* split "expression[:type]", treating :: operators as part of expression */
-	expr = sv_trim(sv_split_top(def, ":", &arg_type));
+	expr = sv_trim(sv_split_top(def, ":", false, &arg_type));
 	int err = parse_arg_expr(orig, argdef, expr, p);
 	if (err)
 		return err;
@@ -379,7 +379,7 @@ static int parse_arg_param(struct sview orig, struct sview def, struct utrace_pa
 	/* render modifiers: "/name" or "/name(args)", e.g. /x, /map(0=a,1=b) */
 	while (!sv_is_empty(mods)) {
 		struct sview rest;
-		struct sview mod = sv_trim(sv_split_top(sv_consume_left(mods, 1), "/", &rest));
+		struct sview mod = sv_trim(sv_split_top(sv_consume_left(mods, 1), "/", false, &rest));
 
 		mods = rest;
 		if (sv_is_empty(mod))
@@ -419,7 +419,7 @@ static int parse_params(struct sview orig, struct sview def, struct utrace_param
 
 	while (!sv_is_empty(def)) {
 		struct sview rest;
-		struct sview param = sv_split_top(def, ",", &rest);
+		struct sview param = sv_split_top(def, ",", true, &rest);
 
 		def = sv_consume_left(rest, 1);
 
