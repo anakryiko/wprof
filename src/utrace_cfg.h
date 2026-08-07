@@ -12,6 +12,16 @@
 
 #define MAX_UTRACE_READ_OPS 8
 
+/*
+ * Positional args readable from registers by utrace_read_arg_pt_regs
+ * (kprobe/uprobe). Arch-specific: x86-64 passes 6 in registers, arm64 8.
+ */
+#if defined(__TARGET_ARCH_arm64) || defined(__aarch64__)
+#define UTRACE_MAX_REG_ARGS 8
+#else
+#define UTRACE_MAX_REG_ARGS 6
+#endif
+
 enum utrace_read_op_kind {
 	UTRACE_READ_INVALID,
 	UTRACE_READ_ARG,
