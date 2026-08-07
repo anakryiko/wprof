@@ -175,10 +175,10 @@ struct/union capture is not supported.
 
 Typed chains currently work with zero-offset entry `k:` probes, `kret:`
 return values, `kspan:`, `raw_tp:`, `bpf:`/`bpfret:`/`bpfspan:`, and
-generic spans whose individual legs are supported. For `bpf:` probes the
-field offsets are taken from the program's own BTF; if that layout differs
-from the running kernel's, the captured values will be wrong. Resolving BPF
-roots against vmlinux BTF is not yet implemented.
+generic spans whose individual legs are supported. For `bpf:` probes each
+named type in the chain is resolved against vmlinux BTF (by name and kind)
+so kernel types use the running kernel's layout; a type with no vmlinux
+match is treated as program-local and read from the program's own BTF.
 
 ### Render modifiers
 
