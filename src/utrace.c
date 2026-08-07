@@ -1140,6 +1140,40 @@ static int resolve_arg_name(const struct utrace_cfg *cfg, const struct btf *btf,
 	return -ENOENT;
 }
 
+/*
+ * Number of positional arguments a probe exposes, or -1 when it can't be
+ * determined (missing BTF/format), in which case numeric indices are not
+ * range-checked.
+ */
+static int utrace_probe_arg_count(const struct utrace_cfg *cfg, const struct btf *btf)
+{
+	switch (cfg->type) {
+	case UTRACE_TRACEPOINT:
+		return cfg->tp.field_cnt;
+	case UTRACE_RAW_TRACEPOINT: {
+		const struct btf_type *proto = cfg->raw_tp.proto ?: cfg->raw_tp.name_proto;
+
+		return proto ? btf_vlen(proto) - 1 : -1; /* skip void *__data */
+	}
+	case UTRACE_USDT:
+		return cfg->usdt.info.arg_cnt;
+	case UTRACE_KPROBE:
+	case UTRACE_KRETPROBE:
+	case UTRACE_KPROBE_SPAN:
+	case UTRACE_BPF_PROBE:
+	case UTRACE_BPF_RETPROBE:
+	case UTRACE_BPF_SPAN: {
+		const struct btf *rbtf = cfg_is_bpf_type(cfg) ? cfg->bpf_prog.btf : btf;
+		const char *func = cfg_is_bpf_type(cfg) ? cfg->bpf_prog.name : cfg->kprobe.name;
+		const struct btf_type *proto = rbtf ? btf_find_func_proto(rbtf, func) : NULL;
+
+		return proto ? btf_vlen(proto) : -1;
+	}
+	default:
+		return -1;
+	}
+}
+
 static int param_sort_key(const struct utrace_param *p)
 {
 	if (p->type == UTRACE_PARAM_ARG)
@@ -1301,6 +1335,21 @@ static int augment_cfg_args(struct utrace_cfg *cfg, const struct btf *vmlinux_bt
 			return -ESRCH;
 		} else {
 			p->arg.arg_idx = resolved;
+		}
+	}
+
+	/* range-check numeric arg indices against the probe's argument count */
+	int arg_count = utrace_probe_arg_count(cfg, btf);
+	if (arg_count >= 0) {
+		for (int j = 0; j < cfg->param_cnt; j++) {
+			struct utrace_param *p = &cfg->params[j];
+
+			if (p->type != UTRACE_PARAM_ARG || p->arg.arg_idx == UTRACE_ARG_RET)
+				continue;
+			if (p->arg.arg_idx >= arg_count)
+				return utrace_acc_err(p, NULL,
+						      "argument index %d out of range (probe has %d argument%s)\n",
+						      p->arg.arg_idx, arg_count, arg_count == 1 ? "" : "s");
 		}
 	}
 
