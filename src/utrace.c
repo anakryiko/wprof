@@ -974,9 +974,6 @@ static bool cfg_is_native_span(enum utrace_type t)
 	return t == UTRACE_KPROBE_SPAN || t == UTRACE_UPROBE_SPAN || t == UTRACE_BPF_SPAN;
 }
 
-/* pt_regs arg registers readable by utrace_read_arg_pt_regs (PARM1..6) */
-#define UTRACE_MAX_REG_ARGS 6
-
 /* Determine the number of positional args for wildcard expansion */
 static int btf_func_arg_cnt(const struct btf *btf, const char *func_name)
 {
@@ -1067,9 +1064,9 @@ static void expand_wildcard_args(struct utrace_cfg *cfg, const struct btf *btf)
 	} else if (cfg_is_bpf_type(cfg)) {
 		arg_cnt = bpf_prog_func_arg_cnt(cfg);
 		if (arg_cnt < 0)
-			arg_cnt = 6;
+			arg_cnt = UTRACE_MAX_REG_ARGS;
 	} else {
-		arg_cnt = 6;
+		arg_cnt = UTRACE_MAX_REG_ARGS;
 	}
 
 	/* figure out which arg indices are already explicitly defined */
@@ -1207,6 +1204,10 @@ static int utrace_probe_arg_count(const struct utrace_cfg *cfg, const struct btf
 	}
 	case UTRACE_USDT:
 		return cfg->usdt.info.arg_cnt;
+	case UTRACE_UPROBE:
+	case UTRACE_URETPROBE:
+	case UTRACE_UPROBE_SPAN:
+		return UTRACE_MAX_REG_ARGS;
 	case UTRACE_KPROBE:
 	case UTRACE_KRETPROBE:
 	case UTRACE_KPROBE_SPAN: {

@@ -1989,6 +1989,10 @@ static int utrace_read_arg_pt_regs(struct pt_regs *regs, int idx, u64 *value)
 	case 3: val = PT_REGS_PARM4_CORE(regs); break;
 	case 4: val = PT_REGS_PARM5_CORE(regs); break;
 	case 5: val = PT_REGS_PARM6_CORE(regs); break;
+#if defined(__TARGET_ARCH_arm64)
+	case 6: val = PT_REGS_PARM7_CORE(regs); break;
+	case 7: val = PT_REGS_PARM8_CORE(regs); break;
+#endif
 	default: return -EINVAL;
 	}
 	*value = val;
