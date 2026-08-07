@@ -17,6 +17,9 @@ wprof -U 'u:process_request (arg:0:u32/name(id), arg:1:str/name(name), pid:1234)
 # trace a kernel function with all args from BTF
 wprof -U 'k:vfs_write (arg:*)'
 
+# follow typed kernel fields (task->real_parent->comm)
+wprof -U 'k:wake_up_process (arg:p.real_parent.comm/name(parent_comm))'
+
 # trace sched_switch tracepoint, pick specific fields by name
 wprof -U 'tp:sched:sched_switch (arg:prev_comm, arg:next_comm, arg:prev_pid)'
 
@@ -88,7 +91,7 @@ key-value pairs in JSON output, and can be used in `name:` templates
 to dynamically label events and spans.
 
 ```
-arg:<index-or-name>[:<type>][/modifier...]
+arg:<index-or-name>{.<field>|::<operator><args...>}*[:<type>][/modifier...]
 ```
 
 **By index:** `arg:0`, `arg:1`, ..., `arg:ret`
@@ -122,7 +125,55 @@ tracepoints) or from ELF USDT note metadata (for USDTs). Falls back to
 **Rules:**
 - Return probes (`uret:`, `kret:`, `bpfret:`) only support `arg:ret`
 - `arg:ret` is only valid on return and span probes
-- `arg:*` cannot be combined with other arg specs
+- `arg:*` may be combined with explicit arg specs; the explicit ones win and
+  the wildcard fills in the remaining arguments
+
+### Typed kernel field access
+
+For BTF-backed kernel probes, an argument can be followed through struct and
+union fields before its terminal value is captured:
+
+```
+arg:p.real_parent.comm/name(parent_comm)
+arg:1::cast<struct sock *>.__sk_common.skc_state/name(state)/map(1=ESTAB,7=CLOSE)
+arg:t::container_of<struct delayed_work, timer>.work.data.counter/name(work)
+```
+
+A `.` selects a field. wprof can automatically dereference a pointer to access
+a struct or union field, with at most one pointer dereference for each
+`.field`.
+
+`::op<...>` applies an accessor operator:
+
+- `::cast<TYPE>` reinterprets the current value without reading memory.
+  `TYPE` can be a named struct, union, typedef, or primitive type, with
+  optional `*` for pointer-to-type designation. Pointer-to-pointer casts
+  (`**`), arrays, and function declarators are rejected. Primitive and typedef
+  names are resolved as they appear in the running kernel BTF.
+- `::container_of<TYPE, MEMBER>` rebases an addressed embedded member to its
+  enclosing struct or union. The current type must match `TYPE.MEMBER`.
+
+Here are a few examples demonstrating the syntax:
+
+| Argument expression                                                        | C equivalent                                                       |
+|----------------------------------------------------------------------------|--------------------------------------------------------------------|
+| `arg:p.real_parent.comm`                                                   | `p->real_parent->comm`                                             |
+| `arg:1::cast<struct sock *>.__sk_common.skc_state`                         | `((struct sock *)arg1)->__sk_common.skc_state`                     |
+| `arg:t::container_of<struct delayed_work, timer>.work.data.counter`        | `container_of(t, struct delayed_work, timer)->work.data.counter`   |
+| `arg:1.private_data::cast<struct my_ctx *>.session_id`                     | `((struct my_ctx *)arg1->private_data)->session_id`                |
+
+The terminal BTF type supplies the default output type and source width.
+Integer, enum, and pointer leaves can use a compatible scalar `:type`
+override; `:str` requires `char *` or a bounded `char[]` (use
+`::cast<char *>` for an intentional reinterpretation). We currently support
+capturing fields of primitive types and character arrays/strings. Whole
+struct/union capture is not supported.
+
+Typed chains currently work with zero-offset entry `k:` probes, `kret:`
+return values, `kspan:`, `raw_tp:`, `bpf:`/`bpfret:`/`bpfspan:`, and
+generic spans whose individual legs are supported. A BPF-program root is
+resolved from program BTF, but its kernel type must also exist by name in
+vmlinux BTF; a leading `::cast<struct X *>` can provide the kernel root type.
 
 ### Render modifiers
 

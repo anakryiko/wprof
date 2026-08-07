@@ -1977,67 +1977,69 @@ struct {
 	__uint(max_entries, 1);
 } utrace_scratch SEC(".maps");
 
-static __always_inline u64 utrace_read_arg(struct pt_regs *regs, int idx)
+static int utrace_read_arg_pt_regs(struct pt_regs *regs, int idx, u64 *value)
 {
+	u64 val;
+
 	switch (idx) {
-	case UTRACE_ARG_RET: return PT_REGS_RC_CORE(regs);
-	case 0: return PT_REGS_PARM1_CORE(regs);
-	case 1: return PT_REGS_PARM2_CORE(regs);
-	case 2: return PT_REGS_PARM3_CORE(regs);
-	case 3: return PT_REGS_PARM4_CORE(regs);
-	case 4: return PT_REGS_PARM5_CORE(regs);
-	case 5: return PT_REGS_PARM6_CORE(regs);
-	default: return 0;
+	case UTRACE_ARG_RET: val = PT_REGS_RC_CORE(regs); break;
+	case 0: val = PT_REGS_PARM1_CORE(regs); break;
+	case 1: val = PT_REGS_PARM2_CORE(regs); break;
+	case 2: val = PT_REGS_PARM3_CORE(regs); break;
+	case 3: val = PT_REGS_PARM4_CORE(regs); break;
+	case 4: val = PT_REGS_PARM5_CORE(regs); break;
+	case 5: val = PT_REGS_PARM6_CORE(regs); break;
+	default: return -EINVAL;
 	}
+	*value = val;
+	return 0;
 }
 
-static __always_inline u64 utrace_read_arg_fentry(void *ctx, int idx)
+static int utrace_read_arg_fentry(void *ctx, int idx, u64 *value)
 {
 	u64 val = 0;
+	int err;
 
 	if (idx == UTRACE_ARG_RET)
-		bpf_get_func_ret(ctx, &val);
+		err = bpf_get_func_ret(ctx, &val);
 	else
-		bpf_get_func_arg(ctx, idx, &val);
-	return val;
+		err = bpf_get_func_arg(ctx, idx, &val);
+	if (err)
+		return err;
+	*value = val;
+	return 0;
 }
 
-static __always_inline u64 utrace_read_arg_raw_tp(void *ctx, int idx)
+static int utrace_read_arg_raw_tp(void *ctx, int idx, u64 *value)
 {
 	u64 val = 0;
 	void *args;
+	int err;
 
-	bpf_probe_read_kernel(&args, sizeof(args), &ctx);
-	bpf_probe_read_kernel(&val, sizeof(val), args + idx * sizeof(u64));
-	return val;
+	err = bpf_probe_read_kernel(&args, sizeof(args), &ctx);
+	if (err)
+		return err;
+	err = bpf_probe_read_kernel(&val, sizeof(val), args + idx * sizeof(u64));
+	if (err)
+		return err;
+	*value = val;
+	return 0;
 }
 
-static __always_inline u64 utrace_read_arg_tp(void *ctx, int byte_off)
+static int utrace_read_arg_tp(void *ctx, int byte_off, u64 *value)
 {
 	u64 val = 0;
 	void *args;
+	int err;
 
-	bpf_probe_read_kernel(&args, sizeof(args), &ctx);
-	bpf_probe_read_kernel(&val, sizeof(val), args + byte_off);
-	return val;
-}
-
-static __always_inline int utrace_read_tp_inline_str(void *ctx, int byte_off, void *buf, int buf_sz)
-{
-	void *args;
-
-	bpf_probe_read_kernel(&args, sizeof(args), &ctx);
-	return bpf_probe_read_kernel_str(buf, buf_sz, args + byte_off);
-}
-
-static __always_inline int utrace_read_tp_data_loc_str(void *ctx, int byte_off, void *buf, int buf_sz)
-{
-	u32 data_loc;
-	void *args;
-
-	bpf_probe_read_kernel(&args, sizeof(args), &ctx);
-	bpf_probe_read_kernel(&data_loc, sizeof(data_loc), args + byte_off);
-	return bpf_probe_read_kernel_str(buf, buf_sz, args + (data_loc & 0xffff));
+	err = bpf_probe_read_kernel(&args, sizeof(args), &ctx);
+	if (err)
+		return err;
+	err = bpf_probe_read_kernel(&val, sizeof(val), args + byte_off);
+	if (err)
+		return err;
+	*value = val;
+	return 0;
 }
 
 enum utrace_handler_flags {
@@ -2047,6 +2049,97 @@ enum utrace_handler_flags {
 	UTRACE_PF_RAW_TP	= 1 << 3,
 	UTRACE_PF_TP		= 1 << 4,
 };
+
+static u64 utrace_adjust_scalar(u64 val, u16 size, bool is_signed)
+{
+	int shift = (sizeof(val) - size) * 8;
+
+	val <<= shift;
+	if (is_signed)
+		val = (s64)val >> shift;
+	else
+		val >>= shift;
+	return val;
+}
+
+static int utrace_read_arg(void *ctx, enum utrace_handler_flags flags,
+			  const struct utrace_read_op *op, u64 *value)
+{
+	u64 val = 0;
+	int arg_idx = op->arg_idx;
+	int err;
+
+	if ((flags & UTRACE_PF_TP) && (op->flags & UTRACE_READ_F_TP_DATA_LOC)) {
+		u32 data_loc = 0;
+		void *args;
+
+		err = bpf_probe_read_kernel(&args, sizeof(args), &ctx);
+		if (err)
+			return err;
+		err = bpf_probe_read_kernel(&data_loc, sizeof(data_loc), args + arg_idx);
+		if (err)
+			return err;
+		val = (u64)(args + (data_loc & 0xffff));
+	} else if ((flags & UTRACE_PF_TP) && (op->flags & UTRACE_READ_F_TP_INLINE)) {
+		void *args;
+
+		err = bpf_probe_read_kernel(&args, sizeof(args), &ctx);
+		if (err)
+			return err;
+		val = (u64)(args + arg_idx);
+	} else if (flags & UTRACE_PF_USDT) {
+		err = bpf_usdt_arg(ctx, arg_idx, (long *)&val);
+		if (err)
+			return err;
+	} else if (flags & UTRACE_PF_RAW_TP) {
+		err = utrace_read_arg_raw_tp(ctx, arg_idx, &val);
+		if (err)
+			return err;
+	} else if (flags & UTRACE_PF_TP) {
+		err = utrace_read_arg_tp(ctx, arg_idx, &val);
+		if (err)
+			return err;
+	} else if (flags & UTRACE_PF_FENTRY) {
+		err = utrace_read_arg_fentry(ctx, arg_idx, &val);
+		if (err)
+			return err;
+	} else {
+		err = utrace_read_arg_pt_regs(ctx, arg_idx, &val);
+		if (err)
+			return err;
+	}
+	val = utrace_adjust_scalar(val, op->size, op->flags & UTRACE_READ_F_SIGNED);
+	*value = val;
+	return 0;
+}
+
+static int utrace_read_val(u64 cur, const struct utrace_read_op *op, u64 *value)
+{
+	u64 val;
+	int err = bpf_probe_read_kernel(&val, sizeof(val), (void *)(cur + (s64)op->offset));
+	if (err)
+		return err;
+	*value = utrace_adjust_scalar(val, op->size, op->flags & UTRACE_READ_F_SIGNED);
+	return 0;
+}
+
+static int utrace_read_str(u64 cur, enum utrace_handler_flags flags,
+			  const struct utrace_read_op *op, void *buf)
+{
+	size_t size = op->size;
+	if (size > MAX_UTRACE_STR_SZ)
+		return -E2BIG;
+
+	if (op->flags & UTRACE_READ_F_KERNEL)
+		return bpf_probe_read_kernel_str(buf, size, (void *)(cur + op->offset));
+	/* kernel addresses have high bit set (negative as s64) */
+	if ((flags & UTRACE_PF_KERNEL) && (s64)cur >= 0)
+		return bpf_probe_read_user_str(buf, size, (void *)(cur + op->offset));
+	if (flags & UTRACE_PF_KERNEL)
+		return bpf_probe_read_kernel_str(buf, size, (void *)(cur + op->offset));
+	else
+		return bpf_copy_from_user_str(buf, size, (void *)(cur + op->offset), 0);
+}
 
 static __always_inline int utrace_handle_probe(void *ctx, enum utrace_handler_flags flags)
 {
@@ -2080,81 +2173,53 @@ static __always_inline int utrace_handle_probe(void *ctx, enum utrace_handler_fl
 	 */
 	int i;
 	bpf_for(i, 0, arg_cnt) {
-		if (i >= MAX_UTRACE_ARGS)
-			break;
+		u8 op_cnt = cfg->arg_op_cnt[i];
+		u64 val = 0;
+		int j, err;
+		void *p;
 
-		u8 arg_type = cfg->args[i].type;
-		int arg_idx = cfg->args[i].idx;
-		u64 arg_val;
+		bpf_for(j, 0, op_cnt) {
+			if (j >= MAX_UTRACE_READ_OPS)
+				break;
 
-		/* TP string fields: either __data_loc encoded or inline char[] */
-		if ((flags & UTRACE_PF_TP) && arg_type == UTRACE_ARG_STR) {
-			void *p = bpf_dynptr_data(&scratch_dptr, scratch_off, MAX_UTRACE_STR_SZ);
-			if (!p) {
-				scratch->arg_lens[i] = -ENOSPC;
-				continue;
+			const struct utrace_read_op *op = &cfg->arg_ops[i][j];
+			switch (op->kind) {
+			case UTRACE_READ_ARG:
+				err = utrace_read_arg(ctx, flags, op, &val);
+				if (err)
+					goto out_arg;
+				break;
+			case UTRACE_READ_VAL:
+				err = utrace_read_val(val, op, &val);
+				if (err)
+					goto out_arg;
+				break;
+			case UTRACE_READ_STR:
+				p = bpf_dynptr_data(&scratch_dptr, scratch_off, MAX_UTRACE_STR_SZ);
+				if (!p) {
+					err = -ENOSPC;
+					goto out_arg;
+				}
+				/* READ_STR is always the last operation setting final len */
+				err = utrace_read_str(val, flags, op, p);
+				goto out_arg;
+			default:
+				err = -EINVAL;
+				goto out_arg;
 			}
-			int len;
-			if (cfg->args[i].tp_data_loc)
-				len = utrace_read_tp_data_loc_str(ctx, arg_idx, p, MAX_UTRACE_STR_SZ);
-			else
-				len = utrace_read_tp_inline_str(ctx, arg_idx, p, MAX_UTRACE_STR_SZ);
-			if (len > 0) {
-				scratch->arg_lens[i] = len;
-				scratch_off += len;
-			} else {
-				scratch->arg_lens[i] = len;
-			}
-			continue;
 		}
-
-		if (flags & UTRACE_PF_USDT) {
-			long usdt_val = 0;
-			bpf_usdt_arg(ctx, arg_idx, &usdt_val);
-			arg_val = (u64)usdt_val;
-		} else if (flags & UTRACE_PF_RAW_TP) {
-			arg_val = utrace_read_arg_raw_tp(ctx, arg_idx);
-		} else if (flags & UTRACE_PF_TP) {
-			arg_val = utrace_read_arg_tp(ctx, arg_idx);
-		} else if (flags & UTRACE_PF_FENTRY) {
-			arg_val = utrace_read_arg_fentry(ctx, arg_idx);
+		/* READ_STR does its own variable-sized read into dynptr, skipping this part */
+		p = bpf_dynptr_data(&scratch_dptr, scratch_off, sizeof(u64));
+		if (p) {
+			*(u64 *)p = val;
+			err = sizeof(u64);
 		} else {
-			arg_val = utrace_read_arg(ctx, arg_idx);
+			err = -ENOSPC;
 		}
-
-		if (arg_type == UTRACE_ARG_STR) {
-			void *p = bpf_dynptr_data(&scratch_dptr, scratch_off, MAX_UTRACE_STR_SZ);
-			if (!p) {
-				scratch->arg_lens[i] = -ENOSPC;
-				continue;
-			}
-
-			int len;
-			/* kernel addresses have high bit set (negative as s64) */
-			if ((flags & UTRACE_PF_KERNEL) && (s64)arg_val >= 0)
-				len = bpf_probe_read_user_str(p, MAX_UTRACE_STR_SZ, (void *)arg_val);
-			else if (flags & UTRACE_PF_KERNEL)
-				len = bpf_probe_read_kernel_str(p, MAX_UTRACE_STR_SZ, (void *)arg_val);
-			else
-				len = bpf_copy_from_user_str(p, MAX_UTRACE_STR_SZ, (void *)arg_val, 0);
-
-			if (len > 0) {
-				scratch->arg_lens[i] = len;
-				scratch_off += len;
-			} else {
-				scratch->arg_lens[i] = len;
-			}
-		} else {
-			void *p = bpf_dynptr_data(&scratch_dptr, scratch_off, sizeof(u64));
-			if (!p) {
-				scratch->arg_lens[i] = -ENOSPC;
-				continue;
-			}
-
-			bpf_probe_read_kernel(p, sizeof(u64), &arg_val);
-			scratch->arg_lens[i] = sizeof(u64);
-			scratch_off += sizeof(u64);
-		}
+out_arg:
+		scratch->arg_lens[i] = err;
+		if (err > 0)
+			scratch_off += err;
 	}
 
 	struct stack_trace *tr = NULL;

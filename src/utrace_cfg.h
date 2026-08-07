@@ -7,7 +7,34 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include "elf_utils.h"
+#include "strs.h"
 #endif
+
+#define MAX_UTRACE_READ_OPS 8
+
+enum utrace_read_op_kind {
+	UTRACE_READ_INVALID,
+	UTRACE_READ_ARG,
+	UTRACE_READ_VAL,
+	UTRACE_READ_STR,
+};
+
+enum utrace_read_op_flags {
+	UTRACE_READ_F_SIGNED = 1 << 0,
+	UTRACE_READ_F_TP_INLINE = 1 << 1,
+	UTRACE_READ_F_TP_DATA_LOC = 1 << 2,
+	UTRACE_READ_F_KERNEL = 1 << 3,
+};
+
+struct utrace_read_op {
+	union {
+		long long offset;	/* READ_VAL/READ_STR address delta */
+		int arg_idx;		/* READ_ARG index, return marker, or TP byte offset */
+	};
+	unsigned short size;		/* scalar width or concrete string limit */
+	unsigned char kind;		/* enum utrace_read_op_kind */
+	unsigned char flags;		/* enum utrace_read_op_flags */
+};
 
 enum utrace_type {
 	UTRACE_INVALID,
@@ -84,6 +111,21 @@ struct utrace_arg_map {
 	char *label;
 };
 
+enum utrace_accessor_kind {
+	UTRACE_ACC_FIELD,
+	UTRACE_ACC_OP,
+};
+
+/* Parsed field/operator access retained for BTF compilation and formatting. */
+struct utrace_accessor {
+	enum utrace_accessor_kind kind;
+	char *field;		/* FIELD: member name */
+	char *op;		/* OP: operator name */
+	struct sview *args;	/* OP: angle-bracket arguments */
+	int arg_cnt;
+	struct sview source;	/* range within arg.source for diagnostics */
+};
+
 struct utrace_param {
 	enum utrace_param_type type;
 	union {
@@ -92,6 +134,11 @@ struct utrace_param {
 			enum utrace_arg_type arg_type;	/* defaults to UTRACE_ARG_U64 if omitted */
 			char *name;			/* annotation name, NULL = auto "arg<N>" / "ret" */
 			char *ref_name;			/* name-based arg reference, resolved to arg_idx during augmentation */
+			char *source;			/* original arg definition for semantic diagnostics */
+			struct utrace_accessor *accessors;
+			int accessor_cnt;
+			struct utrace_read_op read_ops[MAX_UTRACE_READ_OPS];
+			unsigned char read_op_cnt;
 			int tp_byte_off;		/* TP: byte offset into event struct */
 			bool tp_data_loc;		/* TP: __data_loc encoded string field */
 			bool hex;			/* render integer value as 0x%x */

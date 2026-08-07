@@ -2,7 +2,9 @@
 /* Copyright (c) 2025 Meta Platforms, Inc. */
 #include "bpf/libbpf.h"
 #define _GNU_SOURCE
+#include <ctype.h>
 #include <errno.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -123,19 +125,19 @@ static void fill_probe_cfg(struct utrace_probe_cfg *pcfg, const struct utrace_cf
 		if (p->type != UTRACE_PARAM_ARG)
 			continue;
 
-		/* For spans: ret args go to exit side, non-ret args go to entry side */
-		if (event_type == UTRACE_ENTRY && p->arg.arg_idx == UTRACE_ARG_RET)
-			continue;
-		if (event_type == UTRACE_EXIT && p->arg.arg_idx != UTRACE_ARG_RET)
-			continue;
-
-		pcfg->args[arg_idx].type = p->arg.arg_type;
-		if (cfg->type == UTRACE_TRACEPOINT) {
-			pcfg->args[arg_idx].idx = p->arg.tp_byte_off;
-			pcfg->args[arg_idx].tp_data_loc = p->arg.tp_data_loc;
-		} else {
-			pcfg->args[arg_idx].idx = p->arg.arg_idx;
+		/*
+		 * Native spans split one cfg's args across entry/exit by ret-ness;
+		 * generic ~~ span legs (and plain probes) keep all their own args.
+		 */
+		if (cfg_is_span(cfg)) {
+			if (event_type == UTRACE_ENTRY && p->arg.arg_idx == UTRACE_ARG_RET)
+				continue;
+			if (event_type == UTRACE_EXIT && p->arg.arg_idx != UTRACE_ARG_RET)
+				continue;
 		}
+
+		memcpy(pcfg->arg_ops[arg_idx], p->arg.read_ops, p->arg.read_op_cnt * sizeof(**pcfg->arg_ops));
+		pcfg->arg_op_cnt[arg_idx] = p->arg.read_op_cnt;
 		arg_idx++;
 	}
 	pcfg->arg_cnt = arg_idx;
@@ -223,7 +225,8 @@ static const struct btf_type *btf_skip_modifiers(const struct btf *btf, __u32 id
 }
 
 static int resolve_btf_proto_arg_type(const struct btf *btf, const struct btf_type *proto,
-				      int arg_idx, enum utrace_arg_type *out, const char **name_out)
+				      int arg_idx, enum utrace_arg_type *out,
+				      const char **name_out, __u32 *type_id_out)
 {
 	__u32 type_id;
 	if (arg_idx == UTRACE_ARG_RET) {
@@ -241,6 +244,8 @@ static int resolve_btf_proto_arg_type(const struct btf *btf, const struct btf_ty
 				*name_out = pname;
 		}
 	}
+	if (type_id_out)
+		*type_id_out = type_id;
 
 	const struct btf_type *t = btf_skip_modifiers(btf, type_id, NULL);
 
@@ -299,12 +304,513 @@ static const struct btf_type *btf_find_func_proto(const struct btf *btf, const c
 }
 
 static int resolve_btf_arg_type(const struct btf *btf, const char *func_name,
-				int arg_idx, enum utrace_arg_type *out, const char **name_out)
+				int arg_idx, enum utrace_arg_type *out, const char **name_out,
+				__u32 *type_id_out)
 {
 	const struct btf_type *proto = btf_find_func_proto(btf, func_name);
 	if (!proto)
 		return -ENOENT;
-	return resolve_btf_proto_arg_type(btf, proto, arg_idx, out, name_out);
+	return resolve_btf_proto_arg_type(btf, proto, arg_idx, out, name_out, type_id_out);
+}
+
+struct utrace_type_ref {
+	const struct btf *btf;
+	__u32 id;		/* BTF type id; 0 means no/failed type resolution */
+};
+
+#define UTRACE_TYPE_REF(btf_, id_) ((struct utrace_type_ref){ .btf = (btf_), .id = (id_) })
+
+/*
+ * Where the value tracked during accessor compilation currently lives — the
+ * value-vs-lvalue distinction that decides whether a step needs a memory read.
+ *
+ * UTRACE_LOC_VALUE: the raw arg/register value. If it is a pointer it is already
+ *   the pointee's address, so the first field access is free (no deref) — e.g.
+ *   arg:0.comm on a `struct task_struct *` is just reg + offsetof(comm).
+ * UTRACE_LOC_ADDR: the value lives in memory at addr + offset; following a
+ *   pointer from here needs a real load — e.g. arg:0.real_parent.comm must DEREF
+ *   real_parent before reading comm.
+ *
+ * It also keeps casts position-correct (a cast preserves loc): the same
+ * ::cast<struct sock *>.sk_state compiles to 0 derefs on a register value
+ * (VALUE) but 1 deref when the pointer is a struct member (ADDR).
+ */
+enum utrace_value_loc {
+	UTRACE_LOC_VALUE,
+	UTRACE_LOC_ADDR,
+};
+
+struct utrace_arg_state {
+	struct utrace_type_ref type;
+	enum utrace_arg_type fallback_type;
+	enum utrace_value_loc loc;
+	long long offset;
+};
+
+struct utrace_member_info {
+	struct utrace_type_ref type;
+	__u32 byte_offset;
+};
+
+__printf(3, 4)
+static int utrace_acc_err(const struct utrace_param *p,
+			       const struct utrace_accessor *acc, const char *fmt, ...)
+{
+	va_list ap;
+
+	va_start(ap, fmt);
+	eprintf("utrace: %s", vsfmt(fmt, ap));
+	va_end(ap);
+
+	if (p->arg.source) {
+		struct sview source = acc ? acc->source : sv_new(p->arg.source);
+		int off = source.s - p->arg.source;
+		int len = source.len;
+
+		eprintf("  %s\n", p->arg.source);
+		if (sv_is_empty(source))
+			len = 1;
+		eprintf("  %*s%.*s\n", off, "", len,
+			"^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^");
+	}
+	return -EINVAL;
+}
+
+static const struct btf_type *utrace_ref_type(struct utrace_type_ref ref, __u32 *id_out)
+{
+	if (!ref.id || !ref.btf)
+		return NULL;
+	return btf_skip_modifiers(ref.btf, ref.id, id_out);
+}
+
+static bool utrace_ref_ptr(struct utrace_type_ref ref, struct utrace_type_ref *pointee)
+{
+	if (!ref.id || !ref.btf)
+		return false;
+	const struct btf_type *t = btf_skip_modifiers(ref.btf, ref.id, NULL);
+	if (!t || !btf_is_ptr(t))
+		return false;
+	if (pointee)
+		*pointee = UTRACE_TYPE_REF(ref.btf, t->type);
+	return true;
+}
+
+static bool utrace_ref_is_char(struct utrace_type_ref ref)
+{
+	const struct btf_type *t = utrace_ref_type(ref, NULL);
+	const char *name;
+
+	if (!t || !btf_is_int(t) || t->size != 1)
+		return false;
+	name = btf__name_by_offset(ref.btf, t->name_off);
+	return name && strcmp(name, "char") == 0;
+}
+
+static bool utrace_refs_compatible(struct utrace_type_ref a, struct utrace_type_ref b, int depth)
+{
+	struct utrace_type_ref ap, bp;
+	const struct btf_type *at, *bt;
+	const char *aname, *bname;
+	__u32 aid, bid;
+
+	if (!a.id || !b.id || depth > 8)
+		return false;
+	bool a_ptr = utrace_ref_ptr(a, &ap);
+	bool b_ptr = utrace_ref_ptr(b, &bp);
+	if (a_ptr || b_ptr)
+		return a_ptr && b_ptr && utrace_refs_compatible(ap, bp, depth + 1);
+	at = utrace_ref_type(a, &aid);
+	bt = utrace_ref_type(b, &bid);
+	if (!at || !bt)
+		return false;
+	if (a.btf == b.btf)
+		return aid == bid;
+	if (btf_kind(at) != btf_kind(bt))
+		return false;
+	aname = btf__name_by_offset(a.btf, at->name_off);
+	bname = btf__name_by_offset(b.btf, bt->name_off);
+	return aname && bname && aname[0] && strcmp(aname, bname) == 0;
+}
+
+static int utrace_find_member(struct utrace_type_ref container, struct sview name,
+			      __u32 base_bytes, int depth, struct utrace_member_info *out)
+{
+	const struct btf_type *t = utrace_ref_type(container, NULL);
+	const struct btf *btf = container.btf;
+
+	if (!t || !btf_is_composite(t))
+		return -EINVAL;
+	if (depth > 16)
+		return -ELOOP;
+
+	const struct btf_member *members = btf_members(t);
+	for (int i = 0; i < btf_vlen(t); i++) {
+		const struct btf_member *m = &members[i];
+		const char *member_name = btf__name_by_offset(btf, m->name_off);
+		__u32 bit_offset = btf_member_bit_offset(t, i);
+
+		if (member_name && member_name[0] && sv_eq(name, member_name)) {
+			if (btf_member_bitfield_size(t, i) || bit_offset % 8)
+				return -ENOTSUP;
+			*out = (struct utrace_member_info){
+				.type = UTRACE_TYPE_REF(btf, m->type),
+				.byte_offset = base_bytes + bit_offset / 8,
+			};
+			return 0;
+		}
+		if (member_name && member_name[0])
+			continue;
+
+		struct utrace_type_ref nested = UTRACE_TYPE_REF(btf, m->type);
+		const struct btf_type *nested_t = utrace_ref_type(nested, NULL);
+		if (!nested_t || !btf_is_composite(nested_t))
+			continue;
+		int err = utrace_find_member(nested, name, base_bytes + bit_offset / 8, depth + 1, out);
+		if (!err)
+			return 0;
+		if (err != -ENOENT)
+			return err;
+	}
+	return -ENOENT;
+}
+
+static int utrace_emit_read_op(struct utrace_param *p, const struct utrace_accessor *acc,
+			       enum utrace_read_op_kind kind, long long val, unsigned short size,
+			       unsigned char flags)
+{
+	if (p->arg.read_op_cnt == MAX_UTRACE_READ_OPS)
+		return utrace_acc_err(p, acc, "too many compiled read operations (max %d)\n", MAX_UTRACE_READ_OPS);
+
+	struct utrace_read_op *op = &p->arg.read_ops[p->arg.read_op_cnt++];
+
+	*op = (struct utrace_read_op){
+		.offset = val,
+		.size = size,
+		.kind = kind,
+		.flags = flags,
+	};
+	if (kind == UTRACE_READ_ARG)
+		op->arg_idx = val;
+	return 0;
+}
+
+static int normalize_cast_type(struct sview input, struct sview *name_out, bool *is_ptr)
+{
+	struct sview v = sv_trim(input);
+	*is_ptr = v.len > 0 && v.s[v.len - 1] == '*';
+	if (*is_ptr)
+		v = sv_trim(sv(v.s, v.len - 1));
+	if (sv_is_empty(v))
+		return -EINVAL;
+	*name_out = v;
+	return 0;
+}
+
+static __u32 utrace_canon_id(const struct btf *btf, __u32 id)
+{
+	__u32 res = id;
+	if (id)
+		btf_skip_modifiers(btf, id, &res);
+	return res;
+}
+
+/*
+ * Find a real BTF pointer type whose pointee resolves to target_id. A cast to
+ * T * is only meaningful if some T * field exists in the kernel, so its pointer
+ * type is present in BTF.
+ */
+static __s32 btf_find_ptr_to(const struct btf *btf, __u32 target_id)
+{
+	__u32 canon = utrace_canon_id(btf, target_id);
+	__u32 n = btf__type_cnt(btf);
+
+	for (__u32 i = 1; i < n; i++) {
+		const struct btf_type *t = btf__type_by_id(btf, i);
+		if (t && btf_is_ptr(t) && utrace_canon_id(btf, t->type) == canon)
+			return i;
+	}
+	return -ENOENT;
+}
+
+static int utrace_resolve_type(const struct btf *btf, const struct utrace_param *p,
+			       const struct utrace_accessor *acc, struct utrace_type_ref *out)
+{
+	struct sview tname, lookup;
+	bool is_ptr;
+	int err = normalize_cast_type(acc->args[0], &tname, &is_ptr);
+	if (err)
+		return utrace_acc_err(p, acc, "invalid cast type\n");
+	if (tname.len && tname.s[tname.len - 1] == '*')
+		return utrace_acc_err(p, acc, "pointer-to-pointer casts are not supported\n");
+	if (!is_ptr && sv_eq(tname, "void"))
+		return utrace_acc_err(p, acc, "cannot cast to void\n");
+
+	int kind = 0;
+	char name[128];
+	__s32 id;
+
+	lookup = tname;
+	if (sv_starts_with(tname, "struct ")) {
+		lookup = sv_trim(sv_consume_left(tname, 7));
+		kind = BTF_KIND_STRUCT;
+	} else if (sv_starts_with(tname, "union ")) {
+		lookup = sv_trim(sv_consume_left(tname, 6));
+		kind = BTF_KIND_UNION;
+	}
+	snprintf(name, sizeof(name), "%.*s", lookup.len, lookup.s);
+
+	if (kind) {
+		id = btf__find_by_name_kind(btf, name, kind);
+	} else if (sv_eq(tname, "void")) {
+		id = 0;
+	} else {
+		id = btf__find_by_name_kind(btf, name, BTF_KIND_TYPEDEF);
+		if (id < 0)
+			id = btf__find_by_name_kind(btf, name, BTF_KIND_INT);
+		if (id < 0)
+			id = btf__find_by_name_kind(btf, name, BTF_KIND_STRUCT);
+		if (id < 0)
+			id = btf__find_by_name_kind(btf, name, BTF_KIND_UNION);
+	}
+	if (id < 0)
+		return utrace_acc_err(p, acc, "type '%.*s' not found\n", tname.len, tname.s);
+
+	if (is_ptr) {
+		id = btf_find_ptr_to(btf, id);
+		if (id < 0)
+			return utrace_acc_err(p, acc, "no pointer-to-'%.*s' type in BTF\n", lookup.len, lookup.s);
+	}
+	*out = UTRACE_TYPE_REF(btf, id);
+	return 0;
+}
+
+static int utrace_compile_field(struct utrace_arg_state *state, struct utrace_param *p,
+				const struct utrace_accessor *acc)
+{
+	struct utrace_type_ref pointee;
+	struct utrace_member_info member;
+
+	if (!state->type.id)
+		return utrace_acc_err(p, acc, "field access needs a value type or leading ::cast\n");
+	if (state->loc == UTRACE_LOC_VALUE) {
+		if (!utrace_ref_ptr(state->type, &pointee))
+			return utrace_acc_err(p, acc, "cannot select field '%s' from a scalar value\n", acc->field);
+		state->type = pointee;
+		state->loc = UTRACE_LOC_ADDR;
+	}
+	if (utrace_ref_ptr(state->type, &pointee)) {
+		int err = utrace_emit_read_op(p, acc, UTRACE_READ_VAL, state->offset, sizeof(void *), 0);
+		if (err)
+			return err;
+		state->offset = 0;
+		state->type = pointee;
+		if (utrace_ref_ptr(state->type, NULL)) {
+			return utrace_acc_err(p, acc, "field '%s' would require more than one implicit pointer dereference\n",
+					      acc->field);
+		}
+	}
+
+	const struct btf_type *t = utrace_ref_type(state->type, NULL);
+	if (!t || !btf_is_composite(t))
+		return utrace_acc_err(p, acc, "cannot select field '%s' from a non-struct type\n", acc->field);
+	int err = utrace_find_member(state->type, sv_new(acc->field), 0, 0, &member);
+	if (err == -ENOENT)
+		return utrace_acc_err(p, acc, "field '%s' not found\n", acc->field);
+	if (err == -ENOTSUP)
+		return utrace_acc_err(p, acc, "field '%s' is a bitfield or not byte-aligned (unsupported)\n", acc->field);
+	if (err)
+		return utrace_acc_err(p, acc, "failed to resolve field '%s'\n", acc->field);
+	state->offset += member.byte_offset;
+	state->type = member.type;
+	return 0;
+}
+
+static int utrace_compile_container_of(struct utrace_arg_state *state, const struct btf *btf,
+				       struct utrace_param *p, const struct utrace_accessor *acc)
+{
+	struct utrace_type_ref container, current;
+	struct utrace_member_info member;
+	int err = utrace_resolve_type(btf, p, acc, &container);
+	if (err)
+		return err;
+
+	const struct btf_type *container_t = utrace_ref_type(container, NULL);
+	if (!container_t || !btf_is_composite(container_t))
+		return utrace_acc_err(p, acc, "container_of type is not a struct or union\n");
+
+	err = utrace_find_member(container, acc->args[1], 0, 0, &member);
+	if (err == -ENOENT) {
+		return utrace_acc_err(p, acc, "container member '%.*s' not found\n",
+				      acc->args[1].len, acc->args[1].s);
+	} else if (err == -ENOTSUP) {
+		return utrace_acc_err(p, acc, "container member '%.*s' is a bitfield or not byte-aligned (unsupported)\n",
+				      acc->args[1].len, acc->args[1].s);
+	} else if (err) {
+		return utrace_acc_err(p, acc, "failed to resolve container member '%.*s'\n",
+				      acc->args[1].len, acc->args[1].s);
+	}
+
+	current = state->type;
+	if (state->loc == UTRACE_LOC_VALUE) {
+		if (!utrace_ref_ptr(current, &current))
+			return utrace_acc_err(p, acc, "container_of needs a pointer value or addressed member\n");
+		state->loc = UTRACE_LOC_ADDR;
+	}
+	if (!utrace_refs_compatible(current, member.type, 0)) {
+		return utrace_acc_err(p, acc, "container_of current type does not match member '%.*s'\n",
+				      acc->args[1].len, acc->args[1].s);
+	}
+	state->offset -= member.byte_offset;
+	state->type = container;
+	state->loc = UTRACE_LOC_ADDR;
+	return 0;
+}
+
+static int utrace_int_arg_type(int size, bool is_signed, enum utrace_arg_type *out)
+{
+	switch (size) {
+	case 1: *out = is_signed ? UTRACE_ARG_S8 : UTRACE_ARG_U8; return 0;
+	case 2: *out = is_signed ? UTRACE_ARG_S16 : UTRACE_ARG_U16; return 0;
+	case 4: *out = is_signed ? UTRACE_ARG_S32 : UTRACE_ARG_U32; return 0;
+	case 8: *out = is_signed ? UTRACE_ARG_S64 : UTRACE_ARG_U64; return 0;
+	default: return -EINVAL;
+	}
+}
+
+static int utrace_compile_btf_terminal(struct utrace_arg_state *state, struct utrace_param *p,
+				       const struct utrace_accessor *last)
+{
+	enum utrace_arg_type explicit_type = p->arg.arg_type;
+	struct utrace_type_ref pointee;
+	const struct btf_type *t;
+	enum utrace_arg_type inferred;
+	bool is_signed = false;
+	int size;
+
+	if (!state->type.id)
+		return utrace_acc_err(p, last, "failed to determine value type\n");
+
+	if (utrace_ref_ptr(state->type, &pointee)) {
+		bool char_ptr = utrace_ref_is_char(pointee);
+		int err;
+
+		if (explicit_type == UTRACE_ARG_STR && !char_ptr)
+			return utrace_acc_err(p, last, ":str requires a char pointer (use ::cast<char *> to reinterpret)\n");
+		if (explicit_type != UTRACE_ARG_UNKNOWN && explicit_type != UTRACE_ARG_STR &&
+		    explicit_type != UTRACE_ARG_PTR && !utrace_arg_is_int(explicit_type))
+			return utrace_acc_err(p, last, "invalid pointer type override\n");
+		p->arg.arg_type = explicit_type == UTRACE_ARG_UNKNOWN ?
+			(char_ptr ? UTRACE_ARG_STR : UTRACE_ARG_PTR) : explicit_type;
+		if (state->loc == UTRACE_LOC_ADDR) {
+			err = utrace_emit_read_op(p, last, UTRACE_READ_VAL, state->offset, sizeof(void *), 0);
+			if (err)
+				return err;
+			state->offset = 0;
+		} else {
+			p->arg.read_ops[0].size = sizeof(void *);
+			p->arg.read_ops[0].flags = 0;
+		}
+		if (p->arg.arg_type == UTRACE_ARG_STR) {
+			return utrace_emit_read_op(p, last, UTRACE_READ_STR, state->offset, MAX_UTRACE_STR_SZ,
+						   state->loc == UTRACE_LOC_ADDR ? UTRACE_READ_F_KERNEL : 0);
+		}
+		return 0;
+	}
+
+	t = utrace_ref_type(state->type, NULL);
+	if (!t)
+		return utrace_acc_err(p, last, "failed to determine value type\n");
+	if (btf_is_array(t)) {
+		const struct btf_array *arr = btf_array(t);
+		struct utrace_type_ref elem = UTRACE_TYPE_REF(state->type.btf, arr->type);
+		if (!utrace_ref_is_char(elem))
+			return utrace_acc_err(p, last, "only char arrays are supported\n");
+		if (state->loc != UTRACE_LOC_ADDR || arr->nelems == 0)
+			return utrace_acc_err(p, last, "char array has no fixed address to read from\n");
+		if (explicit_type != UTRACE_ARG_UNKNOWN && explicit_type != UTRACE_ARG_STR)
+			return utrace_acc_err(p, last, "char array only supports :str\n");
+		p->arg.arg_type = UTRACE_ARG_STR;
+		return utrace_emit_read_op(p, last, UTRACE_READ_STR, state->offset,
+					   min(arr->nelems, (unsigned int)MAX_UTRACE_STR_SZ),
+					   UTRACE_READ_F_KERNEL);
+	}
+	if (btf_is_composite(t))
+		return utrace_acc_err(p, last, "capturing a whole struct/union is not supported yet; select a field\n");
+	if (btf_is_int(t)) {
+		size = t->size;
+		is_signed = btf_int_encoding(t) & BTF_INT_SIGNED;
+	} else if (btf_is_enum(t) || btf_is_enum64(t)) {
+		size = t->size;
+		is_signed = btf_kflag(t);
+	} else {
+		return utrace_acc_err(p, last, "unsupported value type\n");
+	}
+	if (utrace_int_arg_type(size, is_signed, &inferred))
+		return utrace_acc_err(p, last, "value has unsupported size %d\n", size);
+	if (explicit_type == UTRACE_ARG_STR)
+		return utrace_acc_err(p, last, ":str requires char * or char[] (use ::cast<char *> to reinterpret)\n");
+	if (explicit_type != UTRACE_ARG_UNKNOWN && explicit_type != UTRACE_ARG_PTR &&
+	    !utrace_arg_is_int(explicit_type))
+		return utrace_acc_err(p, last, "invalid scalar type override\n");
+	p->arg.arg_type = explicit_type == UTRACE_ARG_UNKNOWN ? inferred : explicit_type;
+	if (state->loc == UTRACE_LOC_VALUE) {
+		p->arg.read_ops[0].size = size;
+		p->arg.read_ops[0].flags = is_signed ? UTRACE_READ_F_SIGNED : 0;
+		return 0;
+	}
+	return utrace_emit_read_op(p, last, UTRACE_READ_VAL, state->offset, size,
+				   is_signed ? UTRACE_READ_F_SIGNED : 0);
+}
+
+static bool utrace_arg_is_signed_type(enum utrace_arg_type type)
+{
+	return type == UTRACE_ARG_S8 || type == UTRACE_ARG_S16 || type == UTRACE_ARG_S32 || type == UTRACE_ARG_S64;
+}
+
+static int utrace_compile_fallback_terminal(struct utrace_arg_state *state, struct utrace_param *p)
+{
+	enum utrace_arg_type type = p->arg.arg_type == UTRACE_ARG_UNKNOWN ? state->fallback_type : p->arg.arg_type;
+	struct utrace_read_op *read_arg = &p->arg.read_ops[0];
+
+	if (type == UTRACE_ARG_UNKNOWN)
+		type = UTRACE_ARG_U64;
+	p->arg.arg_type = type;
+	if (type == UTRACE_ARG_STR) {
+		read_arg->size = sizeof(void *);
+		return utrace_emit_read_op(p, NULL, UTRACE_READ_STR, 0, MAX_UTRACE_STR_SZ, 0);
+	}
+
+	int size = utrace_arg_size(type);
+
+	read_arg->size = size ?: sizeof(void *);
+	read_arg->flags = utrace_arg_is_signed_type(type) ? UTRACE_READ_F_SIGNED : 0;
+	return 0;
+}
+
+static int utrace_apply_accessors(struct utrace_arg_state *state, const struct btf *btf,
+				  struct utrace_param *p)
+{
+	for (int i = 0; i < p->arg.accessor_cnt; i++) {
+		const struct utrace_accessor *acc = &p->arg.accessors[i];
+		int err;
+
+		if (acc->kind == UTRACE_ACC_FIELD) {
+			err = utrace_compile_field(state, p, acc);
+		} else if (strcmp(acc->op, "cast") == 0) {
+			if (acc->arg_cnt != 1)
+				return utrace_acc_err(p, acc, "operator 'cast' expects 1 argument, got %d\n", acc->arg_cnt);
+			err = utrace_resolve_type(btf, p, acc, &state->type);
+		} else if (strcmp(acc->op, "container_of") == 0) {
+			if (acc->arg_cnt != 2)
+				return utrace_acc_err(p, acc, "operator 'container_of' expects 2 arguments, got %d\n", acc->arg_cnt);
+			err = utrace_compile_container_of(state, btf, p, acc);
+		} else {
+			err = utrace_acc_err(p, acc, "unsupported accessor operator '%s'\n", acc->op);
+		}
+		if (err)
+			return err;
+	}
+	return 0;
 }
 
 /*
@@ -460,9 +966,6 @@ static bool cfg_is_native_span(enum utrace_type t)
 /* Determine the number of positional args for wildcard expansion */
 static int btf_func_arg_cnt(const struct btf *btf, const char *func_name)
 {
-	if (!btf)
-		return -1;
-
 	__s32 func_id = btf__find_by_name_kind(btf, func_name, BTF_KIND_FUNC);
 	if (func_id < 0)
 		return -1;
@@ -575,20 +1078,14 @@ static bool cfg_needs_btf(const struct utrace_cfg *cfg)
 {
 	if (cfg->type == UTRACE_SPAN)
 		return cfg_needs_btf(cfg->span.entry) || cfg_needs_btf(cfg->span.exit);
-
 	if (cfg->type == UTRACE_RAW_TRACEPOINT)
 		return true;
-
-	if (cfg->wildcard_args && cfg_is_kprobe_type(cfg))
-		return true;
-
 	if (!cfg_is_kprobe_type(cfg))
 		return false;
-
-	for (int j = 0; j < cfg->param_cnt; j++) {
-		if (cfg->params[j].type != UTRACE_PARAM_ARG)
-			continue;
-		if (cfg->params[j].arg.arg_type == UTRACE_ARG_UNKNOWN || !cfg->params[j].arg.name)
+	if (cfg->wildcard_args)
+		return true;
+	for (int i = 0; i < cfg->param_cnt; i++) {
+		if (cfg->params[i].type == UTRACE_PARAM_ARG)
 			return true;
 	}
 	return false;
@@ -655,18 +1152,118 @@ static int cmp_params(const void *a, const void *b)
 	return param_sort_key(a) - param_sort_key(b);
 }
 
+static int utrace_resolve_base(struct utrace_arg_state *state, struct utrace_cfg *cfg,
+			       const struct btf *btf, struct utrace_param *p)
+{
+	enum utrace_arg_type inferred_type = UTRACE_ARG_UNKNOWN;
+	const char *base_name = NULL;
+	__u32 btf_id = 0;
+	int err = -ENOENT;
+
+	switch (cfg->type) {
+	case UTRACE_TRACEPOINT: {
+		int idx = p->arg.arg_idx;
+
+		if (idx >= 0 && idx < cfg->tp.field_cnt) {
+			const struct tp_field *field = &cfg->tp.fields[idx];
+
+			p->arg.tp_byte_off = field->offset;
+			p->arg.tp_data_loc = field->is_data_loc;
+			base_name = field->name;
+			if (field->is_string) {
+				inferred_type = UTRACE_ARG_STR;
+			} else {
+				switch (field->size) {
+				case 1: inferred_type = field->is_signed ? UTRACE_ARG_S8 : UTRACE_ARG_U8; break;
+				case 2: inferred_type = field->is_signed ? UTRACE_ARG_S16 : UTRACE_ARG_U16; break;
+				case 4: inferred_type = field->is_signed ? UTRACE_ARG_S32 : UTRACE_ARG_U32; break;
+				default: inferred_type = field->is_signed ? UTRACE_ARG_S64 : UTRACE_ARG_U64; break;
+				}
+			}
+		}
+		break;
+	}
+	case UTRACE_RAW_TRACEPOINT: {
+		int btf_idx = p->arg.arg_idx + 1; /* skip void *__data */
+
+		if (cfg->raw_tp.proto) {
+			err = resolve_btf_proto_arg_type(btf, cfg->raw_tp.proto, btf_idx,
+							 &inferred_type, &base_name, &btf_id);
+		}
+		/* if proto had no names, try name_proto */
+		if (!base_name && cfg->raw_tp.name_proto) {
+			resolve_btf_proto_arg_type(btf, cfg->raw_tp.name_proto, btf_idx,
+						   &inferred_type, &base_name, NULL);
+		}
+		break;
+	}
+	case UTRACE_USDT: {
+		int idx = p->arg.arg_idx;
+
+		if (idx >= 0 && idx < cfg->usdt.info.arg_cnt)
+			inferred_type = usdt_arg_to_utrace_type(&cfg->usdt.info.args[idx]);
+		break;
+	}
+	case UTRACE_KPROBE:
+	case UTRACE_KRETPROBE:
+	case UTRACE_KPROBE_SPAN:
+	case UTRACE_BPF_PROBE:
+	case UTRACE_BPF_RETPROBE:
+	case UTRACE_BPF_SPAN: {
+		const char *func_name = cfg_is_bpf_type(cfg) ? cfg->bpf_prog.name : cfg->kprobe.name;
+
+		if (cfg_is_bpf_type(cfg) && !btf) {
+			if (p->arg.accessor_cnt) {
+				return utrace_acc_err(p, &p->arg.accessors[0],
+							  "typed argument access requires BPF program BTF\n");
+			}
+		} else {
+			err = resolve_btf_arg_type(btf, func_name, p->arg.arg_idx, &inferred_type, &base_name, &btf_id);
+		}
+		if (err && p->arg.arg_type == UTRACE_ARG_UNKNOWN) {
+			wprintf("utrace: failed to determine type for %s arg %d, defaulting to u64\n",
+				func_name, p->arg.arg_idx == UTRACE_ARG_RET ? -1 : p->arg.arg_idx);
+		}
+		break;
+	}
+	default:
+		break;
+	}
+
+	if (!err)
+		state->type = UTRACE_TYPE_REF(btf, btf_id);
+	if (!base_name && p->arg.ref_name)
+		base_name = p->arg.ref_name;
+	if (!p->arg.name && base_name)
+		p->arg.name = strdup(base_name);
+
+	state->fallback_type = inferred_type;
+	enum utrace_arg_type type = p->arg.arg_type == UTRACE_ARG_UNKNOWN ? state->fallback_type : p->arg.arg_type;
+	unsigned char flags = 0;
+	int arg_idx = p->arg.arg_idx;
+
+	if (cfg->type == UTRACE_TRACEPOINT) {
+		arg_idx = p->arg.tp_byte_off;
+		if (type == UTRACE_ARG_STR)
+			flags = p->arg.tp_data_loc ? UTRACE_READ_F_TP_DATA_LOC : UTRACE_READ_F_TP_INLINE;
+	}
+	p->arg.read_op_cnt = 0;
+	return utrace_emit_read_op(p, NULL, UTRACE_READ_ARG, arg_idx, sizeof(void *), flags);
+}
+
 /* Expand wildcards and resolve arg types/names for a single cfg */
-static int augment_cfg_args(struct utrace_cfg *cfg, const struct btf *btf)
+static int augment_cfg_args(struct utrace_cfg *cfg, const struct btf *vmlinux_btf)
 {
 	if (cfg->type == UTRACE_SPAN) {
 		int err;
 
-		err = augment_cfg_args(cfg->span.entry, btf);
-		err = err ?: augment_cfg_args(cfg->span.exit, btf);
+		err = augment_cfg_args(cfg->span.entry, vmlinux_btf);
+		err = err ?: augment_cfg_args(cfg->span.exit, vmlinux_btf);
 		return err;
 	}
+	const struct btf *btf = cfg_is_bpf_type(cfg) ? cfg->bpf_prog.btf : vmlinux_btf;
 
-	if (cfg->type == UTRACE_RAW_TRACEPOINT && btf) {
+	if (cfg->type == UTRACE_RAW_TRACEPOINT) {
 		if (resolve_raw_tp_btf(btf, cfg))
 			eprintf("utrace: failed to find BTF for raw tracepoint '%s'\n", cfg->raw_tp.name);
 	}
@@ -677,6 +1274,20 @@ static int augment_cfg_args(struct utrace_cfg *cfg, const struct btf *btf)
 
 	if (cfg->wildcard_args)
 		expand_wildcard_args(cfg, btf);
+
+	int nonret_args = 0, ret_args = 0;
+	for (int j = 0; j < cfg->param_cnt; j++) {
+		if (cfg->params[j].type != UTRACE_PARAM_ARG)
+			continue;
+		if (cfg->params[j].arg.arg_idx == UTRACE_ARG_RET)
+			ret_args++;
+		else
+			nonret_args++;
+	}
+	if (nonret_args > MAX_UTRACE_ARGS || ret_args > MAX_UTRACE_ARGS) {
+		eprintf("utrace: too many arguments (max %d per probe entry/exit side)\n", MAX_UTRACE_ARGS);
+		return -E2BIG;
+	}
 
 	/* resolve name-based arg references (arg:prev_pid) to indices */
 	for (int j = 0; j < cfg->param_cnt; j++) {
@@ -690,8 +1301,6 @@ static int augment_cfg_args(struct utrace_cfg *cfg, const struct btf *btf)
 			return -ESRCH;
 		} else {
 			p->arg.arg_idx = resolved;
-			if (!p->arg.name)
-				p->arg.name = p->arg.ref_name;
 		}
 	}
 
@@ -700,100 +1309,26 @@ static int augment_cfg_args(struct utrace_cfg *cfg, const struct btf *btf)
 
 		if (p->type != UTRACE_PARAM_ARG)
 			continue;
-		if (p->arg.arg_type != UTRACE_ARG_UNKNOWN && p->arg.name)
-			continue;
 
-		switch (cfg->type) {
-		case UTRACE_TRACEPOINT: {
-			int idx = p->arg.arg_idx;
-			if (idx >= 0 && idx < cfg->tp.field_cnt) {
-				const struct tp_field *field = &cfg->tp.fields[idx];
+		struct utrace_arg_state state = { .loc = UTRACE_LOC_VALUE };
+		const struct utrace_accessor *last = NULL;
 
-				p->arg.tp_byte_off = field->offset;
-				p->arg.tp_data_loc = field->is_data_loc;
+		int err = utrace_resolve_base(&state, cfg, btf, p);
+		if (err)
+			return err;
+		err = utrace_apply_accessors(&state, btf, p);
+		if (err)
+			return err;
+		if (p->arg.accessor_cnt)
+			last = &p->arg.accessors[p->arg.accessor_cnt - 1];
+		if (!state.type.id)
+			err = utrace_compile_fallback_terminal(&state, p);
+		else
+			err = utrace_compile_btf_terminal(&state, p, last);
+		if (err)
+			return err;
 
-				if (!p->arg.name)
-					p->arg.name = strdup(field->name);
-				if (p->arg.arg_type == UTRACE_ARG_UNKNOWN) {
-					if (field->is_string) {
-						p->arg.arg_type = UTRACE_ARG_STR;
-					} else {
-						switch (field->size) {
-						case 1: p->arg.arg_type = field->is_signed ? UTRACE_ARG_S8  : UTRACE_ARG_U8;  break;
-						case 2: p->arg.arg_type = field->is_signed ? UTRACE_ARG_S16 : UTRACE_ARG_U16; break;
-						case 4: p->arg.arg_type = field->is_signed ? UTRACE_ARG_S32 : UTRACE_ARG_U32; break;
-						default: p->arg.arg_type = field->is_signed ? UTRACE_ARG_S64 : UTRACE_ARG_U64; break;
-						}
-					}
-				}
-			}
-			break;
-		}
-		case UTRACE_RAW_TRACEPOINT: {
-			if (btf && cfg->raw_tp.proto) {
-				int btf_idx = p->arg.arg_idx + 1; /* skip void *__data at index 0 */
-				enum utrace_arg_type arg_type;
-				const char *param_name = NULL;
-
-				if (resolve_btf_proto_arg_type(btf, cfg->raw_tp.proto,
-							      btf_idx, &arg_type, &param_name) == 0) {
-					if (p->arg.arg_type == UTRACE_ARG_UNKNOWN)
-						p->arg.arg_type = arg_type;
-					if (!p->arg.name && param_name)
-						p->arg.name = strdup(param_name);
-				}
-				/* if proto had no names, try name_proto */
-				if (!p->arg.name && cfg->raw_tp.name_proto) {
-					param_name = NULL;
-					if (resolve_btf_proto_arg_type(btf, cfg->raw_tp.name_proto,
-								      btf_idx, &arg_type, &param_name) == 0 && param_name)
-						p->arg.name = strdup(param_name);
-				}
-			}
-			break;
-		}
-		case UTRACE_USDT:
-			if (p->arg.arg_type == UTRACE_ARG_UNKNOWN) {
-				int idx = p->arg.arg_idx;
-				if (idx >= 0 && idx < cfg->usdt.info.arg_cnt)
-					p->arg.arg_type = usdt_arg_to_utrace_type(&cfg->usdt.info.args[idx]);
-			}
-			break;
-		case UTRACE_KPROBE:
-		case UTRACE_KRETPROBE:
-		case UTRACE_KPROBE_SPAN:
-		case UTRACE_BPF_PROBE:
-		case UTRACE_BPF_RETPROBE:
-		case UTRACE_BPF_SPAN: {
-			const struct btf *resolve_btf = cfg_is_bpf_type(cfg) ? cfg->bpf_prog.btf : btf;
-			const char *func_name = cfg_is_bpf_type(cfg) ? cfg->bpf_prog.name : cfg->kprobe.name;
-			if (!resolve_btf)
-				break;
-			enum utrace_arg_type arg_type;
-			const char *param_name = NULL;
-			int err = resolve_btf_arg_type(resolve_btf, func_name,
-						       p->arg.arg_idx, &arg_type, &param_name);
-			if (err) {
-				if (p->arg.arg_type == UTRACE_ARG_UNKNOWN)
-					wprintf("utrace: failed to resolve BTF type for %s arg %d, defaulting to u64\n",
-						func_name, p->arg.arg_idx == UTRACE_ARG_RET ? -1 : p->arg.arg_idx);
-				break;
-			}
-			if (p->arg.arg_type == UTRACE_ARG_UNKNOWN)
-				p->arg.arg_type = arg_type;
-			if (!p->arg.name && param_name)
-				p->arg.name = strdup(param_name);
-			break;
-		}
-		default:
-			break;
-		}
-
-		if (p->arg.arg_type == UTRACE_ARG_UNKNOWN)
-			p->arg.arg_type = UTRACE_ARG_U64;
-
-		if (p->arg.hex && !utrace_arg_is_int(p->arg.arg_type) &&
-		    p->arg.arg_type != UTRACE_ARG_PTR) {
+		if (p->arg.hex && !utrace_arg_is_int(p->arg.arg_type) && p->arg.arg_type != UTRACE_ARG_PTR) {
 			eprintf("utrace: /x supports integer (u8..s64) and ptr args, but '%s' is neither\n",
 				p->arg.name ?: "(unnamed)");
 			return -EINVAL;
@@ -820,10 +1355,10 @@ static int utrace_augment_args(void)
 		}
 	}
 
-	struct btf *btf = need_btf ? load_vmlinux_btf() : NULL;
+	struct btf *vmlinux_btf = need_btf ? load_vmlinux_btf() : NULL;
 
 	for (int i = 0; i < env.utrace_cfg_cnt; i++) {
-		int err = augment_cfg_args(&env.utrace_cfgs[i], btf);
+		int err = augment_cfg_args(&env.utrace_cfgs[i], vmlinux_btf);
 		if (err)
 			return err;
 	}

@@ -488,6 +488,13 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 	case EV_UTRACE_EXIT: {
 		u32 utrace_id = e->utrace.utrace_id;
 		const struct utrace_cfg *cfg = &env.utrace_cfgs[utrace_id];
+		/*
+		 * Native spans split one cfg's args across entry/exit by ret-ness; a
+		 * generic ~~ span uses the firing leg and keeps all of that leg's args.
+		 */
+		bool ret_filter = cfg_is_span(cfg) && cfg->type != UTRACE_SPAN;
+		if (cfg->type == UTRACE_SPAN)
+			cfg = (e->kind == EV_UTRACE_EXIT) ? cfg->span.exit : cfg->span.entry;
 
 		/* Derive arg_cnt from config, filtered for entry/exit */
 		int arg_cnt = 0;
@@ -495,9 +502,9 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 			const struct utrace_param *p = &cfg->params[i];
 			if (p->type != UTRACE_PARAM_ARG)
 				continue;
-			if (e->kind == EV_UTRACE_ENTRY && p->arg.arg_idx == UTRACE_ARG_RET)
+			if (ret_filter && e->kind == EV_UTRACE_ENTRY && p->arg.arg_idx == UTRACE_ARG_RET)
 				continue;
-			if (e->kind == EV_UTRACE_EXIT && p->arg.arg_idx != UTRACE_ARG_RET)
+			if (ret_filter && e->kind == EV_UTRACE_EXIT && p->arg.arg_idx != UTRACE_ARG_RET)
 				continue;
 			arg_cnt++;
 		}
@@ -532,9 +539,9 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 				p = &cfg->params[j];
 				if (p->type != UTRACE_PARAM_ARG)
 					continue;
-				if (e->kind == EV_UTRACE_ENTRY && p->arg.arg_idx == UTRACE_ARG_RET)
+				if (ret_filter && e->kind == EV_UTRACE_ENTRY && p->arg.arg_idx == UTRACE_ARG_RET)
 					continue;
-				if (e->kind == EV_UTRACE_EXIT && p->arg.arg_idx != UTRACE_ARG_RET)
+				if (ret_filter && e->kind == EV_UTRACE_EXIT && p->arg.arg_idx != UTRACE_ARG_RET)
 					continue;
 				if (cfg_arg_idx == i)
 					break;
