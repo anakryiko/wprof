@@ -331,6 +331,11 @@ static int parse_arg_expr(struct sview orig, struct sview argdef, struct sview e
 					  "unterminated '<' for operator '%.*s'\n",
 					  op_name.len, op_name.s);
 		}
+		if (sv_is_empty(sv_trim(body))) {
+			return utrace_err(orig, source,
+					  "operator '%.*s' has an empty '<>' argument list\n",
+					  op_name.len, op_name.s);
+		}
 
 		struct utrace_accessor *acc = append_accessor(p);
 		acc->kind = UTRACE_ACC_OP;
