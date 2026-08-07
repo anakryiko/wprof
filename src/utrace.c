@@ -1309,8 +1309,19 @@ static int augment_cfg_args(struct utrace_cfg *cfg, const struct btf *vmlinux_bt
 	const struct btf *btf = cfg_is_bpf_type(cfg) ? cfg->bpf_prog.btf : vmlinux_btf;
 
 	if (cfg->type == UTRACE_RAW_TRACEPOINT) {
-		if (resolve_raw_tp_btf(btf, cfg))
-			eprintf("utrace: failed to find BTF for raw tracepoint '%s'\n", cfg->raw_tp.name);
+		if (resolve_raw_tp_btf(btf, cfg)) {
+			bool has_args = cfg->wildcard_args;
+
+			for (int j = 0; !has_args && j < cfg->param_cnt; j++)
+				has_args = cfg->params[j].type == UTRACE_PARAM_ARG;
+			if (has_args) {
+				eprintf("utrace: no BTF for raw tracepoint '%s'; argument capture is not supported\n",
+					cfg->raw_tp.name);
+				return -ESRCH;
+			}
+			eprintf("utrace: no BTF for raw tracepoint '%s'; capturing event without arguments\n",
+				cfg->raw_tp.name);
+		}
 	}
 	if (cfg->type == UTRACE_TRACEPOINT) {
 		if (resolve_tp_format(cfg))
