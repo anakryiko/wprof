@@ -556,10 +556,17 @@ static int utrace_resolve_type(const struct btf *btf, const struct utrace_param 
 	} else if (sv_starts_with(tname, "union ")) {
 		lookup = sv_trim(sv_consume_left(tname, 6));
 		kind = BTF_KIND_UNION;
+	} else if (sv_starts_with(tname, "enum ")) {
+		lookup = sv_trim(sv_consume_left(tname, 5));
+		kind = BTF_KIND_ENUM;
 	}
 	snprintf(name, sizeof(name), "%.*s", lookup.len, lookup.s);
 
-	if (kind) {
+	if (kind == BTF_KIND_ENUM) {
+		id = btf__find_by_name_kind(btf, name, BTF_KIND_ENUM);
+		if (id < 0)
+			id = btf__find_by_name_kind(btf, name, BTF_KIND_ENUM64);
+	} else if (kind) {
 		id = btf__find_by_name_kind(btf, name, kind);
 	} else if (sv_eq(tname, "void")) {
 		id = 0;
@@ -567,6 +574,10 @@ static int utrace_resolve_type(const struct btf *btf, const struct utrace_param 
 		id = btf__find_by_name_kind(btf, name, BTF_KIND_TYPEDEF);
 		if (id < 0)
 			id = btf__find_by_name_kind(btf, name, BTF_KIND_INT);
+		if (id < 0)
+			id = btf__find_by_name_kind(btf, name, BTF_KIND_ENUM);
+		if (id < 0)
+			id = btf__find_by_name_kind(btf, name, BTF_KIND_ENUM64);
 		if (id < 0)
 			id = btf__find_by_name_kind(btf, name, BTF_KIND_STRUCT);
 		if (id < 0)
