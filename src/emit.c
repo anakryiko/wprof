@@ -4402,7 +4402,7 @@ static void emit_utrace_event(struct worker_state *w, const struct wevent *e)
 		format_utrace_name(name_buf, sizeof(name_buf), hdr, e, cfg, arg_cnt);
 		name = name_buf;
 	} else {
-		name = utrace_probe_name(cfg);
+		name = utrace_probe_name(arg_cfg);
 	}
 	pb_iid name_iid = emit_intern_str(w, name);
 
@@ -4480,7 +4480,7 @@ static void emit_utrace_json(struct worker_state *w, const struct wevent *e)
 		format_utrace_name(name_buf, sizeof(name_buf), hdr, e, cfg, arg_cnt);
 		name = name_buf;
 	} else {
-		name = utrace_probe_name(cfg);
+		name = utrace_probe_name(arg_cfg);
 	}
 	json_kv_str(j, "name", name);
 
