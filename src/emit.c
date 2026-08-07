@@ -4262,7 +4262,8 @@ static s64 read_int_blob(struct wprof_data_hdr *hdr, u32 bloboff, enum utrace_ar
  * Render a utrace arg value into buf, honoring /x and /map; returns the number
  * of characters written (snprintf semantics). A mapped value renders as its
  * label, /x (and ptr) as 0x-hex, strings verbatim, everything else as decimal.
- * `ref` is the per-arg blob (or string) offset.
+ * `ref` is the per-arg blob (or string) offset; callers filter faulted (negative)
+ * refs beforehand.
  */
 static int utrace_format_arg(char *buf, size_t buf_sz, struct wprof_data_hdr *hdr, u32 ref,
 			     const struct utrace_param *p)
@@ -4320,7 +4321,7 @@ static int format_utrace_name(char *buf, size_t buf_sz, struct wprof_data_hdr *h
 	if (!cfg->settings.name_segs)
 		return snprintf(buf, buf_sz, "%s", utrace_probe_name(cfg));
 
-	const u32 *arg_refs = (const u32 *)((const void *)e + WEVENT_SZ(utrace));
+	const s32 *arg_refs = (const s32 *)((const void *)e + WEVENT_SZ(utrace));
 	size_t pos = 0;
 
 	for (int i = 0; i < cfg->settings.name_seg_cnt && pos < buf_sz - 1; i++) {
@@ -4329,7 +4330,7 @@ static int format_utrace_name(char *buf, size_t buf_sz, struct wprof_data_hdr *h
 
 		if (seg->type == UTRACE_FMT_SEG_LIT) {
 			n = snprintf(buf + pos, buf_sz - pos, "%.*s", seg->lit.len, seg->lit.s);
-		} else if (seg->arg.arg_idx < arg_cnt) {
+		} else if (seg->arg.arg_idx < arg_cnt && arg_refs[seg->arg.arg_idx] >= 0) {
 			n = utrace_format_arg(buf + pos, buf_sz - pos, hdr, arg_refs[seg->arg.arg_idx],
 					      seg->arg.param);
 		}
@@ -4345,13 +4346,17 @@ static void emit_utrace_args(struct worker_state *w, const struct wevent *e,
 			     const struct utrace_cfg *cfg, int arg_cnt, bool ret_filter)
 {
 	struct wprof_data_hdr *hdr = w->dump_hdr;
-	const u32 *arg_refs = (const u32 *)((const void *)e + WEVENT_SZ(utrace));
+	const s32 *arg_refs = (const s32 *)((const void *)e + WEVENT_SZ(utrace));
 
 	int arg_idx = 0;
 	for (int i = 0; i < cfg->param_cnt && arg_idx < arg_cnt; i++) {
 		const struct utrace_param *p = &cfg->params[i];
 		if (!utrace_arg_for_event(e, ret_filter, p))
 			continue;
+		if (arg_refs[arg_idx] < 0) {
+			arg_idx++;
+			continue;
+		}
 
 		const char *name_str = p->arg.name;
 		if (!name_str) {
@@ -4485,7 +4490,7 @@ static void emit_utrace_json(struct worker_state *w, const struct wevent *e)
 	json_kv_str(j, "name", name);
 
 	/* Decode args from wevent trailing data */
-	const u32 *arg_refs = (const u32 *)((const void *)e + WEVENT_SZ(utrace));
+	const s32 *arg_refs = (const s32 *)((const void *)e + WEVENT_SZ(utrace));
 
 	if (arg_cnt > 0) {
 		json_subobj_start(j, "args");
@@ -4501,6 +4506,12 @@ static void emit_utrace_json(struct worker_state *w, const struct wevent *e)
 					name = "ret";
 				else
 					name = sfmt("arg%d", p->arg.arg_idx);
+			}
+
+			if (arg_refs[arg_idx] < 0) {
+				json_kv_null(j, name);
+				arg_idx++;
+				continue;
 			}
 
 			/*
