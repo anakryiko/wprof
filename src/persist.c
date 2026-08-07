@@ -509,7 +509,7 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 			arg_cnt++;
 		}
 
-		u16 wsz = WEVENT_SZ(utrace) + arg_cnt * sizeof(u32);
+		u16 wsz = WEVENT_SZ(utrace) + arg_cnt * sizeof(s32);
 		fill_wevent_hdr(dst, e, task_id, wsz);
 
 		dst->utrace.utrace_id = utrace_id;
@@ -521,14 +521,14 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 		dyn_data += bpf_event_stack_traces_sz(e);
 		dyn_data += bpf_event_task_infos_sz(e);
 
-		u32 *arg_refs = (u32 *)((void *)dst + WEVENT_SZ(utrace));
+		s32 *arg_refs = (s32 *)((void *)dst + WEVENT_SZ(utrace));
 		int dyn_off = 0;
 
 		for (int i = 0; i < arg_cnt && i < MAX_UTRACE_ARGS; i++) {
 			s16 len = e->utrace.arg_len[i];
 
 			if (len <= 0) {
-				arg_refs[i] = 0;
+				arg_refs[i] = len < 0 ? len : -EINVAL;
 				continue;
 			}
 

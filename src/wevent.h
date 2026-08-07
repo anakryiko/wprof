@@ -237,9 +237,10 @@ struct wevent {
 			u32 utrace_id;
 			u32 utrace_stack_id;
 			/* trailing variable-size data:
-			 *   u32 arg_refs[arg_cnt]  -- per-arg reference:
+			 *   s32 arg_refs[arg_cnt]  -- per-arg reference:
 			 *                             string args -> stroff into string pool
 			 *                             integer args -> bloboff into blob pool
+			 *                             faulted read -> negative errno
 			 */
 		} utrace;
 	};

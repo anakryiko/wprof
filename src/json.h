@@ -185,6 +185,12 @@ static inline void json_kv_int(struct json_state *js, const char *key, long long
 	fprintf(js->f, "%lld", value);
 }
 
+static inline void json_kv_null(struct json_state *js, const char *key)
+{
+	json_key(js, key);
+	fputs("null", js->f);
+}
+
 static inline void json_kv_float(struct json_state *js, const char *key, const char *fmt, double value)
 {
 	json_key(js, key);
