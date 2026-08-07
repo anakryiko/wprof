@@ -83,7 +83,12 @@ as they land.
 wprof supports user-defined probes for capturing custom events alongside
 its built-in tracing. Supports uprobes, kprobes, USDT, tracepoints, raw
 tracepoints, and BPF program probes with argument capture, stack traces,
-and name formatting.
+and name formatting. BTF-backed kernel probes can also follow typed fields and
+apply casts or `container_of`, for example:
+
+```shell
+wprof -U 'k:wake_up_process (arg:p.real_parent.comm/name(parent_comm))'
+```
 
 See [UTRACE.md](UTRACE.md) for full documentation.
 

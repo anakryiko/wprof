@@ -181,7 +181,7 @@ static int parse_arg_modifier(struct sview orig, struct sview mod, struct utrace
 
 	if (has_inner) {
 		inner = sv_consume_left(inner, 1);	/* skip '(' */
-		if (inner.len == 0 || inner.s[inner.len - 1] != ')')
+		if (sv_is_empty(inner) || inner.s[inner.len - 1] != ')')
 			return utrace_err(orig, mod, "unterminated '(' in modifier\n");
 		inner.len--;				/* drop ')' */
 	}
@@ -205,44 +205,167 @@ static int parse_arg_modifier(struct sview orig, struct sview mod, struct utrace
 		display_name = sv_trim(inner);
 		if (!sv_is_ident(display_name))
 			return utrace_err(orig, display_name, "invalid argument display name\n");
-		if (p->arg.name)
-			return utrace_err(orig, mod, "duplicate name modifier\n");
+		free(p->arg.name);
 		p->arg.name = sv_strdup(display_name);
 		return 0;
 	}
 	return utrace_err(orig, name, "unknown arg modifier '%.*s'\n", name.len, name.s);
 }
 
-/* parse "IDX[:TYPE][/MOD...]" arg definition without "arg:" prefix */
+static struct utrace_accessor *append_accessor(struct utrace_param *p)
+{
+	p->arg.accessors = realloc(p->arg.accessors, (p->arg.accessor_cnt + 1) * sizeof(*p->arg.accessors));
+	struct utrace_accessor *acc = &p->arg.accessors[p->arg.accessor_cnt];
+
+	memset(acc, 0, sizeof(*acc));
+	p->arg.accessor_cnt += 1;
+
+	return acc;
+}
+
+static int parse_op_args(struct sview orig, struct sview argdef, struct sview body,
+			 struct utrace_param *p, struct utrace_accessor *acc)
+{
+	body = sv_trim(body);
+	if (sv_is_empty(body))
+		return 0;
+
+	while (!sv_is_empty(body)) {
+		struct sview rest;
+		struct sview arg = sv_trim(sv_split_top(body, ",", &rest));
+
+		if (sv_is_empty(arg))
+			return utrace_err(orig, body, "empty operator argument\n");
+		acc->args = realloc(acc->args, (acc->arg_cnt + 1) * sizeof(*acc->args));
+		acc->args[acc->arg_cnt++] = sv(p->arg.source + (arg.s - argdef.s), arg.len);
+		if (sv_is_empty(rest))
+			break;
+		body = sv_consume_left(rest, 1);
+		if (sv_is_empty(sv_trim(body)))
+			return utrace_err(orig, rest, "empty trailing operator argument\n");
+	}
+	return 0;
+}
+
+static struct sview sv_split_accessor(struct sview v, struct sview *rest)
+{
+	struct sview field_rest, op_rest;
+	struct sview field = sv_split_top(v, ".", &field_rest);
+	struct sview op = sv_split_top(v, "::", &op_rest);
+
+	if (!sv_is_empty(field_rest) && !sv_is_empty(op_rest)) {
+		if (field.len < op.len) {
+			*rest = field_rest;
+			return field;
+		}
+		*rest = op_rest;
+		return op;
+	}
+	if (!sv_is_empty(field_rest)) {
+		*rest = field_rest;
+		return field;
+	}
+	if (!sv_is_empty(op_rest)) {
+		*rest = op_rest;
+		return op;
+	}
+	*rest = sv_empty();
+	return v;
+}
+
+/* Parse BASE{.field|::op<args>} and populate the base reference/accessor AST. */
+static int parse_arg_expr(struct sview orig, struct sview argdef, struct sview expr, struct utrace_param *p)
+{
+	struct sview rest;
+	struct sview base = sv_trim(sv_split_accessor(expr, &rest));
+	long idx;
+
+	if (sv_is_empty(base))
+		return utrace_err(orig, base, "empty arg index or name\n");
+	if (sv_eq(base, "ret")) {
+		idx = UTRACE_ARG_RET;
+	} else if (isdigit(base.s[0])) {
+		if (!sv_as_long(base, &idx) || idx < 0 || idx > INT_MAX)
+			return utrace_err(orig, base, "invalid arg index\n");
+	} else if (sv_is_ident(base)) {
+		idx = UTRACE_ARG_UNRESOLVED;
+		p->arg.ref_name = sv_strdup(base);
+		p->arg.name = sv_strdup(base);
+	} else {
+		return utrace_err(orig, base, "invalid argument name\n");
+	}
+	p->arg.arg_idx = idx;
+
+	while (!sv_is_empty(rest)) {
+		struct sview acc_src = rest;
+		bool is_op = sv_starts_with(rest, "::");
+		struct sview tail = sv_trim(sv_consume_left(rest, is_op ? 2 : 1));
+		struct sview item = sv_trim(sv_split_accessor(tail, &rest));
+		struct sview source = sv(acc_src.s, item.s + item.len - acc_src.s);
+		struct sview saved_source = sv(p->arg.source + (source.s - argdef.s), source.len);
+
+		if (!is_op) {
+			if (!sv_is_ident(item))
+				return utrace_err(orig, item, "expected field name after '.'\n");
+
+			struct utrace_accessor *acc = append_accessor(p);
+			acc->kind = UTRACE_ACC_FIELD;
+			acc->field = sv_strdup(item);
+			acc->source = saved_source;
+			free(p->arg.name);
+			p->arg.name = sv_strdup(item);
+			continue;
+		}
+
+		struct sview body;
+		struct sview op_name = sv_trim(sv_split(item, "<", &body));
+		if (!sv_is_ident(op_name))
+			return utrace_err(orig, op_name, "expected operator name after '::'\n");
+
+		if (sv_is_empty(body)) {
+			return utrace_err(orig, op_name, "operator '%.*s' requires <...> arguments\n",
+					  op_name.len, op_name.s);
+		}
+		if (!sv_unwrap(&body, "<", ">")) {
+			return utrace_err(orig, source,
+					  "unterminated '<' for operator '%.*s'\n",
+					  op_name.len, op_name.s);
+		}
+
+		struct utrace_accessor *acc = append_accessor(p);
+		acc->kind = UTRACE_ACC_OP;
+		acc->op = sv_strdup(op_name);
+		acc->source = saved_source;
+
+		int err = parse_op_args(orig, argdef, body, p, acc);
+		if (err)
+			return err;
+	}
+
+	return 0;
+}
+
+/* parse "EXPR[:TYPE][/MOD...]" arg definition without "arg:" prefix */
 static int parse_arg_param(struct sview orig, struct sview def, struct utrace_param *p)
 {
-	struct sview arg, arg_type, mods;
+	struct sview expr, arg_type, mods;
 	enum utrace_arg_type atype = UTRACE_ARG_UNKNOWN;
-	long idx;
 
 	def = sv_trim(def);
 	if (sv_is_empty(def))
 		return utrace_err(orig, def, "empty arg definition\n");
 
 	struct sview argdef = def;	/* full arg spec, for error highlighting */
+	p->arg.source = sv_strdup(argdef);
 
 	/* peel trailing "/MOD" render modifiers (paren-aware, so map(a,b) is intact) */
 	def = sv_split_top(def, "/", &mods);
 
-	/* split "idx[:type]" */
-	arg = sv_trim(sv_split(def, ":", &arg_type));
-
-	if (sv_eq(arg, "ret")) {
-		idx = UTRACE_ARG_RET;
-	} else if (arg.len > 0 && isdigit(arg.s[0])) {
-		if (!sv_as_long(arg, &idx) || idx < 0 || idx > INT_MAX)
-			return utrace_err(orig, arg, "invalid arg index\n");
-	} else if (arg.len > 0) {
-		idx = UTRACE_ARG_UNRESOLVED;
-		p->arg.ref_name = sv_strdup(arg);
-	} else {
-		return utrace_err(orig, arg, "empty arg index or name\n");
-	}
+	/* split "expression[:type]", treating :: operators as part of expression */
+	expr = sv_trim(sv_split_top(def, ":", &arg_type));
+	int err = parse_arg_expr(orig, argdef, expr, p);
+	if (err)
+		return err;
 
 	if (!sv_is_empty(arg_type)) {
 		arg_type = sv_trim(sv_consume_left(arg_type, 1));
@@ -251,7 +374,6 @@ static int parse_arg_param(struct sview orig, struct sview def, struct utrace_pa
 	}
 
 	p->type = UTRACE_PARAM_ARG;
-	p->arg.arg_idx = idx;
 	p->arg.arg_type = atype;
 
 	/* render modifiers: "/name" or "/name(args)", e.g. /x, /map(0=a,1=b) */
@@ -263,7 +385,7 @@ static int parse_arg_param(struct sview orig, struct sview def, struct utrace_pa
 		if (sv_is_empty(mod))
 			continue;
 
-		int err = parse_arg_modifier(orig, mod, p);
+		err = parse_arg_modifier(orig, mod, p);
 		if (err)
 			return err;
 	}
@@ -401,6 +523,23 @@ static bool is_span_probe(enum utrace_type t)
 	}
 }
 
+static bool probe_supports_accessors(const struct utrace_cfg *cfg)
+{
+	switch (cfg->type) {
+	case UTRACE_KPROBE:
+		return cfg->kprobe.off == 0;
+	case UTRACE_KRETPROBE:
+	case UTRACE_KPROBE_SPAN:
+	case UTRACE_RAW_TRACEPOINT:
+	case UTRACE_BPF_PROBE:
+	case UTRACE_BPF_RETPROBE:
+	case UTRACE_BPF_SPAN:
+		return true;
+	default:
+		return false;
+	}
+}
+
 static const struct utrace_param *find_pid_param(const struct utrace_cfg *cfg)
 {
 	for (int i = 0; i < cfg->param_cnt; i++)
@@ -434,6 +573,8 @@ static int validate_probe_def(struct sview orig, const struct utrace_cfg *cfg)
 				return utrace_err(orig, orig, "return probes only support arg:ret captures, not arg:%d\n", p->arg.arg_idx);
 			if (!is_ret_probe(cfg->type) && !is_span_probe(cfg->type) && p->arg.arg_idx == UTRACE_ARG_RET)
 				return utrace_err(orig, orig, "arg:ret is only valid on return/span probes (uret/kret/uspan/kspan)\n");
+			if (p->arg.accessor_cnt && !probe_supports_accessors(cfg))
+				return utrace_err(orig, orig, "typed arg accessors are not supported for this probe target\n");
 		}
 		if (p->type == UTRACE_PARAM_BINARY_PATH && !is_uprobe(cfg->type))
 			return utrace_err(orig, orig, "'path' parameter is only valid for uprobe-based probes\n");
@@ -814,13 +955,13 @@ static int parse_cfg(struct sview def, struct utrace_cfg *cfg)
 
 int utrace_cfg_parse(const char *def)
 {
-	env.utrace_cfg_cnt++;
-	env.utrace_cfgs = realloc(env.utrace_cfgs, env.utrace_cfg_cnt * sizeof(*env.utrace_cfgs));
+	env.utrace_cfgs = realloc(env.utrace_cfgs, (env.utrace_cfg_cnt + 1) * sizeof(*env.utrace_cfgs));
 
-	int err = parse_cfg(sv_new(def), &env.utrace_cfgs[env.utrace_cfg_cnt - 1]);
+	int err = parse_cfg(sv_new(def), &env.utrace_cfgs[env.utrace_cfg_cnt]);
 	if (err)
-		env.utrace_cfg_cnt--;
-	return err;
+		return err;
+	env.utrace_cfg_cnt++;
+	return 0;
 }
 
 int utrace_cfg_parse_file(const char *path)
@@ -946,8 +1087,23 @@ static void format_probe(const struct utrace_cfg *cfg, struct sbuf *sb)
 			case UTRACE_PARAM_ARG:
 				if (p->arg.arg_idx == UTRACE_ARG_RET)
 					sbuf_appendf(sb, "arg:ret");
+				else if (p->arg.arg_idx == UTRACE_ARG_UNRESOLVED && p->arg.ref_name)
+					sbuf_appendf(sb, "arg:%s", p->arg.ref_name);
 				else
 					sbuf_appendf(sb, "arg:%d", p->arg.arg_idx);
+				for (int j = 0; j < p->arg.accessor_cnt; j++) {
+					const struct utrace_accessor *acc = &p->arg.accessors[j];
+					if (acc->kind == UTRACE_ACC_FIELD) {
+						sbuf_appendf(sb, ".%s", acc->field);
+						continue;
+					}
+					sbuf_appendf(sb, "::%s%s", acc->op, acc->arg_cnt ? "<" : "");
+					for (int j = 0; j < acc->arg_cnt; j++) {
+						sbuf_appendf(sb, "%s%.*s", j ? ", " : "", acc->args[j].len,
+							     acc->args[j].s);
+					}
+					sbuf_appendf(sb, "%s", acc->arg_cnt ? ">" : "");
+				}
 				if (p->arg.arg_type != UTRACE_ARG_UNKNOWN)
 					sbuf_appendf(sb, ":%s", arg_type_str(p->arg.arg_type));
 				if (p->arg.name)

@@ -34,7 +34,7 @@ static inline struct sview sv_empty(void)
 
 static inline bool sv_is_empty(struct sview v)
 {
-	return v.len == 0;
+	return v.len <= 0;
 }
 
 static inline struct sview sv_trim(struct sview v)
@@ -89,24 +89,50 @@ static inline struct sview sv_split(struct sview v, const char *delim, struct sv
 	return sv(v.s, pos);
 }
 
+static inline bool sv_exact_delim_at(struct sview v, int pos, const char *delim, int dlen)
+{
+	if (pos + dlen > v.len || strncmp(v.s + pos, delim, dlen) != 0)
+		return false;
+	if (pos > 0 && strncmp(v.s + pos - 1, delim, dlen) == 0)
+		return false;
+	if (pos + dlen < v.len && strncmp(v.s + pos + 1, delim, dlen) == 0)
+		return false;
+	return true;
+}
+
 /*
- * Like sv_split, but only matches delim at the top level — occurrences inside
- * (...) are skipped (paren depth tracked), so e.g. map(0=a,1=b) survives a ","
- * split. Like sv_split, *right starts at the delimiter, empty if none found.
+ * Like sv_split, but only matches an exact delim at the top level. Occurrences
+ * inside balanced (...) are skipped; <...> nests only outside parentheses (for
+ * ::op<...>), so angle brackets inside (...) are opaque and don't affect it.
+ * *right starts at the delimiter, or is empty if none was found.
  */
 static inline struct sview sv_split_top(struct sview v, const char *delim, struct sview *right)
 {
 	int dlen = strlen(delim);
-	int depth = 0;
+	int paren = 0, angle = 0;
 
 	for (int i = 0; i < v.len; i++) {
 		char c = v.s[i];
 
-		if (c == '(')
-			depth++;
-		else if (c == ')' && depth > 0)
-			depth--;
-		else if (depth == 0 && i + dlen <= v.len && strncmp(v.s + i, delim, dlen) == 0) {
+		if (c == '(') {
+			paren++;
+			continue;
+		}
+		if (c == ')') {
+			if (paren > 0)
+				paren--;
+			continue;
+		}
+		if (paren == 0 && c == '<') {
+			angle++;
+			continue;
+		}
+		if (paren == 0 && c == '>') {
+			if (angle > 0)
+				angle--;
+			continue;
+		}
+		if (paren == 0 && angle == 0 && sv_exact_delim_at(v, i, delim, dlen)) {
 			*right = sv(v.s + i, v.len - i);
 			return sv(v.s, i);
 		}
