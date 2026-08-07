@@ -124,7 +124,11 @@ tracepoints) or from ELF USDT note metadata (for USDTs). Falls back to
 
 **Rules:**
 - Return probes (`uret:`, `kret:`, `bpfret:`) only support `arg:ret`
-- `arg:ret` is only valid on return and span probes
+- `arg:ret` is only valid on return and span probes; it is also rejected on a
+  function whose BTF return type is `void`
+- Numeric indices are range-checked at setup. For kprobes and uprobes,
+  positional arguments are limited to those the ABI passes in registers (6 on
+  x86-64, 8 on arm64); higher or out-of-range indices are rejected
 - `arg:*` may be combined with explicit arg specs; the explicit ones win and
   the wildcard fills in the remaining arguments
 
@@ -146,10 +150,10 @@ a struct or union field, with at most one pointer dereference for each
 `::op<...>` applies an accessor operator:
 
 - `::cast<TYPE>` reinterprets the current value without reading memory.
-  `TYPE` can be a named struct, union, typedef, or primitive type, with
-  optional `*` for pointer-to-type designation. Pointer-to-pointer casts
-  (`**`), arrays, and function declarators are rejected. Primitive and typedef
-  names are resolved as they appear in the running kernel BTF.
+  `TYPE` can be a named struct, union, enum, or typedef, or a primitive type,
+  with optional `*` for pointer-to-type designation. Pointer-to-pointer casts
+  (`**`), arrays, and function declarators are rejected. Enum, primitive, and
+  typedef names are resolved as they appear in the running kernel BTF.
 - `::container_of<TYPE, MEMBER>` rebases an addressed embedded member to its
   enclosing struct or union. The current type must match `TYPE.MEMBER`.
 
@@ -171,9 +175,10 @@ struct/union capture is not supported.
 
 Typed chains currently work with zero-offset entry `k:` probes, `kret:`
 return values, `kspan:`, `raw_tp:`, `bpf:`/`bpfret:`/`bpfspan:`, and
-generic spans whose individual legs are supported. A BPF-program root is
-resolved from program BTF, but its kernel type must also exist by name in
-vmlinux BTF; a leading `::cast<struct X *>` can provide the kernel root type.
+generic spans whose individual legs are supported. For `bpf:` probes the
+field offsets are taken from the program's own BTF; if that layout differs
+from the running kernel's, the captured values will be wrong. Resolving BPF
+roots against vmlinux BTF is not yet implemented.
 
 ### Render modifiers
 
@@ -302,7 +307,8 @@ Placeholders use `{...}` syntax and can reference arguments by their
 positional name (`{arg0}`) or by their display name (`{req_id}`,
 `{prev_comm}`). Both forms work if the argument has a name. Captured
 argument values also appear as annotations on the Perfetto slice or
-instant event.
+instant event. An argument that could not be read is omitted from the
+annotations and renders empty in a `name:` template.
 
 ## JSON output
 
@@ -323,9 +329,15 @@ With `-J`, utrace events appear as:
 Event types: `utrace_instant`, `utrace_entry`, `utrace_exit`.
 
 Argument values are formatted by type: integers as decimal, pointers as
-`"0x..."` hex strings, strings as JSON strings. The `/x` and `/map(...)`
-render modifiers (see **Render modifiers**) apply here too — hex values and
-mapped labels are emitted as JSON strings.
+`"0x..."` hex strings, strings as JSON strings. An argument whose value could
+not be read — a NULL or faulting pointer along a chain, for example — is
+emitted as `null`; other arguments on the same event are unaffected.
+
+When a value is read successfully, the `/x` and `/map(...)` render modifiers
+(see **Render modifiers**) change how an integer is rendered: `/x` emits its
+hexadecimal representation and `/map(...)` emits the matching label (falling
+back to the numeric form on a miss). In both cases the argument is emitted as
+a JSON string rather than a number.
 
 ## Type inference
 
