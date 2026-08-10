@@ -14,12 +14,17 @@
 
 /*
  * Positional args readable from registers by utrace_read_arg_pt_regs
- * (kprobe/uprobe). Arch-specific: x86-64 passes 6 in registers, arm64 8.
+ * (kprobe/uprobe). x86-64 passes 6 in registers, arm64 8. Other targets
+ * cap at 5 (PARM1..PARM5), the widest set libbpf's bpf_tracing.h backs
+ * with a real PT_REGS_PARM* helper on every 64-bit arch, so wprof still
+ * builds there instead of failing on a missing PT_REGS_PARM* helper.
  */
 #if defined(__TARGET_ARCH_arm64) || defined(__aarch64__)
 #define UTRACE_MAX_REG_ARGS 8
-#else
+#elif defined(__TARGET_ARCH_x86) || defined(__x86_64__)
 #define UTRACE_MAX_REG_ARGS 6
+#else
+#define UTRACE_MAX_REG_ARGS 5
 #endif
 
 enum utrace_read_op_kind {
