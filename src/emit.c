@@ -4281,7 +4281,9 @@ static int utrace_format_arg(char *buf, size_t buf_sz, struct wprof_data_hdr *hd
 	if (p->arg.hex || p->arg.arg_type == UTRACE_ARG_PTR)
 		return snprintf(buf, buf_sz, "0x%llx", (unsigned long long)val);
 
-	return snprintf(buf, buf_sz, "%lld", (long long)val);
+	if (utrace_arg_is_signed(p->arg.arg_type))
+		return snprintf(buf, buf_sz, "%lld", (long long)val);
+	return snprintf(buf, buf_sz, "%llu", (unsigned long long)val);
 }
 
 /*
@@ -4519,7 +4521,12 @@ static void emit_utrace_json(struct worker_state *w, const struct wevent *e)
 			 * /map, ptr and str render as (string) text via the formatter.
 			 */
 			if (!p->arg.hex && !p->arg.map_cnt && utrace_arg_is_int(p->arg.arg_type)) {
-				json_kv_int(j, name, read_int_blob(hdr, arg_refs[arg_idx], p->arg.arg_type));
+				s64 v = read_int_blob(hdr, arg_refs[arg_idx], p->arg.arg_type);
+
+				if (utrace_arg_is_signed(p->arg.arg_type))
+					json_kv_int(j, name, v);
+				else
+					json_kv_uint(j, name, (u64)v);
 			} else {
 				char vbuf[256];
 
