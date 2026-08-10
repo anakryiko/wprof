@@ -834,11 +834,6 @@ static int utrace_compile_btf_terminal(struct utrace_arg_state *state, struct ut
 				   is_signed ? UTRACE_READ_F_SIGNED : 0);
 }
 
-static bool utrace_arg_is_signed_type(enum utrace_arg_type type)
-{
-	return type == UTRACE_ARG_S8 || type == UTRACE_ARG_S16 || type == UTRACE_ARG_S32 || type == UTRACE_ARG_S64;
-}
-
 static int utrace_compile_fallback_terminal(struct utrace_arg_state *state, struct utrace_param *p)
 {
 	enum utrace_arg_type type = p->arg.arg_type == UTRACE_ARG_UNKNOWN ? state->fallback_type : p->arg.arg_type;
@@ -855,7 +850,7 @@ static int utrace_compile_fallback_terminal(struct utrace_arg_state *state, stru
 	int size = utrace_arg_size(type);
 
 	read_arg->size = size ?: sizeof(void *);
-	read_arg->flags = utrace_arg_is_signed_type(type) ? UTRACE_READ_F_SIGNED : 0;
+	read_arg->flags = utrace_arg_is_signed(type) ? UTRACE_READ_F_SIGNED : 0;
 	return 0;
 }
 

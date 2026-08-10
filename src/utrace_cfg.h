@@ -292,6 +292,11 @@ static inline bool utrace_arg_is_int(enum utrace_arg_type t)
 	}
 }
 
+static inline bool utrace_arg_is_signed(enum utrace_arg_type t)
+{
+	return t == UTRACE_ARG_S8 || t == UTRACE_ARG_S16 || t == UTRACE_ARG_S32 || t == UTRACE_ARG_S64;
+}
+
 /* binary-search an arg value in a key-sorted map; returns label or NULL */
 static inline const char *utrace_arg_map_lookup(const struct utrace_arg_map *map, int cnt,
 						unsigned long long key)
