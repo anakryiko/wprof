@@ -316,6 +316,7 @@ static int resolve_btf_arg_type(const struct btf *btf, const char *func_name,
 struct utrace_type_ref {
 	const struct btf *btf;
 	__u32 id;		/* BTF type id; 0 means no/failed type resolution */
+	bool is_ptr;		/* synthetic pointer to id (::cast<T *>); id is the pointee */
 };
 
 #define UTRACE_TYPE_REF(btf_, id_) ((struct utrace_type_ref){ .btf = (btf_), .id = (id_) })
@@ -387,6 +388,11 @@ static bool utrace_ref_ptr(struct utrace_type_ref ref, struct utrace_type_ref *p
 {
 	if (!ref.id || !ref.btf)
 		return false;
+	if (ref.is_ptr) {
+		if (pointee)
+			*pointee = UTRACE_TYPE_REF(ref.btf, ref.id);
+		return true;
+	}
 	const struct btf_type *t = btf_skip_modifiers(ref.btf, ref.id, NULL);
 	if (!btf_is_ptr(t))
 		return false;
@@ -506,32 +512,6 @@ static int normalize_cast_type(struct sview input, struct sview *name_out, bool 
 	return 0;
 }
 
-static __u32 utrace_canon_id(const struct btf *btf, __u32 id)
-{
-	__u32 res = id;
-	if (id)
-		btf_skip_modifiers(btf, id, &res);
-	return res;
-}
-
-/*
- * Find a real BTF pointer type whose pointee resolves to target_id. A cast to
- * T * is only meaningful if some T * field exists in the kernel, so its pointer
- * type is present in BTF.
- */
-static __s32 btf_find_ptr_to(const struct btf *btf, __u32 target_id)
-{
-	__u32 canon = utrace_canon_id(btf, target_id);
-	__u32 n = btf__type_cnt(btf);
-
-	for (__u32 i = 1; i < n; i++) {
-		const struct btf_type *t = btf__type_by_id(btf, i);
-		if (t && btf_is_ptr(t) && utrace_canon_id(btf, t->type) == canon)
-			return i;
-	}
-	return -ENOENT;
-}
-
 /* Resolve a cast type name to a BTF id in one BTF: >=1 found, 0 for void, -1 not found. */
 static __s32 utrace_lookup_type(const struct btf *btf, struct sview tname)
 {
@@ -606,12 +586,7 @@ static int utrace_resolve_type(const struct btf *prog_btf, const struct btf *vml
 	if (id < 0)
 		return utrace_acc_err(p, acc, "type '%.*s' not found\n", tname.len, tname.s);
 
-	if (is_ptr) {
-		id = btf_find_ptr_to(btf, id);
-		if (id < 0)
-			return utrace_acc_err(p, acc, "no pointer-to-'%.*s' type in BTF\n", tname.len, tname.s);
-	}
-	*out = UTRACE_TYPE_REF(btf, id);
+	*out = (struct utrace_type_ref){ .btf = btf, .id = id, .is_ptr = is_ptr };
 	return 0;
 }
 
@@ -705,6 +680,8 @@ static int utrace_compile_container_of(struct utrace_arg_state *state, const str
 	int err = utrace_resolve_type(btf, vmlinux_btf, p, acc, &container);
 	if (err)
 		return err;
+	if (container.is_ptr)
+		return utrace_acc_err(p, acc, "container_of type must not be a pointer\n");
 
 	const struct btf_type *container_t = utrace_ref_type(container, NULL);
 	if (!container_t || !btf_is_composite(container_t))
