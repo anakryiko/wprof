@@ -1111,6 +1111,13 @@ static void emit_process_track_descr(const struct wprof_task *t)
 		/* sibling_merge_behavior left as default (mergeable) */
 	};
 	wpb_emit_track_descriptor_with_interns(&desc);
+
+	struct wpb_kernel_process proc = {
+		.pid = track_pid(t),
+		.ppid = t->ppid,
+		.cmdline = wpb_str_from_cstr(0, pcomm),
+	};
+	wpb_emit_generic_kernel_process_tree(cur_wpb_writer, &proc, 1);
 }
 
 static void emit_thread_track_descr(const struct wprof_task *t, const char *comm)

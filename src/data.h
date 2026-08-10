@@ -400,6 +400,7 @@ static inline struct wprof_task wevent_resolve_task(struct wprof_data_hdr *hdr, 
 	return (struct wprof_task) {
 		.tid = t->tid,
 		.pid = t->pid,
+		.ppid = t->ppid,
 		.flags = t->flags,
 		.comm = wevent_str(hdr, t->comm_stroff),
 		.pcomm = wevent_str(hdr, t->pcomm_stroff),

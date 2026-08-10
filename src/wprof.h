@@ -202,6 +202,7 @@ struct stack_trace {
 struct wprof_thread {
 	u32 tid;
 	u32 pid;
+	u32 ppid;
 	u32 flags;
 	char comm[TASK_COMM_FULL_LEN];
 	char pcomm[TASK_COMM_LEN];
@@ -210,6 +211,7 @@ struct wprof_thread {
 struct wprof_task {
 	u32 tid;
 	u32 pid;
+	u32 ppid;
 	u32 flags;
 	const char *comm;
 	const char *pcomm;

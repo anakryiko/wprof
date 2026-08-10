@@ -23,6 +23,7 @@ const KEEP_FIELDS: &[(&str, &[&str])] = &[
             "trace_uuid",
             "ftrace_events",
             "interned_data",
+            "generic_kernel_process_tree",
         ],
     ),
     (
