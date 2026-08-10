@@ -158,6 +158,13 @@ pub struct WpbTrackDescriptor {
 }
 
 #[repr(C)]
+pub struct WpbKernelProcess {
+    pid: i64,
+    ppid: i64,
+    cmdline: WpbStr,
+}
+
+#[repr(C)]
 pub struct WpbFtraceEvent {
     timestamp: u64,
     pid: u32,
@@ -400,6 +407,25 @@ impl WpbWriter {
             packet.interned_data = Some(interned_data);
         }
         packet.data = Some(trace_packet::Data::TrackDescriptor(td));
+        self.emit_packet(&packet)
+    }
+
+    fn emit_generic_kernel_process_tree(&mut self, procs: &[WpbKernelProcess]) -> Result<(), c_int> {
+        let processes = procs
+            .iter()
+            .map(|p| generic_kernel_process_tree::Process {
+                pid: Some(p.pid),
+                ppid: Some(p.ppid),
+                cmdline: read_string(&p.cmdline),
+            })
+            .collect();
+        let mut packet = base_packet(WPB_SEQ_ID_THREADS);
+        packet.data = Some(trace_packet::Data::GenericKernelProcessTree(
+            GenericKernelProcessTree {
+                processes,
+                threads: Vec::new(),
+            },
+        ));
         self.emit_packet(&packet)
     }
 
@@ -946,6 +972,23 @@ pub unsafe extern "C" fn wpb_emit_track_descriptor(
 
     if let Err(err) = (*writer).emit_track_descriptor(&*desc) {
         wpb_emit_failed("TrackDescriptor", err);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn wpb_emit_generic_kernel_process_tree(
+    writer: *mut WpbWriter,
+    procs: *const WpbKernelProcess,
+    proc_cnt: usize,
+) {
+    if writer.is_null() {
+        wpb_emit_failed("GenericKernelProcessTree", -EINVAL);
+    }
+
+    let procs = checked_slice(procs, proc_cnt);
+
+    if let Err(err) = (*writer).emit_generic_kernel_process_tree(procs) {
+        wpb_emit_failed("GenericKernelProcessTree", err);
     }
 }
 

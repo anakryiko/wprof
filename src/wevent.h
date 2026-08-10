@@ -19,6 +19,7 @@
 struct wevent_task {
 	u32 tid;
 	u32 pid;
+	u32 ppid;
 	u32 flags;
 	u32 comm_stroff;	/* offset into string pool */
 	u32 pcomm_stroff;	/* offset into string pool */

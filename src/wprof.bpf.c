@@ -393,6 +393,7 @@ static int fill_task_info(struct task_struct *t, struct wprof_thread *info)
 	if (info->tid == 0) /* idle thread */
 		info->tid = -(bpf_get_smp_processor_id() + 1);
 	info->pid = t->tgid;
+	info->ppid = t->group_leader->real_parent->tgid;
 	info->flags = t->flags;
 	fill_task_name(t, info->comm, sizeof(info->comm));
 	__builtin_memcpy(info->pcomm, t->group_leader->comm, sizeof(info->pcomm));

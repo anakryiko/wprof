@@ -125,6 +125,7 @@ static void persist_update_task_slot(struct persist_state *ps, int task_id, cons
 
 	entry->tid = task->tid;
 	entry->pid = task->pid;
+	entry->ppid = task->ppid;
 	entry->flags = task->flags;
 	entry->comm_stroff = persist_stroff(ps, task->comm);
 	entry->pcomm_stroff = persist_stroff(ps, task->pcomm);

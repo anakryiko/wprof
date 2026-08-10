@@ -185,6 +185,12 @@ struct wpb_ftrace_event {
 	int32_t target_cpu;
 };
 
+struct wpb_kernel_process {
+	int64_t pid;
+	int64_t ppid;
+	struct wpb_str cmdline;
+};
+
 void wpb_emit_track_event(struct wpb_writer *writer,
 			  const struct wpb_track_event *ev);
 void wpb_emit_clock_snapshot(struct wpb_writer *writer, uint64_t realtime_ts);
@@ -199,6 +205,8 @@ void wpb_emit_trace_start(struct wpb_writer *writer, uint64_t track_uuid,
 			  const struct wpb_interned_data *data);
 void wpb_emit_track_descriptor(struct wpb_writer *writer,
 			       const struct wpb_track_descriptor *desc);
+void wpb_emit_generic_kernel_process_tree(struct wpb_writer *writer,
+					  const struct wpb_kernel_process *procs, size_t proc_cnt);
 void wpb_emit_ftrace_bundle(struct wpb_writer *writer, uint32_t cpu,
 			    const struct wpb_ftrace_event *events, size_t event_cnt);
 
