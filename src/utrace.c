@@ -1125,11 +1125,11 @@ static void expand_wildcard_args(struct utrace_cfg *cfg, const struct btf *btf)
 		arg_cnt = UTRACE_MAX_REG_ARGS;
 	}
 
-	/* figure out which arg indices are already explicitly defined */
+	/* which arg indices are already captured as whole args (chains excluded) */
 	bool has_arg[MAX_UTRACE_ARGS] = {};
 	bool has_arg_ret = false;
 	for (int i = 0; i < cfg->param_cnt; i++) {
-		if (cfg->params[i].type != UTRACE_PARAM_ARG)
+		if (cfg->params[i].type != UTRACE_PARAM_ARG || cfg->params[i].arg.accessor_cnt > 0)
 			continue;
 		if (cfg->params[i].arg.arg_idx == UTRACE_ARG_RET)
 			has_arg_ret = true;
@@ -1434,6 +1434,21 @@ static int augment_cfg_args(struct utrace_cfg *cfg, const struct btf *vmlinux_bt
 			eprintf("utrace: failed to parse format for tracepoint '%s:%s'\n", cfg->tp.cat, cfg->tp.name);
 	}
 
+	/* resolve name-based arg references (arg:prev_pid) to indices */
+	for (int j = 0; j < cfg->param_cnt; j++) {
+		struct utrace_param *p = &cfg->params[j];
+		if (p->type != UTRACE_PARAM_ARG || !p->arg.ref_name)
+			continue;
+
+		int resolved = resolve_arg_name(cfg, btf, p->arg.ref_name);
+		if (resolved < 0) {
+			eprintf("utrace: failed to resolve argument '%s'\n", p->arg.ref_name);
+			return -ESRCH;
+		} else {
+			p->arg.arg_idx = resolved;
+		}
+	}
+
 	if (cfg->wildcard_args)
 		expand_wildcard_args(cfg, btf);
 
@@ -1449,21 +1464,6 @@ static int augment_cfg_args(struct utrace_cfg *cfg, const struct btf *vmlinux_bt
 	if (nonret_args > MAX_UTRACE_ARGS || ret_args > MAX_UTRACE_ARGS) {
 		eprintf("utrace: too many arguments (max %d per probe entry/exit side)\n", MAX_UTRACE_ARGS);
 		return -E2BIG;
-	}
-
-	/* resolve name-based arg references (arg:prev_pid) to indices */
-	for (int j = 0; j < cfg->param_cnt; j++) {
-		struct utrace_param *p = &cfg->params[j];
-		if (p->type != UTRACE_PARAM_ARG || !p->arg.ref_name)
-			continue;
-
-		int resolved = resolve_arg_name(cfg, btf, p->arg.ref_name);
-		if (resolved < 0) {
-			eprintf("utrace: failed to resolve argument '%s'\n", p->arg.ref_name);
-			return -ESRCH;
-		} else {
-			p->arg.arg_idx = resolved;
-		}
 	}
 
 	/* range-check numeric arg indices against the probe's argument count */
