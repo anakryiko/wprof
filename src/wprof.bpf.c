@@ -1988,7 +1988,9 @@ static int utrace_read_arg_pt_regs(struct pt_regs *regs, int idx, u64 *value)
 	case 2: val = PT_REGS_PARM3_CORE(regs); break;
 	case 3: val = PT_REGS_PARM4_CORE(regs); break;
 	case 4: val = PT_REGS_PARM5_CORE(regs); break;
+#if defined(__TARGET_ARCH_x86) || defined(__TARGET_ARCH_arm64)
 	case 5: val = PT_REGS_PARM6_CORE(regs); break;
+#endif
 #if defined(__TARGET_ARCH_arm64)
 	case 6: val = PT_REGS_PARM7_CORE(regs); break;
 	case 7: val = PT_REGS_PARM8_CORE(regs); break;
