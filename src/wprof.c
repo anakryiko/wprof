@@ -1378,7 +1378,13 @@ int attach_usdt_probe(struct bpf_state *st, struct bpf_program *prog,
 	struct bpf_link *link, **tmp;
 	struct usdt_info info;
 
-	if (elf_find_usdt(binary_attach_path, usdt_provider, usdt_name, &info)) {
+	int err = elf_find_usdt(binary_attach_path, usdt_provider, usdt_name, &info);
+	if (err == -ESRCH) {
+		dlogf(USDT, 1, "Failed to open %s (%s) looking for USDT %s:%s.\n",
+		      binary_path, binary_attach_path, usdt_provider, usdt_name);
+		return -ESRCH;
+	}
+	if (err) {
 		dlogf(USDT, 2, "No USDT %s:%s in %s (%s), skipping.\n",
 		      usdt_provider, usdt_name, binary_path, binary_attach_path);
 		return -ENOENT;

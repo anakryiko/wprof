@@ -17,7 +17,8 @@
 #include "data.h"
 #include "wevent.h"
 
-static int add_uprobe_binary(u64 dev, u64 inode, const char *path, const char *attach_path)
+static int add_uprobe_binary(u64 dev, u64 inode, const char *path, const char *attach_path,
+			     bool required, u64 pid_mask)
 {
 	struct uprobe_binary *binary, key = {};
 
@@ -33,7 +34,9 @@ static int add_uprobe_binary(u64 dev, u64 inode, const char *path, const char *a
 	if (!key.path)
 		return -ENOMEM;
 
-	if (hashmap__find(env.req_binaries, &key, NULL)) {
+	if (hashmap__find(env.req_binaries, &key, &binary)) {
+		binary->required |= required;
+		binary->pid_mask |= pid_mask;
 		free(key.path);
 		return 0;
 	}
@@ -46,6 +49,8 @@ static int add_uprobe_binary(u64 dev, u64 inode, const char *path, const char *a
 
 	*binary = key;
 	binary->attach_path = strdup(attach_path ?: path);
+	binary->required = required;
+	binary->pid_mask = pid_mask;
 
 	hashmap__set(env.req_binaries, binary, binary, NULL, NULL);
 
@@ -57,10 +62,11 @@ static int add_uprobe_binary(u64 dev, u64 inode, const char *path, const char *a
 	return 0;
 }
 
-static int discover_pid_req_binaries(int pid)
+/* returns the number of binaries discovered, or a negative error */
+static int discover_pid_req_binaries(int pid, u64 pid_mask)
 {
 	struct vma_info *vma;
-	int err = 0;
+	int err = 0, cnt = 0;
 
 	wprof_for_each(vma, vma, pid,
 		       VMA_QUERY_VMA_EXECUTABLE | VMA_QUERY_FILE_BACKED_VMA) {
@@ -79,9 +85,10 @@ static int discover_pid_req_binaries(int pid)
 			 pid, vma->vma_start, vma->vma_end);
 
 		u64 dev = makedev(vma->dev_major, vma->dev_minor);
-		err = add_uprobe_binary(dev, vma->inode, vma->vma_name, tmp);
+		err = add_uprobe_binary(dev, vma->inode, vma->vma_name, tmp, false, pid_mask);
 		if (err)
 			return err;
+		cnt++;
 		/* reset errno, so we don't trigger false error reporting after the loop */
 		errno = 0;
 	}
@@ -91,7 +98,7 @@ static int discover_pid_req_binaries(int pid)
 		return err;
 	}
 
-	return 0;
+	return cnt;
 }
 
 int setup_req_tracking_discovery(void)
@@ -103,8 +110,8 @@ int setup_req_tracking_discovery(void)
 
 		wprof_for_each(proc, pidp) {
 			pid = *pidp;
-			err = discover_pid_req_binaries(pid);
-			if (err) {
+			err = discover_pid_req_binaries(pid, 0);
+			if (err < 0) {
 				eprintf("Failed to discover request tracking binaries for PID %d: %d (skipping...)\n", pid, err);
 				continue;
 			}
@@ -117,24 +124,27 @@ int setup_req_tracking_discovery(void)
 		err = stat(env.req_paths[i], &st);
 		if (err) {
 			err = -errno;
-			eprintf("Failed to stat() binary '%s' for request tracking: %d (skipping...)\n", env.req_paths[i], err);
-			continue;
+			eprintf("Failed to stat() binary '%s' for request tracking: %d\n", env.req_paths[i], err);
+			return err;
 		}
 
-		err = add_uprobe_binary(st.st_dev, st.st_ino, env.req_paths[i], NULL);
+		err = add_uprobe_binary(st.st_dev, st.st_ino, env.req_paths[i], NULL, true, 0);
 		if (err) {
-			eprintf("Failed to record binary path '%s' for request tracking: %d (skipping...)\n", env.req_paths[i], err);
-			continue;
+			eprintf("Failed to record binary path '%s' for request tracking: %d\n", env.req_paths[i], err);
+			return err;
 		}
 	}
 
 	for (int i = 0; i < env.req_pid_cnt; i++) {
+		u64 pid_mask = i < REQ_PID_MASK_BITS ? 1ULL << i : 0;
 		int pid = env.req_pids[i];
 
-		err = discover_pid_req_binaries(pid);
-		if (err) {
-			eprintf("Failed to discover request tracking binaries for PID %d: %d (skipping...)\n", pid, err);
-			continue;
+		err = discover_pid_req_binaries(pid, pid_mask);
+		if (err < 0)
+			return err;
+		if (err == 0) {
+			eprintf("No request tracking binaries found for PID %d!\n", pid);
+			return -ESRCH;
 		}
 	}
 
@@ -545,6 +555,7 @@ bool req_allowlist_has(const struct req_allowlist *al, int pid, u64 req_id)
 
 int attach_req_tracking_usdts(struct bpf_state *st)
 {
+	u64 attached_pids = 0;
 	struct hashmap_entry *entry;
 	size_t bkt;
 	int err;
@@ -555,10 +566,16 @@ int attach_req_tracking_usdts(struct bpf_state *st)
 		err = attach_usdt_probe(st, st->skel->progs.wprof_req_ctx,
 					binary->path, binary->attach_path,
 					"thrift", "crochet_request_data_context");
-		if (err == -ENOENT)
-			continue;
-		if (err)
+		if (err) {
+			/* discovered binaries usually have no such USDT, and can go away before we attach */
+			if (!binary->required)
+				continue;
+			eprintf("Failed to attach thrift:crochet_request_data_context to '%s': %d\n",
+				binary->path, err);
 			return err;
+		}
+
+		attached_pids |= binary->pid_mask;
 
 		err = attach_usdt_probe(st, st->skel->progs.wprof_req_task_enqueue,
 					binary->path, binary->attach_path,
@@ -583,6 +600,14 @@ int attach_req_tracking_usdts(struct bpf_state *st)
 			continue;
 		if (err)
 			return err;
+	}
+
+	for (int i = 0; i < env.req_pid_cnt && i < REQ_PID_MASK_BITS; i++) {
+		if (attached_pids & (1ULL << i))
+			continue;
+		eprintf("No thrift:crochet_request_data_context USDT in any binary of PID %d!\n",
+			env.req_pids[i]);
+		return -ENOENT;
 	}
 
 	return 0;
