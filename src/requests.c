@@ -45,8 +45,7 @@ static int add_uprobe_binary(u64 dev, u64 inode, const char *path, const char *a
 	}
 
 	*binary = key;
-	if (attach_path)
-		binary->attach_path = strdup(attach_path);
+	binary->attach_path = strdup(attach_path ?: path);
 
 	hashmap__set(env.req_binaries, binary, binary, NULL, NULL);
 
