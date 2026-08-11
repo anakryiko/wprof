@@ -3058,9 +3058,6 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e)
 			}
 		}
 
-		if (env.emit_req_split)
-			emit_slice_end(req_thread_track_uuid, e->ts, IID_NAME_RUNNING, IID_CAT_REQUEST_ONCPU);
-
 		emit_slice_end(req_track_uuid, e->ts, iid_str(req_name_iid, req_name), IID_CAT_REQUEST) {
 			emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
 			emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
@@ -3129,7 +3126,6 @@ static int process_req_event(struct worker_state *w, const struct wevent *e)
 
 	switch (e->req.req_event) {
 	case REQ_BEGIN:
-		st->req_id = e->req.req_id;
 		break;
 	case REQ_SET:
 		st->req_id = e->req.req_id;
