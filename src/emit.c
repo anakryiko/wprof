@@ -3040,9 +3040,9 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e)
 			}
 		}
 		break;
-	case REQ_CLEAR:
+	case REQ_END:
 		break;
-	case REQ_END: {
+	case REQ_CLEAR: {
 		struct track_state *rs = track_state_find(DTK_REQ, task.pid, req_id);
 		u64 req_start_ts = rs && rs->req.start_ts ? rs->req.start_ts : e->req.req_ts;
 
@@ -3101,7 +3101,7 @@ static void emit_req_event_json(struct worker_state *w, const struct wevent *e)
 	json_kv_str(j, "event", req_event_str(e->req.req_event));
 	json_kv_int(j, "req_id", e->req.req_id);
 	json_kv_str(j, "req_name", wevent_str(hdr, e->req.req_name_stroff));
-	if (e->req.req_event == REQ_END && e->req.req_ts)
+	if (e->req.req_event == REQ_CLEAR && e->req.req_ts)
 		json_kv_ts(j, "latency", e->ts - e->req.req_ts);
 	if ((env.requested_stack_traces & ST_REQ) && e->req.req_stack_id > 0)
 		json_kv_int(j, "stack_id", e->req.req_stack_id);
@@ -3125,18 +3125,15 @@ static int process_req_event(struct worker_state *w, const struct wevent *e)
 	struct task_state *st = task_state(w, &task);
 
 	switch (e->req.req_event) {
-	case REQ_BEGIN:
-		break;
 	case REQ_SET:
 		st->req_id = e->req.req_id;
 		break;
 	case REQ_UNSET:
 		st->req_id = 0;
 		break;
+	case REQ_BEGIN:
 	case REQ_CLEAR:
-		break;
 	case REQ_END:
-		st->req_id = 0;
 		break;
 	default:
 		BUG("unhandled req event %d\n", e->req.req_event);
