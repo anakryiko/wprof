@@ -15,7 +15,13 @@ struct uprobe_binary {
 	/* informational info */
 	char *path;
 	char *attach_path;
+
+	bool required;	/* named path, so this binary itself has to attach */
+	u64 pid_mask;	/* bit N set if mapped by named PID env.req_pids[N] */
 };
+
+/* named PIDs past this many aren't tracked in pid_mask and go unchecked */
+#define REQ_PID_MASK_BITS 64
 
 static inline size_t uprobe_binary_hash_fn(long key, void *ctx)
 {

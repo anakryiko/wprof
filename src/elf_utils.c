@@ -476,9 +476,10 @@ int elf_find_usdt(const char *binary_path, const char *provider, const char *nam
 	struct elf_fd ef;
 	int err;
 
+	/* -ESRCH tells the caller the binary itself is unusable, not that it lacks the USDT */
 	err = elf_open(binary_path, &ef);
 	if (err)
-		return err;
+		return -ESRCH;
 
 	GElf_Shdr shdr;
 	Elf_Scn *scn = elf_find_sec_by_name(ef.elf, USDT_NOTE_SEC, &shdr);
