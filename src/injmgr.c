@@ -723,7 +723,7 @@ int injmgr_attach_usdts(struct bpf_state *st, struct bpf_program *prog)
 		char lib_path[32];
 		snprintf(lib_path, sizeof(lib_path), "/proc/%d/fd/%d", inj->pid, inj->lib_fd);
 
-		int err = attach_usdt_probe(st, prog, "libwprofinj.so", lib_path, "wprof", "cuda_call");
+		int err = attach_usdt_probe(st, prog, "libwprofinj.so", lib_path, "wprof", "cuda_call", false);
 		if (err) {
 			eprintf("Failed to attach CUDA USDTs for %s: %d, skipping...\n", injectee_str(inj), err);
 			continue;
