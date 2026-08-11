@@ -1730,9 +1730,14 @@ struct req_state {
 	u64 start_ts;
 };
 
+struct req_key {
+	u64 req_id;
+	u64 tgid;
+};
+
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
-	__type(key, u64); /* req_id */
+	__type(key, struct req_key);
 	__type(value, struct req_state);
 } req_states SEC(".maps");
 
@@ -1749,12 +1754,14 @@ int BPF_USDT(wprof_req_ctx, u64 req_id, const char *endpoint, enum wprof_req_eve
 	if (!should_trace_task(task, now_ts))
 		return 0;
 
+	struct req_key key = { .req_id = req_id, .tgid = task->tgid };
+
 	switch (event_kind) {
 	case REQ_BEGIN:
-		s = bpf_map_lookup_elem(&req_states, &req_id);
+		s = bpf_map_lookup_elem(&req_states, &key);
 		if (!s) {
-			bpf_map_update_elem(&req_states, &req_id, &empty_req_state, BPF_NOEXIST);
-			s = bpf_map_lookup_elem(&req_states, &req_id);
+			bpf_map_update_elem(&req_states, &key, &empty_req_state, BPF_NOEXIST);
+			s = bpf_map_lookup_elem(&req_states, &key);
 		}
 		if (!s) {
 			(void)inc_stat(req_state_drops);
@@ -1765,7 +1772,7 @@ int BPF_USDT(wprof_req_ctx, u64 req_id, const char *endpoint, enum wprof_req_eve
 	case REQ_END:
 	case REQ_SET:
 	case REQ_UNSET:
-		s = bpf_map_lookup_elem(&req_states, &req_id);
+		s = bpf_map_lookup_elem(&req_states, &key);
 		if (!s) /* caught request in mid-flight or out of req_states space */
 			return 0;
 		break;
@@ -1803,7 +1810,7 @@ int BPF_USDT(wprof_req_ctx, u64 req_id, const char *endpoint, enum wprof_req_eve
 	}
 
 	if (event_kind == REQ_END)
-		bpf_map_delete_elem(&req_states, &req_id);
+		bpf_map_delete_elem(&req_states, &key);
 
 	put_stack_trace(tr);
 
