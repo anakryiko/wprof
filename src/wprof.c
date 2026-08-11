@@ -71,6 +71,11 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va
 	return vfprintf(stderr, format, args);
 }
 
+static int libbpf_silent_print_fn(enum libbpf_print_level level, const char *format, va_list args)
+{
+	return 0;
+}
+
 const struct capture_feature capture_features[] = {
 	{"IPIs", "IPIs:", "capture_ipis", DEFAULT_CAPTURE_IPIS,
 	 offsetof(struct env, capture_ipis), CFG_CAPTURE_IPIS},
@@ -1373,7 +1378,7 @@ static void *rb_worker(void *ctx)
 
 int attach_usdt_probe(struct bpf_state *st, struct bpf_program *prog,
 		      const char *binary_path, const char *binary_attach_path,
-		      const char *usdt_provider, const char *usdt_name)
+		      const char *usdt_provider, const char *usdt_name, bool quiet)
 {
 	struct bpf_link *link, **tmp;
 	struct usdt_info info;
@@ -1390,8 +1395,19 @@ int attach_usdt_probe(struct bpf_state *st, struct bpf_program *prog,
 		return -ENOENT;
 	}
 
+	/* we're going to ignore this failure, so don't let libbpf report it either */
+	bool silence = quiet && !(env.log_set & LOG_LIBBPF);
+	libbpf_print_fn_t prev_print_fn = NULL;
+
+	if (silence)
+		prev_print_fn = libbpf_set_print(libbpf_silent_print_fn);
+
 	link = bpf_program__attach_usdt(prog, -1, binary_attach_path,
 					usdt_provider, usdt_name, NULL);
+
+	if (silence)
+		libbpf_set_print(prev_print_fn);
+
 	if (!link) {
 		vprintf("Failed to attach USDT %s:%s to %s (%s): %d, skipping.\n",
 		      usdt_provider, usdt_name, binary_path, binary_attach_path, -errno);

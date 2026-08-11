@@ -565,7 +565,7 @@ int attach_req_tracking_usdts(struct bpf_state *st)
 
 		err = attach_usdt_probe(st, st->skel->progs.wprof_req_ctx,
 					binary->path, binary->attach_path,
-					"thrift", "crochet_request_data_context");
+					"thrift", "crochet_request_data_context", !binary->required);
 		if (err) {
 			/* discovered binaries usually have no such USDT, and can go away before we attach */
 			if (!binary->required)
@@ -579,7 +579,7 @@ int attach_req_tracking_usdts(struct bpf_state *st)
 
 		err = attach_usdt_probe(st, st->skel->progs.wprof_req_task_enqueue,
 					binary->path, binary->attach_path,
-					"folly", "thread_pool_executor_task_enqueued");
+					"folly", "thread_pool_executor_task_enqueued", !binary->required);
 		if (err == -ENOENT)
 			continue;
 		if (err)
@@ -587,7 +587,7 @@ int attach_req_tracking_usdts(struct bpf_state *st)
 
 		err = attach_usdt_probe(st, st->skel->progs.wprof_req_task_dequeue,
 					binary->path, binary->attach_path,
-					"folly", "thread_pool_executor_task_dequeued");
+					"folly", "thread_pool_executor_task_dequeued", !binary->required);
 		if (err == -ENOENT)
 			continue;
 		if (err)
@@ -595,7 +595,7 @@ int attach_req_tracking_usdts(struct bpf_state *st)
 
 		err = attach_usdt_probe(st, st->skel->progs.wprof_req_task_stats,
 					binary->path, binary->attach_path,
-					"folly", "thread_pool_executor_task_stats");
+					"folly", "thread_pool_executor_task_stats", !binary->required);
 		if (err == -ENOENT)
 			continue;
 		if (err)

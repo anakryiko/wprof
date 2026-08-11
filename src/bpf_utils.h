@@ -37,6 +37,6 @@ struct uprobe_binary;
 
 int attach_usdt_probe(struct bpf_state *st, struct bpf_program *prog,
 		      const char *binary_path, const char *binary_attach_path,
-		      const char *usdt_provider, const char *usdt_name);
+		      const char *usdt_provider, const char *usdt_name, bool quiet);
 
 #endif /* __BPF_UTILS_H_ */
