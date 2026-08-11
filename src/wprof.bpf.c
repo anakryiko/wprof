@@ -1769,14 +1769,14 @@ int BPF_USDT(wprof_req_ctx, u64 req_id, const char *endpoint, enum wprof_req_eve
 		}
 		s->start_ts = now_ts;
 		break;
-	case REQ_END:
+	case REQ_CLEAR:
 	case REQ_SET:
 	case REQ_UNSET:
 		s = bpf_map_lookup_elem(&req_states, &key);
 		if (!s) /* caught request in mid-flight or out of req_states space */
 			return 0;
 		break;
-	case REQ_CLEAR: /* don't care */
+	case REQ_END: /* CLEAR is the request end; END may never fire */
 	default:
 		return 0;
 	}
@@ -1809,7 +1809,7 @@ int BPF_USDT(wprof_req_ctx, u64 req_id, const char *endpoint, enum wprof_req_eve
 			e->flags |= task_infos_emit(&tis, dptr, fix_sz + dyn_sz);
 	}
 
-	if (event_kind == REQ_END)
+	if (event_kind == REQ_CLEAR)
 		bpf_map_delete_elem(&req_states, &key);
 
 	put_stack_trace(tr);

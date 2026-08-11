@@ -394,7 +394,7 @@ int req_list_output(struct worker_state *w)
 	wevent_for_each_event(rec, hdr, env.sess_start_ts, env.sess_end_ts) {
 		const struct wevent *e = rec->e;
 
-		if (e->kind != EV_REQ_EVENT || e->req.req_event != REQ_END)
+		if (e->kind != EV_REQ_EVENT || e->req.req_event != REQ_CLEAR)
 			continue;
 
 		struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
@@ -478,7 +478,7 @@ int req_filter_build_allowlist(struct worker_state *w, struct req_allowlist *al)
 	wevent_for_each_event(rec, hdr, env.sess_start_ts, env.sess_end_ts) {
 		const struct wevent *e = rec->e;
 
-		if (e->kind != EV_REQ_EVENT || e->req.req_event != REQ_END)
+		if (e->kind != EV_REQ_EVENT || e->req.req_event != REQ_CLEAR)
 			continue;
 
 		struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
