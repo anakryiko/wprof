@@ -49,6 +49,11 @@ static inline bool sv_eq(struct sview a, const char *b)
 	return strncmp(a.s, b, a.len) == 0 && b[a.len] == '\0';
 }
 
+static inline bool sv_eq_case(struct sview a, const char *b)
+{
+	return strncasecmp(a.s, b, a.len) == 0 && b[a.len] == '\0';
+}
+
 static inline bool sv_starts_with(struct sview v, const char *pfx)
 {
 	int plen = strlen(pfx);
