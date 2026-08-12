@@ -33,6 +33,7 @@ enum wcuda_event_kind {
 	WCK_CUDA_MEMSET = 52,
 	WCK_CUDA_SYNC = 53,
 	WCK_CUDA_API = 54,
+	WCK_CUDA_OVERHEAD = 55,
 };
 
 enum wcuda_cuda_api_kind {
@@ -40,6 +41,24 @@ enum wcuda_cuda_api_kind {
 	WCUDA_CUDA_API_DRIVER = 1,
 	WCUDA_CUDA_API_RUNTIME = 2,
 };
+
+/* mirrors CUpti_ActivityObjectKind for attributing overhead records */
+enum wcuda_object_kind {
+	WCUDA_OBJ_UNKNOWN = 0,
+	WCUDA_OBJ_PROCESS = 1,
+	WCUDA_OBJ_THREAD = 2,
+	WCUDA_OBJ_DEVICE = 3,
+	WCUDA_OBJ_CONTEXT = 4,
+	WCUDA_OBJ_STREAM = 5,
+};
+
+/* true when attribution uses the dcs union arm (device/context/stream) */
+static inline bool wcuda_obj_is_dcs(u8 object_kind)
+{
+	return object_kind == WCUDA_OBJ_DEVICE ||
+	       object_kind == WCUDA_OBJ_CONTEXT ||
+	       object_kind == WCUDA_OBJ_STREAM;
+}
 
 /* intentionally kept compatible in the first 8 bytes with wprof_event */
 struct wcuda_event {
@@ -100,6 +119,23 @@ struct wcuda_event {
 			u32 event_id;
 			u8 sync_type;
 		} cuda_sync;
+		struct wcuda_cuda_overhead {
+			u64 end_ts;
+			u32 overhead_kind;	/* raw CUpti_ActivityOverheadKind */
+			u8 object_kind;		/* enum wcuda_object_kind */
+			/* attribution is object_kind-specific, mirroring CUpti_ActivityObjectKindId */
+			union {
+				struct {
+					u32 pid;
+					u32 tid;
+				} pt;			/* PROCESS/THREAD */
+				struct {
+					u32 device_id;
+					u32 ctx_id;
+					u32 stream_id;
+				} dcs;			/* DEVICE/CONTEXT/STREAM */
+			};
+		} cuda_overhead;
 	};
 };
 

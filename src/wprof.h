@@ -97,6 +97,7 @@ enum event_kind {
 	EV_CUDA_MEMSET = 52,
 	EV_CUDA_SYNC = 53,
 	EV_CUDA_API = 54,
+	EV_CUDA_OVERHEAD = 55,
 
 	/* Python function tracing events (from PyEval_SetProfile) */
 	EV_PYTRACE_ENTRY = 60,

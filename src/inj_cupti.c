@@ -372,6 +372,44 @@ static int handle_cupti_record(CUpti_Activity *rec)
 		};
 		return cuda_dump_event(&e);
 	}
+	case CUPTI_ACTIVITY_KIND_OVERHEAD: {
+		CUpti_ActivityOverhead *r = (CUpti_ActivityOverhead *)rec;
+
+		u64 start_ts = gpu_to_cpu_time_ns(r->start);
+		u64 end_ts = gpu_to_cpu_time_ns(r->end);
+		if (!rec_within_session(start_ts, end_ts, run_ctx->sess_start_ts, run_ctx->sess_end_ts))
+			return -ENODATA;
+
+		struct wcuda_event e = {
+			.sz = sizeof(e),
+			.kind = WCK_CUDA_OVERHEAD,
+			.ts = start_ts,
+			.cuda_overhead = {
+				.end_ts = end_ts,
+				.overhead_kind = r->overheadKind,
+				.object_kind = r->objectKind,
+			},
+		};
+		switch (r->objectKind) {
+		case CUPTI_ACTIVITY_OBJECT_PROCESS:
+			e.cuda_overhead.pt.pid = r->objectId.pt.processId;
+			break;
+		case CUPTI_ACTIVITY_OBJECT_THREAD:
+			e.cuda_overhead.pt.pid = r->objectId.pt.processId;
+			e.cuda_overhead.pt.tid = r->objectId.pt.threadId;
+			break;
+		case CUPTI_ACTIVITY_OBJECT_DEVICE:
+		case CUPTI_ACTIVITY_OBJECT_CONTEXT:
+		case CUPTI_ACTIVITY_OBJECT_STREAM:
+			e.cuda_overhead.dcs.device_id = r->objectId.dcs.deviceId;
+			e.cuda_overhead.dcs.ctx_id = r->objectId.dcs.contextId;
+			e.cuda_overhead.dcs.stream_id = r->objectId.dcs.streamId;
+			break;
+		default:
+			break;
+		}
+		return cuda_dump_event(&e);
+	}
 	case CUPTI_ACTIVITY_KIND_CUDA_EVENT:
 		/*
 		 * XXX: event is a means to connect GPU-side sync scope with CPU-side sync API call,
@@ -495,6 +533,7 @@ static CUpti_ActivityKind cupti_act_kinds[] = {
 	CUPTI_ACTIVITY_KIND_RUNTIME,
 	CUPTI_ACTIVITY_KIND_MEMSET,
 	CUPTI_ACTIVITY_KIND_SYNCHRONIZATION,
+	CUPTI_ACTIVITY_KIND_OVERHEAD,
 };
 
 static const char *cupti_act_kind_strs[] = {
@@ -506,6 +545,7 @@ static const char *cupti_act_kind_strs[] = {
 	[CUPTI_ACTIVITY_KIND_MEMSET] = "MEMSET",
 	[CUPTI_ACTIVITY_KIND_SYNCHRONIZATION] = "SYNCHRONIZATION",
 	[CUPTI_ACTIVITY_KIND_CUDA_EVENT] = "EVENT",
+	[CUPTI_ACTIVITY_KIND_OVERHEAD] = "OVERHEAD",
 };
 
 static const char *cupti_act_kind_str(CUpti_ActivityKind kind)

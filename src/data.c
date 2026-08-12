@@ -49,6 +49,7 @@ static const char *event_kind_str_map[] = {
 	[EV_CUDA_MEMSET] = "CUDA_MEMSET",
 	[EV_CUDA_SYNC] = "CUDA_SYNC",
 	[EV_CUDA_API] = "CUDA_API",
+	[EV_CUDA_OVERHEAD] = "CUDA_OVERHEAD",
 
 	/* Python function tracing events */
 	[EV_PYTRACE_ENTRY] = "PYTRACE_ENTRY",

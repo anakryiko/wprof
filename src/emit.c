@@ -168,6 +168,7 @@ enum dyn_track_kind {
 	DTK_CUDA_PROC_GPU,		/* CUDA-using process's GPU track (id1 = pid, id2 = gpu_id) */
 	DTK_CUDA_PROC_STREAM,		/* CUDA-using process's GPU stream track (id1 = pid, id2 = stream_id) */
 	DTK_CUDA_PROC_STREAM_SYNC,	/* per-stream sync sub-track, merged with the stream (id1 = pid, id2 = stream_id) */
+	DTK_CUDA_PROC_OVERHEAD,		/* CUDA/driver overhead track not attributable to a thread (id1 = pid) */
 
 	DTK_UNRESOLVED,			/* unresolved-ref task track (id1 = tid), child of the UNRESOLVED folder */
 
@@ -184,6 +185,7 @@ enum dyn_track_kind {
 	DTK_PYTRACE,			/* Python-traced thread track (by TID) */
 	DTK_PYTORCH,			/* PyTorch RecordFunction thread track (by TID) */
 	DTK_THREAD_CUDA,		/* per-thread CUDA API calls track (id1 = tid) */
+	DTK_THREAD_CUDA_OVERHEAD,	/* per-thread CUDA/driver overhead track (id1 = tid) */
 	DTK_REQ_THREAD_EMBED,		/* first-event-per-thread tracking for embed mode (id1 = tid, id2 = req_id) */
 	DTK_UTRACE,			/* utrace per-config track (id1 = tid, id2 = utrace_id) */
 };
@@ -244,7 +246,9 @@ static size_t track_state_size(enum dyn_track_kind kind)
 	case DTK_CUDA_PROC:
 	case DTK_CUDA_PROC_GPU:
 	case DTK_CUDA_PROC_STREAM_SYNC:
+	case DTK_CUDA_PROC_OVERHEAD:
 	case DTK_THREAD_CUDA:
+	case DTK_THREAD_CUDA_OVERHEAD:
 	case DTK_UNRESOLVED:
 		return offsetof(struct track_state, req);
 	default:
@@ -3279,8 +3283,9 @@ static u64 ensure_cuda_proc_track(int pid, const char *proc_name)
 	struct track_state *s = track_state_get_or_add(DTK_CUDA_PROC, pid, 0);
 
 	if (!s->exists) {
-		emit_track_descr(s->track_id, TRACK_UUID_CUDA,
-				 sfmt("%s %d (CUDA)", proc_name, pid), 0);
+		emit_track_descr_impl(s->track_id, TRACK_UUID_CUDA,
+				      sfmt("%s %d (CUDA)", proc_name, pid), 0,
+				      CHILD_ORDER_CHRONO, MERGE_BY_NAME);
 		s->exists = true;
 	}
 	return s->track_id;
@@ -3338,7 +3343,41 @@ static u64 ensure_cuda_api_track(int tid, const char *comm)
 
 	if (!s->exists) {
 		emit_track_descr_impl(s->track_id, TRACK_UUID(TK_THREAD, tid),
-				      "CUDA", s->kind, CHILD_ORDER_CHRONO, MERGE_NONE);
+				      "CUDA", s->kind, CHILD_ORDER_CHRONO, MERGE_BY_NAME);
+		s->exists = true;
+	}
+	return s->track_id;
+}
+
+/*
+ * Overhead rides its own track (so it can overlap the API slices without
+ * breaking nesting), but shares the "CUDA" name so Perfetto merges it into the
+ * thread's CUDA API row instead of showing a separate overhead track.
+ */
+static u64 ensure_cuda_overhead_thread_track(int tid, const char *comm)
+{
+	struct track_state *s = track_state_get_or_add(DTK_THREAD_CUDA_OVERHEAD, tid, 0);
+
+	if (!s->exists) {
+		emit_track_descr_impl(s->track_id, TRACK_UUID(TK_THREAD, tid),
+				      "CUDA", DTK_THREAD_CUDA, CHILD_ORDER_CHRONO, MERGE_BY_NAME);
+		s->exists = true;
+	}
+	return s->track_id;
+}
+
+/*
+ * Process-attributed overhead (device/context/stream) merges into the process's
+ * "(CUDA)" row, matching the by-name merge used for the per-thread case.
+ */
+static u64 ensure_cuda_overhead_proc_track(int pid, const char *proc_name)
+{
+	struct track_state *s = track_state_get_or_add(DTK_CUDA_PROC_OVERHEAD, pid, 0);
+
+	if (!s->exists) {
+		emit_track_descr_impl(s->track_id, TRACK_UUID_CUDA,
+				      sfmt("%s %d (CUDA)", proc_name, pid), 0,
+				      CHILD_ORDER_CHRONO, MERGE_BY_NAME);
 		s->exists = true;
 	}
 	return s->track_id;
@@ -3879,6 +3918,92 @@ static int process_cuda_api(struct worker_state *w, const struct wevent *e)
 		emit_cuda_api_json(w, e);
 	else
 		emit_cuda_api(w, e);
+	return 0;
+}
+
+/* WCK_CUDA_OVERHEAD */
+static void emit_cuda_overhead(struct worker_state *w, const struct wevent *e)
+{
+	const struct wevent_cuda_overhead *ov = &e->cuda_overhead;
+	struct wprof_data_hdr *hdr = w->dump_hdr;
+	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
+	bool dcs = wcuda_obj_is_dcs(ov->object_kind);
+	u64 track_uuid;
+
+	/*
+	 * Thread-attributed overhead (e.g. JIT/driver compilation) rides a
+	 * dedicated per-thread track; everything else (buffer flush, device/
+	 * stream/context work) lands on a per-process overhead track so it never
+	 * crosses the thread's own slices.
+	 */
+	if (ov->object_kind == WCUDA_OBJ_THREAD) {
+		emit_track_descrs(w, &task);
+		track_uuid = ensure_cuda_overhead_thread_track(task.tid, task.comm);
+	} else {
+		track_uuid = ensure_cuda_overhead_proc_track(task.pid, task.pcomm);
+	}
+
+	int kind = cuda_overhead_kind_compact(ov->overhead_kind);
+	pb_iid name_iid = IID_NAME_CUDA_OVERHEAD + kind;
+	pb_iid kind_iid = IID_ANNV_CUDA_OVERHEAD_KIND + kind;
+	const char *kind_str = cuda_overhead_kind_str(kind);
+	struct pb_str name = iid_str(name_iid, sfmt("%s:%s", "overhead", kind_str));
+
+	emit_slice_begin(track_uuid, clamp_ts(e->ts), name, IID_CAT_CUDA_OVERHEAD) {
+		emit_kv_str(IID_ANNK_CUDA_KIND, iid_str(kind_iid, kind_str));
+		if (dcs) {
+			emit_kv_int(IID_ANNK_CUDA_DEVICE_ID, ov->device_id);
+			emit_kv_int(IID_ANNK_CUDA_CONTEXT_ID, ov->ctx_id);
+			emit_kv_int(IID_ANNK_CUDA_STREAM_ID, ov->stream_id);
+		}
+	}
+
+	emit_slice_end(track_uuid, clamp_ts(ov->end_ts), name, IID_CAT_CUDA_OVERHEAD);
+}
+
+static void emit_cuda_overhead_json(struct worker_state *w, const struct wevent *e)
+{
+	struct json_state *j = &js;
+	const struct wevent_cuda_overhead *ov = &e->cuda_overhead;
+	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
+
+	json_obj_start(j);
+	json_kv_ts(j, "ts", clamp_ts(e->ts) - env.sess_start_ts);
+	json_kv_str(j, "t", "cuda_overhead");
+	json_task(j, "task", &task);
+	json_kv_ts(j, "dur", clamp_ts(ov->end_ts) - clamp_ts(e->ts));
+	json_kv_int(j, "cpu", e->cpu);
+	if (env.emit_numa)
+		json_kv_int(j, "numa", e->numa_node);
+	json_kv_str(j, "kind", cuda_overhead_kind_str(cuda_overhead_kind_compact(ov->overhead_kind)));
+	if (wcuda_obj_is_dcs(ov->object_kind)) {
+		json_kv_int(j, "device_id", ov->device_id);
+		json_kv_int(j, "context_id", ov->ctx_id);
+		json_kv_int(j, "stream_id", ov->stream_id);
+	}
+	json_obj_end(j);
+}
+
+static int process_cuda_overhead(struct worker_state *w, const struct wevent *e)
+{
+	if (!env.capture_cuda)
+		return 0;
+
+	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
+	if (!should_trace_task(&task))
+		return 0;
+
+	if (!is_time_range_in_session(e->ts, e->cuda_overhead.end_ts))
+		return 0;
+
+	/* check if we failed to resolve TID at data capture time */
+	if (task.tid == 0)
+		return 0;
+
+	if (env.json_path)
+		emit_cuda_overhead_json(w, e);
+	else
+		emit_cuda_overhead(w, e);
 	return 0;
 }
 
@@ -4591,6 +4716,7 @@ static handle_event_fn emit_fns[] = {
 	[EV_CUDA_MEMSET] = process_cuda_memset,
 	[EV_CUDA_SYNC] = process_cuda_sync,
 	[EV_CUDA_API] = process_cuda_api,
+	[EV_CUDA_OVERHEAD] = process_cuda_overhead,
 	[EV_PYTRACE_ENTRY] = process_pytrace,
 	[EV_PYTRACE_EXIT] = process_pytrace,
 	[EV_PYTORCH_ENTRY] = process_pytorch,

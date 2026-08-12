@@ -732,6 +732,26 @@ int persist_cuda_event(struct persist_state *ps, const struct wcuda_event *e, st
 		dst->cuda_sync.sync_type = e->cuda_sync.sync_type;
 		break;
 
+	case WCK_CUDA_OVERHEAD: {
+		bool dcs = wcuda_obj_is_dcs(e->cuda_overhead.object_kind);
+		if (e->cuda_overhead.object_kind == WCUDA_OBJ_THREAD)
+			ti = resolve_cuda_host_tid(ps, host_pid, proc_name,
+						   e->cuda_overhead.pt.pid, e->cuda_overhead.pt.tid);
+		else if (e->cuda_overhead.object_kind == WCUDA_OBJ_PROCESS)
+			ti = resolve_cuda_host_tid(ps, host_pid, proc_name, host_pid, host_pid);
+		else /* DEVICE/CONTEXT/STREAM */
+			ti = resolve_cuda_host_tid(ps, host_pid, proc_name, host_pid, host_pid);
+		fill_cuda_wevent_hdr(dst, e, EV_CUDA_OVERHEAD, ti->task_id, WEVENT_SZ(cuda_overhead));
+
+		dst->cuda_overhead.end_ts = e->cuda_overhead.end_ts;
+		dst->cuda_overhead.overhead_kind = e->cuda_overhead.overhead_kind;
+		dst->cuda_overhead.object_kind = e->cuda_overhead.object_kind;
+		dst->cuda_overhead.device_id = dcs ? e->cuda_overhead.dcs.device_id : 0;
+		dst->cuda_overhead.ctx_id = dcs ? e->cuda_overhead.dcs.ctx_id : 0;
+		dst->cuda_overhead.stream_id = dcs ? e->cuda_overhead.dcs.stream_id : 0;
+		break;
+	}
+
 	default:
 		BUG("unrecognized CUDA event type %d while persisting\n", e->kind);
 	}

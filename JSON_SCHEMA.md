@@ -578,6 +578,35 @@ thread-level event.
 }
 ```
 
+#### `cuda_overhead` — CUPTI/driver overhead
+
+CUPTI-reported overhead such as buffer flush, JIT/driver compilation, and
+module loading. Attribution follows CUPTI's object model: thread-attributed
+overhead is associated with the offending thread, while process- and
+device/context/stream-attributed overhead is associated with the owning
+process. `device_id`, `context_id`, and `stream_id` are emitted only for
+device/context/stream-attributed overhead.
+
+| Field        | Type   | Description                                  |
+|--------------|--------|----------------------------------------------|
+| `task`       | task   | Offending thread, or owning process          |
+| `dur`        | float  | Overhead duration                            |
+| `kind`       | string | Overhead kind (e.g. `"cupti_buffer_flush"`)  |
+| `device_id`  | int    | *(optional)* GPU device ID                   |
+| `context_id` | int    | *(optional)* CUDA context ID                 |
+| `stream_id`  | int    | *(optional)* CUDA stream ID                  |
+
+```json
+{
+  "ts": 1.000300000,
+  "t": "cuda_overhead",
+  "task": {"tid": 1234, "pid": 1000, "comm": "trainer"},
+  "dur": 0.000030000,
+  "cpu": 3,
+  "kind": "cupti_buffer_flush"
+}
+```
+
 ---
 
 ### CUDA GPU events
