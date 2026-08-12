@@ -10,6 +10,7 @@
 #include <sys/sysmacros.h>
 
 #include "requests.h"
+#include "strs.h"
 #include "proc.h"
 #include "env.h"
 #include "bpf_utils.h"
@@ -153,21 +154,29 @@ int setup_req_tracking_discovery(void)
 
 static enum req_field parse_field(const char *name)
 {
-	if (strcasecmp(name, "id") == 0)
+	struct sview v = sv_trim(sv_new(name));
+
+	if (sv_eq_case(v, "id"))
 		return REQ_FIELD_ID;
-	if (strcasecmp(name, "name") == 0)
+	if (sv_eq_case(v, "name"))
 		return REQ_FIELD_NAME;
-	if (strcasecmp(name, "comm") == 0)
+	if (sv_eq_case(v, "comm"))
 		return REQ_FIELD_COMM;
-	if (strcasecmp(name, "pid") == 0)
+	if (sv_eq_case(v, "pcomm"))
+		return REQ_FIELD_PCOMM;
+	if (sv_eq_case(v, "pid"))
 		return REQ_FIELD_PID;
-	if (strcasecmp(name, "start") == 0)
+	if (sv_eq_case(v, "tid"))
+		return REQ_FIELD_TID;
+	if (sv_eq_case(v, "start"))
 		return REQ_FIELD_START;
-	if (strcasecmp(name, "end") == 0)
+	if (sv_eq_case(v, "end"))
 		return REQ_FIELD_END;
-	if (strcasecmp(name, "latency") == 0 || strcasecmp(name, "lat") == 0)
+	if (sv_eq_case(v, "latency") || sv_eq_case(v, "lat"))
 		return REQ_FIELD_LATENCY;
-	eprintf("Unknown request field '%s' (expected: id, name, comm, pid, start, end, latency/lat)\n", name);
+
+	eprintf("Unknown request field '%s' (expected: id, name, comm, pcomm, pid, tid, start, end, latency/lat)\n",
+		name);
 	return REQ_FIELD_INVALID;
 }
 
@@ -228,12 +237,14 @@ int req_list_parse_filter(const char *expr)
 	switch (f.field) {
 	case REQ_FIELD_NAME:
 	case REQ_FIELD_COMM:
+	case REQ_FIELD_PCOMM:
 		f.str_val = strdup(val_str);
 		break;
 	case REQ_FIELD_ID:
-	case REQ_FIELD_PID: {
+	case REQ_FIELD_PID:
+	case REQ_FIELD_TID: {
 		if (f.op == REQ_OP_GLOB_MATCH || f.op == REQ_OP_GLOB_MISMATCH) {
-			eprintf("Glob operator can only be used with name or comm fields in '%s'\n", expr);
+			eprintf("Glob operator can only be used with name, comm or pcomm fields in '%s'\n", expr);
 			return -EINVAL;
 		}
 		char *end;
@@ -249,7 +260,7 @@ int req_list_parse_filter(const char *expr)
 	case REQ_FIELD_END:
 	case REQ_FIELD_LATENCY: {
 		if (f.op == REQ_OP_GLOB_MATCH || f.op == REQ_OP_GLOB_MISMATCH) {
-			eprintf("Glob operator can only be used with name or comm fields in '%s'\n", expr);
+			eprintf("Glob operator can only be used with name, comm or pcomm fields in '%s'\n", expr);
 			return -EINVAL;
 		}
 		s64 ns = parse_time_units(val_str);
@@ -288,7 +299,9 @@ struct req_entry {
 	u64 id;
 	const char *name;
 	const char *comm;
+	const char *pcomm;
 	int pid;
+	int tid;
 	u64 start_ns;
 	u64 end_ns;
 };
@@ -328,8 +341,17 @@ static bool req_entry_matches(const struct req_entry *e, const struct req_filter
 		else
 			cmp = strcmp(e->comm, f->str_val);
 		break;
+	case REQ_FIELD_PCOMM:
+		if (f->op == REQ_OP_GLOB_MATCH || f->op == REQ_OP_GLOB_MISMATCH)
+			cmp = wprof_glob_match(f->str_val, e->pcomm) ? 0 : 1;
+		else
+			cmp = strcmp(e->pcomm, f->str_val);
+		break;
 	case REQ_FIELD_PID:
 		cmp = (e->pid > f->num_val) - (e->pid < f->num_val);
+		break;
+	case REQ_FIELD_TID:
+		cmp = (e->tid > f->num_val) - (e->tid < f->num_val);
 		break;
 	case REQ_FIELD_START:
 		cmp = (e->start_ns > f->num_val) - (e->start_ns < f->num_val);
@@ -367,8 +389,14 @@ static int req_entry_cmp(const void *_a, const void *_b, void *ctx)
 		case REQ_FIELD_COMM:
 			cmp = strcmp(a->comm, b->comm);
 			break;
+		case REQ_FIELD_PCOMM:
+			cmp = strcmp(a->pcomm, b->pcomm);
+			break;
 		case REQ_FIELD_PID:
 			cmp = (a->pid > b->pid) - (a->pid < b->pid);
+			break;
+		case REQ_FIELD_TID:
+			cmp = (a->tid > b->tid) - (a->tid < b->tid);
 			break;
 		case REQ_FIELD_START:
 			cmp = (a->start_ns > b->start_ns) - (a->start_ns < b->start_ns);
@@ -411,7 +439,9 @@ int req_list_output(struct worker_state *w)
 			.id = e->req.req_id,
 			.name = wevent_str(hdr, e->req.req_name_stroff),
 			.comm = task.comm,
+			.pcomm = task.pcomm,
 			.pid = task.pid,
+			.tid = task.tid,
 			.start_ns = e->req.req_ts - env.sess_start_ts,
 			.end_ns = e->ts - env.sess_start_ts,
 		};
@@ -437,11 +467,11 @@ int req_list_output(struct worker_state *w)
 		qsort_r(entries, entry_cnt, sizeof(*entries), req_entry_cmp, cfg);
 
 	/* print */
-	fprintf(stderr, "%12s %9s %8s %-15s %20s  %s\n",
-	       "START", "LATENCY", "PID", "COMM", "ID", "NAME");
-	fprintf(stderr, "%12s %9s %8s %-15s %20s  %s\n",
-	       "------------",
-	       "---------", "--------", "---------------",
+	fprintf(stderr, "%12s %9s %8s %8s %-15s %-15s %20s  %s\n",
+	       "START", "LATENCY", "PID", "TID", "PCOMM", "COMM", "ID", "NAME");
+	fprintf(stderr, "%12s %9s %8s %8s %-15s %-15s %20s  %s\n",
+	       "------------", "---------", "--------", "--------",
+	       "---------------", "---------------",
 	       "--------------------", "----");
 	bool show_all = cfg->top_n <= 0 && cfg->bottom_n <= 0;
 	bool skipped = false;
@@ -450,10 +480,11 @@ int req_list_output(struct worker_state *w)
 		bool in_bottom = cfg->bottom_n > 0 && i >= entry_cnt - cfg->bottom_n;
 		if (show_all || in_top || in_bottom) {
 			char ts1[32];
-			fprintf(stderr, "%12s %9.6f %8d %-15s %20llu  %s\n",
+			fprintf(stderr, "%12s %9.6f %8d %8d %-15s %-15s %20llu  %s\n",
 			       fmt_ts(entries[i].start_ns, ts1, sizeof(ts1)),
 			       (entries[i].end_ns - entries[i].start_ns) / 1000000000.0,
-			       entries[i].pid, entries[i].comm,
+			       entries[i].pid, entries[i].tid,
+			       entries[i].pcomm, entries[i].comm,
 			       entries[i].id, entries[i].name);
 		} else if (!skipped) {
 			fprintf(stderr, "  ... (%d entries skipped) ...\n", entry_cnt - cfg->top_n - cfg->bottom_n);
@@ -495,7 +526,9 @@ int req_filter_build_allowlist(struct worker_state *w, struct req_allowlist *al)
 			.id = e->req.req_id,
 			.name = wevent_str(hdr, e->req.req_name_stroff),
 			.comm = task.comm,
+			.pcomm = task.pcomm,
 			.pid = task.pid,
+			.tid = task.tid,
 			.start_ns = e->req.req_ts - env.sess_start_ts,
 			.end_ns = e->ts - env.sess_start_ts,
 		};
