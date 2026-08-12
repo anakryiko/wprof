@@ -143,6 +143,43 @@ const char *cuda_sync_type_str(int type)
 	return cuda_sync_type_str_map[0];
 }
 
+static const char *cuda_overhead_kind_str_map[] = {
+	[CUDA_OVERHEAD_UNKN]                    = "???",
+	[CUDA_OVERHEAD_DRIVER_COMPILER]         = "driver_compiler",
+	[CUDA_OVERHEAD_BUFFER_FLUSH]            = "cupti_buffer_flush",
+	[CUDA_OVERHEAD_INSTRUMENTATION]         = "cupti_instrumentation",
+	[CUDA_OVERHEAD_RESOURCE]                = "cupti_resource",
+	[CUDA_OVERHEAD_MODULE_LOADING]          = "module_loading",
+	[CUDA_OVERHEAD_LAZY_FUNCTION_LOADING]   = "lazy_function_loading",
+	[CUDA_OVERHEAD_COMMAND_BUFFER_FULL]     = "command_buffer_full",
+	[CUDA_OVERHEAD_ACTIVITY_BUFFER_REQUEST] = "activity_buffer_request",
+	[CUDA_OVERHEAD_UVM_ACTIVITY_INIT]       = "uvm_activity_init",
+};
+
+const char *cuda_overhead_kind_str(int kind)
+{
+	if (kind > 0 && kind < ARRAY_SIZE(cuda_overhead_kind_str_map))
+		return cuda_overhead_kind_str_map[kind];
+	return cuda_overhead_kind_str_map[CUDA_OVERHEAD_UNKN];
+}
+
+/* raw CUpti_ActivityOverheadKind values are sparse (1, then N<<16) */
+int cuda_overhead_kind_compact(u32 raw_overhead_kind)
+{
+	switch (raw_overhead_kind) {
+	case 1:		return CUDA_OVERHEAD_DRIVER_COMPILER;
+	case 1 << 16:	return CUDA_OVERHEAD_BUFFER_FLUSH;
+	case 2 << 16:	return CUDA_OVERHEAD_INSTRUMENTATION;
+	case 3 << 16:	return CUDA_OVERHEAD_RESOURCE;
+	case 4 << 16:	return CUDA_OVERHEAD_MODULE_LOADING;
+	case 5 << 16:	return CUDA_OVERHEAD_LAZY_FUNCTION_LOADING;
+	case 6 << 16:	return CUDA_OVERHEAD_COMMAND_BUFFER_FULL;
+	case 7 << 16:	return CUDA_OVERHEAD_ACTIVITY_BUFFER_REQUEST;
+	case 8 << 16:	return CUDA_OVERHEAD_UVM_ACTIVITY_INIT;
+	default:	return CUDA_OVERHEAD_UNKN;
+	}
+}
+
 /*
  * PROTOBUF UTILS
  */
@@ -186,6 +223,7 @@ static const char *pb_static_strs[] = {
 	[IID_CAT_CUDA_API] = "CUDA_API",
 	[IID_CAT_CUDA_MEMSET] = "CUDA_MEMSET",
 	[IID_CAT_CUDA_SYNC] = "CUDA_SYNC",
+	[IID_CAT_CUDA_OVERHEAD] = "CUDA_OVERHEAD",
 	[IID_CAT_SCX_DSQ] = "SCX_DSQ",
 	[IID_CAT_PYTRACE] = "PYTRACE",
 	[IID_CAT_PYTORCH] = "PYTORCH",
@@ -262,6 +300,16 @@ static const char *pb_static_strs[] = {
 	[IID_NAME_CUDA_SYNC + CUDA_SYNC_STREAM_WAIT_EVENT] = "sync:stream_wait_event",
 	[IID_NAME_CUDA_SYNC + CUDA_SYNC_STREAM_SYNC] = "sync:stream_sync",
 	[IID_NAME_CUDA_SYNC + CUDA_SYNC_CONTEXT_SYNC] = "sync:context_sync",
+	[IID_NAME_CUDA_OVERHEAD + CUDA_OVERHEAD_UNKN] = "overhead:???",
+	[IID_NAME_CUDA_OVERHEAD + CUDA_OVERHEAD_DRIVER_COMPILER] = "overhead:driver_compiler",
+	[IID_NAME_CUDA_OVERHEAD + CUDA_OVERHEAD_BUFFER_FLUSH] = "overhead:cupti_buffer_flush",
+	[IID_NAME_CUDA_OVERHEAD + CUDA_OVERHEAD_INSTRUMENTATION] = "overhead:cupti_instrumentation",
+	[IID_NAME_CUDA_OVERHEAD + CUDA_OVERHEAD_RESOURCE] = "overhead:cupti_resource",
+	[IID_NAME_CUDA_OVERHEAD + CUDA_OVERHEAD_MODULE_LOADING] = "overhead:module_loading",
+	[IID_NAME_CUDA_OVERHEAD + CUDA_OVERHEAD_LAZY_FUNCTION_LOADING] = "overhead:lazy_function_loading",
+	[IID_NAME_CUDA_OVERHEAD + CUDA_OVERHEAD_COMMAND_BUFFER_FULL] = "overhead:command_buffer_full",
+	[IID_NAME_CUDA_OVERHEAD + CUDA_OVERHEAD_ACTIVITY_BUFFER_REQUEST] = "overhead:activity_buffer_request",
+	[IID_NAME_CUDA_OVERHEAD + CUDA_OVERHEAD_UVM_ACTIVITY_INIT] = "overhead:uvm_activity_init",
 
 	[IID_ANNK_CPU] = "cpu",
 	[IID_ANNK_NUMA_NODE] = "numa_node",
@@ -373,6 +421,17 @@ static const char *pb_static_strs[] = {
 	[IID_ANNV_CUDA_SYNC_TYPE + CUDA_SYNC_STREAM_WAIT_EVENT] = "stream_wait_event",
 	[IID_ANNV_CUDA_SYNC_TYPE + CUDA_SYNC_STREAM_SYNC] = "stream_sync",
 	[IID_ANNV_CUDA_SYNC_TYPE + CUDA_SYNC_CONTEXT_SYNC] = "context_sync",
+
+	[IID_ANNV_CUDA_OVERHEAD_KIND + CUDA_OVERHEAD_UNKN] = "???",
+	[IID_ANNV_CUDA_OVERHEAD_KIND + CUDA_OVERHEAD_DRIVER_COMPILER] = "driver_compiler",
+	[IID_ANNV_CUDA_OVERHEAD_KIND + CUDA_OVERHEAD_BUFFER_FLUSH] = "cupti_buffer_flush",
+	[IID_ANNV_CUDA_OVERHEAD_KIND + CUDA_OVERHEAD_INSTRUMENTATION] = "cupti_instrumentation",
+	[IID_ANNV_CUDA_OVERHEAD_KIND + CUDA_OVERHEAD_RESOURCE] = "cupti_resource",
+	[IID_ANNV_CUDA_OVERHEAD_KIND + CUDA_OVERHEAD_MODULE_LOADING] = "module_loading",
+	[IID_ANNV_CUDA_OVERHEAD_KIND + CUDA_OVERHEAD_LAZY_FUNCTION_LOADING] = "lazy_function_loading",
+	[IID_ANNV_CUDA_OVERHEAD_KIND + CUDA_OVERHEAD_COMMAND_BUFFER_FULL] = "command_buffer_full",
+	[IID_ANNV_CUDA_OVERHEAD_KIND + CUDA_OVERHEAD_ACTIVITY_BUFFER_REQUEST] = "activity_buffer_request",
+	[IID_ANNV_CUDA_OVERHEAD_KIND + CUDA_OVERHEAD_UVM_ACTIVITY_INIT] = "uvm_activity_init",
 
 	[IID_ANNV_OFFCPU_BLOCKED] = "blocked",
 	[IID_ANNV_OFFCPU_PREEMPTED] = "preempted",

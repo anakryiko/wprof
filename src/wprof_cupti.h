@@ -36,6 +36,7 @@ typedef enum {
 	CUPTI_ACTIVITY_KIND_DRIVER              = 4,
 	CUPTI_ACTIVITY_KIND_RUNTIME             = 5,
 	CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL   = 10,
+	CUPTI_ACTIVITY_KIND_OVERHEAD            = 17,
 	CUPTI_ACTIVITY_KIND_MEMCPY2             = 22,
 	CUPTI_ACTIVITY_KIND_CUDA_EVENT          = 36,
 	CUPTI_ACTIVITY_KIND_SYNCHRONIZATION     = 38,
@@ -251,6 +252,56 @@ typedef struct CUPTI_PACKED_ALIGNMENT {
 	uint32_t streamId;
 	uint32_t cudaEventId;
 } CUpti_ActivitySynchronization;
+
+typedef enum {
+	CUPTI_ACTIVITY_OBJECT_UNKNOWN   = 0,
+	CUPTI_ACTIVITY_OBJECT_PROCESS   = 1,
+	CUPTI_ACTIVITY_OBJECT_THREAD    = 2,
+	CUPTI_ACTIVITY_OBJECT_DEVICE    = 3,
+	CUPTI_ACTIVITY_OBJECT_CONTEXT   = 4,
+	CUPTI_ACTIVITY_OBJECT_STREAM    = 5,
+} CUpti_ActivityObjectKind;
+
+typedef union {
+	struct {
+		uint32_t processId;
+		uint32_t threadId;
+	} pt;
+	struct {
+		uint32_t deviceId;
+		uint32_t contextId;
+		uint32_t streamId;
+	} dcs;
+} CUpti_ActivityObjectKindId;
+
+typedef enum {
+	CUPTI_ACTIVITY_OVERHEAD_UNKNOWN                          = 0,
+	CUPTI_ACTIVITY_OVERHEAD_DRIVER_COMPILER                  = 1,
+	CUPTI_ACTIVITY_OVERHEAD_CUPTI_BUFFER_FLUSH               = 1 << 16,
+	CUPTI_ACTIVITY_OVERHEAD_CUPTI_INSTRUMENTATION            = 2 << 16,
+	CUPTI_ACTIVITY_OVERHEAD_CUPTI_RESOURCE                   = 3 << 16,
+	CUPTI_ACTIVITY_OVERHEAD_RUNTIME_TRIGGERED_MODULE_LOADING = 4 << 16,
+	CUPTI_ACTIVITY_OVERHEAD_LAZY_FUNCTION_LOADING            = 5 << 16,
+	CUPTI_ACTIVITY_OVERHEAD_COMMAND_BUFFER_FULL              = 6 << 16,
+	CUPTI_ACTIVITY_OVERHEAD_ACTIVITY_BUFFER_REQUEST          = 7 << 16,
+	CUPTI_ACTIVITY_OVERHEAD_UVM_ACTIVITY_INIT                = 8 << 16,
+} CUpti_ActivityOverheadKind;
+
+/*
+ * Only the prefix through 'end' is declared; later CUPTI revisions append a
+ * trailing correlationId, but CUPTI 12.4 (the version in use here) does not
+ * carry one, so we deliberately stop at the version-stable fields.
+ */
+typedef struct CUPTI_PACKED_ALIGNMENT {
+	CUpti_ActivityKind kind;
+
+	CUpti_ActivityOverheadKind overheadKind;
+	CUpti_ActivityObjectKind objectKind;
+	CUpti_ActivityObjectKindId objectId;
+
+	uint64_t start;
+	uint64_t end;
+} CUpti_ActivityOverhead;
 
 enum CUpti_driver_api_trace_cbid {
 	/* uninteresting high-frequency APIs */

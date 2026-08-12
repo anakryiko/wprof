@@ -86,9 +86,32 @@ enum cuda_sync_type {
 	NR_CUDA_SYNC_TYPE,
 };
 
+/*
+ * Dense re-numbering of CUpti_ActivityOverheadKind, whose raw values are
+ * sparse (1, then 1<<16, 2<<16, ...). cuda_overhead_kind_compact() maps the
+ * raw wire value onto this compact enum.
+ */
+enum cuda_overhead_kind {
+	CUDA_OVERHEAD_UNKN = 0,
+
+	CUDA_OVERHEAD_DRIVER_COMPILER = 1,
+	CUDA_OVERHEAD_BUFFER_FLUSH = 2,
+	CUDA_OVERHEAD_INSTRUMENTATION = 3,
+	CUDA_OVERHEAD_RESOURCE = 4,
+	CUDA_OVERHEAD_MODULE_LOADING = 5,
+	CUDA_OVERHEAD_LAZY_FUNCTION_LOADING = 6,
+	CUDA_OVERHEAD_COMMAND_BUFFER_FULL = 7,
+	CUDA_OVERHEAD_ACTIVITY_BUFFER_REQUEST = 8,
+	CUDA_OVERHEAD_UVM_ACTIVITY_INIT = 9,
+
+	NR_CUDA_OVERHEAD_KIND,
+};
+
 const char *cuda_memcpy_kind_str(enum cuda_memcpy_kind);
 const char *cuda_sync_type_str(int type);
 const char *cuda_memory_kind_str(int kind);
+const char *cuda_overhead_kind_str(int kind);
+int cuda_overhead_kind_compact(u32 raw_overhead_kind);
 
 enum pb_static_iid {
 	IID_NONE = 0,
@@ -133,6 +156,7 @@ enum pb_static_iid {
 		IID_CAT_CUDA_API, 				/* CUDA_API */
 		IID_CAT_CUDA_MEMSET, 				/* CUDA_MEMSET */
 		IID_CAT_CUDA_SYNC,				/* CUDA_SYNC */
+		IID_CAT_CUDA_OVERHEAD,				/* CUDA_OVERHEAD */
 		IID_CAT_SCX_DSQ,				/* SCX_DSQ */
 		IID_CAT_PYTRACE,				/* PYTRACE */
 		IID_CAT_PYTORCH,				/* PYTORCH */
@@ -181,6 +205,8 @@ enum pb_static_iid {
 		IID_NAME_CUDA_MEMSET_LAST = IID_NAME_CUDA_MEMSET + NR_CUDA_MEMORY_KIND - 1,
 		IID_NAME_CUDA_SYNC,				/* sync:... */
 		IID_NAME_CUDA_SYNC_LAST = IID_NAME_CUDA_SYNC + NR_CUDA_SYNC_TYPE - 1,
+		IID_NAME_CUDA_OVERHEAD,				/* overhead:... */
+		IID_NAME_CUDA_OVERHEAD_LAST = IID_NAME_CUDA_OVERHEAD + NR_CUDA_OVERHEAD_KIND - 1,
 	NAME_END_IID,
 
 	ANNK_START_IID, __ANNK_RESET_IID = ANNK_START_IID - 1,
@@ -265,6 +291,8 @@ enum pb_static_iid {
 		IID_ANNV_CUDA_MEMORY_KIND_LAST = IID_ANNV_CUDA_MEMORY_KIND + NR_CUDA_MEMORY_KIND - 1,
 		IID_ANNV_CUDA_SYNC_TYPE,			/* event_sync, stream_sync, etc. */
 		IID_ANNV_CUDA_SYNC_TYPE_LAST = IID_ANNV_CUDA_SYNC_TYPE + NR_CUDA_SYNC_TYPE - 1,
+		IID_ANNV_CUDA_OVERHEAD_KIND,			/* driver_compiler, buffer_flush, etc. */
+		IID_ANNV_CUDA_OVERHEAD_KIND_LAST = IID_ANNV_CUDA_OVERHEAD_KIND + NR_CUDA_OVERHEAD_KIND - 1,
 	ANNV_END_IID,
 
 	IID_FIXED_LAST_ID,

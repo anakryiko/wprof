@@ -220,6 +220,15 @@ struct wevent {
 			u8 sync_type;
 		} cuda_sync;
 
+		struct wevent_cuda_overhead {
+			u64 end_ts;
+			u32 overhead_kind;	/* raw CUpti_ActivityOverheadKind */
+			u32 device_id;
+			u32 ctx_id;
+			u32 stream_id;
+			u8 object_kind;		/* enum wcuda_object_kind */
+		} cuda_overhead;
+
 		/* Python function tracing events (from PyEval_SetProfile) */
 		struct wevent_pytrace {
 			u32 func_name_stroff;
@@ -278,6 +287,7 @@ static inline size_t wevent_fixed_sz(const struct wevent *e)
 	case EV_CUDA_MEMSET:	return WEVENT_SZ(cuda_memset);
 	case EV_CUDA_SYNC:	return WEVENT_SZ(cuda_sync);
 	case EV_CUDA_API:	return WEVENT_SZ(cuda_api);
+	case EV_CUDA_OVERHEAD:	return WEVENT_SZ(cuda_overhead);
 
 	case EV_PYTRACE_ENTRY:	return WEVENT_SZ(pytrace);
 	case EV_PYTRACE_EXIT:	return WEVENT_SZ(pytrace);
@@ -321,6 +331,7 @@ static inline const char *wevent_kind_name(enum event_kind kind)
 	case EV_CUDA_MEMSET:	return "cuda_memset";
 	case EV_CUDA_SYNC:	return "cuda_sync";
 	case EV_CUDA_API:	return "cuda_api";
+	case EV_CUDA_OVERHEAD:	return "cuda_overhead";
 	case EV_PYTRACE_ENTRY:	return "pytrace_entry";
 	case EV_PYTRACE_EXIT:	return "pytrace_exit";
 	case EV_PYTORCH_ENTRY:	return "pytorch_entry";
