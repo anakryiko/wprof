@@ -280,21 +280,28 @@ int req_list_parse_filter(const char *expr)
 	return 0;
 }
 
-static const char *fmt_ts(u64 ns, char *buf, size_t buf_sz)
+static const char *fmt_ts(s64 ns, char *buf, size_t buf_sz)
 {
-	u64 s = ns / 1000000000ULL;
-	u64 frac = ns % 1000000000ULL;
+	const char *sign = ns < 0 ? "-" : "";
+	u64 abs_ns = ns < 0 ? -ns : ns;
+	u64 s = abs_ns / 1000000000ULL;
+	u64 frac = abs_ns % 1000000000ULL;
 	unsigned h = s / 3600, m = (s / 60) % 60;
 
 	if (h)
-		snprintf(buf, buf_sz, "%u:%02u:%02llu.%09llu", h, m, s % 60, frac);
+		snprintf(buf, buf_sz, "%s%u:%02u:%02llu.%09llu", sign, h, m, s % 60, frac);
 	else if (m)
-		snprintf(buf, buf_sz, "%u:%02llu.%09llu", m, s % 60, frac);
+		snprintf(buf, buf_sz, "%s%u:%02llu.%09llu", sign, m, s % 60, frac);
 	else
-		snprintf(buf, buf_sz, "%llu.%09llu", s % 60, frac);
+		snprintf(buf, buf_sz, "%s%llu.%09llu", sign, s % 60, frac);
 	return buf;
 }
 
+/*
+ * A request we never saw CLEAR for is assumed to still be outstanding when the
+ * session ended, so end_ns is a lower bound and latency is only known to be at
+ * least end_ns - start_ns.
+ */
 struct req_entry {
 	u64 id;
 	const char *name;
@@ -302,8 +309,15 @@ struct req_entry {
 	const char *pcomm;
 	int pid;
 	int tid;
-	u64 start_ns;
-	u64 end_ns;
+	s64 start_ns;
+	s64 end_ns;
+	bool complete;
+};
+
+enum req_match {
+	REQ_MATCH_NO,
+	REQ_MATCH_YES,
+	REQ_MATCH_MAYBE,
 };
 
 static bool filter_cmp(int cmp, enum req_filter_op op)
@@ -321,7 +335,21 @@ static bool filter_cmp(int cmp, enum req_filter_op op)
 	}
 }
 
-static bool req_entry_matches(const struct req_entry *e, const struct req_filter_spec *f)
+/* actual value is somewhere in [lo, inf), so most comparisons can't be decided */
+static enum req_match filter_cmp_lower_bound(s64 lo, s64 val, enum req_filter_op op)
+{
+	switch (op) {
+	case REQ_OP_GT: return lo > val ? REQ_MATCH_YES : REQ_MATCH_MAYBE;
+	case REQ_OP_GE: return lo >= val ? REQ_MATCH_YES : REQ_MATCH_MAYBE;
+	case REQ_OP_LT: return lo >= val ? REQ_MATCH_NO : REQ_MATCH_MAYBE;
+	case REQ_OP_LE: return lo > val ? REQ_MATCH_NO : REQ_MATCH_MAYBE;
+	case REQ_OP_EQ: return lo > val ? REQ_MATCH_NO : REQ_MATCH_MAYBE;
+	case REQ_OP_NE: return lo > val ? REQ_MATCH_YES : REQ_MATCH_MAYBE;
+	default: BUG("unexpected filter op %d on a bounded field\n", op);
+	}
+}
+
+static enum req_match req_entry_matches(const struct req_entry *e, const struct req_filter_spec *f)
 {
 	int cmp;
 
@@ -357,17 +385,67 @@ static bool req_entry_matches(const struct req_entry *e, const struct req_filter
 		cmp = (e->start_ns > f->num_val) - (e->start_ns < f->num_val);
 		break;
 	case REQ_FIELD_END:
+		if (!e->complete)
+			return filter_cmp_lower_bound(e->end_ns, f->num_val, f->op);
 		cmp = (e->end_ns > f->num_val) - (e->end_ns < f->num_val);
 		break;
 	case REQ_FIELD_LATENCY: {
-		u64 latency_ns = e->end_ns - e->start_ns;
+		s64 latency_ns = e->end_ns - e->start_ns;
+
+		if (!e->complete)
+			return filter_cmp_lower_bound(latency_ns, f->num_val, f->op);
 		cmp = (latency_ns > f->num_val) - (latency_ns < f->num_val);
 		break;
 	}
 	default:
 		BUG("unknown filter field %d\n", f->field);
 	}
-	return filter_cmp(cmp, f->op);
+	return filter_cmp(cmp, f->op) ? REQ_MATCH_YES : REQ_MATCH_NO;
+}
+
+/* end and latency aren't known until a request reports REQ_CLEAR */
+static bool req_field_is_late(enum req_field field)
+{
+	return field == REQ_FIELD_END || field == REQ_FIELD_LATENCY;
+}
+
+/*
+ * Filters are ANDed, so a single definite mismatch rejects, and anything we
+ * can't decide is kept rather than silently dropped. Identity and timing
+ * filters are applied at different points, so each pass skips the other kind.
+ */
+static enum req_match req_entry_matches_class(const struct req_entry *e,
+					      const struct req_list_cfg *cfg, bool late)
+{
+	enum req_match res = REQ_MATCH_YES;
+
+	for (int i = 0; i < cfg->filter_cnt; i++) {
+		if (req_field_is_late(cfg->filters[i].field) != late)
+			continue;
+
+		switch (req_entry_matches(e, &cfg->filters[i])) {
+		case REQ_MATCH_NO:
+			return REQ_MATCH_NO;
+		case REQ_MATCH_MAYBE:
+			res = REQ_MATCH_MAYBE;
+			break;
+		case REQ_MATCH_YES:
+			break;
+		default:
+			BUG("unknown request match result\n");
+		}
+	}
+	return res;
+}
+
+static enum req_match req_entry_matches_ident(const struct req_entry *e, const struct req_list_cfg *cfg)
+{
+	return req_entry_matches_class(e, cfg, false);
+}
+
+static enum req_match req_entry_matches_timing(const struct req_entry *e, const struct req_list_cfg *cfg)
+{
+	return req_entry_matches_class(e, cfg, true);
 }
 
 static int req_entry_cmp(const void *_a, const void *_b, void *ctx)
@@ -405,7 +483,7 @@ static int req_entry_cmp(const void *_a, const void *_b, void *ctx)
 			cmp = (a->end_ns > b->end_ns) - (a->end_ns < b->end_ns);
 			break;
 		case REQ_FIELD_LATENCY: {
-			u64 la = a->end_ns - a->start_ns, lb = b->end_ns - b->start_ns;
+			s64 la = a->end_ns - a->start_ns, lb = b->end_ns - b->start_ns;
 			cmp = (la > lb) - (la < lb);
 			break;
 		}
@@ -417,59 +495,131 @@ static int req_entry_cmp(const void *_a, const void *_b, void *ctx)
 			continue;
 		return s->order == REQ_ORDER_DESC ? -cmp : cmp;
 	}
-	return 0;
+
+	/* an exact value sorts before a lower bound that happens to tie it */
+	return (int)b->complete - (int)a->complete;
 }
 
-int req_list_output(struct worker_state *w)
+static size_t req_id_hash_fn(long key, void *ctx)
+{
+	struct req_id *k = (void *)key;
+
+	return hash_combine(k->pid, k->req_id);
+}
+
+static bool req_id_equal_fn(long a, long b, void *ctx)
+{
+	struct req_id *x = (void *)a, *y = (void *)b;
+
+	return x->pid == y->pid && x->req_id == y->req_id;
+}
+
+/* wraparound-safe session-relative offset */
+static s64 rel_ts(u64 ts)
+{
+	return (s64)(ts - env.sess_start_ts);
+}
+
+/*
+ * One entry per request, tracked from REQ_BEGIN so requests that never report
+ * REQ_CLEAR are still listed. Those are assumed to have been outstanding until
+ * the end of the session, which makes their end_ns (and latency) a lower bound.
+ * Identity filters are known at REQ_BEGIN, so requests they reject never get an
+ * entry; end and latency are only checked once known.
+ */
+static void collect_req_entries(struct worker_state *w, struct req_entry **res, int *res_cnt)
 {
 	struct req_list_cfg *cfg = env.req_list_cfg;
 	struct wprof_data_hdr *hdr = w->dump_hdr;
-	struct wevent_record *rec;
 	struct req_entry *entries = NULL;
-	int entry_cnt = 0, entry_cap = 0;
+	int entry_cnt = 0, entry_cap = 0, kept_cnt = 0;
+	struct hashmap_entry *hent;
+	struct wevent_record *rec;
+	struct hashmap *live;
+	size_t bkt;
+
+	live = hashmap__new(req_id_hash_fn, req_id_equal_fn, NULL);
 
 	wevent_for_each_event(rec, hdr, env.sess_start_ts, env.sess_end_ts) {
 		const struct wevent *e = rec->e;
+		struct wprof_task task;
+		struct req_id key, *pkey;
+		struct req_entry ent;
+		long idx;
 
-		if (e->kind != EV_REQ_EVENT || e->req.req_event != REQ_CLEAR)
+		if (e->kind != EV_REQ_EVENT)
+			continue;
+		if (e->req.req_event != REQ_BEGIN && e->req.req_event != REQ_CLEAR)
 			continue;
 
-		struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
-		struct req_entry ent = {
+		task = wevent_resolve_task(hdr, e->task_id);
+		key = (struct req_id){ .pid = task.pid, .req_id = e->req.req_id };
+
+		if (e->req.req_event == REQ_CLEAR) {
+			/* a request whose REQ_BEGIN we never saw isn't ours to report */
+			if (!hashmap__find(live, &key, &idx))
+				continue;
+			entries[idx].end_ns = rel_ts(e->ts);
+			entries[idx].complete = true;
+			hashmap__delete(live, &key, &pkey, NULL);
+			free(pkey);
+			continue;
+		}
+
+		ent = (struct req_entry){
 			.id = e->req.req_id,
 			.name = wevent_str(hdr, e->req.req_name_stroff),
 			.comm = task.comm,
 			.pcomm = task.pcomm,
 			.pid = task.pid,
 			.tid = task.tid,
-			.start_ns = e->req.req_ts - env.sess_start_ts,
-			.end_ns = e->ts - env.sess_start_ts,
+			.start_ns = rel_ts(e->req.req_ts),
+			.end_ns = rel_ts(env.sess_end_ts),
 		};
-
-		bool pass = true;
-		for (int i = 0; i < cfg->filter_cnt; i++) {
-			if (!req_entry_matches(&ent, &cfg->filters[i])) {
-				pass = false;
-				break;
-			}
-		}
-		if (!pass)
+		if (req_entry_matches_ident(&ent, cfg) == REQ_MATCH_NO)
 			continue;
 
 		if (entry_cnt >= entry_cap) {
 			entry_cap = entry_cap ? entry_cap * 3 / 2 : 64;
 			entries = realloc(entries, entry_cap * sizeof(*entries));
 		}
-		entries[entry_cnt++] = ent;
+		entries[entry_cnt] = ent;
+
+		pkey = malloc(sizeof(*pkey));
+		*pkey = key;
+		hashmap__set(live, pkey, (long)entry_cnt, NULL, NULL);
+		entry_cnt++;
 	}
+
+	hashmap__for_each_entry(live, hent, bkt)
+		free((void *)hent->key);
+	hashmap__free(live);
+
+	for (int i = 0; i < entry_cnt; i++) {
+		if (req_entry_matches_timing(&entries[i], cfg) == REQ_MATCH_NO)
+			continue;
+		entries[kept_cnt++] = entries[i];
+	}
+
+	*res = entries;
+	*res_cnt = kept_cnt;
+}
+
+int req_list_output(struct worker_state *w)
+{
+	struct req_list_cfg *cfg = env.req_list_cfg;
+	struct req_entry *entries;
+	int entry_cnt;
+
+	collect_req_entries(w, &entries, &entry_cnt);
 
 	if (cfg->sort_cnt > 0 && entry_cnt > 1)
 		qsort_r(entries, entry_cnt, sizeof(*entries), req_entry_cmp, cfg);
 
 	/* print */
-	fprintf(stderr, "%12s %9s %8s %8s %-15s %-15s %20s  %s\n",
+	fprintf(stderr, "%12s %9s  %8s %8s %-15s %-15s %20s  %s\n",
 	       "START", "LATENCY", "PID", "TID", "PCOMM", "COMM", "ID", "NAME");
-	fprintf(stderr, "%12s %9s %8s %8s %-15s %-15s %20s  %s\n",
+	fprintf(stderr, "%12s %9s  %8s %8s %-15s %-15s %20s  %s\n",
 	       "------------", "---------", "--------", "--------",
 	       "---------------", "---------------",
 	       "--------------------", "----");
@@ -480,9 +630,11 @@ int req_list_output(struct worker_state *w)
 		bool in_bottom = cfg->bottom_n > 0 && i >= entry_cnt - cfg->bottom_n;
 		if (show_all || in_top || in_bottom) {
 			char ts1[32];
-			fprintf(stderr, "%12s %9.6f %8d %8d %-15s %-15s %20llu  %s\n",
+
+			fprintf(stderr, "%12s %9.6f%s %8d %8d %-15s %-15s %20llu  %s\n",
 			       fmt_ts(entries[i].start_ns, ts1, sizeof(ts1)),
 			       (entries[i].end_ns - entries[i].start_ns) / 1000000000.0,
+			       entries[i].complete ? " " : "*",
 			       entries[i].pid, entries[i].tid,
 			       entries[i].pcomm, entries[i].comm,
 			       entries[i].id, entries[i].name);
@@ -509,51 +661,22 @@ static int req_id_cmp(const void *_a, const void *_b)
 
 int req_filter_build_allowlist(struct worker_state *w, struct req_allowlist *al)
 {
-	struct req_list_cfg *cfg = env.req_list_cfg;
-	struct wprof_data_hdr *hdr = w->dump_hdr;
-	struct wevent_record *rec;
-	struct req_id *ids = NULL;
-	int cnt = 0, cap = 0;
+	struct req_entry *entries;
+	struct req_id *ids;
+	int cnt;
 
-	wevent_for_each_event(rec, hdr, env.sess_start_ts, env.sess_end_ts) {
-		const struct wevent *e = rec->e;
-
-		if (e->kind != EV_REQ_EVENT || e->req.req_event != REQ_CLEAR)
-			continue;
-
-		struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
-		struct req_entry ent = {
-			.id = e->req.req_id,
-			.name = wevent_str(hdr, e->req.req_name_stroff),
-			.comm = task.comm,
-			.pcomm = task.pcomm,
-			.pid = task.pid,
-			.tid = task.tid,
-			.start_ns = e->req.req_ts - env.sess_start_ts,
-			.end_ns = e->ts - env.sess_start_ts,
-		};
-
-		bool pass = true;
-		for (int i = 0; i < cfg->filter_cnt; i++) {
-			if (!req_entry_matches(&ent, &cfg->filters[i])) {
-				pass = false;
-				break;
-			}
-		}
-		if (!pass)
-			continue;
-
-		if (cnt >= cap) {
-			cap = cap ? cap * 3 / 2 : 64;
-			ids = realloc(ids, cap * sizeof(*ids));
-		}
-		ids[cnt++] = (struct req_id){ .pid = task.pid, .req_id = e->req.req_id };
-	}
+	collect_req_entries(w, &entries, &cnt);
 
 	if (cnt == 0) {
 		eprintf("No requests match the given --req-filter criteria!\n");
+		free(entries);
 		return -ENOENT;
 	}
+
+	ids = calloc(cnt, sizeof(*ids));
+	for (int i = 0; i < cnt; i++)
+		ids[i] = (struct req_id){ .pid = entries[i].pid, .req_id = entries[i].id };
+	free(entries);
 
 	if (cnt > 1)
 		qsort(ids, cnt, sizeof(*ids), req_id_cmp);
