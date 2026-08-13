@@ -190,11 +190,6 @@ static void sig_term(int sig)
 	signal(SIGTERM, SIG_DFL);
 }
 
-static void sig_pipe(int sig)
-{
-	eprintf("!!! Got unexpected SIGPIPE!\n");
-}
-
 /*
  * Flight-recorder thread state (flightrec mode only). Workers hand off their
  * just-completed chunks via the intrusive `incoming` list; the FR thread
@@ -1876,7 +1871,6 @@ int main(int argc, char **argv)
 
 	signal(SIGINT, sig_term);
 	signal(SIGTERM, sig_term);
-	signal(SIGPIPE, sig_pipe);
 
 	if (env.ringbuf_cnt == 0) {
 		if (env.replay) {
@@ -2865,7 +2859,6 @@ skip_data_collection:
 
 		if (strcmp(output_path, "-") == 0) {
 			w->trace = stdout;
-			signal(SIGPIPE, SIG_IGN);
 		} else {
 			w->trace = fopen_buffered(output_path, "w+");
 			if (!w->trace) {
