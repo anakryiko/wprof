@@ -671,6 +671,43 @@ static int utrace_compile_field(struct utrace_arg_state *state, const struct btf
 	return 0;
 }
 
+static int utrace_compile_arrelem(struct utrace_arg_state *state, const struct btf *vmlinux_btf,
+				  struct utrace_param *p, const struct utrace_accessor *acc)
+{
+	struct utrace_type_ref elem_type;
+	__s64 stride;
+
+	if (!state->type.id)
+		return utrace_acc_err(p, acc, "array element access needs a value type or leading ::cast\n");
+
+	if (utrace_ref_ptr(state->type, &elem_type)) {
+		if (state->loc == UTRACE_LOC_ADDR) {
+			int err = utrace_emit_read_op(p, acc, UTRACE_READ_VAL, state->offset, sizeof(void *), 0);
+			if (err)
+				return err;
+			state->offset = 0;
+		}
+		state->type = elem_type;
+		state->loc = UTRACE_LOC_ADDR;
+	} else {
+		const struct btf_type *t = utrace_ref_type(state->type, NULL);
+		if (!t || !btf_is_array(t))
+			return utrace_acc_err(p, acc, "cannot take an array element of a non-pointer, non-array value\n");
+		if (state->loc != UTRACE_LOC_ADDR)
+			return utrace_acc_err(p, acc, "array value has no address to read from\n");
+		__u32 elem_id;
+		btf_skip_modifiers(state->type.btf, btf_array(t)->type, &elem_id);
+		state->type = UTRACE_TYPE_REF(state->type.btf, elem_id);
+	}
+
+	stride = btf__resolve_size(state->type.btf, state->type.id);
+	if (stride <= 0)
+		return utrace_acc_err(p, acc, "cannot determine array element size\n");
+	state->offset += acc->arr_elem * stride;
+	state->type = utrace_canon_ref(vmlinux_btf, state->type);
+	return 0;
+}
+
 static int utrace_compile_container_of(struct utrace_arg_state *state, const struct btf *btf,
 				       const struct btf *vmlinux_btf, struct utrace_param *p,
 				       const struct utrace_accessor *acc)
@@ -840,6 +877,8 @@ static int utrace_apply_accessors(struct utrace_arg_state *state, const struct b
 
 		if (acc->kind == UTRACE_ACC_FIELD) {
 			err = utrace_compile_field(state, vmlinux_btf, p, acc);
+		} else if (acc->kind == UTRACE_ACC_ARRELEM) {
+			err = utrace_compile_arrelem(state, vmlinux_btf, p, acc);
 		} else if (strcmp(acc->op, "cast") == 0) {
 			if (acc->arg_cnt != 1)
 				return utrace_acc_err(p, acc, "operator 'cast' expects 1 argument, got %d\n", acc->arg_cnt);

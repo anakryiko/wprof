@@ -157,6 +157,10 @@ a struct or union field, with at most one pointer dereference for each
 - `::container_of<TYPE, MEMBER>` rebases an addressed embedded member to its
   enclosing struct or union. The current type must match `TYPE.MEMBER`.
 
+`[N]` selects element `N` (a non-negative integer) of a pointer or array, like
+C subscripting: `ptr[N]` reads the element at `ptr + N`, and `array[N]` the
+element at that offset.
+
 Here are a few examples demonstrating the syntax:
 
 | Argument expression                                                        | C equivalent                                                       |
@@ -165,6 +169,8 @@ Here are a few examples demonstrating the syntax:
 | `arg:1::cast<struct sock *>.__sk_common.skc_state`                         | `((struct sock *)arg1)->__sk_common.skc_state`                     |
 | `arg:t::container_of<struct delayed_work, timer>.work.data.counter`        | `container_of(t, struct delayed_work, timer)->work.data.counter`   |
 | `arg:1.private_data::cast<struct my_ctx *>.session_id`                     | `((struct my_ctx *)arg1->private_data)->session_id`                |
+| `arg:0[1]::cast<struct task_struct *>.pid`                                 | `((struct task_struct *)ctx[1])->pid`                              |
+| `arg:0.comm[0]`                                                            | `p->comm[0]`                                                       |
 
 The terminal BTF type supplies the default output type and source width.
 Integer, enum, and pointer leaves can use a compatible scalar `:type`

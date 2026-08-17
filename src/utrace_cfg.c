@@ -247,30 +247,27 @@ static int parse_op_args(struct sview orig, struct sview argdef, struct sview bo
 	return 0;
 }
 
+/* Split off the leading base/accessor token at the earliest '.', '::' or '['. */
 static struct sview sv_split_accessor(struct sview v, struct sview *rest)
 {
-	struct sview field_rest, op_rest;
-	struct sview field = sv_split_top(v, ".", false, &field_rest);
-	struct sview op = sv_split_top(v, "::", false, &op_rest);
+	static const char *delims[] = { ".", "::", "[" };
+	struct sview best = v, best_rest = sv_empty();
+	bool found = false;
 
-	if (!sv_is_empty(field_rest) && !sv_is_empty(op_rest)) {
-		if (field.len < op.len) {
-			*rest = field_rest;
-			return field;
+	for (int i = 0; i < ARRAY_SIZE(delims); i++) {
+		struct sview r;
+		struct sview tok = sv_split_top(v, delims[i], false, &r);
+
+		if (sv_is_empty(r))
+			continue;
+		if (!found || tok.len < best.len) {
+			best = tok;
+			best_rest = r;
+			found = true;
 		}
-		*rest = op_rest;
-		return op;
 	}
-	if (!sv_is_empty(field_rest)) {
-		*rest = field_rest;
-		return field;
-	}
-	if (!sv_is_empty(op_rest)) {
-		*rest = op_rest;
-		return op;
-	}
-	*rest = sv_empty();
-	return v;
+	*rest = best_rest;
+	return best;
 }
 
 /* Parse BASE{.field|::op<args>} and populate the base reference/accessor AST. */
@@ -298,6 +295,32 @@ static int parse_arg_expr(struct sview orig, struct sview argdef, struct sview e
 
 	while (!sv_is_empty(rest)) {
 		struct sview acc_src = rest;
+
+		if (sv_starts_with(rest, "[")) {
+			int close = sv_find(rest, "]");
+			if (close < 0)
+				return utrace_err(orig, acc_src, "unterminated '[' array element\n");
+
+			struct sview item = sv_trim(sv(rest.s + 1, close - 1));
+			struct sview source = sv(acc_src.s, close + 1);
+			struct sview saved_source = sv(p->arg.source + (source.s - argdef.s), source.len);
+			long elem;
+
+			if (!sv_as_long(item, &elem) || elem < 0)
+				return utrace_err(orig, source, "expected a non-negative array element inside '[]'\n");
+
+			rest = sv_trim(sv_consume_left(rest, close + 1));
+			if (!sv_is_empty(rest) && !sv_starts_with(rest, ".") &&
+			    !sv_starts_with(rest, "::") && !sv_starts_with(rest, "["))
+				return utrace_err(orig, rest, "unexpected characters after ']'\n");
+
+			struct utrace_accessor *acc = append_accessor(p);
+			acc->kind = UTRACE_ACC_ARRELEM;
+			acc->arr_elem = elem;
+			acc->source = saved_source;
+			continue;
+		}
+
 		bool is_op = sv_starts_with(rest, "::");
 		struct sview tail = sv_trim(sv_consume_left(rest, is_op ? 2 : 1));
 		struct sview item = sv_trim(sv_split_accessor(tail, &rest));
@@ -1100,6 +1123,10 @@ static void format_probe(const struct utrace_cfg *cfg, struct sbuf *sb)
 					const struct utrace_accessor *acc = &p->arg.accessors[j];
 					if (acc->kind == UTRACE_ACC_FIELD) {
 						sbuf_appendf(sb, ".%s", acc->field);
+						continue;
+					}
+					if (acc->kind == UTRACE_ACC_ARRELEM) {
+						sbuf_appendf(sb, "[%ld]", acc->arr_elem);
 						continue;
 					}
 					sbuf_appendf(sb, "::%s%s", acc->op, acc->arg_cnt ? "<" : "");
