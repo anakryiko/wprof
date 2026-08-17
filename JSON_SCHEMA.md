@@ -31,7 +31,7 @@ The first line contains session metadata. Example:
 
 ```json
 {
-  "version": "3.0",
+  "version": "3.1",
   "dur": 1.000000000,
   "timer_freq_hz": 997,
   "capture_ipis": false,
@@ -150,7 +150,7 @@ Emitted when a thread is switched off-CPU and another is switched on.
 |----------------------|----------------|--------------------------------------------------------------------------------|
 | `prev`               | task           | Thread being switched out                                                      |
 | `next`               | task           | Thread being switched in                                                       |
-| `prev_state`         | string         | `"preempted"` or `"blocked"` — why `prev` went off-CPU                         |
+| `prev_state`         | string         | Interpreted scheduler state of `prev`; values are listed below                 |
 | `prev_prio`          | int            | Scheduling priority of `prev`                                                  |
 | `next_prio`          | int            | Scheduling priority of `next`                                                  |
 | `waking_ts`          | float          | *(optional)* Timestamp when `next` was woken                                   |
@@ -158,11 +158,37 @@ Emitted when a thread is switched off-CPU and another is switched on.
 | `waker`              | task           | *(optional)* Thread that woke `next`                                           |
 | `waking_cpu`         | int            | *(optional)* CPU where the waker ran                                           |
 | `offcpu_dur`         | float          | *(optional)* How long `next` was off-CPU, in seconds                           |
-| `next_state`         | string         | *(optional)* `"preempted"` or `"blocked"` — why `next` was off-CPU previously  |
+| `next_state`         | string         | *(optional)* State in which `next` previously went off-CPU                     |
 | `offcpu_stack_id`    | int            | *(optional)* Stack trace ID for the off-CPU stack                              |
 | `compound_delay`     | float          | *(optional)* Accumulated wakeup chain delay, in seconds                        |
 | `compound_chain_len` | int            | *(optional)* Length of the waker-wakee chain                                   |
 | `pmus`               | array of float | *(optional)* PMU counter values, parallel to header `pmus`                     |
+
+Scheduler state values preserve distinct reasons for a task going off-CPU. For
+example, `rtlock_wait` and `frozen` remain distinct from
+`uninterruptible_sleep`.
+
+| Value                     | Meaning                                                     |
+|---------------------------|-------------------------------------------------------------|
+| `runnable`                | Runnable when switched out                                  |
+| `preempted`               | Switched out by scheduler preemption                        |
+| `interruptible_sleep`     | Interruptible sleep (`TASK_INTERRUPTIBLE`)                  |
+| `uninterruptible_sleep`   | Uninterruptible sleep (`TASK_UNINTERRUPTIBLE`)              |
+| `killable_sleep`          | Killable uninterruptible sleep (`TASK_KILLABLE`)            |
+| `stopped`                 | Stopped task                                                |
+| `traced`                  | Task stopped under tracing                                  |
+| `exit_dead`               | Dead exit state                                             |
+| `exit_zombie`             | Zombie exit state                                           |
+| `exit_trace`              | Combined traced-exit state                                  |
+| `parked`                  | Parked kernel thread                                        |
+| `task_dead`               | Dead task state                                             |
+| `rtlock_wait`             | Waiting for a real-time lock                                |
+| `freezable`               | In a freezable wait                                         |
+| `frozen`                  | Frozen by the freezer                                       |
+| `idle`                    | Idle/no-load sleep                                          |
+| `waking`                  | Wakeup is in progress                                       |
+| `new`                     | Newly created task not yet runnable                         |
+| `unknown`                 | Unrecognized state-bit combination                          |
 
 ```json
 {
@@ -171,7 +197,7 @@ Emitted when a thread is switched off-CPU and another is switched on.
   "prev": {"tid": 1234, "pid": 1000, "comm": "worker"},
   "next": {"tid": 5678, "pid": 5000, "comm": "myapp"},
   "cpu": 3,
-  "prev_state": "blocked",
+  "prev_state": "interruptible_sleep",
   "prev_prio": 120,
   "next_prio": 120,
   "waking_ts": 0.500100000,
@@ -179,7 +205,7 @@ Emitted when a thread is switched off-CPU and another is switched on.
   "waker": {"tid": 9999, "pid": 5000, "comm": "scheduler"},
   "waking_cpu": 7,
   "offcpu_dur": 0.005000000,
-  "next_state": "blocked",
+  "next_state": "interruptible_sleep",
   "offcpu_stack_id": 42,
   "compound_delay": 0.006500000,
   "compound_chain_len": 3,

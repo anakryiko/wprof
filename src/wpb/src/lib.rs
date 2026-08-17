@@ -281,7 +281,7 @@ impl WpbWriter {
 
     fn emit_system_info(
         &mut self,
-        hostname: Option<&WpbStr>,
+        sysname: Option<&WpbStr>,
         kernel: Option<&WpbStr>,
         arch: Option<&WpbStr>,
         num_cpus: u32,
@@ -289,7 +289,7 @@ impl WpbWriter {
         let mut packet = base_packet(WPB_SEQ_ID_THREADS);
         packet.data = Some(trace_packet::Data::SystemInfo(SystemInfo {
             utsname: Some(Utsname {
-                sysname: read_optional_string(hostname),
+                sysname: read_optional_string(sysname),
                 release: read_optional_string(kernel),
                 machine: read_optional_string(arch),
                 ..Utsname::default()
@@ -864,7 +864,7 @@ pub unsafe extern "C" fn wpb_emit_clock_snapshot(
 #[no_mangle]
 pub unsafe extern "C" fn wpb_emit_system_info(
     writer: *mut WpbWriter,
-    hostname: *const WpbStr,
+    sysname: *const WpbStr,
     kernel: *const WpbStr,
     arch: *const WpbStr,
     num_cpus: u32,
@@ -873,7 +873,7 @@ pub unsafe extern "C" fn wpb_emit_system_info(
         wpb_emit_failed("SystemInfo", -EINVAL);
     }
 
-    if let Err(err) = (*writer).emit_system_info(hostname.as_ref(), kernel.as_ref(), arch.as_ref(), num_cpus) {
+    if let Err(err) = (*writer).emit_system_info(sysname.as_ref(), kernel.as_ref(), arch.as_ref(), num_cpus) {
         wpb_emit_failed("SystemInfo", err);
     }
 }

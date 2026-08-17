@@ -26,11 +26,86 @@
 
 static __thread struct json_state js;
 
-enum task_run_state {
-	TASK_STATE_RUNNING,
-	TASK_STATE_WAITING,
-	TASK_STATE_PREEMPTED,
-};
+_Static_assert(IID_NAME_TASK_STATE_LAST - IID_NAME_RUNNING + 1 == NR_WPROF_TASK_RUN_STATES,
+	       "task-state name IIDs must match enum wprof_task_run_state");
+_Static_assert(IID_ANNV_OFFCPU_STATE_LAST - IID_ANNV_OFFCPU_STATE + 1 == NR_WPROF_TASK_RUN_STATES,
+	       "task-state annotation IIDs must match enum wprof_task_run_state");
+
+static enum wprof_task_run_state classify_task_state(u32 packed_state)
+{
+	u32 state = packed_state & ~WPROF_TASK_STATE_PREEMPTED;
+
+	if (packed_state & WPROF_TASK_STATE_PREEMPTED)
+		return WTRS_PREEMPTED;
+	if ((state & WPROF_EXIT_TRACE) == WPROF_EXIT_TRACE)
+		return WTRS_EXIT_TRACE;
+	if (state & WPROF_EXIT_DEAD)
+		return WTRS_EXIT_DEAD;
+	if (state & WPROF_EXIT_ZOMBIE)
+		return WTRS_EXIT_ZOMBIE;
+	if (state & WPROF_TASK_RTLOCK_WAIT)
+		return WTRS_RTLOCK_WAIT;
+	if (state & WPROF_TASK_FROZEN)
+		return WTRS_FROZEN;
+	if ((state & WPROF_TASK_IDLE) == WPROF_TASK_IDLE)
+		return WTRS_IDLE;
+	if (state & WPROF_TASK_STOPPED)
+		return WTRS_STOPPED;
+	if (state & WPROF_TASK_TRACED)
+		return WTRS_TRACED;
+	if (state & WPROF_TASK_PARKED)
+		return WTRS_PARKED;
+	if (state & WPROF_TASK_DEAD)
+		return WTRS_TASK_DEAD;
+	if (state & WPROF_TASK_WAKING)
+		return WTRS_WAKING;
+	if (state & WPROF_TASK_NEW)
+		return WTRS_NEW;
+	if ((state & WPROF_TASK_KILLABLE) == WPROF_TASK_KILLABLE)
+		return WTRS_KILLABLE_SLEEP;
+	if (state & WPROF_TASK_INTERRUPTIBLE)
+		return WTRS_INTERRUPTIBLE_SLEEP;
+	if (state & WPROF_TASK_UNINTERRUPTIBLE)
+		return WTRS_UNINTERRUPTIBLE_SLEEP;
+	if (state & (WPROF_TASK_FREEZABLE | WPROF_TASK_FREEZABLE_UNSAFE))
+		return WTRS_FREEZABLE;
+	if (state == WPROF_TASK_RUNNING)
+		return WTRS_RUNNABLE;
+	return WTRS_UNKNOWN;
+}
+
+static pb_iid task_state_name_iid(enum wprof_task_run_state state)
+{
+	return IID_NAME_RUNNING + state;
+}
+
+static pb_iid task_state_ann_iid(enum wprof_task_run_state state)
+{
+	return IID_ANNV_OFFCPU_STATE + state;
+}
+
+static const char *task_state_str(enum wprof_task_run_state state)
+{
+	return pb_static_str(task_state_ann_iid(state));
+}
+
+/* Match the state normalization performed by Linux's sched_switch tracepoint. */
+static u32 task_state_to_ftrace(u32 packed_state)
+{
+	u32 raw_state = packed_state & ~WPROF_TASK_STATE_PREEMPTED;
+	u32 state;
+
+	if (packed_state & WPROF_TASK_STATE_PREEMPTED)
+		return WPROF_TASK_REPORT_MAX;
+
+	state = raw_state & WPROF_TASK_REPORT;
+	if ((raw_state & WPROF_TASK_IDLE) == WPROF_TASK_IDLE)
+		state = WPROF_TASK_REPORT_IDLE;
+	if (raw_state & (WPROF_TASK_RTLOCK_WAIT | WPROF_TASK_FROZEN))
+		state = WPROF_TASK_UNINTERRUPTIBLE;
+
+	return state ? 1U << (31 - __builtin_clz(state)) : WPROF_TASK_RUNNING;
+}
 
 enum track_child_order {
 	CHILD_ORDER_INVALID,
@@ -73,7 +148,7 @@ struct task_state {
 	u64 rename_ts;
 	char old_comm[TASK_COMM_FULL_LEN];
 	/* on-cpu state */
-	enum task_run_state run_state;
+	enum wprof_task_run_state run_state;
 	u64 oncpu_ts;
 	u64 offcpu_ts;
 	u64 req_id; /* active ongoing request ID */
@@ -1670,7 +1745,7 @@ struct switch_ctx {
 	enum waking_flags waking_flags;
 
 	struct task_state *prev_st;
-	bool prev_preempted;
+	enum wprof_task_run_state prev_state;
 	const char *prev_name;
 	pb_iid prev_name_iid;
 	bool prev_renamed;
@@ -1680,7 +1755,7 @@ struct switch_ctx {
 
 	struct task_state *next_st;
 	u64 next_offcpu_dur_ns;
-	bool next_was_preempted;
+	enum wprof_task_run_state next_state;
 };
 
 static void emit_switch(struct worker_state *w, const struct wevent *e, struct switch_ctx *s)
@@ -1697,7 +1772,7 @@ static void emit_switch(struct worker_state *w, const struct wevent *e, struct s
 	 * is rendered at prev's next switch-in, paired by flow id. The idle task is
 	 * always runnable, so exclude it -- it is never actually preempted.
 	 */
-	if (s->trace_next && !is_idle_task(&task) && e->swtch.prev_task_state == TASK_RUNNING) {
+	if (s->trace_next && !is_idle_task(&task) && s->prev_state == WTRS_PREEMPTED) {
 		emit_track_descrs(w, &next);
 
 		emit_instant(trackid_thread(&next), e->ts, IID_NAME_PREEMPTOR, IID_CAT_PREEMPTOR) {
@@ -1744,7 +1819,7 @@ static void emit_switch(struct worker_state *w, const struct wevent *e, struct s
 
 		/* IDLE threads always go off-cpu to run something else */
 		if (!is_idle_task(&task))
-			emit_kv_str(IID_ANNK_OFFCPU_REASON, s->prev_preempted ? IID_ANNV_OFFCPU_PREEMPTED : IID_ANNV_OFFCPU_BLOCKED);
+			emit_kv_str(IID_ANNK_OFFCPU_REASON, task_state_ann_iid(s->prev_state));
 
 		emit_kv_str(IID_ANNK_SWITCH_TO,
 			    iid_str(emit_intern_str(w, next.comm), next.comm));
@@ -1769,8 +1844,7 @@ static void emit_switch(struct worker_state *w, const struct wevent *e, struct s
 		emit_slice_end(trackid_req_thread(s->prev_st->req_id, &task),
 			       e->ts, IID_NAME_RUNNING, IID_CAT_REQUEST_ONCPU);
 		emit_slice_begin(trackid_req_thread(s->prev_st->req_id, &task),
-				 e->ts,
-				 s->prev_preempted ? IID_NAME_PREEMPTED : IID_NAME_WAITING,
+				 e->ts, task_state_name_iid(s->prev_state),
 				 IID_CAT_REQUEST_OFFCPU);
 	}
 
@@ -1857,8 +1931,7 @@ skip_waking:
 
 	if (env.emit_req_split && s->next_st->req_id) {
 		emit_slice_end(trackid_req_thread(s->next_st->req_id, &next),
-			       e->ts,
-			       s->next_was_preempted ? IID_NAME_PREEMPTED : IID_NAME_WAITING,
+			       e->ts, task_state_name_iid(s->next_state),
 			       IID_CAT_REQUEST_OFFCPU);
 		emit_slice_begin(trackid_req_thread(s->next_st->req_id, &next),
 				 e->ts, IID_NAME_RUNNING, IID_CAT_REQUEST_ONCPU);
@@ -1875,22 +1948,10 @@ skip_next_task:
 		fev->prev_comm = is_idle_task(&task) ? wpb_no_str() : wpb_str_from_cstr(0, task.comm);
 		fev->prev_pid = task_tid(&task);
 		fev->prev_prio = e->swtch.prev_prio;
-		fev->prev_state = e->swtch.prev_task_state;
+		fev->prev_state = task_state_to_ftrace(e->swtch.prev_task_state);
 		fev->next_comm = is_idle_task(&next) ? wpb_no_str() : wpb_str_from_cstr(0, next.comm);
 		fev->next_pid = task_tid(&next);
 		fev->next_prio = e->swtch.next_prio;
-	}
-
-	/* preemption is not a wakeup -- don't fabricate a sched_waking ftrace for it */
-	if (s->trace_waker && s->waking_flags != WF_PREEMPTED) {
-		struct wpb_ftrace_event *fev = add_ftrace_event(w, s->waker_cpu, s->waking_ts,
-								task_tid(&task));
-		fev->kind = s->waking_flags == WF_WOKEN_NEW
-			? WPB_FTRACE_SCHED_WAKEUP_NEW : WPB_FTRACE_SCHED_WAKING;
-		fev->comm = wpb_str_from_cstr(0, next.comm);
-		fev->event_pid = task_tid(&next);
-		fev->prio = e->swtch.next_prio;
-		fev->target_cpu = e->cpu;
 	}
 
 skip_sched_view:
@@ -1913,7 +1974,7 @@ static void emit_switch_json(struct worker_state *w, const struct wevent *e, str
 	json_kv_int(j, "cpu", e->cpu);
 	if (env.emit_numa)
 		json_kv_int(j, "numa", e->numa_node);
-	json_kv_str(j, "prev_state", s->prev_preempted ? "preempted" : "blocked");
+	json_kv_str(j, "prev_state", task_state_str(s->prev_state));
 	json_kv_int(j, "prev_prio", e->swtch.prev_prio);
 	json_kv_int(j, "next_prio", e->swtch.next_prio);
 	if (s->has_waking) {
@@ -1925,7 +1986,7 @@ static void emit_switch_json(struct worker_state *w, const struct wevent *e, str
 	}
 	if (s->next_offcpu_dur_ns) {
 		json_kv_ts(j, "offcpu_dur", s->next_offcpu_dur_ns);
-		json_kv_str(j, "next_state", s->next_was_preempted ? "preempted" : "blocked");
+		json_kv_str(j, "next_state", task_state_str(s->next_state));
 	}
 	if ((env.requested_stack_traces & ST_OFFCPU) && e->swtch.offcpu_stack_id > 0)
 		json_kv_int(j, "offcpu_stack_id", e->swtch.offcpu_stack_id);
@@ -1949,6 +2010,8 @@ static int process_switch(struct worker_state *w, const struct wevent *e)
 	struct switch_ctx s = {
 		.trace_prev = should_trace_task(&task),
 		.trace_next = should_trace_task(&next),
+		.prev_state = classify_task_state(e->swtch.prev_task_state),
+		.next_state = classify_task_state(e->swtch.last_next_task_state),
 	};
 
 	/*
@@ -1980,7 +2043,6 @@ static int process_switch(struct worker_state *w, const struct wevent *e)
 
 	if (s.trace_prev) {
 		s.prev_st = task_state(w, &task);
-		s.prev_preempted = !is_idle_task(&task) && e->swtch.prev_task_state == TASK_RUNNING;
 		/* take into account task rename for switched-out task to maintain consistently named trace slice */
 		s.prev_name = s.prev_st->rename_ts ? s.prev_st->old_comm : s.prev_st->comm;
 		s.prev_name_iid = s.prev_st->rename_ts ? s.prev_st->old_name_iid : s.prev_st->name_iid;
@@ -1993,10 +2055,10 @@ static int process_switch(struct worker_state *w, const struct wevent *e)
 		s.prev_st->oncpu_ctrs = NULL;
 		s.prev_st->oncpu_ts = 0;
 		s.prev_st->offcpu_ts = e->ts;
-		s.prev_st->run_state = s.prev_preempted ? TASK_STATE_PREEMPTED : TASK_STATE_WAITING;
+		s.prev_st->run_state = s.prev_state;
 
 		/* record preemption on the preemptee (waker = next); consumed at its switch-in */
-		if (s.prev_preempted && s.prev_st->waking_ts == 0) {
+		if (s.prev_state == WTRS_PREEMPTED && !is_idle_task(&task) && s.prev_st->waking_ts == 0) {
 			s.prev_st->waking_ts = e->ts;
 			s.prev_st->waker_task_id = e->swtch.next_task_id;
 			s.prev_st->waker_cpu = e->cpu;
@@ -2035,8 +2097,7 @@ static int process_switch(struct worker_state *w, const struct wevent *e)
 			}
 		}
 
-		s.next_was_preempted = e->swtch.last_next_task_state == TASK_RUNNING;
-		s.next_st->run_state = TASK_STATE_RUNNING;
+		s.next_st->run_state = WTRS_RUNNING;
 	}
 
 	if (env.json_path) {
@@ -2434,9 +2495,10 @@ static int process_waking(struct worker_state *w, const struct wevent *e)
 	enum waking_flags flags = e->kind == EV_WAKEUP_NEW ? WF_WOKEN_NEW : WF_WOKEN;
 	struct wprof_data_hdr *hdr = w->dump_hdr;
 	struct wprof_task wakee = wevent_resolve_task(hdr, e->waking.wakee_task_id);
+	bool trace_wakee = should_trace_task(&wakee);
 
 	/* track first wake per off-cpu period on the wakee; consumed at its switch-in */
-	if (!should_trace_task(&wakee))
+	if (!trace_wakee)
 		goto emit;
 
 	struct task_state *wakee_st = task_state(w, &wakee);
@@ -2451,7 +2513,19 @@ static int process_waking(struct worker_state *w, const struct wevent *e)
 emit:
 	;
 	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
-	if (!should_trace_task(&task))
+	bool trace_waker = should_trace_task(&task);
+
+	if (!env.json_path && env.emit_sched_view && trace_wakee && trace_waker && is_ts_in_range(e->ts)) {
+		struct wpb_ftrace_event *fev = add_ftrace_event(w, e->cpu, e->ts, task_tid(&task));
+
+		fev->kind = flags == WF_WOKEN_NEW ? WPB_FTRACE_SCHED_WAKEUP_NEW : WPB_FTRACE_SCHED_WAKING;
+		fev->comm = wpb_str_from_cstr(0, wakee.comm);
+		fev->event_pid = task_tid(&wakee);
+		fev->prio = e->waking.prio;
+		fev->target_cpu = e->waking.target_cpu;
+	}
+
+	if (!trace_waker)
 		return 0;
 	if (env.json_path)
 		emit_waking_json(w, e, flags);

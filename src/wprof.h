@@ -30,9 +30,63 @@
 #define PF_KTHREAD 0x00200000
 #endif
 
-#ifndef TASK_RUNNING
-#define TASK_RUNNING 0
-#endif
+/*
+ * task_struct state bits from include/linux/sched.h. task->__state and
+ * task->exit_state occupy non-overlapping bits, so scheduler events store
+ * their union. Bit 31 is reserved by wprof to record sched_switch preemption.
+ */
+#define WPROF_TASK_RUNNING		0x00000000U
+#define WPROF_TASK_INTERRUPTIBLE	0x00000001U
+#define WPROF_TASK_UNINTERRUPTIBLE	0x00000002U
+#define WPROF_TASK_STOPPED		0x00000004U
+#define WPROF_TASK_TRACED		0x00000008U
+#define WPROF_EXIT_DEAD			0x00000010U
+#define WPROF_EXIT_ZOMBIE		0x00000020U
+#define WPROF_TASK_PARKED		0x00000040U
+#define WPROF_TASK_DEAD			0x00000080U
+#define WPROF_TASK_WAKEKILL		0x00000100U
+#define WPROF_TASK_WAKING		0x00000200U
+#define WPROF_TASK_NOLOAD		0x00000400U
+#define WPROF_TASK_NEW			0x00000800U
+#define WPROF_TASK_RTLOCK_WAIT		0x00001000U
+#define WPROF_TASK_FREEZABLE		0x00002000U
+#define WPROF_TASK_FREEZABLE_UNSAFE	0x00004000U
+#define WPROF_TASK_FROZEN		0x00008000U
+
+#define WPROF_TASK_KILLABLE (WPROF_TASK_WAKEKILL | WPROF_TASK_UNINTERRUPTIBLE)
+#define WPROF_TASK_IDLE (WPROF_TASK_UNINTERRUPTIBLE | WPROF_TASK_NOLOAD)
+#define WPROF_EXIT_TRACE (WPROF_EXIT_ZOMBIE | WPROF_EXIT_DEAD)
+#define WPROF_TASK_STATE_PREEMPTED (1U << 31)
+
+#define WPROF_TASK_REPORT (WPROF_TASK_INTERRUPTIBLE | WPROF_TASK_UNINTERRUPTIBLE | \
+			   WPROF_TASK_STOPPED | WPROF_TASK_TRACED | WPROF_EXIT_DEAD | \
+			   WPROF_EXIT_ZOMBIE | WPROF_TASK_PARKED)
+#define WPROF_TASK_REPORT_IDLE (WPROF_TASK_REPORT + 1)
+#define WPROF_TASK_REPORT_MAX (WPROF_TASK_REPORT_IDLE << 1)
+
+enum wprof_task_run_state {
+	WTRS_RUNNING = 0,
+	WTRS_RUNNABLE = 1,
+	WTRS_PREEMPTED = 2,
+	WTRS_INTERRUPTIBLE_SLEEP = 3,
+	WTRS_UNINTERRUPTIBLE_SLEEP = 4,
+	WTRS_KILLABLE_SLEEP = 5,
+	WTRS_STOPPED = 6,
+	WTRS_TRACED = 7,
+	WTRS_EXIT_DEAD = 8,
+	WTRS_EXIT_ZOMBIE = 9,
+	WTRS_EXIT_TRACE = 10,
+	WTRS_PARKED = 11,
+	WTRS_TASK_DEAD = 12,
+	WTRS_RTLOCK_WAIT = 13,
+	WTRS_FREEZABLE = 14,
+	WTRS_FROZEN = 15,
+	WTRS_IDLE = 16,
+	WTRS_WAKING = 17,
+	WTRS_NEW = 18,
+	WTRS_UNKNOWN = 19,
+	NR_WPROF_TASK_RUN_STATES,
+};
 
 #define WPROF_GLOB_SZ 32
 struct glob_str { char pat[WPROF_GLOB_SZ]; };
@@ -284,9 +338,13 @@ struct wprof_event {
 		} pmu_event;
 		struct wprof_waking {
 			int wakee_task_id;
+			u32 prio;
+			int target_cpu;
 		} waking;
 		struct wprof_wakeup_new {
 			int wakee_task_id;
+			u32 prio;
+			int target_cpu;
 		} wakeup_new;
 		struct wprof_hardirq {
 			u64 hardirq_ts;

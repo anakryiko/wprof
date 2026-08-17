@@ -80,11 +80,15 @@ struct wevent {
 		struct wevent_waking {
 			u32 wakee_task_id;
 			u32 waker_stack_id;
+			u32 prio;
+			int target_cpu;
 		} waking;
 
 		struct wevent_wakeup_new {
 			u32 wakee_task_id;
 			u32 waker_stack_id;
+			u32 prio;
+			int target_cpu;
 		} wakeup_new;
 
 		struct wevent_hardirq {
