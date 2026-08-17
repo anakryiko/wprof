@@ -1799,7 +1799,7 @@ int BPF_USDT(wprof_req_ctx, u64 req_id, const char *endpoint, enum wprof_req_eve
 		e->req.req_id = req_id;
 		e->req.req_ts = s->start_ts;
 		e->req.req_event = event_kind;
-		if (bpf_probe_read_user(&e->req.req_name, sizeof(e->req.req_name), endpoint))
+		if (bpf_probe_read_user_str(e->req.req_name, sizeof(e->req.req_name), endpoint) < 0)
 			e->req.req_name[0] = '\0';
 		if (tr) {
 			emit_stack_trace(tr, dyn_sz, dptr, fix_sz);
