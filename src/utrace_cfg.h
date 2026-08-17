@@ -129,6 +129,7 @@ struct utrace_arg_map {
 enum utrace_accessor_kind {
 	UTRACE_ACC_FIELD,
 	UTRACE_ACC_OP,
+	UTRACE_ACC_ARRELEM,
 };
 
 /* Parsed field/operator access retained for BTF compilation and formatting. */
@@ -138,6 +139,7 @@ struct utrace_accessor {
 	char *op;		/* OP: operator name */
 	struct sview *args;	/* OP: angle-bracket arguments */
 	int arg_cnt;
+	long arr_elem;		/* ARRELEM: array element */
 	struct sview source;	/* range within arg.source for diagnostics */
 };
 
