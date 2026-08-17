@@ -188,7 +188,7 @@ struct wpb_ftrace_event {
 void wpb_emit_track_event(struct wpb_writer *writer,
 			  const struct wpb_track_event *ev);
 void wpb_emit_clock_snapshot(struct wpb_writer *writer, uint64_t realtime_ts);
-void wpb_emit_system_info(struct wpb_writer *writer, const struct wpb_str *hostname,
+void wpb_emit_system_info(struct wpb_writer *writer, const struct wpb_str *sysname,
 			  const struct wpb_str *kernel, const struct wpb_str *arch,
 			  uint32_t num_cpus);
 void wpb_emit_trace_uuid(struct wpb_writer *writer, int64_t msb, int64_t lsb);

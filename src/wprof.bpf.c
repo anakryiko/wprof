@@ -165,6 +165,22 @@ static struct task_state empty_task_state;
 u64 session_start_ts;
 u64 session_end_ts;
 
+static u32 pack_task_state(u32 task_state, struct task_struct *task, bool preempt)
+{
+	u32 state = task_state | task->exit_state;
+
+	if (preempt)
+		state |= WPROF_TASK_STATE_PREEMPTED;
+	return state;
+}
+
+static int wprof_task_cpu(struct task_struct *task)
+{
+	struct thread_info *ti = bpf_core_cast(&task->thread_info, struct thread_info);
+
+	return ti->cpu;
+}
+
 /* XXX: pass CPU explicitly to avoid unnecessary surprises */
 static __always_inline int task_id(int pid)
 {
@@ -863,6 +879,7 @@ int BPF_PROG(wprof_task_switch,
 	struct task_state *sprev, *snext;
 	struct wprof_event *e;
 	int cpu = bpf_get_smp_processor_id();
+	u32 packed_state = pack_task_state(prev_state, prev, preempt);
 
 	if (!should_trace_task(prev, now_ts) && !should_trace_task(next, now_ts))
 		return 0;
@@ -875,7 +892,7 @@ int BPF_PROG(wprof_task_switch,
 	struct perf_counters pmu_vals;
 	size_t pmu_sz = capture_perf_counters(&pmu_vals, NULL, cpu);
 
-	sprev->last_task_state = prev->__state;
+	sprev->last_task_state = packed_state;
 
 	struct bpf_dynptr *dptr;
 	struct stack_trace *tr_out = NULL;
@@ -907,7 +924,7 @@ int BPF_PROG(wprof_task_switch,
 	size_t tasks_sz = tis.data_sz;
 
 	emit_task_event_dyn(e, dptr, fix_sz, pmu_sz + tr_out_sz + py_sz + tasks_sz, EV_SWITCH, now_ts, prev) {
-		e->swtch.prev_task_state = prev->__state;
+		e->swtch.prev_task_state = packed_state;
 		e->swtch.last_next_task_state = snext->last_task_state;
 		e->swtch.prev_prio = prev->prio;
 		e->swtch.next_prio = next->prio;
@@ -969,6 +986,8 @@ static __always_inline int handle_waking(void *ctx, struct task_struct *p, enum 
 
 	emit_task_event_dyn(e, dptr, fix_sz, dyn_sz + tasks_sz, kind, now_ts, task) {
 		e->waking.wakee_task_id = task_id(p->pid);
+		e->waking.prio = p->prio;
+		e->waking.target_cpu = wprof_task_cpu(p);
 		if (tr) {
 			emit_stack_trace(tr, dyn_sz, dptr, fix_sz);
 			e->flags |= ST_WAKER;
@@ -979,7 +998,7 @@ static __always_inline int handle_waking(void *ctx, struct task_struct *p, enum 
 
 	put_stack_trace(tr);
 
-	s->last_task_state = p->__state;
+	s->last_task_state = pack_task_state(p->__state, p, false);
 
 	return 0;
 }

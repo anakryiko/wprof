@@ -11,7 +11,7 @@
 /* On-disk format version (hdr.version_major / hdr.version_minor). */
 enum wprof_data_version {
 	WPROF_DATA_MAJOR = 3,
-	WPROF_DATA_MINOR = 0,
+	WPROF_DATA_MINOR = 1,
 };
 
 /* Flags stored in hdr.flags. */

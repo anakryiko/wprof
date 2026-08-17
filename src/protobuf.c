@@ -267,8 +267,25 @@ static const char *pb_static_strs[] = {
 	[IID_NAME_IPI_SEND + IPI_MULTI] = "IPI_SEND:multi",
 	[IID_NAME_IPI_SEND + IPI_RESCHED] = "IPI_SEND:resched",
 	[IID_NAME_RUNNING] = "RUNNING",
-	[IID_NAME_WAITING] = "WAITING",
+	[IID_NAME_RUNNABLE] = "RUNNABLE",
 	[IID_NAME_PREEMPTED] = "PREEMPTED",
+	[IID_NAME_INTERRUPTIBLE_SLEEP] = "INTERRUPTIBLE_SLEEP",
+	[IID_NAME_UNINTERRUPTIBLE_SLEEP] = "UNINTERRUPTIBLE_SLEEP",
+	[IID_NAME_KILLABLE_SLEEP] = "KILLABLE_SLEEP",
+	[IID_NAME_STOPPED] = "STOPPED",
+	[IID_NAME_TRACED] = "TRACED",
+	[IID_NAME_EXIT_DEAD] = "EXIT_DEAD",
+	[IID_NAME_EXIT_ZOMBIE] = "EXIT_ZOMBIE",
+	[IID_NAME_EXIT_TRACE] = "EXIT_TRACE",
+	[IID_NAME_PARKED] = "PARKED",
+	[IID_NAME_TASK_DEAD] = "TASK_DEAD",
+	[IID_NAME_RTLOCK_WAIT] = "RTLOCK_WAIT",
+	[IID_NAME_FREEZABLE] = "FREEZABLE",
+	[IID_NAME_FROZEN] = "FROZEN",
+	[IID_NAME_IDLE] = "IDLE",
+	[IID_NAME_WAKING] = "WAKING",
+	[IID_NAME_NEW] = "NEW",
+	[IID_NAME_UNKNOWN] = "UNKNOWN",
 	[IID_NAME_REQUEST_BEGIN] = "REQUEST_BEGIN",
 	[IID_NAME_REQUEST_SET] = "REQUEST_SET",
 	[IID_NAME_REQUEST_UNSET] = "REQUEST_UNSET",
@@ -433,8 +450,26 @@ static const char *pb_static_strs[] = {
 	[IID_ANNV_CUDA_OVERHEAD_KIND + CUDA_OVERHEAD_ACTIVITY_BUFFER_REQUEST] = "activity_buffer_request",
 	[IID_ANNV_CUDA_OVERHEAD_KIND + CUDA_OVERHEAD_UVM_ACTIVITY_INIT] = "uvm_activity_init",
 
-	[IID_ANNV_OFFCPU_BLOCKED] = "blocked",
-	[IID_ANNV_OFFCPU_PREEMPTED] = "preempted",
+	[IID_ANNV_OFFCPU_STATE + WTRS_RUNNING] = "running",
+	[IID_ANNV_OFFCPU_STATE + WTRS_RUNNABLE] = "runnable",
+	[IID_ANNV_OFFCPU_STATE + WTRS_PREEMPTED] = "preempted",
+	[IID_ANNV_OFFCPU_STATE + WTRS_INTERRUPTIBLE_SLEEP] = "interruptible_sleep",
+	[IID_ANNV_OFFCPU_STATE + WTRS_UNINTERRUPTIBLE_SLEEP] = "uninterruptible_sleep",
+	[IID_ANNV_OFFCPU_STATE + WTRS_KILLABLE_SLEEP] = "killable_sleep",
+	[IID_ANNV_OFFCPU_STATE + WTRS_STOPPED] = "stopped",
+	[IID_ANNV_OFFCPU_STATE + WTRS_TRACED] = "traced",
+	[IID_ANNV_OFFCPU_STATE + WTRS_EXIT_DEAD] = "exit_dead",
+	[IID_ANNV_OFFCPU_STATE + WTRS_EXIT_ZOMBIE] = "exit_zombie",
+	[IID_ANNV_OFFCPU_STATE + WTRS_EXIT_TRACE] = "exit_trace",
+	[IID_ANNV_OFFCPU_STATE + WTRS_PARKED] = "parked",
+	[IID_ANNV_OFFCPU_STATE + WTRS_TASK_DEAD] = "task_dead",
+	[IID_ANNV_OFFCPU_STATE + WTRS_RTLOCK_WAIT] = "rtlock_wait",
+	[IID_ANNV_OFFCPU_STATE + WTRS_FREEZABLE] = "freezable",
+	[IID_ANNV_OFFCPU_STATE + WTRS_FROZEN] = "frozen",
+	[IID_ANNV_OFFCPU_STATE + WTRS_IDLE] = "idle",
+	[IID_ANNV_OFFCPU_STATE + WTRS_WAKING] = "waking",
+	[IID_ANNV_OFFCPU_STATE + WTRS_NEW] = "new",
+	[IID_ANNV_OFFCPU_STATE + WTRS_UNKNOWN] = "unknown",
 };
 
 const char *pb_static_str(enum pb_static_iid iid)
@@ -630,26 +665,24 @@ static const char *meta_lookup(struct wprof_data_hdr *hdr, const char *key)
 /*
  * Emit user-supplied metadata (-M pairs) plus the human-readable capture time
  * as Perfetto trace attributes. These surface in the UI Overview and the
- * trace_processor `metadata` table. hostname, kernel and arch are skipped
- * here as they are emitted via SystemInfo (system_name / system_release /
- * system_machine) instead.
+ * trace_processor `metadata` table. kernel and arch are skipped here as they
+ * are emitted via SystemInfo (system_release / system_machine) instead.
  */
 static void emit_metadata(struct wpb_writer *writer, struct wprof_data_hdr *hdr)
 {
 	const char *kernel = meta_lookup(hdr, "kernel");
-	const char *hostname = meta_lookup(hdr, "hostname");
 	const char *arch = meta_lookup(hdr, "arch");
-	struct wpb_str hostname_str = wpb_cstr(hostname);
+	struct wpb_str sysname_str = wpb_cstr("Linux");
 	struct wpb_str kernel_str = wpb_cstr(kernel);
 	struct wpb_str arch_str = wpb_cstr(arch);
 	uint32_t num_cpus = env.stats ? env.stats->cpu_cnt : 0;
 
 	/*
-	 * Perfetto's Utsname has no hostname/nodename field, so stash the
-	 * hostname in `sysname` (normally the OS name) to surface it as
-	 * system_name in the UI Overview; `machine` carries the architecture.
+	 * Perfetto uses Utsname.sysname == "Linux" together with release to decode
+	 * version-dependent sched_switch state bits. Keep hostname as a separate
+	 * trace attribute because Utsname has no hostname/nodename field.
 	 */
-	wpb_emit_system_info(writer, &hostname_str, &kernel_str, &arch_str, num_cpus);
+	wpb_emit_system_info(writer, &sysname_str, &kernel_str, &arch_str, num_cpus);
 
 	/*
 	 * Surface our capture UUID as Perfetto's trace_uuid so the UI/trace_processor
@@ -683,8 +716,7 @@ static void emit_metadata(struct wpb_writer *writer, struct wprof_data_hdr *hdr)
 		const char *eq = strchr(kv, '=');
 		size_t key_len = eq ? (size_t)(eq - kv) : strlen(kv);
 		const char *val = eq ? eq + 1 : "";
-		if ((key_len == 8 && strncmp(kv, "hostname", 8) == 0) ||
-		    (key_len == 6 && strncmp(kv, "kernel", 6) == 0) ||
+		if ((key_len == 6 && strncmp(kv, "kernel", 6) == 0) ||
 		    (key_len == 4 && strncmp(kv, "arch", 4) == 0))
 			continue;
 		attrs[attr_cnt++] = (struct wpb_attr) {
