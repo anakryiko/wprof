@@ -81,6 +81,17 @@ static inline int sv_find(struct sview v, const char *needle)
 	return -1;
 }
 
+/* find last occurrence of substring in view, return -1 if not found */
+static inline int sv_rfind(struct sview v, const char *needle)
+{
+	int nlen = strlen(needle);
+
+	for (int i = v.len - nlen; i >= 0; i--)
+		if (strncmp(v.s + i, needle, nlen) == 0)
+			return i;
+	return -1;
+}
+
 static inline struct sview sv_split(struct sview v, const char *delim, struct sview *right)
 {
 	int pos = sv_find(v, delim);
