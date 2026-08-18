@@ -219,7 +219,8 @@ static bool cfg_is_bpf_type(const struct utrace_cfg *cfg)
  */
 static bool bpf_prog_args_in_ctx(const struct utrace_cfg *cfg)
 {
-	return cfg_is_bpf_type(cfg) && cfg->bpf_prog.prog_type == BPF_PROG_TYPE_STRUCT_OPS;
+	return cfg_is_bpf_type(cfg) && cfg->bpf_prog.subprog_idx == 0 &&
+	       cfg->bpf_prog.prog_type == BPF_PROG_TYPE_STRUCT_OPS;
 }
 
 /*
@@ -1781,12 +1782,14 @@ static int resolve_usdt_cfg(struct utrace_cfg *cfg, bool mandatory)
 
 static int find_bpf_prog_by_name(const char *entry, const char *name, int *prog_fd_out,
 				 __u32 *btf_func_id_out, struct btf **btf_out,
-				 __u32 *prog_id_out, enum bpf_prog_type *prog_type_out)
+				 __u32 *prog_id_out, enum bpf_prog_type *prog_type_out,
+				 int *subprog_idx_out)
 {
 	__u32 id = 0;
 	int err = -ENOENT, prog_fd = -1;
 	int match_prog_fd = -1, match_btf_func_id = 0;
 	enum bpf_prog_type match_prog_type = BPF_PROG_TYPE_UNSPEC;
+	int match_subprog_idx = 0;
 	__u32 match_prog_id = 0;
 	struct btf *match_btf = NULL;
 	void *func_info_buf = NULL;
@@ -1859,6 +1862,7 @@ static int find_bpf_prog_by_name(const char *entry, const char *name, int *prog_
 			match_btf_func_id = fi->type_id;
 			match_prog_id = info.id;
 			match_prog_type = info.type;
+			match_subprog_idx = i;
 			match_btf = btf;
 			found = true;
 			break;
@@ -1877,6 +1881,7 @@ next:
 		*btf_out = match_btf;
 		*prog_id_out = match_prog_id;
 		*prog_type_out = match_prog_type;
+		*subprog_idx_out = match_subprog_idx;
 		return 0;
 	}
 
@@ -1900,18 +1905,22 @@ out:
  */
 static int resolve_bpf_prog_proto(struct utrace_cfg *cfg, __u32 prog_id)
 {
-	switch (cfg->bpf_prog.prog_type) {
-	case BPF_PROG_TYPE_STRUCT_OPS:
-		return wprof_query_st_ops_proto(prog_id, &cfg->bpf_prog.proto_btf,
-					       &cfg->bpf_prog.proto);
-	default: {
-		const struct btf_type *f = btf__type_by_id(cfg->bpf_prog.btf, cfg->bpf_prog.btf_func_id);
+	const struct btf_type *f;
 
-		cfg->bpf_prog.proto = btf__type_by_id(cfg->bpf_prog.btf, f->type);
-		cfg->bpf_prog.proto_btf = cfg->bpf_prog.btf;
-		return 0;
+	if (cfg->bpf_prog.subprog_idx == 0) {
+		switch (cfg->bpf_prog.prog_type) {
+		case BPF_PROG_TYPE_STRUCT_OPS:
+			return wprof_query_st_ops_proto(prog_id, &cfg->bpf_prog.proto_btf,
+							&cfg->bpf_prog.proto);
+		default:
+			break;
+		}
 	}
-	}
+
+	f = btf__type_by_id(cfg->bpf_prog.btf, cfg->bpf_prog.btf_func_id);
+	cfg->bpf_prog.proto = btf__type_by_id(cfg->bpf_prog.btf, f->type);
+	cfg->bpf_prog.proto_btf = cfg->bpf_prog.btf;
+	return 0;
 }
 
 static bool is_uprobe_family(enum utrace_type type)
@@ -2115,7 +2124,8 @@ int utrace_setup(struct wprof_bpf *skel)
 							    &leg->bpf_prog.btf_func_id,
 							    &leg->bpf_prog.btf,
 							    &prog_id,
-							    &leg->bpf_prog.prog_type);
+							    &leg->bpf_prog.prog_type,
+							    &leg->bpf_prog.subprog_idx);
 				if (err) {
 					eprintf("utrace: failed to find BPF program '%s%s%s': %d\n",
 						leg->bpf_prog.entry ?: "", leg->bpf_prog.entry ? ":" : "",

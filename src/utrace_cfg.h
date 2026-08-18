@@ -253,6 +253,7 @@ struct utrace_cfg {
 			unsigned int btf_func_id; /* BTF func type ID */
 			struct btf *btf; /* target prog BTF (valid during setup only) */
 			enum bpf_prog_type prog_type;	/* type of the target program */
+			int subprog_idx;		/* 0 for the entry program itself */
 			/*
 			 * Prototype describing the program's logical arguments. For
 			 * struct_ops programs it comes from the ops struct member and
