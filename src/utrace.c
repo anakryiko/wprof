@@ -1747,7 +1747,7 @@ static int resolve_usdt_cfg(struct utrace_cfg *cfg, bool mandatory)
 	return 0;
 }
 
-static int find_bpf_prog_by_name(const char *name, int *prog_fd_out,
+static int find_bpf_prog_by_name(const char *entry, const char *name, int *prog_fd_out,
 				 __u32 *btf_func_id_out, struct btf **btf_out)
 {
 	__u32 id = 0;
@@ -1796,6 +1796,14 @@ static int find_bpf_prog_by_name(const char *name, int *prog_fd_out,
 		if (!btf)
 			goto next;
 
+		if (entry) {
+			struct bpf_func_info *fi0 = func_info_buf;
+			const struct btf_type *et = btf__type_by_id(btf, fi0->type_id);
+
+			if (strcmp(btf__name_by_offset(btf, et->name_off), entry) != 0)
+				goto next;
+		}
+
 		for (__u32 i = 0; i < info.nr_func_info; i++) {
 			struct bpf_func_info *fi = func_info_buf + i * func_info_rec_size;
 			const struct btf_type *t = btf__type_by_id(btf, fi->type_id);
@@ -1806,7 +1814,8 @@ static int find_bpf_prog_by_name(const char *name, int *prog_fd_out,
 				continue;
 
 			if (match_prog_fd >= 0) {
-				eprintf("utrace: BPF function '%s' is ambiguous, can't proceed!\n", name);
+				eprintf("utrace: BPF function '%s%s%s' is ambiguous, can't proceed!\n",
+					entry ?: "", entry ? ":" : "", name);
 				err = -EEXIST;
 				goto out;
 			}
@@ -2039,12 +2048,13 @@ int utrace_setup(struct wprof_bpf *skel)
 			case UTRACE_BPF_PROBE:
 			case UTRACE_BPF_RETPROBE:
 			case UTRACE_BPF_SPAN:
-				err = find_bpf_prog_by_name(leg->bpf_prog.name,
-								    &leg->bpf_prog.prog_fd,
-								    &leg->bpf_prog.btf_func_id,
-								    &leg->bpf_prog.btf);
+				err = find_bpf_prog_by_name(leg->bpf_prog.entry, leg->bpf_prog.name,
+							    &leg->bpf_prog.prog_fd,
+							    &leg->bpf_prog.btf_func_id,
+							    &leg->bpf_prog.btf);
 				if (err) {
-					eprintf("utrace: failed to find BPF program '%s': %d\n",
+					eprintf("utrace: failed to find BPF program '%s%s%s': %d\n",
+						leg->bpf_prog.entry ?: "", leg->bpf_prog.entry ? ":" : "",
 						leg->bpf_prog.name, err);
 					return err;
 				}

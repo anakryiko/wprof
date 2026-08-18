@@ -887,9 +887,25 @@ static int parse_probe_def(struct sview orig, struct sview def, struct utrace_cf
 		break;
 	case UTRACE_BPF_PROBE:
 	case UTRACE_BPF_RETPROBE:
-	case UTRACE_BPF_SPAN:
-		cfg->bpf_prog.name = sv_strdup(def);
+	case UTRACE_BPF_SPAN: {
+		struct sview entry, name;
+
+		entry = sv_trim(sv_split(def, ":", &name));
+		if (sv_is_empty(name)) {
+			if (!sv_is_ident(entry))
+				return utrace_err(orig, def, "BPF program name must be an identifier\n");
+			cfg->bpf_prog.name = sv_strdup(entry);
+			break;
+		}
+
+		name = sv_trim(sv_consume_left(name, 1)); /* skip ':' delimiter */
+		if (!sv_is_ident(entry) || !sv_is_ident(name))
+			return utrace_err(orig, def, "BPF probe requires 'prog' or 'entry:subprog' identifier names\n");
+
+		cfg->bpf_prog.entry = sv_strdup(entry);
+		cfg->bpf_prog.name = sv_strdup(name);
 		break;
+	}
 	default:
 		return utrace_err(orig, def, "unexpected probe type %d\n", cfg->type);
 	}
@@ -1085,7 +1101,8 @@ static void format_probe(const struct utrace_cfg *cfg, struct sbuf *sb)
 	case UTRACE_BPF_PROBE:
 	case UTRACE_BPF_RETPROBE:
 	case UTRACE_BPF_SPAN:
-		sbuf_appendf(sb, "%s", cfg->bpf_prog.name);
+		sbuf_appendf(sb, "%s%s%s", cfg->bpf_prog.entry ?: "",
+			     cfg->bpf_prog.entry ? ":" : "", cfg->bpf_prog.name);
 		break;
 	default:
 		break;

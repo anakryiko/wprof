@@ -58,8 +58,8 @@ wprof -U 'usdt:myapp:request_start (arg:0, pid:nvidia-smi)'
 | `kret:`   | `func_name`          | Kernel function return (kretprobe)   |
 | `tp:`     | `category:name`      | Classic kernel tracepoint            |
 | `raw_tp:` | `name`               | Raw kernel tracepoint (BTF-based)    |
-| `bpf:`    | `prog_name`          | Loaded BPF program entry (fentry)    |
-| `bpfret:` | `prog_name`          | Loaded BPF program return (fexit)    |
+| `bpf:`    | `prog[:subprog]`     | Loaded BPF program entry (fentry)    |
+| `bpfret:` | `prog[:subprog]`     | Loaded BPF program return (fexit)    |
 
 ### Span probes (entry + exit pairs)
 
@@ -68,6 +68,14 @@ wprof -U 'usdt:myapp:request_start (arg:0, pid:nvidia-smi)'
 | `uspan:`    | Uprobe + uretprobe on same function  |
 | `kspan:`    | Kprobe + kretprobe on same function  |
 | `bpfspan:`  | BPF fentry + fexit on same function  |
+
+A `bpf:`/`bpfret:`/`bpfspan:` target names a loaded BPF program's function.
+A bare `prog` name resolves to that function wherever it is loaded. A
+subprogram shared by several entry programs is loaded once per calling
+entry, so its bare name is ambiguous; scope it to one entry program with
+`entry:subprog` (the same `container:name` shape as `tp:category:name`).
+For example `bpf:lavd_enqueue:calc_when_to_run` selects the `calc_when_to_run`
+subprogram as reached through the `lavd_enqueue` entry program.
 
 ### Generic spans
 
