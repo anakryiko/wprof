@@ -28,6 +28,16 @@
 #include <bpf/btf.h>
 
 #include "utils.h"
+#include "ksyms.h"
+
+struct ksyms *load_ksyms(void)
+{
+	static struct ksyms *ksyms;
+
+	if (!ksyms)
+		ksyms = ksyms__load();
+	return ksyms;
+}
 
 struct btf *load_vmlinux_btf(void)
 {

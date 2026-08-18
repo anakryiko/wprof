@@ -726,7 +726,7 @@ int process_stack_traces(struct worker_state *workers, int worker_cnt, FILE *sta
 
 	if (env.raw_stacks)
 		goto skip_ksyms;
-	ksyms = ksyms__load();
+	ksyms = load_ksyms();
 	if (!ksyms) {
 		wprintf("Failed to load /proc/kallsyms! Stack trace trimming is disable.\n");
 		goto skip_ksyms;
