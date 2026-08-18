@@ -810,6 +810,7 @@ static int parse_probe_def(struct sview orig, struct sview def, struct utrace_cf
 		cfg->type = probe_type_table[i].type;
 		def = sv_consume_left(def, strlen(probe_type_table[i].prefix));
 		def = sv_trim(def);
+		break;
 	}
 	if (cfg->type == UTRACE_INVALID)
 		return utrace_err(orig, def, "unrecognized probe type\n");
