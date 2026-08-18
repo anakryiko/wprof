@@ -983,8 +983,9 @@ static int parse_cfg(struct sview def, struct utrace_cfg *cfg)
 		if (err)
 			return err;
 
-		if (is_span_probe(cfg->span.entry->type) || is_span_probe(cfg->span.exit->type))
-			return utrace_err(orig, def, "nested spans are not allowed\n");
+		bool entry_is_span = is_span_probe(cfg->span.entry->type);
+		if (entry_is_span || is_span_probe(cfg->span.exit->type))
+			return utrace_err(orig, entry_is_span ? left : right, "nested spans are not allowed\n");
 
 		/* check and inherit `pid:` specs between compatible entry/exit spans */
 		const struct utrace_param *ep = find_pid_param(cfg->span.entry);
