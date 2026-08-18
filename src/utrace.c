@@ -19,6 +19,7 @@
 #include "elf_utils.h"
 #include "bpf_utils.h"
 #include "proc.h"
+#include "wprof_query.h"
 #include "wprof.skel.h"
 
 static enum utrace_arg_type usdt_arg_to_utrace_type(const struct usdt_arg_info *arg)
@@ -211,6 +212,16 @@ static bool cfg_is_bpf_type(const struct utrace_cfg *cfg)
 	}
 }
 
+/*
+ * Some BPF program types don't take their arguments directly: they are compiled
+ * down to a single context pointer to an array of u64 values, so a logical
+ * argument N is read as ctx[N].
+ */
+static bool bpf_prog_args_in_ctx(const struct utrace_cfg *cfg)
+{
+	return cfg_is_bpf_type(cfg) && cfg->bpf_prog.prog_type == BPF_PROG_TYPE_STRUCT_OPS;
+}
+
 /* Chase through typedefs/const/volatile/restrict/type_tag to the underlying type */
 static const struct btf_type *btf_skip_modifiers(const struct btf *btf, __u32 id, __u32 *res_id)
 {
@@ -346,6 +357,7 @@ struct utrace_arg_state {
 	enum utrace_arg_type fallback_type;
 	enum utrace_value_loc loc;
 	long long offset;
+	int base_op_idx;	/* read op holding the base value; >0 when args come from ctx[N] */
 };
 
 struct utrace_member_info {
@@ -787,8 +799,8 @@ static int utrace_compile_btf_terminal(struct utrace_arg_state *state, struct ut
 				return err;
 			state->offset = 0;
 		} else {
-			p->arg.read_ops[0].size = sizeof(void *);
-			p->arg.read_ops[0].flags = 0;
+			p->arg.read_ops[state->base_op_idx].size = sizeof(void *);
+			p->arg.read_ops[state->base_op_idx].flags = 0;
 		}
 		if (p->arg.arg_type == UTRACE_ARG_STR) {
 			return utrace_emit_read_op(p, last, UTRACE_READ_STR, state->offset, MAX_UTRACE_STR_SZ,
@@ -834,8 +846,8 @@ static int utrace_compile_btf_terminal(struct utrace_arg_state *state, struct ut
 		return utrace_acc_err(p, last, "invalid scalar type override\n");
 	p->arg.arg_type = explicit_type == UTRACE_ARG_UNKNOWN ? inferred : explicit_type;
 	if (state->loc == UTRACE_LOC_VALUE) {
-		p->arg.read_ops[0].size = size;
-		p->arg.read_ops[0].flags = is_signed ? UTRACE_READ_F_SIGNED : 0;
+		p->arg.read_ops[state->base_op_idx].size = size;
+		p->arg.read_ops[state->base_op_idx].flags = is_signed ? UTRACE_READ_F_SIGNED : 0;
 		return 0;
 	}
 	return utrace_emit_read_op(p, last, UTRACE_READ_VAL, state->offset, size,
@@ -845,7 +857,7 @@ static int utrace_compile_btf_terminal(struct utrace_arg_state *state, struct ut
 static int utrace_compile_fallback_terminal(struct utrace_arg_state *state, struct utrace_param *p)
 {
 	enum utrace_arg_type type = p->arg.arg_type == UTRACE_ARG_UNKNOWN ? state->fallback_type : p->arg.arg_type;
-	struct utrace_read_op *read_arg = &p->arg.read_ops[0];
+	struct utrace_read_op *read_arg = &p->arg.read_ops[state->base_op_idx];
 
 	if (type == UTRACE_ARG_UNKNOWN)
 		type = UTRACE_ARG_U64;
@@ -1055,21 +1067,13 @@ static int btf_func_arg_cnt(const struct btf *btf, const char *func_name)
 	return btf_vlen(proto);
 }
 
-/* Get arg count for a BPF program target using its pre-loaded BTF */
+/* Get arg count for a BPF program target from its resolved prototype */
 static int bpf_prog_func_arg_cnt(const struct utrace_cfg *cfg)
 {
-	if (!cfg->bpf_prog.btf)
+	if (!cfg->bpf_prog.proto)
 		return -ENOENT;
 
-	const struct btf_type *t = btf__type_by_id(cfg->bpf_prog.btf, cfg->bpf_prog.btf_func_id);
-	if (!t || !btf_is_func(t))
-		return -ESRCH;
-
-	const struct btf_type *proto = btf__type_by_id(cfg->bpf_prog.btf, t->type);
-	if (!proto || !btf_is_func_proto(proto))
-		return -EINVAL;
-
-	return btf_vlen(proto);
+	return btf_vlen(cfg->bpf_prog.proto);
 }
 
 /*
@@ -1086,17 +1090,9 @@ static int utrace_func_returns_void(const struct utrace_cfg *cfg, const struct b
 		proto = btf ? btf_find_func_proto(btf, cfg->kprobe.name) : NULL;
 		break;
 	case UTRACE_BPF_RETPROBE:
-	case UTRACE_BPF_SPAN: {
-		const struct btf *rbtf = cfg->bpf_prog.btf;
-		const struct btf_type *f = rbtf ? btf__type_by_id(rbtf, cfg->bpf_prog.btf_func_id) : NULL;
-
-		if (f && btf_is_func(f)) {
-			proto = btf__type_by_id(rbtf, f->type);
-			if (proto && !btf_is_func_proto(proto))
-				proto = NULL;
-		}
+	case UTRACE_BPF_SPAN:
+		proto = cfg->bpf_prog.proto;
 		break;
-	}
 	default:
 		return -1;
 	}
@@ -1233,20 +1229,29 @@ static int resolve_arg_name(const struct utrace_cfg *cfg, const struct btf *btf,
 	}
 	case UTRACE_KPROBE:
 	case UTRACE_KRETPROBE:
-	case UTRACE_KPROBE_SPAN:
-	case UTRACE_BPF_PROBE:
-	case UTRACE_BPF_RETPROBE:
-	case UTRACE_BPF_SPAN: {
-		const struct btf *resolve_btf = cfg_is_bpf_type(cfg) ? cfg->bpf_prog.btf : btf;
-		const char *func_name = cfg_is_bpf_type(cfg) ? cfg->bpf_prog.name : cfg->kprobe.name;
-		if (!resolve_btf)
+	case UTRACE_KPROBE_SPAN: {
+		if (!btf)
 			return -ENOENT;
-		const struct btf_type *proto = btf_find_func_proto(resolve_btf, func_name);
+		const struct btf_type *proto = btf_find_func_proto(btf, cfg->kprobe.name);
 		if (!proto)
 			return -ENOENT;
 		const struct btf_param *p = btf_params(proto);
 		for (int i = 0; i < btf_vlen(proto); i++, p++) {
-			const char *pname = btf__name_by_offset(resolve_btf, p->name_off);
+			const char *pname = btf__name_by_offset(btf, p->name_off);
+			if (strcmp(pname, name) == 0)
+				return i;
+		}
+		break;
+	}
+	case UTRACE_BPF_PROBE:
+	case UTRACE_BPF_RETPROBE:
+	case UTRACE_BPF_SPAN: {
+		const struct btf_type *proto = cfg->bpf_prog.proto;
+		if (!proto)
+			return -ENOENT;
+		const struct btf_param *p = btf_params(proto);
+		for (int i = 0; i < btf_vlen(proto); i++, p++) {
+			const char *pname = btf__name_by_offset(cfg->bpf_prog.proto_btf, p->name_off);
 			if (strcmp(pname, name) == 0)
 				return i;
 		}
@@ -1290,12 +1295,8 @@ static int utrace_probe_arg_count(const struct utrace_cfg *cfg, const struct btf
 	}
 	case UTRACE_BPF_PROBE:
 	case UTRACE_BPF_RETPROBE:
-	case UTRACE_BPF_SPAN: {
-		const struct btf *rbtf = cfg->bpf_prog.btf;
-		const struct btf_type *proto = rbtf ? btf_find_func_proto(rbtf, cfg->bpf_prog.name) : NULL;
-
-		return proto ? btf_vlen(proto) : -1;
-	}
+	case UTRACE_BPF_SPAN:
+		return cfg->bpf_prog.proto ? btf_vlen(cfg->bpf_prog.proto) : -1;
 	default:
 		return -1;
 	}
@@ -1317,6 +1318,7 @@ static int utrace_resolve_base(struct utrace_arg_state *state, struct utrace_cfg
 			       const struct btf *btf, struct utrace_param *p)
 {
 	enum utrace_arg_type inferred_type = UTRACE_ARG_UNKNOWN;
+	const struct btf *args_btf = btf;
 	const char *base_name = NULL;
 	__u32 btf_id = 0;
 	int err = -ENOENT;
@@ -1368,31 +1370,34 @@ static int utrace_resolve_base(struct utrace_arg_state *state, struct utrace_cfg
 	case UTRACE_KPROBE:
 	case UTRACE_KRETPROBE:
 	case UTRACE_KPROBE_SPAN:
+		err = resolve_btf_arg_type(btf, cfg->kprobe.name, p->arg.arg_idx,
+					   &inferred_type, &base_name, &btf_id);
+		if (err && p->arg.arg_type == UTRACE_ARG_UNKNOWN) {
+			wprintf("utrace: failed to determine type for %s arg %d, defaulting to u64\n",
+				cfg->kprobe.name, p->arg.arg_idx == UTRACE_ARG_RET ? -1 : p->arg.arg_idx);
+		}
+		break;
 	case UTRACE_BPF_PROBE:
 	case UTRACE_BPF_RETPROBE:
-	case UTRACE_BPF_SPAN: {
-		const char *func_name = cfg_is_bpf_type(cfg) ? cfg->bpf_prog.name : cfg->kprobe.name;
-
-		if (cfg_is_bpf_type(cfg) && !btf) {
-			if (p->arg.accessor_cnt) {
-				return utrace_acc_err(p, &p->arg.accessors[0],
-							  "typed argument access requires BPF program BTF\n");
-			}
-		} else {
-			err = resolve_btf_arg_type(btf, func_name, p->arg.arg_idx, &inferred_type, &base_name, &btf_id);
+	case UTRACE_BPF_SPAN:
+		if (!cfg->bpf_prog.proto && p->arg.accessor_cnt)
+			return utrace_acc_err(p, &p->arg.accessors[0], "typed argument access requires BPF program BTF\n");
+		if (cfg->bpf_prog.proto) {
+			args_btf = cfg->bpf_prog.proto_btf;
+			err = resolve_btf_proto_arg_type(args_btf, cfg->bpf_prog.proto, p->arg.arg_idx,
+							 &inferred_type, &base_name, &btf_id);
 		}
 		if (err && p->arg.arg_type == UTRACE_ARG_UNKNOWN) {
 			wprintf("utrace: failed to determine type for %s arg %d, defaulting to u64\n",
-				func_name, p->arg.arg_idx == UTRACE_ARG_RET ? -1 : p->arg.arg_idx);
+				cfg->bpf_prog.name, p->arg.arg_idx == UTRACE_ARG_RET ? -1 : p->arg.arg_idx);
 		}
 		break;
-	}
 	default:
 		break;
 	}
 
 	if (!err)
-		state->type = UTRACE_TYPE_REF(btf, btf_id);
+		state->type = UTRACE_TYPE_REF(args_btf, btf_id);
 	if (!base_name && p->arg.ref_name)
 		base_name = p->arg.ref_name;
 	if (!p->arg.name && base_name)
@@ -1408,7 +1413,23 @@ static int utrace_resolve_base(struct utrace_arg_state *state, struct utrace_cfg
 		if (type == UTRACE_ARG_STR)
 			flags = p->arg.tp_data_loc ? UTRACE_READ_F_TP_DATA_LOC : UTRACE_READ_F_TP_INLINE;
 	}
+	bool read_ctx = p->arg.arg_idx != UTRACE_ARG_RET && bpf_prog_args_in_ctx(cfg);
+
 	p->arg.read_op_cnt = 0;
+	/*
+	 * When arguments are passed through a context pointer, the first read gets
+	 * that pointer and the value itself comes from ctx[arg_idx].
+	 */
+	if (read_ctx) {
+		err = utrace_emit_read_op(p, NULL, UTRACE_READ_ARG, 0, sizeof(void *), flags);
+		if (err)
+			return err;
+
+		state->base_op_idx = 1;
+		return utrace_emit_read_op(p, NULL, UTRACE_READ_VAL, arg_idx * sizeof(__u64),
+					   sizeof(void *), 0);
+	}
+
 	return utrace_emit_read_op(p, NULL, UTRACE_READ_ARG, arg_idx, sizeof(void *), flags);
 }
 
@@ -1742,11 +1763,14 @@ static int resolve_usdt_cfg(struct utrace_cfg *cfg, bool mandatory)
 }
 
 static int find_bpf_prog_by_name(const char *entry, const char *name, int *prog_fd_out,
-				 __u32 *btf_func_id_out, struct btf **btf_out)
+				 __u32 *btf_func_id_out, struct btf **btf_out,
+				 __u32 *prog_id_out, enum bpf_prog_type *prog_type_out)
 {
 	__u32 id = 0;
 	int err = -ENOENT, prog_fd = -1;
 	int match_prog_fd = -1, match_btf_func_id = 0;
+	enum bpf_prog_type match_prog_type = BPF_PROG_TYPE_UNSPEC;
+	__u32 match_prog_id = 0;
 	struct btf *match_btf = NULL;
 	void *func_info_buf = NULL;
 	struct btf *btf = NULL;
@@ -1816,6 +1840,8 @@ static int find_bpf_prog_by_name(const char *entry, const char *name, int *prog_
 
 			match_prog_fd = prog_fd;
 			match_btf_func_id = fi->type_id;
+			match_prog_id = info.id;
+			match_prog_type = info.type;
 			match_btf = btf;
 			found = true;
 			break;
@@ -1832,6 +1858,8 @@ next:
 		*prog_fd_out = match_prog_fd;
 		*btf_func_id_out = match_btf_func_id;
 		*btf_out = match_btf;
+		*prog_id_out = match_prog_id;
+		*prog_type_out = match_prog_type;
 		return 0;
 	}
 
@@ -1846,6 +1874,27 @@ out:
 	if (match_prog_fd >= 0)
 		close(match_prog_fd);
 	return err;
+}
+
+/*
+ * Pick the prototype that describes the program's logical arguments. Program
+ * types whose signature hides them behind a context argument need extra
+ * information from the kernel to recover it; the rest describe themselves.
+ */
+static int resolve_bpf_prog_proto(struct utrace_cfg *cfg, __u32 prog_id)
+{
+	switch (cfg->bpf_prog.prog_type) {
+	case BPF_PROG_TYPE_STRUCT_OPS:
+		return wprof_query_struct_ops_proto(prog_id, &cfg->bpf_prog.proto_btf,
+						    &cfg->bpf_prog.proto);
+	default: {
+		const struct btf_type *f = btf__type_by_id(cfg->bpf_prog.btf, cfg->bpf_prog.btf_func_id);
+
+		cfg->bpf_prog.proto = btf__type_by_id(cfg->bpf_prog.btf, f->type);
+		cfg->bpf_prog.proto_btf = cfg->bpf_prog.btf;
+		return 0;
+	}
+	}
 }
 
 static bool is_uprobe_family(enum utrace_type type)
@@ -2041,14 +2090,24 @@ int utrace_setup(struct wprof_bpf *skel)
 				break;
 			case UTRACE_BPF_PROBE:
 			case UTRACE_BPF_RETPROBE:
-			case UTRACE_BPF_SPAN:
+			case UTRACE_BPF_SPAN: {
+				__u32 prog_id = 0;
+
 				err = find_bpf_prog_by_name(leg->bpf_prog.entry, leg->bpf_prog.name,
 							    &leg->bpf_prog.prog_fd,
 							    &leg->bpf_prog.btf_func_id,
-							    &leg->bpf_prog.btf);
+							    &leg->bpf_prog.btf,
+							    &prog_id,
+							    &leg->bpf_prog.prog_type);
 				if (err) {
 					eprintf("utrace: failed to find BPF program '%s%s%s': %d\n",
 						leg->bpf_prog.entry ?: "", leg->bpf_prog.entry ? ":" : "",
+						leg->bpf_prog.name, err);
+					return err;
+				}
+				err = resolve_bpf_prog_proto(leg, prog_id);
+				if (err) {
+					eprintf("utrace: failed to resolve arguments of BPF program '%s': %d\n",
 						leg->bpf_prog.name, err);
 					return err;
 				}
@@ -2061,6 +2120,7 @@ int utrace_setup(struct wprof_bpf *skel)
 				if (leg->type == UTRACE_BPF_RETPROBE || leg->type == UTRACE_BPF_SPAN)
 					need_fexit = true;
 				break;
+			}
 			default:
 				break;
 			}
