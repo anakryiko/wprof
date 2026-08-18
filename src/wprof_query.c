@@ -9,6 +9,7 @@
 #include <bpf/libbpf.h>
 
 #include "utils.h"
+#include "ksyms.h"
 #include "wprof_query.h"
 #include "wprof_query.skel.h"
 
@@ -55,6 +56,7 @@ static int query_prog(unsigned int prog_id)
 	skel->bss->expected_attach_type = 0;
 	skel->bss->attach_btf_id = 0;
 	skel->bss->attach_btf_obj_id = 0;
+	skel->bss->st_ops_stub_addr = 0;
 
 	iter_fd = bpf_iter_create(bpf_link__fd(iter_link));
 	if (iter_fd < 0)
@@ -115,12 +117,53 @@ static const struct btf_type *btf_resolve_func_ptr(const struct btf *btf, __u32 
 	return t;
 }
 
-int wprof_query_struct_ops_proto(unsigned int prog_id, const struct btf **btf_out,
-				 const struct btf_type **proto_out)
+/*
+ * The ops struct only declares a member's arguments, so they have no names. The
+ * stub function the kernel keeps in cfi_stubs for that member is a real
+ * function, and its BTF does name them, so prefer its prototype when the two
+ * agree on arity and argument types, as prepare_arg_info() requires them to.
+ */
+static const struct btf_type *st_ops_stub_proto(const struct btf *btf, const struct btf_type *proto,
+					       __u64 addr)
+{
+	const struct btf_type *sproto;
+	const struct btf_param *p, *sp;
+	const struct ksyms *ksyms;
+	const struct ksym *ksym;
+	__s32 id;
+
+	if (!addr)
+		return NULL;
+	ksyms = load_ksyms();
+	if (!ksyms)
+		return NULL;
+	ksym = ksyms__map_addr(ksyms, addr, KSYM_FUNC);
+	if (!ksym || ksym->addr != addr)
+		return NULL;
+
+	id = btf__find_by_name_kind(btf, ksym->name, BTF_KIND_FUNC);
+	if (id < 0)
+		return NULL;
+	sproto = btf__type_by_id(btf, btf__type_by_id(btf, id)->type);
+	if (!btf_is_func_proto(sproto) || btf_vlen(sproto) != btf_vlen(proto))
+		return NULL;
+
+	p = btf_params(proto);
+	sp = btf_params(sproto);
+	for (int i = 0; i < btf_vlen(proto); i++) {
+		if (p[i].type != sp[i].type)
+			return NULL;
+	}
+	return sproto;
+}
+
+int wprof_query_st_ops_proto(unsigned int prog_id, const struct btf **btf_out,
+			    const struct btf_type **proto_out)
 {
 	const struct btf_type *t, *proto;
 	const struct btf_member *m;
 	const struct btf *btf;
+	__u32 member_idx;
 	int err;
 
 	err = query_prog(prog_id);
@@ -134,7 +177,7 @@ int wprof_query_struct_ops_proto(unsigned int prog_id, const struct btf **btf_ou
 		return -ESRCH;
 
 	/* for struct_ops programs expected_attach_type is the ops member index */
-	__u32 member_idx = skel->bss->expected_attach_type;
+	member_idx = skel->bss->expected_attach_type;
 
 	t = btf__type_by_id(btf, skel->bss->attach_btf_id);
 	if (!btf_is_struct(t) || member_idx >= btf_vlen(t))
@@ -146,6 +189,6 @@ int wprof_query_struct_ops_proto(unsigned int prog_id, const struct btf **btf_ou
 		return -EINVAL;
 
 	*btf_out = btf;
-	*proto_out = proto;
+	*proto_out = st_ops_stub_proto(btf, proto, skel->bss->st_ops_stub_addr) ?: proto;
 	return 0;
 }

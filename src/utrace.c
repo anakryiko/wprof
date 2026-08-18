@@ -222,6 +222,23 @@ static bool bpf_prog_args_in_ctx(const struct utrace_cfg *cfg)
 	return cfg_is_bpf_type(cfg) && cfg->bpf_prog.prog_type == BPF_PROG_TYPE_STRUCT_OPS;
 }
 
+/*
+ * BPF tags argument names with a trailing __suffix (__nullable, __ref, ...),
+ * which is annotation rather than part of the name.
+ */
+static struct sview arg_base_name(const char *name)
+{
+	struct sview v = sv_new(name);
+	int pos = sv_rfind(v, "__");
+
+	return pos > 0 ? sv(v.s, pos) : v;
+}
+
+static bool arg_name_eq(const char *pname, const char *name)
+{
+	return sv_eq(sv_new(pname), name) || sv_eq(arg_base_name(pname), name);
+}
+
 /* Chase through typedefs/const/volatile/restrict/type_tag to the underlying type */
 static const struct btf_type *btf_skip_modifiers(const struct btf *btf, __u32 id, __u32 *res_id)
 {
@@ -1222,7 +1239,7 @@ static int resolve_arg_name(const struct utrace_cfg *cfg, const struct btf *btf,
 		const struct btf_param *p = btf_params(proto) + 1; /* skip void *__data */
 		for (int i = 1; i < btf_vlen(proto); i++, p++) {
 			const char *pname = btf__name_by_offset(btf, p->name_off);
-			if (strcmp(pname, name) == 0)
+			if (arg_name_eq(pname, name))
 				return i - 1;
 		}
 		break;
@@ -1238,7 +1255,7 @@ static int resolve_arg_name(const struct utrace_cfg *cfg, const struct btf *btf,
 		const struct btf_param *p = btf_params(proto);
 		for (int i = 0; i < btf_vlen(proto); i++, p++) {
 			const char *pname = btf__name_by_offset(btf, p->name_off);
-			if (strcmp(pname, name) == 0)
+			if (arg_name_eq(pname, name))
 				return i;
 		}
 		break;
@@ -1252,7 +1269,7 @@ static int resolve_arg_name(const struct utrace_cfg *cfg, const struct btf *btf,
 		const struct btf_param *p = btf_params(proto);
 		for (int i = 0; i < btf_vlen(proto); i++, p++) {
 			const char *pname = btf__name_by_offset(cfg->bpf_prog.proto_btf, p->name_off);
-			if (strcmp(pname, name) == 0)
+			if (arg_name_eq(pname, name))
 				return i;
 		}
 		break;
@@ -1401,7 +1418,7 @@ static int utrace_resolve_base(struct utrace_arg_state *state, struct utrace_cfg
 	if (!base_name && p->arg.ref_name)
 		base_name = p->arg.ref_name;
 	if (!p->arg.name && base_name)
-		p->arg.name = strdup(base_name);
+		p->arg.name = sv_strdup(arg_base_name(base_name));
 
 	state->fallback_type = inferred_type;
 	enum utrace_arg_type type = p->arg.arg_type == UTRACE_ARG_UNKNOWN ? state->fallback_type : p->arg.arg_type;
@@ -1885,8 +1902,8 @@ static int resolve_bpf_prog_proto(struct utrace_cfg *cfg, __u32 prog_id)
 {
 	switch (cfg->bpf_prog.prog_type) {
 	case BPF_PROG_TYPE_STRUCT_OPS:
-		return wprof_query_struct_ops_proto(prog_id, &cfg->bpf_prog.proto_btf,
-						    &cfg->bpf_prog.proto);
+		return wprof_query_st_ops_proto(prog_id, &cfg->bpf_prog.proto_btf,
+					       &cfg->bpf_prog.proto);
 	default: {
 		const struct btf_type *f = btf__type_by_id(cfg->bpf_prog.btf, cfg->bpf_prog.btf_func_id);
 
