@@ -139,7 +139,7 @@ static int parse_arg_map(struct sview orig, struct sview def, struct utrace_para
 
 		def = sv_is_empty(rest) ? sv_empty() : sv_consume_left(rest, 1);
 		if (sv_is_empty(ent))
-			continue;
+			return utrace_err(orig, ent, "empty map entry\n");
 
 		struct sview key = sv_trim(sv_split(ent, "=", &val));
 		if (sv_is_empty(val))
@@ -412,7 +412,7 @@ static int parse_arg_param(struct sview orig, struct sview def, struct utrace_pa
 
 		mods = rest;
 		if (sv_is_empty(mod))
-			continue;
+			return utrace_err(orig, mod, "empty arg modifier\n");
 
 		err = parse_arg_modifier(orig, mod, p);
 		if (err)
@@ -667,7 +667,7 @@ static int parse_settings(struct sview orig, struct sview def, struct utrace_set
 		def = sv_is_empty(rest) ? sv_empty() : sv_consume_left(rest, 1);
 
 		if (sv_is_empty(tok))
-			continue;
+			return utrace_err(orig, tok, "empty setting\n");
 
 		int err;
 		if (sv_starts_with(tok, "id:")) {
