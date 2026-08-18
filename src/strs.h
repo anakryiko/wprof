@@ -94,29 +94,45 @@ static inline struct sview sv_split(struct sview v, const char *delim, struct sv
 	return sv(v.s, pos);
 }
 
-static inline bool sv_exact_delim_at(struct sview v, int pos, const char *delim, int dlen)
+struct sarr {
+	const char **strs;
+	int cnt;
+};
+
+static inline struct sarr sarr_new(const char **strs, int cnt)
 {
-	if (pos + dlen > v.len || strncmp(v.s + pos, delim, dlen) != 0)
-		return false;
-	if (pos > 0 && strncmp(v.s + pos - 1, delim, dlen) == 0)
-		return false;
-	if (pos + dlen < v.len && strncmp(v.s + pos + 1, delim, dlen) == 0)
-		return false;
-	return true;
+	return (struct sarr){ .strs = strs, .cnt = cnt };
+}
+
+/* build a struct sarr out of string literals, e.g. sarr(".", "::", "[") */
+#define sarr(...) sarr_new((const char *[]){ __VA_ARGS__ },			\
+			   sizeof((const char *[]){ __VA_ARGS__ }) / sizeof(const char *))
+
+static inline bool sv_delim_at(struct sview v, int pos, struct sarr delims)
+{
+	for (int i = 0; i < delims.cnt; i++) {
+		int dlen = strlen(delims.strs[i]);
+
+		if (pos + dlen <= v.len && strncmp(v.s + pos, delims.strs[i], dlen) == 0)
+			return true;
+	}
+	return false;
 }
 
 /*
- * Like sv_split, but only matches an exact delim at the top level. Occurrences
- * inside balanced (...) are skipped. When angle_aware is set, <...> also nests
- * (only outside parentheses), so operator arguments like ::op<a, b> stay opaque
- * to a top-level comma split. Free-form leaf content (e.g. /map labels) should
- * pass angle_aware=false so a stray '<' in a label doesn't swallow delimiters.
- * *right starts at the delimiter, or is empty if none was found.
+ * Like sv_split, but splits at the first top-level occurrence of any delim.
+ * Occurrences inside balanced (...) are skipped. When angle_aware is set,
+ * <...> also nests (only outside parentheses), so operator arguments like
+ * ::op<a, b> stay opaque to a top-level comma split. Free-form leaf content
+ * (e.g. /map labels) should pass angle_aware=false so a stray '<' in a label
+ * doesn't swallow delimiters.
+ * *right starts at the delimiter, or is empty if none was found. Delims that
+ * prefix each other are the caller's to tell apart: check the longer one
+ * first, as ':' vs '::' does.
  */
-static inline struct sview sv_split_top(struct sview v, const char *delim, bool angle_aware,
-					struct sview *right)
+static inline struct sview sv_split_delim(struct sview v, struct sarr delims, bool angle_aware,
+					  struct sview *right)
 {
-	int dlen = strlen(delim);
 	int paren = 0, angle = 0;
 
 	for (int i = 0; i < v.len; i++) {
@@ -140,7 +156,7 @@ static inline struct sview sv_split_top(struct sview v, const char *delim, bool 
 				angle--;
 			continue;
 		}
-		if (paren == 0 && angle == 0 && sv_exact_delim_at(v, i, delim, dlen)) {
+		if (paren == 0 && angle == 0 && sv_delim_at(v, i, delims)) {
 			*right = sv(v.s + i, v.len - i);
 			return sv(v.s, i);
 		}

@@ -135,7 +135,7 @@ static int parse_arg_map(struct sview orig, struct sview def, struct utrace_para
 
 	while (!sv_is_empty(def)) {
 		struct sview rest, val;
-		struct sview ent = sv_trim(sv_split_top(def, ",", false, &rest));
+		struct sview ent = sv_trim(sv_split_delim(def, sarr(","), false, &rest));
 
 		def = sv_is_empty(rest) ? sv_empty() : sv_consume_left(rest, 1);
 		if (sv_is_empty(ent))
@@ -233,7 +233,7 @@ static int parse_op_args(struct sview orig, struct sview argdef, struct sview bo
 
 	while (!sv_is_empty(body)) {
 		struct sview rest;
-		struct sview arg = sv_trim(sv_split_top(body, ",", false, &rest));
+		struct sview arg = sv_trim(sv_split_delim(body, sarr(","), false, &rest));
 
 		if (sv_is_empty(arg))
 			return utrace_err(orig, body, "empty operator argument\n");
@@ -251,24 +251,7 @@ static int parse_op_args(struct sview orig, struct sview argdef, struct sview bo
 /* Split off the leading base/accessor token at the earliest '.', '::' or '['. */
 static struct sview sv_split_accessor(struct sview v, struct sview *rest)
 {
-	static const char *delims[] = { ".", "::", "[" };
-	struct sview best = v, best_rest = sv_empty();
-	bool found = false;
-
-	for (int i = 0; i < ARRAY_SIZE(delims); i++) {
-		struct sview r;
-		struct sview tok = sv_split_top(v, delims[i], false, &r);
-
-		if (sv_is_empty(r))
-			continue;
-		if (!found || tok.len < best.len) {
-			best = tok;
-			best_rest = r;
-			found = true;
-		}
-	}
-	*rest = best_rest;
-	return best;
+	return sv_split_delim(v, sarr(".", "::", "["), false, rest);
 }
 
 /* Parse BASE{.field|::op<args>} and populate the base reference/accessor AST. */
@@ -388,10 +371,26 @@ static int parse_arg_param(struct sview orig, struct sview def, struct utrace_pa
 	p->arg.source = sv_strdup(argdef);
 
 	/* peel trailing "/MOD" render modifiers (paren-aware, so map(a,b) is intact) */
-	def = sv_split_top(def, "/", false, &mods);
+	def = sv_split_delim(def, sarr("/"), false, &mods);
 
-	/* split "expression[:type]", treating :: operators as part of expression */
-	expr = sv_trim(sv_split_top(def, ":", false, &arg_type));
+	/* split "expression[:type]": '::' is an operator, only a lone ':' starts the type */
+	expr = def;
+	arg_type = sv_empty();
+	for (struct sview scan = def; !sv_is_empty(scan); ) {
+		struct sview tail;
+
+		sv_split_delim(scan, sarr("::", ":"), false, &tail);
+		if (sv_is_empty(tail))
+			break;
+		if (sv_starts_with(tail, "::")) {	/* longest match wins */
+			scan = sv_consume_left(tail, 2);
+			continue;
+		}
+		expr = sv(def.s, tail.s - def.s);
+		arg_type = tail;
+		break;
+	}
+	expr = sv_trim(expr);
 	int err = parse_arg_expr(orig, argdef, expr, p);
 	if (err)
 		return err;
@@ -408,7 +407,7 @@ static int parse_arg_param(struct sview orig, struct sview def, struct utrace_pa
 	/* render modifiers: "/name" or "/name(args)", e.g. /x, /map(0=a,1=b) */
 	while (!sv_is_empty(mods)) {
 		struct sview rest;
-		struct sview mod = sv_trim(sv_split_top(sv_consume_left(mods, 1), "/", false, &rest));
+		struct sview mod = sv_trim(sv_split_delim(sv_consume_left(mods, 1), sarr("/"), false, &rest));
 
 		mods = rest;
 		if (sv_is_empty(mod))
@@ -448,7 +447,7 @@ static int parse_params(struct sview orig, struct sview def, struct utrace_param
 
 	while (!sv_is_empty(def)) {
 		struct sview rest;
-		struct sview param = sv_split_top(def, ",", true, &rest);
+		struct sview param = sv_split_delim(def, sarr(","), true, &rest);
 
 		def = sv_consume_left(rest, 1);
 
