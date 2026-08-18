@@ -127,6 +127,7 @@ static int arg_map_cmp(const void *a, const void *b)
 static int parse_arg_map(struct sview orig, struct sview def, struct utrace_param *p)
 {
 	struct utrace_arg_map *map = NULL;
+	struct sview body = def;
 	int cnt = 0;
 
 	if (sv_is_empty(sv_trim(def)))
@@ -161,7 +162,7 @@ static int parse_arg_map(struct sview orig, struct sview def, struct utrace_para
 
 	for (int i = 1; i < cnt; i++) {
 		if (map[i].key == map[i - 1].key)
-			return utrace_err(orig, def, "duplicate map key %lld\n", (long long)map[i].key);
+			return utrace_err(orig, body, "duplicate map key %lld\n", (long long)map[i].key);
 	}
 
 	p->arg.map = map;
