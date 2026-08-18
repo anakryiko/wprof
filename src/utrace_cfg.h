@@ -6,6 +6,7 @@
 #ifndef __bpf__
 #include <stdbool.h>
 #include <stddef.h>
+#include <linux/bpf.h>
 #include "elf_utils.h"
 #include "strs.h"
 #endif
@@ -251,6 +252,14 @@ struct utrace_cfg {
 			int prog_fd;	/* resolved target prog fd (filled during setup) */
 			unsigned int btf_func_id; /* BTF func type ID */
 			struct btf *btf; /* target prog BTF (valid during setup only) */
+			enum bpf_prog_type prog_type;	/* type of the target program */
+			/*
+			 * Prototype describing the program's logical arguments. For
+			 * struct_ops programs it comes from the ops struct member and
+			 * lives in proto_btf (vmlinux or a module), not in ->btf.
+			 */
+			const struct btf_type *proto;
+			const struct btf *proto_btf;
 		} bpf_prog;
 
 		/* GENERIC SPAN */
