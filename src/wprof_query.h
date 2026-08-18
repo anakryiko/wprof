@@ -10,7 +10,7 @@
  * that bpf_prog_info doesn't carry by reading struct bpf_prog through a bpf_prog
  * iterator.
  */
-int wprof_query_struct_ops_proto(unsigned int prog_id, const struct btf **btf_out,
-				 const struct btf_type **proto_out);
+int wprof_query_st_ops_proto(unsigned int prog_id, const struct btf **btf_out,
+			    const struct btf_type **proto_out);
 
 #endif /* __WPROF_QUERY_H_ */
