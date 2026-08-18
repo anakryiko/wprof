@@ -364,15 +364,9 @@ static int utrace_acc_err(const struct utrace_param *p,
 	va_end(ap);
 
 	if (p->arg.source) {
-		struct sview source = acc ? acc->source : sv_new(p->arg.source);
-		int off = source.s - p->arg.source;
-		int len = source.len;
+		struct sview source = sv_new(p->arg.source);
 
-		eprintf("  %s\n", p->arg.source);
-		if (sv_is_empty(source))
-			len = 1;
-		eprintf("  %*s%.*s\n", off, "", len,
-			"^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^");
+		utrace_highlight(source, acc ? acc->source : source);
 	}
 	return -EINVAL;
 }

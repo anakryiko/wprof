@@ -331,6 +331,7 @@ void utrace_cfg_add_pid(struct utrace_cfg *cfg, int pid, enum utrace_pid_discove
 int utrace_cfg_parse(const char *def);
 int utrace_cfg_parse_file(const char *path);
 void utrace_cfg_format(const struct utrace_cfg *cfg, struct sbuf *sb);
+void utrace_highlight(struct sview orig, struct sview bad);
 
 #endif /* !__bpf__ */
 
