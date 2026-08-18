@@ -15,18 +15,12 @@
 
 /* --- error reporting with position highlighting -------------------------- */
 
-__printf(3, 4)
-static int utrace_err(struct sview orig, struct sview bad, const char *fmt, ...)
+/* echo orig with a '^^^' run under bad; bad outside orig underlines all of it */
+void utrace_highlight(struct sview orig, struct sview bad)
 {
-	va_list ap;
-
-	va_start(ap, fmt);
-	eprintf("utrace: %s", vsfmt(fmt, ap));
-	va_end(ap);
+	int off, len;
 
 	eprintf("  %.*s\n", orig.len, orig.s);
-
-	int off, len;
 
 	if (bad.s >= orig.s && bad.s < orig.s + orig.len) {
 		off = bad.s - orig.s;
@@ -42,6 +36,18 @@ static int utrace_err(struct sview orig, struct sview bad, const char *fmt, ...)
 
 	eprintf("  %*s%.*s\n", off, "", len,
 		"^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^");
+}
+
+__printf(3, 4)
+static int utrace_err(struct sview orig, struct sview bad, const char *fmt, ...)
+{
+	va_list ap;
+
+	va_start(ap, fmt);
+	eprintf("utrace: %s", vsfmt(fmt, ap));
+	va_end(ap);
+
+	utrace_highlight(orig, bad);
 
 	return -EINVAL;
 }
