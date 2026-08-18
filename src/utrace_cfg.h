@@ -246,6 +246,7 @@ struct utrace_cfg {
 
 		/* BPF_PROBE, BPF_RETPROBE, BPF_SPAN */
 		struct {
+			char *entry;	/* optional entry program scoping a subprogram name */
 			char *name;
 			int prog_fd;	/* resolved target prog fd (filled during setup) */
 			unsigned int btf_func_id; /* BTF func type ID */
