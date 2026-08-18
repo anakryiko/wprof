@@ -142,6 +142,10 @@ struct btf;
 /* Lazily parse and cache the running kernel's BTF; exits on failure. */
 struct btf *load_vmlinux_btf(void);
 
+struct ksyms;
+/* Lazily load and cache /proc/kallsyms; NULL if unavailable. */
+struct ksyms *load_ksyms(void);
+
 static inline const char *fmt_timestamp_ns(u64 realtime_ns)
 {
 	time_t t = realtime_ns / 1000000000ULL;
