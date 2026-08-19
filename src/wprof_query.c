@@ -187,6 +187,41 @@ static int st_ops_info(struct wprof_prog_info *info)
 
 	info->proto_btf = btf;
 	info->proto = st_ops_stub_proto(btf, proto, skel->bss->st_ops_stub_addr) ?: proto;
+	info->args_in_ctx = true;
+	return 0;
+}
+
+/*
+ * fentry, fexit and LSM programs are called with the arguments of the function
+ * they attach to, which attach_btf_id names.
+ */
+static int attach_func_info(struct wprof_prog_info *info)
+{
+	const struct btf_type *t, *proto;
+	const struct btf *btf;
+
+	/*
+	 * Without an attach_btf the target is another BPF program, and
+	 * attach_btf_id indexes that program's BTF rather than the kernel's.
+	 * Leave the arguments to the program's own prototype.
+	 */
+	if (!skel->bss->attach_btf_id || !skel->bss->attach_btf_obj_id)
+		return 0;
+
+	btf = fetch_kernel_btf(skel->bss->attach_btf_obj_id);
+	if (!btf)
+		return -ESRCH;
+
+	t = btf__type_by_id(btf, skel->bss->attach_btf_id);
+	if (!btf_is_func(t))
+		return -EINVAL;
+	proto = btf__type_by_id(btf, t->type);
+	if (!btf_is_func_proto(proto))
+		return -EINVAL;
+
+	info->proto_btf = btf;
+	info->proto = proto;
+	info->args_in_ctx = true;
 	return 0;
 }
 
@@ -200,9 +235,31 @@ int wprof_query_prog_info(unsigned int prog_id, struct wprof_prog_info *info)
 
 	info->expected_attach_type = skel->bss->expected_attach_type;
 
+	/*
+	 * The attach type only means anything within a program type: struct_ops
+	 * reuses the field as an ops member index, which aliases the values the
+	 * tracing and LSM types use.
+	 */
 	switch (skel->bss->prog_type) {
 	case BPF_PROG_TYPE_STRUCT_OPS:
 		return st_ops_info(info);
+	case BPF_PROG_TYPE_TRACING:
+		switch (info->expected_attach_type) {
+		case BPF_TRACE_FENTRY:
+		case BPF_TRACE_FEXIT:
+		case BPF_MODIFY_RETURN:
+			return attach_func_info(info);
+		default:
+			return 0;
+		}
+	case BPF_PROG_TYPE_LSM:
+		switch (info->expected_attach_type) {
+		case BPF_LSM_MAC:
+		case BPF_LSM_CGROUP:
+			return attach_func_info(info);
+		default:
+			return 0;
+		}
 	default:
 		return 0;
 	}
