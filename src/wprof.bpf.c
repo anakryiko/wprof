@@ -2058,28 +2058,11 @@ static int utrace_read_arg_raw_tp(void *ctx, int idx, u64 *value)
 	return 0;
 }
 
-static int utrace_read_arg_tp(void *ctx, int byte_off, u64 *value)
-{
-	u64 val = 0;
-	void *args;
-	int err;
-
-	err = bpf_probe_read_kernel(&args, sizeof(args), &ctx);
-	if (err)
-		return err;
-	err = bpf_probe_read_kernel(&val, sizeof(val), args + byte_off);
-	if (err)
-		return err;
-	*value = val;
-	return 0;
-}
-
 enum utrace_handler_flags {
 	UTRACE_PF_KERNEL	= 1 << 0,
 	UTRACE_PF_FENTRY	= 1 << 1,
 	UTRACE_PF_USDT		= 1 << 2,
 	UTRACE_PF_RAW_TP	= 1 << 3,
-	UTRACE_PF_TP		= 1 << 4,
 };
 
 static u64 utrace_adjust_scalar(u64 val, u16 size, bool is_signed)
@@ -2101,34 +2084,12 @@ static int utrace_read_arg(void *ctx, enum utrace_handler_flags flags,
 	int arg_idx = op->arg_idx;
 	int err;
 
-	if ((flags & UTRACE_PF_TP) && (op->flags & UTRACE_READ_F_TP_DATA_LOC)) {
-		u32 data_loc = 0;
-		void *args;
-
-		err = bpf_probe_read_kernel(&args, sizeof(args), &ctx);
-		if (err)
-			return err;
-		err = bpf_probe_read_kernel(&data_loc, sizeof(data_loc), args + arg_idx);
-		if (err)
-			return err;
-		val = (u64)(args + (data_loc & 0xffff));
-	} else if ((flags & UTRACE_PF_TP) && (op->flags & UTRACE_READ_F_TP_INLINE)) {
-		void *args;
-
-		err = bpf_probe_read_kernel(&args, sizeof(args), &ctx);
-		if (err)
-			return err;
-		val = (u64)(args + arg_idx);
-	} else if (flags & UTRACE_PF_USDT) {
+	if (flags & UTRACE_PF_USDT) {
 		err = bpf_usdt_arg(ctx, arg_idx, (long *)&val);
 		if (err)
 			return err;
 	} else if (flags & UTRACE_PF_RAW_TP) {
 		err = utrace_read_arg_raw_tp(ctx, arg_idx, &val);
-		if (err)
-			return err;
-	} else if (flags & UTRACE_PF_TP) {
-		err = utrace_read_arg_tp(ctx, arg_idx, &val);
 		if (err)
 			return err;
 	} else if (flags & UTRACE_PF_FENTRY) {
@@ -2161,6 +2122,13 @@ static int utrace_read_str(u64 cur, enum utrace_handler_flags flags,
 	size_t size = op->size;
 	if (size > MAX_UTRACE_STR_SZ)
 		return -E2BIG;
+
+	if (op->flags & UTRACE_READ_F_TP_DATA_LOC) {
+		u32 data_loc = 0;
+
+		bpf_probe_read_kernel(&data_loc, sizeof(data_loc), (void *)(cur + op->offset));
+		return bpf_probe_read_kernel_str(buf, size, (void *)(cur + (data_loc & 0xffff)));
+	}
 
 	if (op->flags & UTRACE_READ_F_KERNEL)
 		return bpf_probe_read_kernel_str(buf, size, (void *)(cur + op->offset));
@@ -2216,6 +2184,10 @@ static __always_inline int utrace_handle_probe(void *ctx, enum utrace_handler_fl
 
 			const struct utrace_read_op *op = &cfg->arg_ops[i][j];
 			switch (op->kind) {
+			case UTRACE_READ_CTX:
+				/* read through the stack slot to get a scalar out of ctx */
+				bpf_probe_read_kernel(&val, sizeof(val), &ctx);
+				break;
 			case UTRACE_READ_ARG:
 				err = utrace_read_arg(ctx, flags, op, &val);
 				if (err)
@@ -2330,7 +2302,7 @@ int wprof_ut_raw_tp(struct bpf_raw_tracepoint_args *ctx)
 SEC("?tp")
 int wprof_ut_tp(void *ctx)
 {
-	return utrace_handle_probe(ctx, UTRACE_PF_KERNEL | UTRACE_PF_TP);
+	return utrace_handle_probe(ctx, UTRACE_PF_KERNEL);
 }
 
 SEC("?kprobe")
