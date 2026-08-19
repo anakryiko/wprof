@@ -603,8 +603,11 @@ static int validate_probe_def(struct sview orig, const struct utrace_cfg *cfg)
 		const struct utrace_param *p = &cfg->params[i];
 
 		if (p->type == UTRACE_PARAM_ARG) {
-			if (is_ret_probe(cfg->type) && p->arg.arg_idx != UTRACE_ARG_RET)
+			if (is_ret_probe(cfg->type) && p->arg.arg_idx != UTRACE_ARG_RET) {
+				if (p->arg.ref_name)
+					return utrace_err(orig, orig, "return probes only support arg:ret captures, not arg:%s\n", p->arg.ref_name);
 				return utrace_err(orig, orig, "return probes only support arg:ret captures, not arg:%d\n", p->arg.arg_idx);
+			}
 			if (!is_ret_probe(cfg->type) && !is_span_probe(cfg->type) && p->arg.arg_idx == UTRACE_ARG_RET)
 				return utrace_err(orig, orig, "arg:ret is only valid on return/span probes (uret/kret/uspan/kspan)\n");
 			if (p->arg.accessor_cnt && !probe_supports_accessors(cfg))
@@ -1140,6 +1143,8 @@ static void format_probe(const struct utrace_cfg *cfg, struct sbuf *sb)
 			case UTRACE_PARAM_ARG:
 				if (p->arg.arg_idx == UTRACE_ARG_RET)
 					sbuf_appendf(sb, "arg:ret");
+				else if (p->arg.arg_idx == UTRACE_ARG_CTX)
+					sbuf_appendf(sb, "arg:ctx");
 				else if (p->arg.arg_idx == UTRACE_ARG_UNRESOLVED && p->arg.ref_name)
 					sbuf_appendf(sb, "arg:%s", p->arg.ref_name);
 				else

@@ -1270,6 +1270,9 @@ static int resolve_arg_name(const struct utrace_cfg *cfg, const struct btf *btf,
 	case UTRACE_BPF_PROBE:
 	case UTRACE_BPF_RETPROBE:
 	case UTRACE_BPF_SPAN: {
+		if (strcmp(name, "ctx") == 0)
+			return UTRACE_ARG_CTX;
+
 		const struct btf_type *proto = cfg->bpf_prog.proto;
 		if (!proto)
 			return -ENOENT;
@@ -1404,6 +1407,10 @@ static int utrace_resolve_base(struct utrace_arg_state *state, struct utrace_cfg
 	case UTRACE_BPF_PROBE:
 	case UTRACE_BPF_RETPROBE:
 	case UTRACE_BPF_SPAN:
+		if (p->arg.arg_idx == UTRACE_ARG_CTX) {
+			inferred_type = UTRACE_ARG_PTR;
+			break;
+		}
 		if (!cfg->bpf_prog.proto && p->arg.accessor_cnt)
 			return utrace_acc_err(p, &p->arg.accessors[0], "typed argument access requires BPF program BTF\n");
 		if (cfg->bpf_prog.proto) {
@@ -1426,7 +1433,10 @@ static int utrace_resolve_base(struct utrace_arg_state *state, struct utrace_cfg
 	 * A program declares its context as the type the verifier rewrites accesses
 	 * through, but is handed the kernel-side one, which is what we observe.
 	 */
-	if (p->arg.arg_idx == 0 && cfg_is_bpf_type(cfg) && cfg->bpf_prog.ctx_btf_id) {
+	bool is_ctx = p->arg.arg_idx == UTRACE_ARG_CTX ||
+		      (p->arg.arg_idx == 0 && !bpf_prog_args_in_ctx(cfg));
+
+	if (is_ctx && cfg_is_bpf_type(cfg) && cfg->bpf_prog.ctx_btf_id) {
 		state->type = (struct utrace_type_ref){
 			.btf = load_vmlinux_btf(),
 			.id = cfg->bpf_prog.ctx_btf_id,
@@ -1461,6 +1471,10 @@ static int utrace_resolve_base(struct utrace_arg_state *state, struct utrace_cfg
 		return utrace_emit_read_op(p, NULL, UTRACE_READ_VAL, p->arg.tp_byte_off,
 					   sizeof(void *), 0);
 	}
+	/* arg:ctx is the context pointer the traced program itself was called with */
+	if (arg_idx == UTRACE_ARG_CTX)
+		return utrace_emit_read_op(p, NULL, UTRACE_READ_ARG, 0, sizeof(void *), 0);
+
 	bool read_ctx = p->arg.arg_idx != UTRACE_ARG_RET && bpf_prog_args_in_ctx(cfg);
 
 	/*
@@ -1519,7 +1533,7 @@ static int augment_cfg_args(struct utrace_cfg *cfg, const struct btf *vmlinux_bt
 			continue;
 
 		int resolved = resolve_arg_name(cfg, btf, p->arg.ref_name);
-		if (resolved < 0) {
+		if (resolved < 0 && resolved != UTRACE_ARG_CTX) {
 			eprintf("utrace: failed to resolve argument '%s'\n", p->arg.ref_name);
 			return -ESRCH;
 		} else {

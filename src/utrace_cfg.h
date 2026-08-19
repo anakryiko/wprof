@@ -109,6 +109,7 @@ enum utrace_pid_discovery {
 
 #define UTRACE_ARG_RET (-1)
 #define UTRACE_ARG_UNRESOLVED (-2)	/* name-based ref, resolved during augmentation */
+#define UTRACE_ARG_CTX (-3)		/* arg:ctx, the raw context pointer of a BPF program */
 
 #ifndef __bpf__
 
