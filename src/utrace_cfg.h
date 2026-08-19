@@ -30,6 +30,7 @@
 
 enum utrace_read_op_kind {
 	UTRACE_READ_INVALID,
+	UTRACE_READ_CTX,
 	UTRACE_READ_ARG,
 	UTRACE_READ_VAL,
 	UTRACE_READ_STR,
@@ -37,9 +38,8 @@ enum utrace_read_op_kind {
 
 enum utrace_read_op_flags {
 	UTRACE_READ_F_SIGNED = 1 << 0,
-	UTRACE_READ_F_TP_INLINE = 1 << 1,
+	UTRACE_READ_F_KERNEL = 1 << 1,
 	UTRACE_READ_F_TP_DATA_LOC = 1 << 2,
-	UTRACE_READ_F_KERNEL = 1 << 3,
 };
 
 struct utrace_read_op {

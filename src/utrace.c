@@ -882,7 +882,13 @@ static int utrace_compile_fallback_terminal(struct utrace_arg_state *state, stru
 	p->arg.arg_type = type;
 	if (type == UTRACE_ARG_STR) {
 		read_arg->size = sizeof(void *);
-		return utrace_emit_read_op(p, NULL, UTRACE_READ_STR, 0, MAX_UTRACE_STR_SZ, 0);
+		if (p->arg.tp_data_loc) {
+			return utrace_emit_read_op(p, NULL, UTRACE_READ_STR, p->arg.tp_byte_off,
+						   MAX_UTRACE_STR_SZ, UTRACE_READ_F_TP_DATA_LOC);
+		} else {
+			return utrace_emit_read_op(p, NULL, UTRACE_READ_STR, state->offset,
+						   MAX_UTRACE_STR_SZ, 0);
+		}
 	}
 
 	int size = utrace_arg_size(type);
@@ -1423,23 +1429,35 @@ static int utrace_resolve_base(struct utrace_arg_state *state, struct utrace_cfg
 
 	state->fallback_type = inferred_type;
 	enum utrace_arg_type type = p->arg.arg_type == UTRACE_ARG_UNKNOWN ? state->fallback_type : p->arg.arg_type;
-	unsigned char flags = 0;
 	int arg_idx = p->arg.arg_idx;
 
+	/*
+	 * A tracepoint's fields live in the event buffer ctx points at, so seed with
+	 * that pointer and read the field out of it. Strings are left to the fallback
+	 * terminal, which reads at the offset stashed here.
+	 */
 	if (cfg->type == UTRACE_TRACEPOINT) {
-		arg_idx = p->arg.tp_byte_off;
-		if (type == UTRACE_ARG_STR)
-			flags = p->arg.tp_data_loc ? UTRACE_READ_F_TP_DATA_LOC : UTRACE_READ_F_TP_INLINE;
+		err = utrace_emit_read_op(p, NULL, UTRACE_READ_CTX, 0, sizeof(void *), 0);
+		if (err)
+			return err;
+
+		if (type == UTRACE_ARG_STR) {
+			/* the READ_STR is emitted by utrace_compile_fallback_terminal() */
+			state->offset = p->arg.tp_byte_off;
+			return 0;
+		}
+		state->base_op_idx = 1;
+		return utrace_emit_read_op(p, NULL, UTRACE_READ_VAL, p->arg.tp_byte_off,
+					   sizeof(void *), 0);
 	}
 	bool read_ctx = p->arg.arg_idx != UTRACE_ARG_RET && bpf_prog_args_in_ctx(cfg);
 
-	p->arg.read_op_cnt = 0;
 	/*
 	 * When arguments are passed through a context pointer, the first read gets
 	 * that pointer and the value itself comes from ctx[arg_idx].
 	 */
 	if (read_ctx) {
-		err = utrace_emit_read_op(p, NULL, UTRACE_READ_ARG, 0, sizeof(void *), flags);
+		err = utrace_emit_read_op(p, NULL, UTRACE_READ_ARG, 0, sizeof(void *), 0);
 		if (err)
 			return err;
 
@@ -1448,7 +1466,7 @@ static int utrace_resolve_base(struct utrace_arg_state *state, struct utrace_cfg
 					   sizeof(void *), 0);
 	}
 
-	return utrace_emit_read_op(p, NULL, UTRACE_READ_ARG, arg_idx, sizeof(void *), flags);
+	return utrace_emit_read_op(p, NULL, UTRACE_READ_ARG, arg_idx, sizeof(void *), 0);
 }
 
 /* Expand wildcards and resolve arg types/names for a single cfg */
