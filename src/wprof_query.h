@@ -13,4 +13,12 @@
 int wprof_query_st_ops_proto(unsigned int prog_id, const struct btf **btf_out,
 			    const struct btf_type **proto_out);
 
+/*
+ * Kernel-side type of a program type's context. A program is written against
+ * the prog_ctx_type half of struct bpf_ctx_convert, but is called with the
+ * kern_ctx_type one, which is what a probe on the program itself observes.
+ * Returns a vmlinux BTF type ID, or zero if there is no usable one.
+ */
+int wprof_query_ctx_kern_type(enum bpf_prog_type prog_type);
+
 #endif /* __WPROF_QUERY_H_ */
