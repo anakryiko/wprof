@@ -5,13 +5,23 @@
 
 #include <bpf/btf.h>
 
+struct wprof_prog_info {
+	enum bpf_attach_type expected_attach_type;
+	/*
+	 * Prototype describing the program's logical arguments, taken from
+	 * whatever its program type attaches to, and the BTF holding it. Left
+	 * NULL for program types whose attach target says nothing about them.
+	 */
+	const struct btf_type *proto;
+	const struct btf *proto_btf;
+};
+
 /*
- * Prototype of the struct_ops member a program implements, recovered from facts
- * that bpf_prog_info doesn't carry by reading struct bpf_prog through a bpf_prog
- * iterator.
+ * What a loaded program's own bpf_prog says about it, which bpf_prog_info
+ * doesn't carry, read through a bpf_prog iterator. Beyond the attach type this
+ * is program-type specific, so fields not described above are left alone.
  */
-int wprof_query_st_ops_proto(unsigned int prog_id, const struct btf **btf_out,
-			    const struct btf_type **proto_out);
+int wprof_query_prog_info(unsigned int prog_id, struct wprof_prog_info *info);
 
 /*
  * Kernel-side type of a program type's context. A program is written against

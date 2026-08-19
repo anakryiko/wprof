@@ -215,12 +215,21 @@ static bool cfg_is_bpf_type(const struct utrace_cfg *cfg)
 /*
  * Some BPF program types don't take their arguments directly: they are compiled
  * down to a single context pointer to an array of u64 values, so a logical
- * argument N is read as ctx[N].
+ * argument N is read as ctx[N]. Which ones do isn't decided by program type
+ * alone; a tracing program is indexed when it is an fentry, but not when it is
+ * an iterator, which takes a context struct of its own.
  */
 static bool bpf_prog_args_in_ctx(const struct utrace_cfg *cfg)
 {
-	return cfg_is_bpf_type(cfg) && cfg->bpf_prog.subprog_idx == 0 &&
-	       cfg->bpf_prog.prog_type == BPF_PROG_TYPE_STRUCT_OPS;
+	if (!cfg_is_bpf_type(cfg) || cfg->bpf_prog.subprog_idx != 0)
+		return false;
+
+	switch (cfg->bpf_prog.prog_type) {
+	case BPF_PROG_TYPE_STRUCT_OPS:
+		return true;
+	default:
+		return false;
+	}
 }
 
 /*
@@ -1952,18 +1961,24 @@ static int resolve_bpf_prog_proto(struct utrace_cfg *cfg, __u32 prog_id)
 	int err;
 
 	if (cfg->bpf_prog.subprog_idx == 0) {
-		switch (cfg->bpf_prog.prog_type) {
-		case BPF_PROG_TYPE_STRUCT_OPS:
-			return wprof_query_st_ops_proto(prog_id, &cfg->bpf_prog.proto_btf,
-							&cfg->bpf_prog.proto);
-		default:
-			/* the program is called with the kernel-side context type */
-			err = wprof_query_ctx_kern_type(cfg->bpf_prog.prog_type);
-			if (err < 0)
-				return err;
-			cfg->bpf_prog.ctx_btf_id = err;
-			break;
+		struct wprof_prog_info info = {};
+
+		err = wprof_query_prog_info(prog_id, &info);
+		if (err)
+			return err;
+		cfg->bpf_prog.expected_attach_type = info.expected_attach_type;
+
+		if (info.proto) {
+			cfg->bpf_prog.proto = info.proto;
+			cfg->bpf_prog.proto_btf = info.proto_btf;
+			return 0;
 		}
+
+		/* the program is called with the kernel-side context type */
+		err = wprof_query_ctx_kern_type(cfg->bpf_prog.prog_type);
+		if (err < 0)
+			return err;
+		cfg->bpf_prog.ctx_btf_id = err;
 	}
 
 	f = btf__type_by_id(cfg->bpf_prog.btf, cfg->bpf_prog.btf_func_id);
