@@ -217,19 +217,13 @@ static bool cfg_is_bpf_type(const struct utrace_cfg *cfg)
  * down to a single context pointer to an array of u64 values, so a logical
  * argument N is read as ctx[N]. Which ones do isn't decided by program type
  * alone; a tracing program is indexed when it is an fentry, but not when it is
- * an iterator, which takes a context struct of its own.
+ * an iterator, which takes a context struct of its own. The query reports it,
+ * and only alongside the prototype that describes those arguments.
  */
 static bool bpf_prog_args_in_ctx(const struct utrace_cfg *cfg)
 {
-	if (!cfg_is_bpf_type(cfg) || cfg->bpf_prog.subprog_idx != 0)
-		return false;
-
-	switch (cfg->bpf_prog.prog_type) {
-	case BPF_PROG_TYPE_STRUCT_OPS:
-		return true;
-	default:
-		return false;
-	}
+	return cfg_is_bpf_type(cfg) && cfg->bpf_prog.subprog_idx == 0 &&
+	       cfg->bpf_prog.args_in_ctx;
 }
 
 /*
@@ -1971,6 +1965,7 @@ static int resolve_bpf_prog_proto(struct utrace_cfg *cfg, __u32 prog_id)
 		if (info.proto) {
 			cfg->bpf_prog.proto = info.proto;
 			cfg->bpf_prog.proto_btf = info.proto_btf;
+			cfg->bpf_prog.args_in_ctx = info.args_in_ctx;
 			return 0;
 		}
 

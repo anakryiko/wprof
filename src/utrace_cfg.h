@@ -255,6 +255,7 @@ struct utrace_cfg {
 			struct btf *btf; /* target prog BTF (valid during setup only) */
 			enum bpf_prog_type prog_type;	/* type of the target program */
 			enum bpf_attach_type expected_attach_type; /* entry programs only */
+			bool args_in_ctx;		/* logical arguments arrive as ctx[N] */
 			int subprog_idx;		/* 0 for the entry program itself */
 			/*
 			 * Prototype describing the program's logical arguments. For
