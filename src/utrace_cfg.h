@@ -264,6 +264,8 @@ struct utrace_cfg {
 			 */
 			const struct btf_type *proto;
 			const struct btf *proto_btf;
+			/* the program's own prototype, in ->btf, which arg:ret returns */
+			const struct btf_type *self_proto;
 			/* vmlinux BTF ID of the kernel-side type of arg 0 for entry programs, 0 if it has none */
 			__u32 ctx_btf_id;
 		} bpf_prog;
