@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause)
 /* Copyright (c) 2026 Meta Platforms, Inc. */
+#include <ctype.h>
 #include <errno.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 #include <linux/bpf.h>
@@ -190,5 +192,45 @@ int wprof_query_st_ops_proto(unsigned int prog_id, const struct btf **btf_out,
 
 	*btf_out = btf;
 	*proto_out = st_ops_stub_proto(btf, proto, skel->bss->st_ops_stub_addr) ?: proto;
+	return 0;
+}
+
+/*
+ * Members of struct bpf_ctx_convert come in prog/kern pairs, one per program
+ * type. The kernel indexes them through a private table that BTF doesn't carry,
+ * so match on the member name instead.
+ */
+int wprof_query_ctx_kern_type(enum bpf_prog_type prog_type)
+{
+	struct btf *vmlinux_btf = load_vmlinux_btf();
+	const char *name = libbpf_bpf_prog_type_str(prog_type);
+	const struct btf_member *m;
+	const struct btf_type *t;
+	char member[256];
+	__s32 id;
+	int i, n;
+
+	if (!name)
+		return 0;
+
+	n = snprintf(member, sizeof(member), "BPF_PROG_TYPE_%s", name);
+	for (i = 0; i < n; i++)
+		member[i] = toupper(member[i]);
+	strcpy(member + n, "_kern");
+
+	id = btf__find_by_name_kind(vmlinux_btf, "bpf_ctx_convert", BTF_KIND_STRUCT);
+	if (id < 0)
+		return id;
+
+	t = btf__type_by_id(vmlinux_btf, id);
+	m = btf_members(t);
+	for (i = 0; i < btf_vlen(t); i++, m++) {
+		if (strcmp(btf__name_by_offset(vmlinux_btf, m->name_off), member) != 0)
+			continue;
+		/* types that have no real context, like void * or u64, are of no use */
+		if (!btf_is_struct(btf_skip_mods(vmlinux_btf, m->type)))
+			return 0;
+		return m->type;
+	}
 	return 0;
 }

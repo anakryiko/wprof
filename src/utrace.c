@@ -1422,6 +1422,17 @@ static int utrace_resolve_base(struct utrace_arg_state *state, struct utrace_cfg
 
 	if (!err)
 		state->type = UTRACE_TYPE_REF(args_btf, btf_id);
+	/*
+	 * A program declares its context as the type the verifier rewrites accesses
+	 * through, but is handed the kernel-side one, which is what we observe.
+	 */
+	if (p->arg.arg_idx == 0 && cfg_is_bpf_type(cfg) && cfg->bpf_prog.ctx_btf_id) {
+		state->type = (struct utrace_type_ref){
+			.btf = load_vmlinux_btf(),
+			.id = cfg->bpf_prog.ctx_btf_id,
+			.is_ptr = true,
+		};
+	}
 	if (!base_name && p->arg.ref_name)
 		base_name = p->arg.ref_name;
 	if (!p->arg.name && base_name)
@@ -1924,6 +1935,7 @@ out:
 static int resolve_bpf_prog_proto(struct utrace_cfg *cfg, __u32 prog_id)
 {
 	const struct btf_type *f;
+	int err;
 
 	if (cfg->bpf_prog.subprog_idx == 0) {
 		switch (cfg->bpf_prog.prog_type) {
@@ -1931,6 +1943,11 @@ static int resolve_bpf_prog_proto(struct utrace_cfg *cfg, __u32 prog_id)
 			return wprof_query_st_ops_proto(prog_id, &cfg->bpf_prog.proto_btf,
 							&cfg->bpf_prog.proto);
 		default:
+			/* the program is called with the kernel-side context type */
+			err = wprof_query_ctx_kern_type(cfg->bpf_prog.prog_type);
+			if (err < 0)
+				return err;
+			cfg->bpf_prog.ctx_btf_id = err;
 			break;
 		}
 	}
