@@ -179,7 +179,7 @@ $(OUTPUT)/%.bpf.o: %.bpf.c $(LIBBPF_OBJ) $(wildcard %.h) $(VMLINUX) | $(OUTPUT) 
 		     -c $(filter %.c,$^) -o $(patsubst %.bpf.o,%.tmp.bpf.o,$@)
 	$(Q)$(BPFTOOL) gen object $@ $(patsubst %.bpf.o,%.tmp.bpf.o,$@)
 
-$(OUTPUT)/wprof.bpf.o: wprof.h wprof.bpf.h
+$(OUTPUT)/wprof.bpf.o: wprof.h wprof.bpf.h utrace_cfg.h
 $(OUTPUT)/utils.bpf.o: wprof.h wprof.bpf.h
 $(OUTPUT)/scx.bpf.o: wprof.h wprof.bpf.h
 
