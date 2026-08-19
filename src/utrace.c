@@ -1118,7 +1118,7 @@ static int utrace_func_returns_void(const struct utrace_cfg *cfg, const struct b
 		break;
 	case UTRACE_BPF_RETPROBE:
 	case UTRACE_BPF_SPAN:
-		proto = cfg->bpf_prog.proto;
+		proto = cfg->bpf_prog.self_proto;
 		break;
 	default:
 		return -1;
@@ -1414,11 +1414,20 @@ static int utrace_resolve_base(struct utrace_arg_state *state, struct utrace_cfg
 			inferred_type = UTRACE_ARG_PTR;
 			break;
 		}
-		if (!cfg->bpf_prog.proto && p->arg.accessor_cnt)
-			return utrace_acc_err(p, &p->arg.accessors[0], "typed argument access requires BPF program BTF\n");
-		if (cfg->bpf_prog.proto) {
+		const struct btf_type *proto;
+
+		/* arg:ret is the program's own return value, not the one of its target */
+		if (p->arg.arg_idx == UTRACE_ARG_RET) {
+			args_btf = cfg->bpf_prog.btf;
+			proto = cfg->bpf_prog.self_proto;
+		} else {
 			args_btf = cfg->bpf_prog.proto_btf;
-			err = resolve_btf_proto_arg_type(args_btf, cfg->bpf_prog.proto, p->arg.arg_idx,
+			proto = cfg->bpf_prog.proto;
+		}
+		if (!proto && p->arg.accessor_cnt)
+			return utrace_acc_err(p, &p->arg.accessors[0], "typed argument access requires BPF program BTF\n");
+		if (proto) {
+			err = resolve_btf_proto_arg_type(args_btf, proto, p->arg.arg_idx,
 							 &inferred_type, &base_name, &btf_id);
 		}
 		if (err && p->arg.arg_type == UTRACE_ARG_UNKNOWN) {
@@ -1952,33 +1961,34 @@ out:
 static int resolve_bpf_prog_proto(struct utrace_cfg *cfg, __u32 prog_id)
 {
 	const struct btf_type *f;
+	struct wprof_prog_info info = {};
 	int err;
 
-	if (cfg->bpf_prog.subprog_idx == 0) {
-		struct wprof_prog_info info = {};
+	f = btf__type_by_id(cfg->bpf_prog.btf, cfg->bpf_prog.btf_func_id);
+	cfg->bpf_prog.self_proto = btf__type_by_id(cfg->bpf_prog.btf, f->type);
+	cfg->bpf_prog.proto = cfg->bpf_prog.self_proto;
+	cfg->bpf_prog.proto_btf = cfg->bpf_prog.btf;
 
-		err = wprof_query_prog_info(prog_id, &info);
-		if (err)
-			return err;
-		cfg->bpf_prog.expected_attach_type = info.expected_attach_type;
+	if (cfg->bpf_prog.subprog_idx != 0)
+		return 0;
 
-		if (info.proto) {
-			cfg->bpf_prog.proto = info.proto;
-			cfg->bpf_prog.proto_btf = info.proto_btf;
-			cfg->bpf_prog.args_in_ctx = info.args_in_ctx;
-			return 0;
-		}
+	err = wprof_query_prog_info(prog_id, &info);
+	if (err)
+		return err;
+	cfg->bpf_prog.expected_attach_type = info.expected_attach_type;
 
-		/* the program is called with the kernel-side context type */
-		err = wprof_query_ctx_kern_type(cfg->bpf_prog.prog_type);
-		if (err < 0)
-			return err;
-		cfg->bpf_prog.ctx_btf_id = err;
+	if (info.proto) {
+		cfg->bpf_prog.proto = info.proto;
+		cfg->bpf_prog.proto_btf = info.proto_btf;
+		cfg->bpf_prog.args_in_ctx = info.args_in_ctx;
+		return 0;
 	}
 
-	f = btf__type_by_id(cfg->bpf_prog.btf, cfg->bpf_prog.btf_func_id);
-	cfg->bpf_prog.proto = btf__type_by_id(cfg->bpf_prog.btf, f->type);
-	cfg->bpf_prog.proto_btf = cfg->bpf_prog.btf;
+	/* the program is called with the kernel-side context type */
+	err = wprof_query_ctx_kern_type(cfg->bpf_prog.prog_type);
+	if (err < 0)
+		return err;
+	cfg->bpf_prog.ctx_btf_id = err;
 	return 0;
 }
 
