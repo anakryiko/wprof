@@ -159,18 +159,13 @@ static const struct btf_type *st_ops_stub_proto(const struct btf *btf, const str
 	return sproto;
 }
 
-int wprof_query_st_ops_proto(unsigned int prog_id, const struct btf **btf_out,
-			    const struct btf_type **proto_out)
+static int st_ops_info(struct wprof_prog_info *info)
 {
 	const struct btf_type *t, *proto;
 	const struct btf_member *m;
 	const struct btf *btf;
 	__u32 member_idx;
-	int err;
 
-	err = query_prog(prog_id);
-	if (err)
-		return err;
 	if (!skel->bss->attach_btf_id)
 		return -ENOENT;
 
@@ -190,9 +185,27 @@ int wprof_query_st_ops_proto(unsigned int prog_id, const struct btf **btf_out,
 	if (!proto)
 		return -EINVAL;
 
-	*btf_out = btf;
-	*proto_out = st_ops_stub_proto(btf, proto, skel->bss->st_ops_stub_addr) ?: proto;
+	info->proto_btf = btf;
+	info->proto = st_ops_stub_proto(btf, proto, skel->bss->st_ops_stub_addr) ?: proto;
 	return 0;
+}
+
+int wprof_query_prog_info(unsigned int prog_id, struct wprof_prog_info *info)
+{
+	int err;
+
+	err = query_prog(prog_id);
+	if (err)
+		return err;
+
+	info->expected_attach_type = skel->bss->expected_attach_type;
+
+	switch (skel->bss->prog_type) {
+	case BPF_PROG_TYPE_STRUCT_OPS:
+		return st_ops_info(info);
+	default:
+		return 0;
+	}
 }
 
 /*
