@@ -32,6 +32,12 @@ wprof -U 'raw_tp:sys_enter (arg:id) | name:"syscall #{id}" |'
 # decode an integer arg: map syscall numbers (x86-64) to names
 wprof -U 'raw_tp:sys_enter (arg:id/name(syscall)/map(0=read,1=write,257=openat)) | name:"{syscall}" |'
 
+# loaded BPF program, arguments by name and through their fields
+wprof -U 'bpf:lavd_enqueue (arg:p.comm, arg:p.pid, arg:enq_flags/x)'
+
+# context of a sched_cls program, as the kernel sees it (struct sk_buff)
+wprof -U 'bpf:tc_ingress (arg:ctx.len, arg:ctx.priority)'
+
 # function span (entry + exit as a Perfetto slice)
 wprof -U 'uspan:do_work (arg:0/name(task_id), arg:ret/name(result), pid:1234, path:./worker)'
 
@@ -107,6 +113,9 @@ arg:<index-or-name>{.<field>|::<operator><args...>}*[:<type>][/modifier...]
 **By name:** `arg:prev_pid`, `arg:filename`, `arg:id` (resolved from BTF
 or tracepoint format metadata).
 
+**Context pointer:** `arg:ctx`, the raw context pointer the traced program
+was called with. BPF probes only (see **BPF program arguments** below).
+
 **Wildcard:** `arg:*` captures all available arguments with auto-detected
 types and names.
 
@@ -134,6 +143,8 @@ tracepoints) or from ELF USDT note metadata (for USDTs). Falls back to
 - Return probes (`uret:`, `kret:`, `bpfret:`) only support `arg:ret`
 - `arg:ret` is only valid on return and span probes; it is also rejected on a
   function whose BTF return type is `void`
+- `arg:ctx` is only meaningful for `bpf:`/`bpfspan:` probes; elsewhere `ctx` is
+  looked up as an ordinary argument name and fails if the target has none
 - Numeric indices are range-checked at setup. For kprobes and uprobes,
   positional arguments are limited to those the ABI passes in registers (6 on
   x86-64, 8 on arm64); higher or out-of-range indices are rejected
@@ -193,6 +204,44 @@ generic spans whose individual legs are supported. For `bpf:` probes each
 named type in the chain is resolved against vmlinux BTF (by name and kind)
 so kernel types use the running kernel's layout; a type with no vmlinux
 match is treated as program-local and read from the program's own BTF.
+
+### BPF program arguments
+
+A subprogram takes the arguments its own BTF describes, and they are read
+as they are written. An entry program is different: what it declares and
+what it is actually called with are not the same thing, so its arguments
+come from the attach target instead.
+
+For struct_ops programs argument names and types are taken from the
+kernel's definition of the ops struct member being implemented:
+
+```bash
+wprof -U 'bpf:lavd_enqueue (arg:p.comm, arg:enq_flags/x)'
+```
+
+BPF tags argument names with a trailing `__suffix` (`__nullable`, `__ref`,
+...) as annotation. Both spellings resolve, and the stripped one is what is
+displayed, so `arg:prev` and `arg:prev__nullable` are the same argument.
+
+These programs also don't take their arguments directly: they are compiled
+down to a single context pointer to an array of `u64` values, and a logical
+argument `N` is read from `ctx[N]`. `arg:0` is that logical argument, not
+the context, and `arg:ctx` is the array itself.
+
+Every other program type is called with one context argument, so `arg:0`
+and `arg:ctx` are the same pointer. It is typed as the kernel-side context
+type rather than the one the program is written against, because that is
+what a probe on the program observes:
+
+```bash
+# a sched_cls program is handed a struct sk_buff, not the struct
+# __sk_buff it is written against
+wprof -U 'bpf:tc_ingress (arg:0.len)'
+```
+
+Fields that exist only on the program-facing type are rejected as a result.
+Program types whose kernel-side context is not a struct — fentry/fexit, LSM,
+syscall programs — leave the argument untyped; `::cast<TYPE>` still applies.
 
 ### Render modifiers
 
@@ -358,7 +407,9 @@ a JSON string rather than a number.
 wprof automatically detects argument types and names when metadata is
 available:
 
-- **kprobes / BPF probes**: from kernel or program BTF
+- **kprobes**: from kernel BTF
+- **BPF probes**: from the program's own BTF for subprograms, from the attach
+  target for entry programs (see **BPF program arguments**)
 - **raw tracepoints**: from `__bpf_trace_<name>` BTF function prototype
 - **classic tracepoints**: from `/sys/kernel/debug/tracing/events/<cat>/<name>/format`
 - **USDTs**: arg count and sizes from `.note.stapsdt` ELF section
