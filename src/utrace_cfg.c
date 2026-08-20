@@ -898,22 +898,29 @@ static int parse_probe_def(struct sview orig, struct sview def, struct utrace_cf
 	case UTRACE_BPF_PROBE:
 	case UTRACE_BPF_RETPROBE:
 	case UTRACE_BPF_SPAN: {
-		struct sview entry, name;
+		struct sview prog, subprog;
+		long id;
 
-		entry = sv_trim(sv_split(def, ":", &name));
-		if (sv_is_empty(name)) {
-			if (!sv_is_ident(entry))
-				return utrace_err(orig, def, "BPF program name must be an identifier\n");
-			cfg->bpf_prog.name = sv_strdup(entry);
-			break;
+		prog = sv_trim(sv_split(def, ":", &subprog));
+		if (!sv_is_empty(subprog)) {
+			subprog = sv_trim(sv_consume_left(subprog, 1)); /* skip ':' delimiter */
+			if (!sv_is_ident(subprog))
+				return utrace_err(orig, subprog, "BPF subprogram must be an identifier\n");
+			cfg->bpf_prog.name = sv_strdup(subprog);
 		}
 
-		name = sv_trim(sv_consume_left(name, 1)); /* skip ':' delimiter */
-		if (!sv_is_ident(entry) || !sv_is_ident(name))
-			return utrace_err(orig, def, "BPF probe requires 'prog' or 'entry:subprog' identifier names\n");
-
-		cfg->bpf_prog.entry = sv_strdup(entry);
-		cfg->bpf_prog.name = sv_strdup(name);
+		/* a BTF function name never starts with a digit, so an id can't be one */
+		if (!sv_is_empty(prog) && isdigit(prog.s[0])) {
+			if (!sv_as_long(prog, &id) || id <= 0 || id > UINT_MAX)
+				return utrace_err(orig, prog, "invalid BPF program id\n");
+			cfg->bpf_prog.prog_id = id;
+		} else if (!sv_is_ident(prog)) {
+			return utrace_err(orig, prog, "BPF program must be an identifier or an id\n");
+		} else if (cfg->bpf_prog.name) {
+			cfg->bpf_prog.entry = sv_strdup(prog);	/* it scopes the subprogram */
+		} else {
+			cfg->bpf_prog.name = sv_strdup(prog);
+		}
 		break;
 	}
 	default:
@@ -1112,8 +1119,7 @@ static void format_probe(const struct utrace_cfg *cfg, struct sbuf *sb)
 	case UTRACE_BPF_PROBE:
 	case UTRACE_BPF_RETPROBE:
 	case UTRACE_BPF_SPAN:
-		sbuf_appendf(sb, "%s%s%s", cfg->bpf_prog.entry ?: "",
-			     cfg->bpf_prog.entry ? ":" : "", cfg->bpf_prog.name);
+		sbuf_appendf(sb, "%s", utrace_bpf_target_str(cfg));
 		break;
 	default:
 		break;

@@ -9,6 +9,7 @@
 #include <linux/bpf.h>
 #include "elf_utils.h"
 #include "strs.h"
+#include "utils.h"
 #endif
 
 #define MAX_UTRACE_READ_OPS 8
@@ -249,7 +250,8 @@ struct utrace_cfg {
 		/* BPF_PROBE, BPF_RETPROBE, BPF_SPAN */
 		struct {
 			char *entry;	/* optional entry program scoping a subprogram name */
-			char *name;
+			char *name;	/* target function, resolved from prog_id when given by id */
+			unsigned int prog_id;	/* target program id, 0 when named instead */
 			int prog_fd;	/* resolved target prog fd (filled during setup) */
 			unsigned int btf_func_id; /* BTF func type ID */
 			struct btf *btf; /* target prog BTF (valid during setup only) */
@@ -281,6 +283,21 @@ struct utrace_cfg {
 };
 
 struct sbuf;
+
+/*
+ * How a bpf: probe's target reads: the function name, scoped by its entry
+ * program when one is needed, or the id it was named by until that resolves.
+ */
+static inline const char *utrace_bpf_target_str(const struct utrace_cfg *cfg)
+{
+	if (!cfg->bpf_prog.name)
+		return sfmt("%u", cfg->bpf_prog.prog_id);
+	if (cfg->bpf_prog.entry)
+		return sfmt("%s:%s", cfg->bpf_prog.entry, cfg->bpf_prog.name);
+	if (cfg->bpf_prog.prog_id)
+		return sfmt("%u:%s", cfg->bpf_prog.prog_id, cfg->bpf_prog.name);
+	return cfg->bpf_prog.name;
+}
 
 static inline bool cfg_is_span(const struct utrace_cfg *cfg)
 {
