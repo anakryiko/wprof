@@ -64,8 +64,8 @@ wprof -U 'usdt:myapp:request_start (arg:0, pid:nvidia-smi)'
 | `kret:`   | `func_name`          | Kernel function return (kretprobe)   |
 | `tp:`     | `category:name`      | Classic kernel tracepoint            |
 | `raw_tp:` | `name`               | Raw kernel tracepoint (BTF-based)    |
-| `bpf:`    | `prog[:subprog]`     | Loaded BPF program entry (fentry)    |
-| `bpfret:` | `prog[:subprog]`     | Loaded BPF program return (fexit)    |
+| `bpf:`    | `prog\|id[:subprog]` | Loaded BPF program entry (fentry)    |
+| `bpfret:` | `prog\|id[:subprog]` | Loaded BPF program return (fexit)    |
 
 ### Span probes (entry + exit pairs)
 
@@ -82,6 +82,19 @@ entry, so its bare name is ambiguous; scope it to one entry program with
 `entry:subprog` (the same `container:name` shape as `tp:category:name`).
 For example `bpf:lavd_enqueue:calc_when_to_run` selects the `calc_when_to_run`
 subprogram as reached through the `lavd_enqueue` entry program.
+
+A program id can be given in place of a name, which picks out one loaded
+program even when several share a function name:
+
+```bash
+wprof -U 'bpf:2714240'                      # the program with that id
+wprof -U 'bpf:2714240:calc_when_to_run'     # a subprogram of it
+```
+
+A BTF function name never starts with a digit, so the two forms can't be
+confused. Ids change every time a program is loaded, which makes this a
+way to reach a program right now rather than something to keep in a probe
+file; captures record the names the id resolved to.
 
 ### Generic spans
 

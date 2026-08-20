@@ -1831,14 +1831,27 @@ static int resolve_usdt_cfg(struct utrace_cfg *cfg, bool mandatory)
 	return 0;
 }
 
-static int find_bpf_prog_by_name(const char *entry, const char *name, int *prog_fd_out,
-				 __u32 *btf_func_id_out, struct btf **btf_out,
+static const char *bpf_prog_func_name(const struct utrace_cfg *cfg, __u32 btf_func_id)
+{
+	const struct btf_type *t = btf__type_by_id(cfg->bpf_prog.btf, btf_func_id);
+
+	return btf__name_by_offset(cfg->bpf_prog.btf, t->name_off);
+}
+
+/*
+ * Find the target function of a bpf: probe. A want_id of zero searches every
+ * loaded program for name, otherwise only that one program is considered, and a
+ * NULL name then selects its entry function.
+ */
+static int find_bpf_prog_by_name(const char *entry, const char *name, __u32 want_id,
+				 int *prog_fd_out, __u32 *btf_func_id_out, struct btf **btf_out,
 				 __u32 *prog_id_out, enum bpf_prog_type *prog_type_out,
-				 int *subprog_idx_out)
+				 int *subprog_idx_out, __u32 *entry_btf_id_out)
 {
 	__u32 id = 0;
 	int err = -ENOENT, prog_fd = -1;
 	int match_prog_fd = -1, match_btf_func_id = 0;
+	__u32 match_entry_btf_id = 0;
 	enum bpf_prog_type match_prog_type = BPF_PROG_TYPE_UNSPEC;
 	int match_subprog_idx = 0;
 	__u32 match_prog_id = 0;
@@ -1850,6 +1863,9 @@ static int find_bpf_prog_by_name(const char *entry, const char *name, int *prog_
 	while (!bpf_prog_get_next_id(id, &id)) {
 		struct bpf_prog_info info;
 		__u32 info_len = sizeof(info);
+
+		if (want_id && id != want_id)
+			continue;
 
 		func_info_buf = NULL;
 		btf = NULL;
@@ -1885,8 +1901,9 @@ static int find_bpf_prog_by_name(const char *entry, const char *name, int *prog_
 		if (!btf)
 			goto next;
 
+		struct bpf_func_info *fi0 = func_info_buf;
+
 		if (entry) {
-			struct bpf_func_info *fi0 = func_info_buf;
 			const struct btf_type *et = btf__type_by_id(btf, fi0->type_id);
 
 			if (strcmp(btf__name_by_offset(btf, et->name_off), entry) != 0)
@@ -1899,8 +1916,12 @@ static int find_bpf_prog_by_name(const char *entry, const char *name, int *prog_
 			if (!t)
 				continue;
 			const char *func_name = btf__name_by_offset(btf, t->name_off);
-			if (strcmp(func_name, name) != 0)
-				continue;
+			if (name) {
+				if (strcmp(func_name, name) != 0)
+					continue;
+			} else if (i != 0) {
+				continue;	/* the entry function is func_info[0] */
+			}
 
 			if (match_prog_fd >= 0) {
 				eprintf("utrace: BPF function '%s%s%s' is ambiguous, can't proceed!\n",
@@ -1914,6 +1935,7 @@ static int find_bpf_prog_by_name(const char *entry, const char *name, int *prog_
 			match_prog_id = info.id;
 			match_prog_type = info.type;
 			match_subprog_idx = i;
+			match_entry_btf_id = fi0->type_id;
 			match_btf = btf;
 			found = true;
 			break;
@@ -1933,6 +1955,7 @@ next:
 		*prog_id_out = match_prog_id;
 		*prog_type_out = match_prog_type;
 		*subprog_idx_out = match_subprog_idx;
+		*entry_btf_id_out = match_entry_btf_id;
 		return 0;
 	}
 
@@ -2185,20 +2208,34 @@ int utrace_setup(struct wprof_bpf *skel)
 			case UTRACE_BPF_PROBE:
 			case UTRACE_BPF_RETPROBE:
 			case UTRACE_BPF_SPAN: {
-				__u32 prog_id = 0;
+				__u32 prog_id = 0, entry_btf_id = 0;
 
 				err = find_bpf_prog_by_name(leg->bpf_prog.entry, leg->bpf_prog.name,
+							    leg->bpf_prog.prog_id,
 							    &leg->bpf_prog.prog_fd,
 							    &leg->bpf_prog.btf_func_id,
 							    &leg->bpf_prog.btf,
 							    &prog_id,
 							    &leg->bpf_prog.prog_type,
-							    &leg->bpf_prog.subprog_idx);
+							    &leg->bpf_prog.subprog_idx,
+							    &entry_btf_id);
 				if (err) {
-					eprintf("utrace: failed to find BPF program '%s%s%s': %d\n",
-						leg->bpf_prog.entry ?: "", leg->bpf_prog.entry ? ":" : "",
-						leg->bpf_prog.name, err);
+					eprintf("utrace: failed to find BPF program '%s': %d\n",
+						utrace_bpf_target_str(leg), err);
 					return err;
+				}
+				/* record the names an id resolved to, and retire the id */
+				if (leg->bpf_prog.prog_id) {
+					const char *fname;
+
+					if (leg->bpf_prog.name) {
+						fname = bpf_prog_func_name(leg, entry_btf_id);
+						leg->bpf_prog.entry = strdup(fname);
+					} else {
+						fname = bpf_prog_func_name(leg, leg->bpf_prog.btf_func_id);
+						leg->bpf_prog.name = strdup(fname);
+					}
+					leg->bpf_prog.prog_id = 0;
 				}
 				err = resolve_bpf_prog_proto(leg, prog_id);
 				if (err) {
