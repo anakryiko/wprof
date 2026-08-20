@@ -257,6 +257,8 @@ struct utrace_cfg {
 			enum bpf_attach_type expected_attach_type; /* entry programs only */
 			bool args_in_ctx;		/* logical arguments arrive as ctx[N] */
 			int subprog_idx;		/* 0 for the entry program itself */
+			int arg_cnt;			/* number of logical arguments */
+			int arg_idx_off;		/* parameter holding logical argument 0 */
 			/*
 			 * Prototype describing the program's logical arguments. For
 			 * struct_ops programs it comes from the ops struct member and
