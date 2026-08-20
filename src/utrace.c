@@ -1094,15 +1094,6 @@ static int btf_func_arg_cnt(const struct btf *btf, const char *func_name)
 	return btf_vlen(proto);
 }
 
-/* Get arg count for a BPF program target from its resolved prototype */
-static int bpf_prog_func_arg_cnt(const struct utrace_cfg *cfg)
-{
-	if (!cfg->bpf_prog.proto)
-		return -ENOENT;
-
-	return btf_vlen(cfg->bpf_prog.proto);
-}
-
 /*
  * Does the probed function return void? 1 = yes, 0 = no, -1 = unknown or not
  * applicable (no BTF, or a probe type with no resolvable return type).
@@ -1151,7 +1142,7 @@ static void expand_wildcard_args(struct utrace_cfg *cfg, const struct btf *btf)
 		if (arg_cnt < 0 || arg_cnt > UTRACE_MAX_REG_ARGS)
 			arg_cnt = UTRACE_MAX_REG_ARGS;
 	} else if (cfg_is_bpf_type(cfg)) {
-		arg_cnt = bpf_prog_func_arg_cnt(cfg);
+		arg_cnt = cfg->bpf_prog.arg_cnt;
 		if (arg_cnt < 0)
 			arg_cnt = UTRACE_MAX_REG_ARGS;
 	} else {
@@ -1279,11 +1270,12 @@ static int resolve_arg_name(const struct utrace_cfg *cfg, const struct btf *btf,
 		const struct btf_type *proto = cfg->bpf_prog.proto;
 		if (!proto)
 			return -ENOENT;
-		const struct btf_param *p = btf_params(proto);
-		for (int i = 0; i < btf_vlen(proto); i++, p++) {
+		int off = cfg->bpf_prog.arg_idx_off;
+		const struct btf_param *p = btf_params(proto) + off;
+		for (int i = off; i < btf_vlen(proto); i++, p++) {
 			const char *pname = btf__name_by_offset(cfg->bpf_prog.proto_btf, p->name_off);
 			if (arg_name_eq(pname, name))
-				return i;
+				return i - off;
 		}
 		break;
 	}
@@ -1326,7 +1318,7 @@ static int utrace_probe_arg_count(const struct utrace_cfg *cfg, const struct btf
 	case UTRACE_BPF_PROBE:
 	case UTRACE_BPF_RETPROBE:
 	case UTRACE_BPF_SPAN:
-		return cfg->bpf_prog.proto ? btf_vlen(cfg->bpf_prog.proto) : -1;
+		return cfg->bpf_prog.arg_cnt;
 	default:
 		return -1;
 	}
@@ -1427,7 +1419,11 @@ static int utrace_resolve_base(struct utrace_arg_state *state, struct utrace_cfg
 		if (!proto && p->arg.accessor_cnt)
 			return utrace_acc_err(p, &p->arg.accessors[0], "typed argument access requires BPF program BTF\n");
 		if (proto) {
-			err = resolve_btf_proto_arg_type(args_btf, proto, p->arg.arg_idx,
+			int arg_idx = p->arg.arg_idx;
+
+			if (arg_idx != UTRACE_ARG_RET)
+				arg_idx += cfg->bpf_prog.arg_idx_off;
+			err = resolve_btf_proto_arg_type(args_btf, proto, arg_idx,
 							 &inferred_type, &base_name, &btf_id);
 		}
 		if (err && p->arg.arg_type == UTRACE_ARG_UNKNOWN) {
@@ -1968,6 +1964,7 @@ static int resolve_bpf_prog_proto(struct utrace_cfg *cfg, __u32 prog_id)
 	cfg->bpf_prog.self_proto = btf__type_by_id(cfg->bpf_prog.btf, f->type);
 	cfg->bpf_prog.proto = cfg->bpf_prog.self_proto;
 	cfg->bpf_prog.proto_btf = cfg->bpf_prog.btf;
+	cfg->bpf_prog.arg_cnt = btf_vlen(cfg->bpf_prog.proto);
 
 	if (cfg->bpf_prog.subprog_idx != 0)
 		return 0;
@@ -1981,6 +1978,8 @@ static int resolve_bpf_prog_proto(struct utrace_cfg *cfg, __u32 prog_id)
 		cfg->bpf_prog.proto = info.proto;
 		cfg->bpf_prog.proto_btf = info.proto_btf;
 		cfg->bpf_prog.args_in_ctx = info.args_in_ctx;
+		cfg->bpf_prog.arg_idx_off = info.arg_idx_off;
+		cfg->bpf_prog.arg_cnt = btf_vlen(info.proto) - info.arg_idx_off;
 		return 0;
 	}
 

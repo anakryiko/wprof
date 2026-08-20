@@ -14,6 +14,8 @@ struct wprof_prog_info {
 	 */
 	const struct btf_type *proto;
 	const struct btf *proto_btf;
+	/* parameter of that prototype holding logical argument 0 */
+	int arg_idx_off;
 	/* whether those arguments reach the program as ctx[0], ctx[1], ... */
 	bool args_in_ctx;
 };

@@ -2,6 +2,7 @@
 /* Copyright (c) 2026 Meta Platforms, Inc. */
 #include <ctype.h>
 #include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -225,6 +226,60 @@ static int attach_func_info(struct wprof_prog_info *info)
 	return 0;
 }
 
+/*
+ * A tp_btf program attaches to a tracepoint through its btf_trace_<name>
+ * typedef, whose prototype leads with the void *__data the tracepoint passes
+ * ahead of its own arguments. It is returned as it is, for the tracepoint side
+ * of utrace to skip like it does for raw tracepoints.
+ */
+static int tp_btf_info(struct wprof_prog_info *info)
+{
+	const char prefix[] = "btf_trace_";
+	const struct btf_type *t, *proto;
+	const struct btf *btf;
+	const char *name;
+	char buf[256];
+	__s32 id;
+
+	if (!skel->bss->attach_btf_id || !skel->bss->attach_btf_obj_id)
+		return 0;
+
+	btf = fetch_kernel_btf(skel->bss->attach_btf_obj_id);
+	if (!btf)
+		return -ESRCH;
+
+	proto = btf_resolve_func_ptr(btf, skel->bss->attach_btf_id);
+	if (!proto || btf_vlen(proto) < 1)
+		return -EINVAL;
+
+	/* the typedef leaves its arguments unnamed, the trace functions name them */
+	static const char *name_funcs[] = { "__bpf_trace_%s", "__traceiter_%s", "__tracepoint_iter_%s" };
+
+	t = btf__type_by_id(btf, skel->bss->attach_btf_id);
+	name = btf__name_by_offset(btf, t->name_off);
+	if (strncmp(name, prefix, sizeof(prefix) - 1) != 0)
+		goto out;
+	name += sizeof(prefix) - 1;
+
+	for (int i = 0; i < ARRAY_SIZE(name_funcs); i++) {
+		snprintf(buf, sizeof(buf), name_funcs[i], name);
+		id = btf__find_by_name_kind(btf, buf, BTF_KIND_FUNC);
+		if (id < 0)
+			continue;
+		t = btf__type_by_id(btf, btf__type_by_id(btf, id)->type);
+		if (btf_is_func_proto(t) && btf_vlen(t) == btf_vlen(proto)) {
+			proto = t;
+			break;
+		}
+	}
+out:
+	info->proto_btf = btf;
+	info->proto = proto;
+	info->arg_idx_off = 1;
+	info->args_in_ctx = true;
+	return 0;
+}
+
 int wprof_query_prog_info(unsigned int prog_id, struct wprof_prog_info *info)
 {
 	int err;
@@ -249,6 +304,8 @@ int wprof_query_prog_info(unsigned int prog_id, struct wprof_prog_info *info)
 		case BPF_TRACE_FEXIT:
 		case BPF_MODIFY_RETURN:
 			return attach_func_info(info);
+		case BPF_TRACE_RAW_TP:
+			return tp_btf_info(info);
 		default:
 			return 0;
 		}
