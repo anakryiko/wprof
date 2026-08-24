@@ -380,7 +380,7 @@ static inline void fill_task_name(struct task_struct *t, char *comm, int max_len
 
 		if (bpf_core_field_exists(struct kthread, full_name) && k->full_name)
 			err = bpf_probe_read_kernel_str(comm, max_len, k->full_name);
-		if (err)
+		if (err < 0)
 			__builtin_memcpy(comm, t->comm, TASK_COMM_LEN);
 	} else {
 		__builtin_memcpy(comm, t->comm, TASK_COMM_LEN);
