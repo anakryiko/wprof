@@ -23,6 +23,7 @@ struct wevent_task {
 	u32 flags;
 	u32 comm_stroff;	/* offset into string pool */
 	u32 pcomm_stroff;	/* offset into string pool */
+	u32 cmdline_stroff;	/* offset into string pool; reserved, always 0 for now */
 };
 
 /*

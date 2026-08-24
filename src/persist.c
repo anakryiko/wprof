@@ -129,6 +129,7 @@ static void persist_update_task_slot(struct persist_state *ps, int task_id, cons
 	entry->flags = task->flags;
 	entry->comm_stroff = persist_stroff(ps, task->comm);
 	entry->pcomm_stroff = persist_stroff(ps, task->pcomm);
+	entry->cmdline_stroff = 0;
 }
 
 static int persist_alloc_task_slot(struct persist_state *ps)
