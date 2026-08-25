@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause)
 /* Copyright (c) 2025 Meta Platforms, Inc. */
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -1203,16 +1204,22 @@ static void emit_pmu_intern_names(struct worker_state *w)
  * Context switch has a pair of values, the rest of entries (e.g. ipi, wq) have just one perf
  * value. For the latter case, diffs should be set to true and ev_ctrs used for final values.
  */
-/* take the slice duration into account, scaling up if the counter was multiplexed */
+/*
+ * Take the slice duration into account, scaling up if the counter was
+ * multiplexed. A counter that never made it onto hardware measured nothing at
+ * all, which is not the same as counting zero, so report it as NAN.
+ */
 static double pmu_value(const struct pmu_val *st_ctrs, const struct pmu_val *ev_ctrs,
 			int idx, bool diffs, u64 dt_ns)
 {
 	double value = diffs ? ev_ctrs[idx].val : ev_ctrs[idx].val - st_ctrs[idx].val;
 	u64 run_ns = diffs ? ev_ctrs[idx].run_ns : ev_ctrs[idx].run_ns - st_ctrs[idx].run_ns;
 
-	if (dt_ns && run_ns)
-		value *= (double)dt_ns / run_ns;
-	return value;
+	if (!dt_ns)
+		return value;
+	if (!run_ns)
+		return NAN;
+	return value * dt_ns / run_ns;
 }
 
 static void emit_perf_counters(const struct pmu_val *st_ctrs, const struct pmu_val *ev_ctrs,
@@ -1226,7 +1233,9 @@ static void emit_perf_counters(const struct pmu_val *st_ctrs, const struct pmu_v
 	for (int i = 0; i < env.pmu_real_cnt; i++) {
 		const struct pmu_event *ev = &env.pmu_reals[i];
 		double value = pmu_value(st_ctrs, ev_ctrs, ev->def_idx, diffs, dt_ns);
-		emit_kv_float(iid_str(ev->name_iid, ev->name), "%.6lf", value);
+
+		if (!isnan(value))
+			emit_kv_float(iid_str(ev->name_iid, ev->name), "%.6lf", value);
 	}
 	for (int i = 0; i < env.pmu_deriv_cnt; i++) {
 		const struct pmu_event *ev = &env.pmu_derivs[i];
@@ -1234,7 +1243,10 @@ static void emit_perf_counters(const struct pmu_val *st_ctrs, const struct pmu_v
 		int denom_idx = (int)ev->config2;
 		double num = pmu_value(st_ctrs, ev_ctrs, num_idx, diffs, dt_ns);
 		double denom = pmu_value(st_ctrs, ev_ctrs, denom_idx, diffs, dt_ns);
-		emit_kv_float(iid_str(ev->name_iid, ev->name), "%.6lf", num / denom);
+		double value = num / denom;
+
+		if (!isnan(value))
+			emit_kv_float(iid_str(ev->name_iid, ev->name), "%.6lf", value);
 	}
 }
 
@@ -1250,7 +1262,11 @@ static void json_pmu_counters(struct json_state *j, const struct pmu_val *st_ctr
 	for (int i = 0; i < env.pmu_real_cnt; i++) {
 		const struct pmu_event *ev = &env.pmu_reals[i];
 		double value = pmu_value(st_ctrs, ev_ctrs, ev->def_idx, diffs, dt_ns);
-		json_arr_float(j, "%.6lf", value);
+
+		if (isnan(value))
+			json_arr_null(j);
+		else
+			json_arr_float(j, "%.6lf", value);
 	}
 	for (int i = 0; i < env.pmu_deriv_cnt; i++) {
 		const struct pmu_event *ev = &env.pmu_derivs[i];
@@ -1258,7 +1274,12 @@ static void json_pmu_counters(struct json_state *j, const struct pmu_val *st_ctr
 		int denom_idx = (int)ev->config2;
 		double num = pmu_value(st_ctrs, ev_ctrs, num_idx, diffs, dt_ns);
 		double denom = pmu_value(st_ctrs, ev_ctrs, denom_idx, diffs, dt_ns);
-		json_arr_float(j, "%.6lf", num / denom);
+		double value = num / denom;
+
+		if (isnan(value))
+			json_arr_null(j);
+		else
+			json_arr_float(j, "%.6lf", value);
 	}
 	json_arr_end(j);
 }
