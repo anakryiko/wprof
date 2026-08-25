@@ -438,9 +438,10 @@ static int parse_derived_event(const char *spec, struct pmu_event *ev)
 
 	int n;
 	/* Parse "name=numerator/denominator" after "derived:" prefix */
-	char tmp1[64], tmp2[64];
-	if (sscanf(spec + 8, "%63[^=]=%63[^/]/%63s%n", ev->name, tmp1, tmp2, &n) == 3 &&
+	char name[64], tmp1[64], tmp2[64];
+	if (sscanf(spec + 8, "%63[^=]=%63[^/]/%63s%n", name, tmp1, tmp2, &n) == 3 &&
 			n == strlen(spec + 8)) {
+		ev->name = strdup(name);
 		ev->num_name = strdup(tmp1);
 		ev->denom_name = strdup(tmp2);
 		ev->perf_type = PERF_TYPE_DERIVED;
