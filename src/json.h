@@ -276,3 +276,10 @@ static inline void json_arr_float(struct json_state *js, const char *fmt, double
 	json_arr_elem(js);
 	fprintf(js->f, fmt, value);
 }
+
+__unused
+static inline void json_arr_null(struct json_state *js)
+{
+	json_arr_elem(js);
+	fputs("null", js->f);
+}
