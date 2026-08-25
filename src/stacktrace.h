@@ -47,14 +47,14 @@ static inline size_t bpf_event_pmu_vals_sz(const struct wprof_event *e)
 	if (!(e->flags & EF_PMU_VALS))
 		return 0;
 	int pmu_cnt = env.data_hdr ? env.data_hdr->pmu_def_real_cnt : env.pmu_real_cnt;
-	return pmu_cnt * sizeof(u64);
+	return pmu_cnt * sizeof(struct pmu_val);
 }
 
-static inline const u64 *bpf_event_pmu_vals(const struct wprof_event *e)
+static inline const struct pmu_val *bpf_event_pmu_vals(const struct wprof_event *e)
 {
 	if (!(e->flags & EF_PMU_VALS))
 		return NULL;
-	return (const u64 *)((void *)e + bpf_event_fix_sz(e));
+	return (const struct pmu_val *)((void *)e + bpf_event_fix_sz(e));
 }
 
 static inline size_t bpf_event_stack_traces_sz(const struct wprof_event *e)

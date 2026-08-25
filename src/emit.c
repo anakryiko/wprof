@@ -159,7 +159,7 @@ struct task_state {
 	u16 waker_numa_node;
 	enum waking_flags waking_flags;
 	/* perf counters */
-	const u64 *oncpu_ctrs;
+	const struct pmu_val *oncpu_ctrs;
 	u64 compound_delay_ns; /* scheduling/running delay, including dependency tasks' ones */
 	u64 compound_chain_len; /* length of continuous waker-wakee chain */
 	/* PyTrace/PyTorch slice nesting state */
@@ -178,7 +178,7 @@ static struct hashmap *emitted_descrs;
  * -Spmu= trigger on the same CPU. Perf counters are free-running per-CPU, so the
  * captured values are absolute; deltas are reconstructed here at emit time.
  */
-static u64 *pmu_cpu_val;		/* [pmu_event_cnt][cpu_cnt][pmu_real_cnt] previous absolute counters */
+static struct pmu_val *pmu_cpu_val;	/* [pmu_event_cnt][cpu_cnt][pmu_real_cnt] previous absolute counters */
 static bool *pmu_cpu_val_seen;		/* [pmu_event_cnt][cpu_cnt] whether a previous sample exists */
 
 static inline u64 clamp_ts(u64 ts)
@@ -1201,7 +1201,7 @@ static void emit_pmu_intern_names(struct worker_state *w)
  * Context switch has a pair of values, the rest of entries (e.g. ipi, wq) have just one perf
  * value. For the latter case, diffs should be set to true and ev_ctrs used for final values.
  */
-static void emit_perf_counters(const u64 *st_ctrs, const u64 *ev_ctrs, bool diffs)
+static void emit_perf_counters(const struct pmu_val *st_ctrs, const struct pmu_val *ev_ctrs, bool diffs)
 {
 	if (!ev_ctrs)
 		return;
@@ -1210,20 +1210,20 @@ static void emit_perf_counters(const u64 *st_ctrs, const u64 *ev_ctrs, bool diff
 
 	for (int i = 0; i < env.pmu_real_cnt; i++) {
 		const struct pmu_event *ev = &env.pmu_reals[i];
-		double value = diffs ? ev_ctrs[ev->def_idx] : ev_ctrs[ev->def_idx] - st_ctrs[ev->def_idx];
+		double value = diffs ? ev_ctrs[ev->def_idx].val : ev_ctrs[ev->def_idx].val - st_ctrs[ev->def_idx].val;
 		emit_kv_float(iid_str(ev->name_iid, ev->name), "%.6lf", value);
 	}
 	for (int i = 0; i < env.pmu_deriv_cnt; i++) {
 		const struct pmu_event *ev = &env.pmu_derivs[i];
 		int num_idx = (int)ev->config1;
 		int denom_idx = (int)ev->config2;
-		double num = diffs ? ev_ctrs[num_idx] : ev_ctrs[num_idx] - st_ctrs[num_idx];
-		double denom = diffs ? ev_ctrs[denom_idx] : ev_ctrs[denom_idx] - st_ctrs[denom_idx];
+		double num = diffs ? ev_ctrs[num_idx].val : ev_ctrs[num_idx].val - st_ctrs[num_idx].val;
+		double denom = diffs ? ev_ctrs[denom_idx].val : ev_ctrs[denom_idx].val - st_ctrs[denom_idx].val;
 		emit_kv_float(iid_str(ev->name_iid, ev->name), "%.6lf", num / denom);
 	}
 }
 
-static void json_pmu_counters(struct json_state *j, const u64 *st_ctrs, const u64 *ev_ctrs, bool diffs)
+static void json_pmu_counters(struct json_state *j, const struct pmu_val *st_ctrs, const struct pmu_val *ev_ctrs, bool diffs)
 {
 	if (!ev_ctrs)
 		return;
@@ -1233,15 +1233,15 @@ static void json_pmu_counters(struct json_state *j, const u64 *st_ctrs, const u6
 	json_subarr_start(j, "pmus");
 	for (int i = 0; i < env.pmu_real_cnt; i++) {
 		const struct pmu_event *ev = &env.pmu_reals[i];
-		double value = diffs ? ev_ctrs[ev->def_idx] : ev_ctrs[ev->def_idx] - st_ctrs[ev->def_idx];
+		double value = diffs ? ev_ctrs[ev->def_idx].val : ev_ctrs[ev->def_idx].val - st_ctrs[ev->def_idx].val;
 		json_arr_float(j, "%.6lf", value);
 	}
 	for (int i = 0; i < env.pmu_deriv_cnt; i++) {
 		const struct pmu_event *ev = &env.pmu_derivs[i];
 		int num_idx = (int)ev->config1;
 		int denom_idx = (int)ev->config2;
-		double num = diffs ? ev_ctrs[num_idx] : ev_ctrs[num_idx] - st_ctrs[num_idx];
-		double denom = diffs ? ev_ctrs[denom_idx] : ev_ctrs[denom_idx] - st_ctrs[denom_idx];
+		double num = diffs ? ev_ctrs[num_idx].val : ev_ctrs[num_idx].val - st_ctrs[num_idx].val;
+		double denom = diffs ? ev_ctrs[denom_idx].val : ev_ctrs[denom_idx].val - st_ctrs[denom_idx].val;
 		json_arr_float(j, "%.6lf", num / denom);
 	}
 	json_arr_end(j);
@@ -1612,12 +1612,12 @@ static u64 ensure_pmu_event_track(const struct wprof_task *t, u32 pmu_idx, const
 	return s->track_id;
 }
 
-static void emit_pmu_event(struct worker_state *w, const struct wevent *e, const u64 *st_ctrs)
+static void emit_pmu_event(struct worker_state *w, const struct wevent *e, const struct pmu_val *st_ctrs)
 {
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
 	/* pmu_idx is the sampled event's 0-based index (the perf_event bpf_cookie) */
 	const struct pmu_event *pmu = &env.pmu_events[e->pmu_event.pmu_idx];
-	const u64 *pmu_vals = wevent_pmu_vals(w->dump_hdr, e->pmu_event.pmu_vals_id);
+	const struct pmu_val *pmu_vals = wevent_pmu_vals(w->dump_hdr, e->pmu_event.pmu_vals_id);
 
 	emit_track_descrs(w, &task);
 
@@ -1641,11 +1641,11 @@ static void emit_pmu_event(struct worker_state *w, const struct wevent *e, const
 	}
 }
 
-static void emit_pmu_event_json(struct worker_state *w, const struct wevent *e, const u64 *st_ctrs)
+static void emit_pmu_event_json(struct worker_state *w, const struct wevent *e, const struct pmu_val *st_ctrs)
 {
 	struct json_state *j = &js;
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
-	const u64 *pmu_vals = wevent_pmu_vals(w->dump_hdr, e->pmu_event.pmu_vals_id);
+	const struct pmu_val *pmu_vals = wevent_pmu_vals(w->dump_hdr, e->pmu_event.pmu_vals_id);
 
 	json_obj_start(j);
 	json_kv_ts(j, "ts", e->ts - env.sess_start_ts);
@@ -1675,9 +1675,9 @@ static int process_pmu_event(struct worker_state *w, const struct wevent *e)
 	 * the previous sample of this -Spmu= trigger on this CPU. The first sample
 	 * per (trigger, cpu) has no baseline yet, so it emits no counter values.
 	 */
-	u64 *prev = NULL;
+	struct pmu_val *prev = NULL;
 	bool *seen = NULL;
-	const u64 *st_ctrs = NULL;
+	const struct pmu_val *st_ctrs = NULL;
 	if (env.pmu_real_cnt) {
 		size_t cell = e->pmu_event.pmu_idx * env.stats->cpu_cnt + e->cpu;
 
@@ -1693,7 +1693,7 @@ static int process_pmu_event(struct worker_state *w, const struct wevent *e)
 
 	if (env.pmu_real_cnt) {
 		memcpy(prev, wevent_pmu_vals(w->dump_hdr, e->pmu_event.pmu_vals_id),
-		       env.pmu_real_cnt * sizeof(u64));
+		       env.pmu_real_cnt * sizeof(struct pmu_val));
 		*seen = true;
 	}
 	return 0;
@@ -1757,8 +1757,8 @@ struct switch_ctx {
 	pb_iid prev_name_iid;
 	bool prev_renamed;
 	bool prev_fake_begin;
-	const u64 *prev_oncpu_ctrs;
-	const u64 *pmu_vals;
+	const struct pmu_val *prev_oncpu_ctrs;
+	const struct pmu_val *pmu_vals;
 
 	struct task_state *next_st;
 	u64 next_offcpu_dur_ns;
@@ -2562,7 +2562,7 @@ static void emit_hardirq_exit(struct worker_state *w, const struct wevent *e)
 	}
 	emit_slice_end(trackid_thread(&task),
 		       e->ts, IID_NAME_HARDIRQ, IID_CAT_HARDIRQ) {
-		const u64 *pmu_vals = wevent_pmu_vals(hdr, e->hardirq.pmu_vals_id);
+		const struct pmu_val *pmu_vals = wevent_pmu_vals(hdr, e->hardirq.pmu_vals_id);
 		emit_perf_counters(NULL, pmu_vals, true /* diffs */);
 	}
 }
@@ -2639,7 +2639,7 @@ static void emit_softirq_exit(struct worker_state *w, const struct wevent *e)
 		       e->ts,
 		       iid_str(name_iid, sfmt("%s:%s", "SOFTIRQ", softirq_str(e->softirq.vec_nr))),
 		       IID_CAT_SOFTIRQ) {
-		const u64 *pmu_vals = wevent_pmu_vals(hdr, e->softirq.pmu_vals_id);
+		const struct pmu_val *pmu_vals = wevent_pmu_vals(hdr, e->softirq.pmu_vals_id);
 		emit_perf_counters(NULL, pmu_vals, true /* diffs */);
 	}
 }
@@ -2706,7 +2706,7 @@ static void emit_wq_end(struct worker_state *w, const struct wevent *e)
 		       e->ts,
 		       iid_str(IID_NONE, sfmt("%s:%s", "WQ", desc)),
 		       IID_CAT_WQ) {
-		const u64 *pmu_vals = wevent_pmu_vals(hdr, e->wq.pmu_vals_id);
+		const struct pmu_val *pmu_vals = wevent_pmu_vals(hdr, e->wq.pmu_vals_id);
 		emit_perf_counters(NULL, pmu_vals, true /* diffs */);
 	}
 }
@@ -2925,7 +2925,7 @@ static void emit_ipi_exit(struct worker_state *w, const struct wevent *e)
 			emit_kv_float(IID_ANNK_IPI_DELAY_US,
 				      "%.3lf", (e->ipi.ipi_ts - e->ipi.send_ts) / 1000.0);
 		}
-		const u64 *pmu_vals = wevent_pmu_vals(hdr, e->ipi.pmu_vals_id);
+		const struct pmu_val *pmu_vals = wevent_pmu_vals(hdr, e->ipi.pmu_vals_id);
 		emit_perf_counters(NULL, pmu_vals, true /* diffs */);
 	}
 }

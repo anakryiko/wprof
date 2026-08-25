@@ -179,12 +179,12 @@ int persist_task_id(struct persist_state *ps, const struct wprof_thread *task)
 	return task_id;
 }
 
-int persist_pmu_vals_id(struct persist_state *ps, const u64 *vals)
+int persist_pmu_vals_id(struct persist_state *ps, const struct pmu_val *vals)
 {
 	if (!vals || ps->pmu_vals.real_pmu_cnt == 0)
 		return 0;
 
-	size_t sz = ps->pmu_vals.real_pmu_cnt * sizeof(u64);
+	size_t sz = ps->pmu_vals.real_pmu_cnt * sizeof(struct pmu_val);
 
 	if (fwrite(vals, sz, 1, ps->pmu_vals.dump) != 1) {
 		eprintf("Failed to write PMU values: %s\n", errstr(-errno));
