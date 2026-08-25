@@ -504,19 +504,22 @@ static size_t capture_perf_counters(struct perf_counters *c,
 		err = bpf_perf_event_read_value(&perf_cntrs, idx, &perf_val, sizeof(perf_val));
 		if (err) {
 			bpf_printk("Failed to read perf counter #%d for #%d: %d", err, i, cpu);
-			c->val[i] = 0;
+			c->ctr[i].val = 0;
+			c->ctr[i].run_ns = 0;
 		} else {
-			c->val[i] = perf_val.counter;
+			c->ctr[i].val = perf_val.counter;
+			c->ctr[i].run_ns = perf_val.running;
 		}
 	}
 
 	if (prev_c) {
 		for (u64 i = 0; i < perf_ctr_cnt; i++) {
-			c->val[i] -= prev_c->val[i];
+			c->ctr[i].val -= prev_c->ctr[i].val;
+			c->ctr[i].run_ns -= prev_c->ctr[i].run_ns;
 		}
 	}
 
-	return perf_ctr_cnt * sizeof(u64);
+	return perf_ctr_cnt * sizeof(struct pmu_val);
 }
 
 static void __capture_stack_trace(void *ctx, struct task_struct *task, struct stack_trace *st,
@@ -614,7 +617,7 @@ static int emit_stack_trace(struct stack_trace *t, size_t sz, struct bpf_dynptr 
 
 static int emit_pmu_values(struct perf_counters *c, struct bpf_dynptr *dptr, size_t offset)
 {
-	return bpf_dynptr_write(dptr, offset, c->val, perf_ctr_cnt * sizeof(u64), 0);
+	return bpf_dynptr_write(dptr, offset, c->ctr, perf_ctr_cnt * sizeof(struct pmu_val), 0);
 }
 
 static __always_inline bool init_wprof_event(struct wprof_event *e, u32 sz, enum event_kind kind, u64 ts, struct task_struct *p)

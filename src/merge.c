@@ -778,8 +778,8 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers,
 			return err;
 		}
 		/* write null entry (index 0 reserved) */
-		u64 zeros[MAX_REAL_PMU_COUNTERS] = {};
-		if (fwrite(zeros, env.pmu_real_cnt * sizeof(u64), 1, pmu_vals_dump) != 1) {
+		struct pmu_val zeros[MAX_REAL_PMU_COUNTERS] = {};
+		if (fwrite(zeros, env.pmu_real_cnt * sizeof(struct pmu_val), 1, pmu_vals_dump) != 1) {
 			err = -errno;
 			eprintf("Failed to write null PMU values entry: %s\n", errstr(err));
 			return err;

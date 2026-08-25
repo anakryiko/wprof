@@ -11,7 +11,7 @@
 /* On-disk format version (hdr.version_major / hdr.version_minor). */
 enum wprof_data_version {
 	WPROF_DATA_MAJOR = 3,
-	WPROF_DATA_MINOR = 1,
+	WPROF_DATA_MINOR = 2,	/* PMU values carry the time they were measured over */
 };
 
 /* Flags stored in hdr.flags. */
@@ -419,12 +419,12 @@ static inline u64 wevent_pmu_def_cnt(const struct wprof_data_hdr *hdr)
 	return hdr->pmu_defs_sz / sizeof(struct wevent_pmu_def);
 }
 
-static inline u64 *wevent_pmu_vals(struct wprof_data_hdr *hdr, u32 id)
+static inline struct pmu_val *wevent_pmu_vals(struct wprof_data_hdr *hdr, u32 id)
 {
 	if (id == 0)
 		return NULL;
 
-	u64 *vals = (void *)hdr + hdr->hdr_sz + hdr->pmu_vals_off;
+	struct pmu_val *vals = (void *)hdr + hdr->hdr_sz + hdr->pmu_vals_off;
 	return &vals[id * hdr->pmu_def_real_cnt];
 }
 

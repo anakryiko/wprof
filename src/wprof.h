@@ -21,7 +21,7 @@
 #define MAX_STACK_DEPTH 128
 #endif
 
-#define MAX_REAL_PMU_COUNTERS 16
+#define MAX_REAL_PMU_COUNTERS 8
 
 #ifndef PF_WQ_WORKER
 #define PF_WQ_WORKER 0x00000020
@@ -217,8 +217,17 @@ struct wprof_task {
 	const char *pcomm;
 };
 
+struct pmu_val {
+	u64 val;
+	/*
+	 * Nanoseconds the counter spent loaded on hardware, which might be lower than total time
+	 * it was supposed to be active due to kernel multiplexing hardware PMUs.
+	 */
+	u64 run_ns;
+};
+
 struct perf_counters {
-	u64 val[MAX_REAL_PMU_COUNTERS];
+	struct pmu_val ctr[MAX_REAL_PMU_COUNTERS];
 };
 
 enum waking_flags {
