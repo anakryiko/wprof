@@ -152,7 +152,6 @@ struct task_state {
 	enum wprof_task_run_state run_state;
 	u64 oncpu_ts;
 	u64 offcpu_ts;
-	u64 req_id; /* active ongoing request ID */
 	/* waker info collected from EV_WAKING/EV_WAKING_NEW */
 	u64 waking_ts;
 	u32 waker_task_id;
@@ -161,6 +160,15 @@ struct task_state {
 	enum waking_flags waking_flags;
 	/* perf counters */
 	const struct pmu_val *oncpu_ctrs;
+
+	/* active request and the counters it ran up on this thread */
+	u64 req_id; /* active ongoing request ID */
+	u64 req_task_set_ts; /* when the request was set on this thread */
+	const struct pmu_val *req_task_ctrs; /* counters when the current on-cpu stretch began */
+	u64 req_task_ts; /* when that stretch began */
+	struct pmu_val req_task_cum[MAX_REAL_PMU_COUNTERS];
+	u64 req_task_cum_ns;
+
 	u64 compound_delay_ns; /* scheduling/running delay, including dependency tasks' ones */
 	u64 compound_chain_len; /* length of continuous waker-wakee chain */
 	/* PyTrace/PyTorch slice nesting state */
@@ -1284,6 +1292,39 @@ static void json_pmu_counters(struct json_state *j, const struct pmu_val *st_ctr
 	json_arr_end(j);
 }
 
+/*
+ * Counters are free-running per-CPU, so only the stretches the task actually
+ * spent on CPU can be charged to its request; the gaps between a switch-out and
+ * the next switch-in belong to whatever else ran there.
+ */
+static void req_task_oncpu_start(struct task_state *st, const struct pmu_val *ctrs, u64 ts)
+{
+	st->req_task_ctrs = ctrs;
+	st->req_task_ts = ts;
+}
+
+static void req_task_oncpu_end(struct task_state *st, const struct pmu_val *ctrs, u64 ts)
+{
+	if (!st->req_task_ctrs || !ctrs)
+		return;
+
+	for (int i = 0; i < env.pmu_real_cnt; i++) {
+		st->req_task_cum[i].val += ctrs[i].val - st->req_task_ctrs[i].val;
+		st->req_task_cum[i].run_ns += ctrs[i].run_ns - st->req_task_ctrs[i].run_ns;
+	}
+	st->req_task_cum_ns += ts - st->req_task_ts;
+	st->req_task_ctrs = NULL;
+}
+
+static void req_task_reset(struct task_state *st, const struct pmu_val *ctrs, u64 ts)
+{
+	if (env.pmu_real_cnt)
+		memset(st->req_task_cum, 0, env.pmu_real_cnt * sizeof(*st->req_task_cum));
+	st->req_task_cum_ns = 0;
+	st->req_task_set_ts = ts;
+	req_task_oncpu_start(st, ctrs, ts);
+}
+
 static struct task_state *task_state_try_get(struct worker_state *w, const struct wprof_task *t)
 {
 	unsigned long key = t->tid;
@@ -2105,6 +2146,9 @@ static int process_switch(struct worker_state *w, const struct wevent *e)
 		s.prev_oncpu_ts = s.prev_st->oncpu_ts;
 		s.pmu_vals = wevent_pmu_vals(hdr, e->swtch.pmu_vals_id);
 
+		if (s.prev_st->req_id)
+			req_task_oncpu_end(s.prev_st, s.pmu_vals, e->ts);
+
 		s.prev_st->rename_ts = 0;
 		s.prev_st->oncpu_ctrs = NULL;
 		s.prev_st->oncpu_ts = 0;
@@ -2125,6 +2169,9 @@ static int process_switch(struct worker_state *w, const struct wevent *e)
 		s.next_st = task_state(w, &next);
 		s.next_st->oncpu_ctrs = wevent_pmu_vals(hdr, e->swtch.pmu_vals_id);
 		s.next_st->oncpu_ts = e->ts;
+
+		if (s.next_st->req_id)
+			req_task_oncpu_start(s.next_st, s.next_st->oncpu_ctrs, e->ts);
 
 		s.next_offcpu_dur_ns = s.next_st->offcpu_ts ? e->ts - s.next_st->offcpu_ts : e->ts - env.sess_start_ts;
 		s.next_st->offcpu_ts = 0;
@@ -3086,7 +3133,8 @@ static bool req_embed_first_event(const struct wprof_task *t, u64 req_id)
 }
 
 /* EV_REQ_EVENT */
-static void emit_req_event(struct worker_state *w, const struct wevent *e)
+static void emit_req_event(struct worker_state *w, const struct wevent *e,
+			   const struct pmu_val *req_ctrs, u64 req_oncpu_ns, u64 req_offcpu_ns)
 {
 	struct wprof_data_hdr *hdr = w->dump_hdr;
 	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
@@ -3165,12 +3213,21 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e)
 		break;
 	case REQ_UNSET:
 		if (env.emit_req_split) {
-			emit_slice_end(req_thread_track_uuid, e->ts, iid_str(st->name_iid, st->comm), IID_CAT_REQUEST_THREAD);
+			emit_slice_end(req_thread_track_uuid, e->ts, iid_str(st->name_iid, st->comm), IID_CAT_REQUEST_THREAD) {
+				if (req_ctrs) {
+					emit_kv_float(IID_ANNK_OFFCPU_DUR_US, "%.3lf", req_offcpu_ns / 1000.0);
+					emit_perf_counters(NULL, req_ctrs, true /* diffs */, req_oncpu_ns);
+				}
+			}
 			emit_slice_end(req_thread_track_uuid, e->ts, IID_NAME_RUNNING, IID_CAT_REQUEST_ONCPU);
 		}
 
 		if (env.emit_req_embed) {
 			emit_slice_end(thread_req_track_uuid, e->ts, iid_str(thread_req_name_iid, thread_req_name), IID_CAT_REQUEST_THREAD) {
+				if (req_ctrs) {
+					emit_kv_float(IID_ANNK_OFFCPU_DUR_US, "%.3lf", req_offcpu_ns / 1000.0);
+					emit_perf_counters(NULL, req_ctrs, true /* diffs */, req_oncpu_ns);
+				}
 				emit_flow_id(hash_combine(req_id, task.tid));
 				emit_callstack(w, req_stack_id);
 			}
@@ -3221,7 +3278,8 @@ static const char *req_event_str(enum wprof_req_event_kind kind)
 	}
 }
 
-static void emit_req_event_json(struct worker_state *w, const struct wevent *e)
+static void emit_req_event_json(struct worker_state *w, const struct wevent *e,
+				const struct pmu_val *req_ctrs, u64 req_oncpu_ns, u64 req_offcpu_ns)
 {
 	struct json_state *j = &js;
 	struct wprof_data_hdr *hdr = w->dump_hdr;
@@ -3241,6 +3299,10 @@ static void emit_req_event_json(struct worker_state *w, const struct wevent *e)
 		json_kv_ts(j, "latency", e->ts - e->req.req_ts);
 	if ((env.requested_stack_traces & ST_REQ) && e->req.req_stack_id > 0)
 		json_kv_int(j, "stack_id", e->req.req_stack_id);
+	if (req_ctrs) {
+		json_kv_ts(j, "offcpu_dur", req_offcpu_ns);
+		json_pmu_counters(j, NULL, req_ctrs, true /* diffs */, req_oncpu_ns);
+	}
 	json_obj_end(j);
 }
 
@@ -3259,12 +3321,22 @@ static int process_req_event(struct worker_state *w, const struct wevent *e)
 		return 0;
 
 	struct task_state *st = task_state(w, &task);
+	const struct pmu_val *req_ctrs = NULL;
+	u64 req_oncpu_ns = 0, req_offcpu_ns = 0;
 
 	switch (e->req.req_event) {
 	case REQ_SET:
 		st->req_id = e->req.req_id;
+		req_task_reset(st, wevent_pmu_vals(hdr, e->req.pmu_vals_id), e->ts);
 		break;
 	case REQ_UNSET:
+		/* without a REQ_SET the request was caught in mid-flight; nothing was accumulated */
+		if (st->req_id && env.pmu_real_cnt) {
+			req_task_oncpu_end(st, wevent_pmu_vals(hdr, e->req.pmu_vals_id), e->ts);
+			req_ctrs = st->req_task_cum;
+			req_oncpu_ns = st->req_task_cum_ns;
+			req_offcpu_ns = (e->ts - st->req_task_set_ts) - req_oncpu_ns;
+		}
 		st->req_id = 0;
 		break;
 	case REQ_BEGIN:
@@ -3276,9 +3348,9 @@ static int process_req_event(struct worker_state *w, const struct wevent *e)
 	}
 
 	if (env.json_path)
-		emit_req_event_json(w, e);
+		emit_req_event_json(w, e, req_ctrs, req_oncpu_ns, req_offcpu_ns);
 	else
-		emit_req_event(w, e);
+		emit_req_event(w, e, req_ctrs, req_oncpu_ns, req_offcpu_ns);
 
 	return 0;
 }
