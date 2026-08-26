@@ -1412,8 +1412,10 @@ static void task_state_delete(struct wprof_task *t)
 	unsigned long key = t->tid;
 	struct task_state *st;
 
-	if (hashmap__delete(tasks, key, NULL, &st))
+	if (hashmap__delete(tasks, key, NULL, &st)) {
+		free(st->uscope);
 		free(st);
+	}
 }
 
 static bool should_trace_task(const struct wprof_task *task)
