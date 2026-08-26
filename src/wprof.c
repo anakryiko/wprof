@@ -654,7 +654,7 @@ skip_rusage:
 
 		struct wevent_pmu_def *def = wevent_pmu_def(env.data_hdr, i);
 		const char *name = wevent_str(env.data_hdr, def->name_stroff);
-		eprintf("!!! PMU counter '%s' was multiplexed by kernel (active %.2f%%), values can be unreliable!\n",
+		eprintf("!!! PMU counter '%s' was multiplexed by kernel (active %.2f%%), values might be approximated or missing!\n",
 			name, 100.0 * active_frac);
 	}
 
