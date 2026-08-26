@@ -467,6 +467,7 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 		dst->req.req_event = e->req.req_event;
 		dst->req.req_name_stroff = persist_stroff(ps, e->req.req_name);
 		dst->req.req_stack_id = bpf_event_stack_id(e, ST_REQ);
+		dst->req.pmu_vals_id = persist_pmu_vals_id(ps, bpf_event_pmu_vals(e));
 		break;
 
 	case EV_REQ_TASK_EVENT:

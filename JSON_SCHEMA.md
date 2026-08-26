@@ -508,6 +508,8 @@ previous name, and `comm` contains the new name.
 | `req_id`   | int    | Request identifier                                              |
 | `req_name` | string | Request name                                                    |
 | `latency`  | float  | *(optional)* Request latency in seconds (on `"end"` events)     |
+| `offcpu_dur` | float | *(optional)* Time spent off-CPU                                |
+| `pmus`     | array of float | *(optional)* PMU counter totals for request task slice           |
 
 ```json
 {
@@ -521,6 +523,8 @@ previous name, and `comm` contains the new name.
   "latency": 0.015300000
 }
 ```
+
+The counters cover on-CPU time only; `offcpu_dur` is excluded from them.
 
 #### `req_task_event` — request task scheduling event
 
