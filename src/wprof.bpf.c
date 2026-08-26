@@ -127,7 +127,7 @@ struct glob_str deny_tnames[1] SEC(".data.deny_tnames");
 const volatile int deny_tname_cnt;
 /* END FILTERING */
 
-const volatile u32 perf_ctr_cnt = 1; /* for veristat, reset in user space */
+const volatile u32 perf_ctr_cnt = MAX_REAL_PMU_COUNTERS; /* for veristat, reset in user space */
 
 u32 rb_cpu_map[2] SEC(".data.rb_cpu_map");
 const volatile u64 rb_cpu_map_mask = 0x1;
@@ -883,7 +883,6 @@ int BPF_PROG(wprof_task_switch,
 	struct task_state *sprev, *snext;
 	struct wprof_event *e;
 	int cpu = bpf_get_smp_processor_id();
-	u32 packed_state = pack_task_state(prev_state, prev, preempt);
 
 	if (!should_trace_task(prev, now_ts) && !should_trace_task(next, now_ts))
 		return 0;
@@ -896,6 +895,7 @@ int BPF_PROG(wprof_task_switch,
 	struct perf_counters pmu_vals;
 	size_t pmu_sz = capture_perf_counters(&pmu_vals, NULL, cpu);
 
+	u32 packed_state = pack_task_state(prev_state, prev, preempt);
 	sprev->last_task_state = packed_state;
 
 	struct bpf_dynptr *dptr;
