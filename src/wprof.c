@@ -1856,6 +1856,12 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
+	if (env.replay && env.utrace_cfg_cnt > 0) {
+		eprintf("--utrace (-U) is capture-time only and can't be used in replay mode (-R)!\n");
+		err = -EINVAL;
+		goto cleanup;
+	}
+
 	if (!env.replay && geteuid() != 0)
 		eprintf("WARNING: wprof is not running as root, data capture will most probably FAIL due to insufficient permissions!\n");
 
