@@ -178,6 +178,18 @@ struct utrace_param {
 enum utrace_tmpl_seg_type {
 	UTRACE_TMPL_SEG_LIT,  /* literal string segment */
 	UTRACE_TMPL_SEG_ARG,  /* argument substitution */
+	UTRACE_TMPL_SEG_ENV,  /* capture environment substitution */
+};
+
+/* what an {env:...} placeholder pulls from the event's capture context */
+enum utrace_env_ref {
+	UTRACE_ENV_TID,
+	UTRACE_ENV_PID,
+	UTRACE_ENV_PPID,
+	UTRACE_ENV_COMM,
+	UTRACE_ENV_PCOMM,
+	UTRACE_ENV_CPU,
+	UTRACE_ENV_NUMA,
 };
 
 struct utrace_tmpl_seg {
@@ -191,6 +203,7 @@ struct utrace_tmpl_seg {
 			int arg_idx;                /* positional index into entry-side arg_refs[] */
 			const struct utrace_param *param; /* the matched arg's full spec */
 		} arg;
+		enum utrace_env_ref env;
 	};
 };
 
@@ -199,6 +212,7 @@ struct utrace_settings {
 	char *name_tmpl; /* template string for slice/instant name, NULL if unset */
 	struct utrace_tmpl_seg *name_segs; /* pre-compiled name template segments */
 	int name_seg_cnt;
+	bool name_has_args; /* name template substitutes entry-side args, so exits can't render it */
 	struct utrace_tmpl_seg *id_segs; /* pre-compiled id segments, NULL unless id has placeholders */
 	int id_seg_cnt;
 };
@@ -362,9 +376,9 @@ static inline const char *utrace_arg_map_lookup(const struct utrace_arg_map *map
 	return NULL;
 }
 
-void utrace_compile_tmpl(const char *tmpl, const struct utrace_param *params, int param_cnt,
-			 struct utrace_tmpl_seg **out_segs, int *out_seg_cnt);
-void utrace_cfg_compile_tmpls(struct utrace_cfg *cfg);
+int utrace_compile_tmpl(const char *tmpl, const struct utrace_param *params, int param_cnt,
+			struct utrace_tmpl_seg **out_segs, int *out_seg_cnt);
+int utrace_cfg_compile_tmpls(struct utrace_cfg *cfg);
 void utrace_cfg_add_pid(struct utrace_cfg *cfg, int pid, enum utrace_pid_discovery discovery);
 int utrace_cfg_parse(const char *def);
 int utrace_cfg_parse_file(const char *path);

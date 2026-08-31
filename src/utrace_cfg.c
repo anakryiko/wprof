@@ -694,10 +694,34 @@ static int parse_settings(struct sview orig, struct sview def, struct utrace_set
 	return 0;
 }
 
-void utrace_compile_tmpl(const char *tmpl, const struct utrace_param *params, int param_cnt,
-			 struct utrace_tmpl_seg **out_segs, int *out_seg_cnt)
+static const struct {
+	const char *name;
+	enum utrace_env_ref ref;
+} env_ref_table[] = {
+	{ "tid",   UTRACE_ENV_TID },
+	{ "pid",   UTRACE_ENV_PID },
+	{ "ppid",  UTRACE_ENV_PPID },
+	{ "comm",  UTRACE_ENV_COMM },
+	{ "pcomm", UTRACE_ENV_PCOMM },
+	{ "cpu",   UTRACE_ENV_CPU },
+	{ "numa",  UTRACE_ENV_NUMA },
+};
+
+/* resolve the KEY of an {env:KEY} placeholder, -1 if there is no such key */
+static int parse_env_ref(struct sview key)
+{
+	for (int i = 0; i < ARRAY_SIZE(env_ref_table); i++) {
+		if (sv_eq(key, env_ref_table[i].name))
+			return env_ref_table[i].ref;
+	}
+	return -1;
+}
+
+int utrace_compile_tmpl(const char *tmpl, const struct utrace_param *params, int param_cnt,
+			struct utrace_tmpl_seg **out_segs, int *out_seg_cnt)
 {
 	struct utrace_tmpl_seg *segs = NULL;
+	const char *orig = tmpl;
 	int seg_cnt = 0;
 
 	while (*tmpl) {
@@ -726,6 +750,24 @@ void utrace_compile_tmpl(const char *tmpl, const struct utrace_param *params, in
 		}
 
 		int name_len = close - tmpl - 1;
+		struct sview name = sv(tmpl + 1, name_len);
+
+		if (sv_starts_with(name, "env:")) {
+			struct sview key = sv_consume_left(name, 4);
+			int ref = parse_env_ref(key);
+
+			if (ref < 0) {
+				return utrace_err(sv_new(orig), sv(tmpl, close - tmpl + 1),
+						  "unknown environment reference '%.*s'\n",
+						  key.len, key.s);
+			}
+			segs = realloc(segs, (seg_cnt + 1) * sizeof(*segs));
+			segs[seg_cnt].type = UTRACE_TMPL_SEG_ENV;
+			segs[seg_cnt].env = ref;
+			seg_cnt++;
+			tmpl = close + 1;
+			continue;
+		}
 
 		/* try to resolve placeholder against entry-side ARG params */
 		int arg_idx = 0;
@@ -772,12 +814,23 @@ void utrace_compile_tmpl(const char *tmpl, const struct utrace_param *params, in
 
 	*out_segs = segs;
 	*out_seg_cnt = seg_cnt;
+	return 0;
 }
 
 static bool tmpl_has_args(const struct utrace_tmpl_seg *segs, int seg_cnt)
 {
 	for (int i = 0; i < seg_cnt; i++) {
 		if (segs[i].type == UTRACE_TMPL_SEG_ARG)
+			return true;
+	}
+	return false;
+}
+
+/* whether a template renders per event, rather than to one fixed string */
+static bool tmpl_is_dynamic(const struct utrace_tmpl_seg *segs, int seg_cnt)
+{
+	for (int i = 0; i < seg_cnt; i++) {
+		if (segs[i].type != UTRACE_TMPL_SEG_LIT)
 			return true;
 	}
 	return false;
@@ -793,10 +846,10 @@ static bool tmpl_has_args(const struct utrace_tmpl_seg *segs, int seg_cnt)
  * An id template that substitutes nothing renders to itself, so it keeps
  * id_segs NULL and emit keeps using the id string as is.
  */
-void utrace_cfg_compile_tmpls(struct utrace_cfg *cfg)
+int utrace_cfg_compile_tmpls(struct utrace_cfg *cfg)
 {
 	const struct utrace_param *params;
-	int param_cnt;
+	int param_cnt, err;
 	if (cfg->type == UTRACE_SPAN) {
 		params = cfg->span.entry->params;
 		param_cnt = cfg->span.entry->param_cnt;
@@ -805,18 +858,25 @@ void utrace_cfg_compile_tmpls(struct utrace_cfg *cfg)
 		param_cnt = cfg->param_cnt;
 	}
 	if (cfg->settings.name_tmpl) {
-		utrace_compile_tmpl(cfg->settings.name_tmpl, params, param_cnt,
-				    &cfg->settings.name_segs, &cfg->settings.name_seg_cnt);
+		err = utrace_compile_tmpl(cfg->settings.name_tmpl, params, param_cnt,
+					  &cfg->settings.name_segs, &cfg->settings.name_seg_cnt);
+		if (err)
+			return err;
+		cfg->settings.name_has_args = tmpl_has_args(cfg->settings.name_segs,
+							    cfg->settings.name_seg_cnt);
 	}
 	if (cfg->settings.id) {
-		utrace_compile_tmpl(cfg->settings.id, params, param_cnt,
-				    &cfg->settings.id_segs, &cfg->settings.id_seg_cnt);
-		if (!tmpl_has_args(cfg->settings.id_segs, cfg->settings.id_seg_cnt)) {
+		err = utrace_compile_tmpl(cfg->settings.id, params, param_cnt,
+					  &cfg->settings.id_segs, &cfg->settings.id_seg_cnt);
+		if (err)
+			return err;
+		if (!tmpl_is_dynamic(cfg->settings.id_segs, cfg->settings.id_seg_cnt)) {
 			free(cfg->settings.id_segs);
 			cfg->settings.id_segs = NULL;
 			cfg->settings.id_seg_cnt = 0;
 		}
 	}
+	return 0;
 }
 
 static int parse_probe_def(struct sview orig, struct sview def, struct utrace_cfg *cfg)
