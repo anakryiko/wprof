@@ -184,7 +184,7 @@ struct utrace_tmpl_seg {
 	enum utrace_tmpl_seg_type type;
 	union {
 		struct {
-			const char *s;   /* points into the name_tmpl string */
+			const char *s;   /* points into the source template string */
 			int len;
 		} lit;
 		struct {
@@ -199,6 +199,8 @@ struct utrace_settings {
 	char *name_tmpl; /* template string for slice/instant name, NULL if unset */
 	struct utrace_tmpl_seg *name_segs; /* pre-compiled name template segments */
 	int name_seg_cnt;
+	struct utrace_tmpl_seg *id_segs; /* pre-compiled id segments, NULL unless id has placeholders */
+	int id_seg_cnt;
 };
 
 struct utrace_cfg {
@@ -362,7 +364,7 @@ static inline const char *utrace_arg_map_lookup(const struct utrace_arg_map *map
 
 void utrace_compile_tmpl(const char *tmpl, const struct utrace_param *params, int param_cnt,
 			 struct utrace_tmpl_seg **out_segs, int *out_seg_cnt);
-void utrace_cfg_compile_name(struct utrace_cfg *cfg);
+void utrace_cfg_compile_tmpls(struct utrace_cfg *cfg);
 void utrace_cfg_add_pid(struct utrace_cfg *cfg, int pid, enum utrace_pid_discovery discovery);
 int utrace_cfg_parse(const char *def);
 int utrace_cfg_parse_file(const char *path);

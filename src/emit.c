@@ -140,6 +140,16 @@ struct uscope_entry {
 	enum uscope_state state;
 };
 
+/*
+ * A span exit event carries only its own (exit-leg) arguments, so it can't
+ * re-render an id template written against entry arguments. The id its entry
+ * rendered is remembered here instead, and matched back innermost-first.
+ */
+struct utrace_open_span {
+	u32 cfg_id;			/* index of the utrace cfg the span belongs to */
+	u32 utrace_id;			/* id its entry rendered and opened a track with */
+};
+
 struct task_state {
 	int tid, pid;
 	pb_iid name_iid;
@@ -176,10 +186,23 @@ struct task_state {
 	int pytorch_depth;
 	struct uscope_entry *uscope;
 	int uscope_cnt, uscope_cap;
+	/* utrace spans with a templated id that are open on this thread */
+	struct utrace_open_span *utspans;
+	int utspan_cnt, utspan_cap;
 };
 
 static struct hashmap *tasks;
 static struct hashmap *emitted_descrs;
+
+/*
+ * Ids rendered from a templated id: setting continue the utrace_id space past
+ * the per-cfg ids that -U positions define, so that a rendered id keys tracks
+ * and JSON the same way a cfg's own id does. Equal renderings intern to one id,
+ * and so share one track, across cfgs as well.
+ */
+static struct hashmap *utrace_dyn_ids;	/* rendered id string -> utrace_id */
+static const char **utrace_dyn_names;	/* utrace_id - utrace_cfg_cnt -> rendered id string */
+static u32 utrace_dyn_cnt, utrace_dyn_cap;
 
 /*
  * Per (pmu_idx, cpu) snapshot of the previous PMU sample's absolute counter
@@ -465,6 +488,10 @@ int init_emit(struct worker_state *w)
 
 	emitted_descrs = hashmap__new(hash_identity_fn, hash_equal_fn, NULL);
 	if (!emitted_descrs)
+		return -ENOMEM;
+
+	utrace_dyn_ids = hashmap__new(str_hash_fn, str_equal_fn, NULL);
+	if (!utrace_dyn_ids)
 		return -ENOMEM;
 
 	cur_wpb_writer = w->wpb_writer;
@@ -1414,6 +1441,7 @@ static void task_state_delete(struct wprof_task *t)
 
 	if (hashmap__delete(tasks, key, NULL, &st)) {
 		free(st->uscope);
+		free(st->utspans);
 		free(st);
 	}
 }
@@ -4581,23 +4609,59 @@ static const char *utrace_probe_name(const struct utrace_cfg *cfg)
 	}
 }
 
+static bool utrace_id_is_dyn(u32 utrace_id)
+{
+	return utrace_id >= env.utrace_cfg_cnt;
+}
+
+static const char *utrace_dyn_name(u32 utrace_id)
+{
+	return utrace_dyn_names[utrace_id - env.utrace_cfg_cnt];
+}
+
+static u32 utrace_intern_id(const char *name)
+{
+	long id;
+
+	if (hashmap__find(utrace_dyn_ids, name, &id))
+		return id;
+
+	if (utrace_dyn_cnt == utrace_dyn_cap) {
+		utrace_dyn_cap = utrace_dyn_cap ? utrace_dyn_cap * 2 : 16;
+		utrace_dyn_names = realloc(utrace_dyn_names, utrace_dyn_cap * sizeof(*utrace_dyn_names));
+	}
+
+	u32 utrace_id = env.utrace_cfg_cnt + utrace_dyn_cnt;
+	const char *key = strdup(name);
+
+	utrace_dyn_names[utrace_dyn_cnt++] = key;
+	hashmap__add(utrace_dyn_ids, key, utrace_id);
+
+	return utrace_id;
+}
+
 static u64 ensure_utrace_thread_track(const struct wprof_task *t, u32 utrace_id)
 {
 	struct track_state *s = track_state_get_or_add(DTK_UTRACE, t->tid, utrace_id);
 
 	if (!s->exists) {
-		const struct utrace_cfg *cfg = &env.utrace_cfgs[utrace_id];
 		char span_name[256];
 		const char *name;
 
-		if (cfg->settings.id) {
-			name = cfg->settings.id;
-		} else if (cfg->type == UTRACE_SPAN) {
-			snprintf(span_name, sizeof(span_name), "%s — %s",
-				 utrace_probe_name(cfg->span.entry), utrace_probe_name(cfg->span.exit));
-			name = span_name;
+		if (utrace_id_is_dyn(utrace_id)) {
+			name = utrace_dyn_name(utrace_id);
 		} else {
-			name = utrace_probe_name(cfg);
+			const struct utrace_cfg *cfg = &env.utrace_cfgs[utrace_id];
+
+			if (cfg->settings.id) {
+				name = cfg->settings.id;
+			} else if (cfg->type == UTRACE_SPAN) {
+				snprintf(span_name, sizeof(span_name), "%s — %s",
+					 utrace_probe_name(cfg->span.entry), utrace_probe_name(cfg->span.exit));
+				name = span_name;
+			} else {
+				name = utrace_probe_name(cfg);
+			}
 		}
 
 		emit_track_descr(s->track_id, trackid_thread(t), name, s->kind + utrace_id);
@@ -4678,21 +4742,19 @@ static bool utrace_arg_for_event(const struct wevent *e, bool ret_filter, const 
 }
 
 /*
- * Format a utrace event name using cfg->settings.name_tmpl, substituting
- * {arg_name} placeholders with actual argument values. Only entry-side args
- * (non-ret) are available for substitution. Returns length written (like snprintf).
+ * Format a compiled template, substituting {arg_name} placeholders with actual
+ * argument values. Only entry-side args (non-ret) are available for
+ * substitution. Returns length written (like snprintf).
  */
-static int utrace_render_name(char *buf, size_t buf_sz, struct wprof_data_hdr *hdr,
-			      const struct wevent *e, const struct utrace_cfg *cfg, int arg_cnt)
+static int utrace_render_tmpl(char *buf, size_t buf_sz, struct wprof_data_hdr *hdr,
+			      const struct wevent *e, const struct utrace_tmpl_seg *segs, int seg_cnt,
+			      int arg_cnt)
 {
-	if (!cfg->settings.name_segs)
-		return snprintf(buf, buf_sz, "%s", utrace_probe_name(cfg));
-
 	const s32 *arg_refs = (const s32 *)((const void *)e + WEVENT_SZ(utrace));
 	size_t pos = 0;
 
-	for (int i = 0; i < cfg->settings.name_seg_cnt && pos < buf_sz - 1; i++) {
-		const struct utrace_tmpl_seg *seg = &cfg->settings.name_segs[i];
+	for (int i = 0; i < seg_cnt && pos < buf_sz - 1; i++) {
+		const struct utrace_tmpl_seg *seg = &segs[i];
 		int n = 0;
 
 		if (seg->type == UTRACE_TMPL_SEG_LIT) {
@@ -4707,6 +4769,77 @@ static int utrace_render_name(char *buf, size_t buf_sz, struct wprof_data_hdr *h
 
 	buf[pos] = '\0';
 	return pos;
+}
+
+static int utrace_render_name(char *buf, size_t buf_sz, struct wprof_data_hdr *hdr,
+			      const struct wevent *e, const struct utrace_cfg *cfg, int arg_cnt)
+{
+	if (cfg->settings.name_segs) {
+		return utrace_render_tmpl(buf, buf_sz, hdr, e, cfg->settings.name_segs,
+					  cfg->settings.name_seg_cnt, arg_cnt);
+	} else {
+		return snprintf(buf, buf_sz, "%s", utrace_probe_name(cfg));
+	}
+}
+
+static void utrace_span_push(struct task_state *st, u32 cfg_id, u32 utrace_id)
+{
+	if (st->utspan_cnt == st->utspan_cap) {
+		st->utspan_cap = st->utspan_cap ? st->utspan_cap * 2 : 8;
+		st->utspans = realloc(st->utspans, st->utspan_cap * sizeof(*st->utspans));
+	}
+	st->utspans[st->utspan_cnt++] = (struct utrace_open_span){ .cfg_id = cfg_id, .utrace_id = utrace_id };
+}
+
+/*
+ * Take back the id of the innermost span of this cfg still open on the thread.
+ * Spans of different cfgs can interleave, so this isn't always the top entry.
+ * Returns -1 if the thread has no such span open.
+ */
+static int utrace_span_pop(struct task_state *st, u32 cfg_id)
+{
+	for (int i = st->utspan_cnt - 1; i >= 0; i--) {
+		if (st->utspans[i].cfg_id != cfg_id)
+			continue;
+
+		u32 utrace_id = st->utspans[i].utrace_id;
+
+		memmove(&st->utspans[i], &st->utspans[i + 1],
+			(st->utspan_cnt - i - 1) * sizeof(*st->utspans));
+		st->utspan_cnt--;
+		return utrace_id;
+	}
+	return -1;
+}
+
+/*
+ * Resolve the utrace id an event's track and JSON id are keyed by: the cfg's
+ * own id, unless its id: setting is templated, in which case the id rendered
+ * from the event's arguments. Returns -1 for the exit of a span that was
+ * already open when the capture (or the replay window) started, as the id its
+ * entry would have rendered is unknown.
+ */
+static int utrace_event_id(struct worker_state *w, const struct wevent *e,
+			   const struct utrace_cfg *cfg, const struct wprof_task *t, int arg_cnt)
+{
+	u32 cfg_id = e->utrace.utrace_id;
+	char buf[256];
+	u32 utrace_id;
+
+	if (!cfg->settings.id_segs)
+		return cfg_id;
+
+	if (e->kind == EV_UTRACE_EXIT)
+		return utrace_span_pop(task_state(w, t), cfg_id);
+
+	utrace_render_tmpl(buf, sizeof(buf), w->dump_hdr, e, cfg->settings.id_segs,
+			   cfg->settings.id_seg_cnt, arg_cnt);
+	utrace_id = utrace_intern_id(buf);
+
+	if (e->kind == EV_UTRACE_ENTRY)
+		utrace_span_push(task_state(w, t), cfg_id, utrace_id);
+
+	return utrace_id;
 }
 
 static void emit_utrace_args(struct worker_state *w, const struct wevent *e,
@@ -4752,13 +4885,10 @@ static void emit_utrace_event(struct worker_state *w, const struct wevent *e)
 	struct wprof_data_hdr *hdr = w->dump_hdr;
 	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
 
-	u32 utrace_id = e->utrace.utrace_id;
-	const struct utrace_cfg *cfg = &env.utrace_cfgs[utrace_id];
+	u32 cfg_id = e->utrace.utrace_id;
+	const struct utrace_cfg *cfg = &env.utrace_cfgs[cfg_id];
 	bool ret_filter;
 	const struct utrace_cfg *arg_cfg = utrace_arg_cfg(e, &ret_filter);
-
-	emit_track_descrs(w, &task);
-	u64 track_uuid = ensure_utrace_thread_track(&task, utrace_id);
 
 	/* Count args for this event side */
 	int arg_cnt = 0;
@@ -4766,6 +4896,22 @@ static void emit_utrace_event(struct worker_state *w, const struct wevent *e)
 		if (utrace_arg_for_event(e, ret_filter, &arg_cfg->params[i]))
 			arg_cnt++;
 	}
+
+	int utrace_id = utrace_event_id(w, e, cfg, &task, arg_cnt);
+	enum event_kind emit_kind = e->kind;
+
+	/*
+	 * An exit with no entry to pair up with has no slice to close, so it goes
+	 * to the cfg's own track as a standalone instant, as an untemplated id
+	 * would have put it.
+	 */
+	if (utrace_id < 0) {
+		utrace_id = cfg_id;
+		emit_kind = EV_UTRACE_INSTANT;
+	}
+
+	emit_track_descrs(w, &task);
+	u64 track_uuid = ensure_utrace_thread_track(&task, utrace_id);
 
 	/* Format the event name: use name_tmpl on entry/instant, probe name on exit */
 	char name_buf[256];
@@ -4780,7 +4926,7 @@ static void emit_utrace_event(struct worker_state *w, const struct wevent *e)
 
 	u32 stack_id = (env.requested_stack_traces & ST_UTRACE) ? e->utrace.utrace_stack_id : 0;
 
-	switch (e->kind) {
+	switch (emit_kind) {
 	case EV_UTRACE_ENTRY:
 		emit_slice_begin(track_uuid, e->ts, iid_str(name_iid, name), IID_CAT_UTRACE) {
 			emit_utrace_args(w, e, arg_cfg, arg_cnt, ret_filter);
@@ -4811,8 +4957,8 @@ static void emit_utrace_json(struct worker_state *w, const struct wevent *e)
 	struct wprof_data_hdr *hdr = w->dump_hdr;
 	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
 
-	u32 utrace_id = e->utrace.utrace_id;
-	const struct utrace_cfg *cfg = &env.utrace_cfgs[utrace_id];
+	u32 cfg_id = e->utrace.utrace_id;
+	const struct utrace_cfg *cfg = &env.utrace_cfgs[cfg_id];
 	bool ret_filter;
 	const struct utrace_cfg *arg_cfg = utrace_arg_cfg(e, &ret_filter);
 
@@ -4839,7 +4985,12 @@ static void emit_utrace_json(struct worker_state *w, const struct wevent *e)
 	}
 
 	/* Emit formatted name and probe id */
-	if (cfg->settings.id) {
+	int utrace_id = utrace_event_id(w, e, cfg, &task, arg_cnt);
+	if (utrace_id < 0)
+		utrace_id = cfg_id;
+	if (utrace_id_is_dyn(utrace_id)) {
+		json_kv_str(j, "utrace_id", utrace_dyn_name(utrace_id));
+	} else if (cfg->settings.id) {
 		json_kv_str(j, "utrace_id", cfg->settings.id);
 	} else {
 		char id_buf[16];

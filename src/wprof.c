@@ -2252,12 +2252,8 @@ int main(int argc, char **argv)
 				break;
 			case WEXTRA_UTRACE_DEF:
 				err = utrace_cfg_parse(val);
-				if (!err) {
-					struct utrace_cfg *cfg = &env.utrace_cfgs[env.utrace_cfg_cnt - 1];
-
-					if (cfg->settings.name_tmpl)
-						utrace_cfg_compile_name(cfg);
-				}
+				if (!err)
+					utrace_cfg_compile_tmpls(&env.utrace_cfgs[env.utrace_cfg_cnt - 1]);
 				break;
 			/*
 			 * Emit (-e) options keep their CLI value if set, otherwise
