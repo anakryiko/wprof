@@ -1746,9 +1746,12 @@ static int utrace_augment_args(void)
 			return err;
 	}
 
-	/* compile name/id format templates after all arg types/names are resolved */
-	for (int i = 0; i < env.utrace_cfg_cnt; i++)
-		utrace_cfg_compile_tmpls(&env.utrace_cfgs[i]);
+	/* compile name/id templates after all arg types/names are resolved */
+	for (int i = 0; i < env.utrace_cfg_cnt; i++) {
+		int err = utrace_cfg_compile_tmpls(&env.utrace_cfgs[i]);
+		if (err)
+			return err;
+	}
 	return 0;
 }
 

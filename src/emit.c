@@ -4741,14 +4741,30 @@ static bool utrace_arg_for_event(const struct wevent *e, bool ret_filter, const 
 	return true;
 }
 
+static int utrace_render_env(char *buf, size_t buf_sz, const struct wevent *e,
+			     const struct wprof_task *t, enum utrace_env_ref ref)
+{
+	switch (ref) {
+	case UTRACE_ENV_TID:	return snprintf(buf, buf_sz, "%u", t->tid);
+	case UTRACE_ENV_PID:	return snprintf(buf, buf_sz, "%u", t->pid);
+	case UTRACE_ENV_PPID:	return snprintf(buf, buf_sz, "%u", t->ppid);
+	case UTRACE_ENV_COMM:	return snprintf(buf, buf_sz, "%s", t->comm);
+	case UTRACE_ENV_PCOMM:	return snprintf(buf, buf_sz, "%s", t->pcomm);
+	case UTRACE_ENV_CPU:	return snprintf(buf, buf_sz, "%d", e->cpu);
+	case UTRACE_ENV_NUMA:	return snprintf(buf, buf_sz, "%d", e->numa_node);
+	default:		return 0;
+	}
+}
+
 /*
  * Format a compiled template, substituting {arg_name} placeholders with actual
- * argument values. Only entry-side args (non-ret) are available for
- * substitution. Returns length written (like snprintf).
+ * argument values and {env:...} ones with the event's capture context. Only
+ * entry-side args (non-ret) are available for substitution. Returns length
+ * written (like snprintf).
  */
 static int utrace_render_tmpl(char *buf, size_t buf_sz, struct wprof_data_hdr *hdr,
-			      const struct wevent *e, const struct utrace_tmpl_seg *segs, int seg_cnt,
-			      int arg_cnt)
+			      const struct wevent *e, const struct wprof_task *t,
+			      const struct utrace_tmpl_seg *segs, int seg_cnt, int arg_cnt)
 {
 	const s32 *arg_refs = (const s32 *)((const void *)e + WEVENT_SZ(utrace));
 	size_t pos = 0;
@@ -4759,6 +4775,8 @@ static int utrace_render_tmpl(char *buf, size_t buf_sz, struct wprof_data_hdr *h
 
 		if (seg->type == UTRACE_TMPL_SEG_LIT) {
 			n = snprintf(buf + pos, buf_sz - pos, "%.*s", seg->lit.len, seg->lit.s);
+		} else if (seg->type == UTRACE_TMPL_SEG_ENV) {
+			n = utrace_render_env(buf + pos, buf_sz - pos, e, t, seg->env);
 		} else if (seg->arg.arg_idx < arg_cnt && arg_refs[seg->arg.arg_idx] >= 0) {
 			n = utrace_format_arg(buf + pos, buf_sz - pos, hdr, arg_refs[seg->arg.arg_idx],
 					      seg->arg.param);
@@ -4772,10 +4790,11 @@ static int utrace_render_tmpl(char *buf, size_t buf_sz, struct wprof_data_hdr *h
 }
 
 static int utrace_render_name(char *buf, size_t buf_sz, struct wprof_data_hdr *hdr,
-			      const struct wevent *e, const struct utrace_cfg *cfg, int arg_cnt)
+			      const struct wevent *e, const struct wprof_task *t,
+			      const struct utrace_cfg *cfg, int arg_cnt)
 {
 	if (cfg->settings.name_segs) {
-		return utrace_render_tmpl(buf, buf_sz, hdr, e, cfg->settings.name_segs,
+		return utrace_render_tmpl(buf, buf_sz, hdr, e, t, cfg->settings.name_segs,
 					  cfg->settings.name_seg_cnt, arg_cnt);
 	} else {
 		return snprintf(buf, buf_sz, "%s", utrace_probe_name(cfg));
@@ -4832,7 +4851,7 @@ static int utrace_event_id(struct worker_state *w, const struct wevent *e,
 	if (e->kind == EV_UTRACE_EXIT)
 		return utrace_span_pop(task_state(w, t), cfg_id);
 
-	utrace_render_tmpl(buf, sizeof(buf), w->dump_hdr, e, cfg->settings.id_segs,
+	utrace_render_tmpl(buf, sizeof(buf), w->dump_hdr, e, t, cfg->settings.id_segs,
 			   cfg->settings.id_seg_cnt, arg_cnt);
 	utrace_id = utrace_intern_id(buf);
 
@@ -4913,11 +4932,11 @@ static void emit_utrace_event(struct worker_state *w, const struct wevent *e)
 	emit_track_descrs(w, &task);
 	u64 track_uuid = ensure_utrace_thread_track(&task, utrace_id);
 
-	/* Format the event name: use name_tmpl on entry/instant, probe name on exit */
+	/* Format the event name: use name_tmpl unless it needs the entry-side args an exit lacks */
 	char name_buf[256];
 	const char *name;
-	if (e->kind != EV_UTRACE_EXIT && cfg->settings.name_segs) {
-		utrace_render_name(name_buf, sizeof(name_buf), hdr, e, cfg, arg_cnt);
+	if (cfg->settings.name_segs && (e->kind != EV_UTRACE_EXIT || !cfg->settings.name_has_args)) {
+		utrace_render_name(name_buf, sizeof(name_buf), hdr, e, &task, cfg, arg_cnt);
 		name = name_buf;
 	} else {
 		name = utrace_probe_name(arg_cfg);
@@ -4999,8 +5018,8 @@ static void emit_utrace_json(struct worker_state *w, const struct wevent *e)
 	}
 	char name_buf[256];
 	const char *name;
-	if (e->kind != EV_UTRACE_EXIT && cfg->settings.name_segs) {
-		utrace_render_name(name_buf, sizeof(name_buf), hdr, e, cfg, arg_cnt);
+	if (cfg->settings.name_segs && (e->kind != EV_UTRACE_EXIT || !cfg->settings.name_has_args)) {
+		utrace_render_name(name_buf, sizeof(name_buf), hdr, e, &task, cfg, arg_cnt);
 		name = name_buf;
 	} else {
 		name = utrace_probe_name(arg_cfg);

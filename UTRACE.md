@@ -335,8 +335,8 @@ Settings go inside `| ... |` after the parameters, comma-separated.
 
 `name:<template>` or `name:'template with spaces'`
 
-Customizes event names with `{...}` argument placeholders. See
-**Perfetto rendering** below for details and examples.
+Customizes event names with `{...}` argument and `{env:...}`
+placeholders. See **Perfetto rendering** below for details and examples.
 
 ### Custom probe ID
 
@@ -347,8 +347,9 @@ JSON output instead of the default numeric index. Multiple probes
 sharing the same ID will have their events combined on the same
 per-thread track in Perfetto (see **Perfetto rendering** below).
 
-Like `name:`, the identifier accepts `{...}` argument placeholders, in
-which case each distinct rendered value gets its own track.
+Like `name:`, the identifier accepts `{...}` argument and `{env:...}`
+placeholders, in which case each distinct rendered value gets its own
+track.
 
 ## Perfetto rendering
 
@@ -415,6 +416,37 @@ entry-side arguments can be substituted, so `arg:ret` is not available
 to a template. Captured argument values also appear as annotations on
 the Perfetto slice or instant event. An argument that could not be read
 is omitted from the annotations and renders empty in a template.
+
+**Capture environment:** A placeholder of the form `{env:...}` refers to
+the context the probe fired in rather than to an argument:
+
+| Key           | Value                                             |
+|---------------|---------------------------------------------------|
+| `{env:tid}`   | Thread ID                                         |
+| `{env:pid}`   | Process ID                                        |
+| `{env:ppid}`  | Parent process ID                                 |
+| `{env:comm}`  | Thread name                                       |
+| `{env:pcomm}` | Process name                                      |
+| `{env:cpu}`   | CPU the probe fired on                            |
+| `{env:numa}`  | NUMA node of that CPU                             |
+
+```bash
+# split one probe's spans across a track per CPU
+-U 'kspan:submit_bio | id:"cpu {env:cpu}" |'
+
+# label events with the thread they fired on
+-U 'usdt:app:req_start (arg:0/name(req)) | name:"{env:comm} req {req}" |'
+```
+
+These are available to both `name:` and `id:`, and unlike arguments they
+are available on every event, so a `name:` template built only from them
+also renders on span exit events. `env:` is a reserved namespace: an
+unknown key is rejected when the definition is parsed, whereas a
+placeholder naming no argument is left as literal text.
+
+For a span's `id:`, the value is the one captured at entry. A thread can
+migrate between CPUs, or be renamed, while a span is open, so a slice
+stays on the track its entry opened rather than moving mid-slice.
 
 ## JSON output
 
