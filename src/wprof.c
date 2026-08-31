@@ -2255,7 +2255,7 @@ int main(int argc, char **argv)
 				if (!err) {
 					struct utrace_cfg *cfg = &env.utrace_cfgs[env.utrace_cfg_cnt - 1];
 
-					if (cfg->settings.name_fmt)
+					if (cfg->settings.name_tmpl)
 						utrace_cfg_compile_name(cfg);
 				}
 				break;

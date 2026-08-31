@@ -4678,11 +4678,11 @@ static bool utrace_arg_for_event(const struct wevent *e, bool ret_filter, const 
 }
 
 /*
- * Format a utrace event name using cfg->settings.name_fmt, substituting
+ * Format a utrace event name using cfg->settings.name_tmpl, substituting
  * {arg_name} placeholders with actual argument values. Only entry-side args
  * (non-ret) are available for substitution. Returns length written (like snprintf).
  */
-static int format_utrace_name(char *buf, size_t buf_sz, struct wprof_data_hdr *hdr,
+static int utrace_render_name(char *buf, size_t buf_sz, struct wprof_data_hdr *hdr,
 			      const struct wevent *e, const struct utrace_cfg *cfg, int arg_cnt)
 {
 	if (!cfg->settings.name_segs)
@@ -4692,10 +4692,10 @@ static int format_utrace_name(char *buf, size_t buf_sz, struct wprof_data_hdr *h
 	size_t pos = 0;
 
 	for (int i = 0; i < cfg->settings.name_seg_cnt && pos < buf_sz - 1; i++) {
-		const struct utrace_fmt_seg *seg = &cfg->settings.name_segs[i];
+		const struct utrace_tmpl_seg *seg = &cfg->settings.name_segs[i];
 		int n = 0;
 
-		if (seg->type == UTRACE_FMT_SEG_LIT) {
+		if (seg->type == UTRACE_TMPL_SEG_LIT) {
 			n = snprintf(buf + pos, buf_sz - pos, "%.*s", seg->lit.len, seg->lit.s);
 		} else if (seg->arg.arg_idx < arg_cnt && arg_refs[seg->arg.arg_idx] >= 0) {
 			n = utrace_format_arg(buf + pos, buf_sz - pos, hdr, arg_refs[seg->arg.arg_idx],
@@ -4767,11 +4767,11 @@ static void emit_utrace_event(struct worker_state *w, const struct wevent *e)
 			arg_cnt++;
 	}
 
-	/* Format the event name: use name_fmt on entry/instant, probe name on exit */
+	/* Format the event name: use name_tmpl on entry/instant, probe name on exit */
 	char name_buf[256];
 	const char *name;
 	if (e->kind != EV_UTRACE_EXIT && cfg->settings.name_segs) {
-		format_utrace_name(name_buf, sizeof(name_buf), hdr, e, cfg, arg_cnt);
+		utrace_render_name(name_buf, sizeof(name_buf), hdr, e, cfg, arg_cnt);
 		name = name_buf;
 	} else {
 		name = utrace_probe_name(arg_cfg);
@@ -4849,7 +4849,7 @@ static void emit_utrace_json(struct worker_state *w, const struct wevent *e)
 	char name_buf[256];
 	const char *name;
 	if (e->kind != EV_UTRACE_EXIT && cfg->settings.name_segs) {
-		format_utrace_name(name_buf, sizeof(name_buf), hdr, e, cfg, arg_cnt);
+		utrace_render_name(name_buf, sizeof(name_buf), hdr, e, cfg, arg_cnt);
 		name = name_buf;
 	} else {
 		name = utrace_probe_name(arg_cfg);
