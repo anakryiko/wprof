@@ -1750,7 +1750,7 @@ static int utrace_augment_args(void)
 	for (int i = 0; i < env.utrace_cfg_cnt; i++) {
 		struct utrace_cfg *cfg = &env.utrace_cfgs[i];
 
-		if (cfg->settings.name_fmt)
+		if (cfg->settings.name_tmpl)
 			utrace_cfg_compile_name(cfg);
 	}
 	return 0;

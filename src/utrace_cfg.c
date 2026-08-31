@@ -683,7 +683,7 @@ static int parse_settings(struct sview orig, struct sview def, struct utrace_set
 			if (err)
 				return err;
 		} else if (sv_starts_with(tok, "name:")) {
-			err = sv_consume_str_literal(orig, sv_trim(sv_consume_left(tok, 5)), "name", &settings->name_fmt);
+			err = sv_consume_str_literal(orig, sv_trim(sv_consume_left(tok, 5)), "name", &settings->name_tmpl);
 			if (err)
 				return err;
 		} else {
@@ -694,38 +694,38 @@ static int parse_settings(struct sview orig, struct sview def, struct utrace_set
 	return 0;
 }
 
-void utrace_compile_fmt(const char *fmt, const struct utrace_param *params, int param_cnt,
-			       struct utrace_fmt_seg **out_segs, int *out_seg_cnt)
+void utrace_compile_tmpl(const char *tmpl, const struct utrace_param *params, int param_cnt,
+			 struct utrace_tmpl_seg **out_segs, int *out_seg_cnt)
 {
-	struct utrace_fmt_seg *segs = NULL;
+	struct utrace_tmpl_seg *segs = NULL;
 	int seg_cnt = 0;
 
-	while (*fmt) {
-		if (*fmt != '{') {
+	while (*tmpl) {
+		if (*tmpl != '{') {
 			/* start of a literal run */
-			const char *start = fmt;
-			while (*fmt && *fmt != '{')
-				fmt++;
+			const char *start = tmpl;
+			while (*tmpl && *tmpl != '{')
+				tmpl++;
 			segs = realloc(segs, (seg_cnt + 1) * sizeof(*segs));
-			segs[seg_cnt].type = UTRACE_FMT_SEG_LIT;
+			segs[seg_cnt].type = UTRACE_TMPL_SEG_LIT;
 			segs[seg_cnt].lit.s = start;
-			segs[seg_cnt].lit.len = fmt - start;
+			segs[seg_cnt].lit.len = tmpl - start;
 			seg_cnt++;
 			continue;
 		}
 
-		const char *close = strchr(fmt + 1, '}');
+		const char *close = strchr(tmpl + 1, '}');
 		if (!close) {
 			/* unterminated '{' — emit rest as literal */
 			segs = realloc(segs, (seg_cnt + 1) * sizeof(*segs));
-			segs[seg_cnt].type = UTRACE_FMT_SEG_LIT;
-			segs[seg_cnt].lit.s = fmt;
-			segs[seg_cnt].lit.len = strlen(fmt);
+			segs[seg_cnt].type = UTRACE_TMPL_SEG_LIT;
+			segs[seg_cnt].lit.s = tmpl;
+			segs[seg_cnt].lit.len = strlen(tmpl);
 			seg_cnt++;
 			break;
 		}
 
-		int name_len = close - fmt - 1;
+		int name_len = close - tmpl - 1;
 
 		/* try to resolve placeholder against entry-side ARG params */
 		int arg_idx = 0;
@@ -742,13 +742,13 @@ void utrace_compile_fmt(const char *fmt, const struct utrace_param *params, int 
 
 			bool name_match = p->arg.name &&
 				strlen(p->arg.name) == name_len &&
-				strncmp(p->arg.name, fmt + 1, name_len) == 0;
+				strncmp(p->arg.name, tmpl + 1, name_len) == 0;
 			bool auto_match = strlen(auto_name) == name_len &&
-				strncmp(auto_name, fmt + 1, name_len) == 0;
+				strncmp(auto_name, tmpl + 1, name_len) == 0;
 
 			if (name_match || auto_match) {
 				segs = realloc(segs, (seg_cnt + 1) * sizeof(*segs));
-				segs[seg_cnt].type = UTRACE_FMT_SEG_ARG;
+				segs[seg_cnt].type = UTRACE_TMPL_SEG_ARG;
 				segs[seg_cnt].arg.arg_idx = arg_idx;
 				segs[seg_cnt].arg.param = p;
 				seg_cnt++;
@@ -761,13 +761,13 @@ void utrace_compile_fmt(const char *fmt, const struct utrace_param *params, int 
 		if (!matched) {
 			/* unmatched placeholder — emit as literal including braces */
 			segs = realloc(segs, (seg_cnt + 1) * sizeof(*segs));
-			segs[seg_cnt].type = UTRACE_FMT_SEG_LIT;
-			segs[seg_cnt].lit.s = fmt;
-			segs[seg_cnt].lit.len = close - fmt + 1;
+			segs[seg_cnt].type = UTRACE_TMPL_SEG_LIT;
+			segs[seg_cnt].lit.s = tmpl;
+			segs[seg_cnt].lit.len = close - tmpl + 1;
 			seg_cnt++;
 		}
 
-		fmt = close + 1;
+		tmpl = close + 1;
 	}
 
 	*out_segs = segs;
@@ -792,8 +792,8 @@ void utrace_cfg_compile_name(struct utrace_cfg *cfg)
 		params = cfg->params;
 		param_cnt = cfg->param_cnt;
 	}
-	utrace_compile_fmt(cfg->settings.name_fmt, params, param_cnt,
-			   &cfg->settings.name_segs, &cfg->settings.name_seg_cnt);
+	utrace_compile_tmpl(cfg->settings.name_tmpl, params, param_cnt,
+			    &cfg->settings.name_segs, &cfg->settings.name_seg_cnt);
 }
 
 static int parse_probe_def(struct sview orig, struct sview def, struct utrace_cfg *cfg)
@@ -1210,7 +1210,7 @@ static void format_setting_value(struct sbuf *sb, const char *val)
 
 static void format_settings(const struct utrace_settings *s, struct sbuf *sb)
 {
-	if (!s->id && !s->name_fmt)
+	if (!s->id && !s->name_tmpl)
 		return;
 
 	sbuf_appendf(sb, " | ");
@@ -1220,11 +1220,11 @@ static void format_settings(const struct utrace_settings *s, struct sbuf *sb)
 		format_setting_value(sb, s->id);
 		first = false;
 	}
-	if (s->name_fmt) {
+	if (s->name_tmpl) {
 		if (!first)
 			sbuf_appendf(sb, ", ");
 		sbuf_appendf(sb, "name:");
-		format_setting_value(sb, s->name_fmt);
+		format_setting_value(sb, s->name_tmpl);
 	}
 	sbuf_appendf(sb, " |");
 }
