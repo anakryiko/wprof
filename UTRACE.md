@@ -331,6 +331,13 @@ inherited by the second.
 
 Settings go inside `| ... |` after the parameters, comma-separated.
 
+### Name format template
+
+`name:<template>` or `name:'template with spaces'`
+
+Customizes event names with `{...}` argument placeholders. See
+**Perfetto rendering** below for details and examples.
+
 ### Custom probe ID
 
 `id:<identifier>` or `id:'identifier with spaces'`
@@ -340,12 +347,8 @@ JSON output instead of the default numeric index. Multiple probes
 sharing the same ID will have their events combined on the same
 per-thread track in Perfetto (see **Perfetto rendering** below).
 
-### Name format template
-
-`name:<template>` or `name:'template with spaces'`
-
-Customizes event names with `{...}` argument placeholders. See
-**Perfetto rendering** below for details and examples.
+Like `name:`, the identifier accepts `{...}` argument placeholders, in
+which case each distinct rendered value gets its own track.
 
 ## Perfetto rendering
 
@@ -364,9 +367,34 @@ same per-thread child track. This is useful for grouping related probes:
 -U 'k:mutex_unlock (arg:*) | id:locks |'
 ```
 
+**Tracks by argument value:** An `id:` with `{...}` placeholders (same
+syntax as `name:`, see **Event names** below) is rendered per event, and
+each distinct value gets its own per-thread track. This splits one probe
+across tracks by whatever its arguments identify:
+
+```bash
+# one track per (thread, ring) instead of a single track for the probe
+-U 'uspan:io_submit (arg:0.ring_id/name(ring)) | id:"ring {ring}" |'
+```
+
+Equal renderings share a track, across probes as well, so the grouping
+above is the case where every event renders the same string. A
+placeholder that matches no argument is left as is, and an id that
+substitutes nothing stays a single static track.
+
 **Span rendering:** Span probes (`uspan:`, `kspan:`, `bpfspan:`, and
 generic `~~` spans) produce Perfetto slices. The entry event starts the
 slice and the matching exit event ends it.
+
+A span's exit event carries only its own arguments (`arg:ret` for the
+native span probes, the exit leg's arguments for a generic `~~` span),
+so it can't re-render an `id:` template written against the entry
+arguments. It closes the track its own entry opened instead, matching
+exits to entries innermost-first for recursive spans. An exit with no
+entry to pair up with — a span already in flight when the capture (or
+the replay window) started — has no slice to close, so it is emitted as
+a standalone instant on the probe's own track, the one an untemplated
+`id:` would have used.
 
 **Event names:** By default, each event is labeled with the probe's
 target name (e.g., `process_request`, `sched_switch`). Use the `name:`
@@ -382,10 +410,11 @@ setting to customize this with argument substitution:
 
 Placeholders use `{...}` syntax and can reference arguments by their
 positional name (`{arg0}`) or by their display name (`{req_id}`,
-`{prev_comm}`). Both forms work if the argument has a name. Captured
-argument values also appear as annotations on the Perfetto slice or
-instant event. An argument that could not be read is omitted from the
-annotations and renders empty in a `name:` template.
+`{prev_comm}`). Both forms work if the argument has a name. Only
+entry-side arguments can be substituted, so `arg:ret` is not available
+to a template. Captured argument values also appear as annotations on
+the Perfetto slice or instant event. An argument that could not be read
+is omitted from the annotations and renders empty in a template.
 
 ## JSON output
 
@@ -404,6 +433,10 @@ With `-J`, utrace events appear as:
 ```
 
 Event types: `utrace_instant`, `utrace_entry`, `utrace_exit`.
+
+`utrace_id` carries the rendered value when the `id:` setting is
+templated, so a span's entry and exit report the same one. An exit with
+no entry to pair up with reports the `id:` setting itself.
 
 Argument values are formatted by type: integers as decimal, pointers as
 `"0x..."` hex strings, strings as JSON strings. An argument whose value could

@@ -1746,13 +1746,9 @@ static int utrace_augment_args(void)
 			return err;
 	}
 
-	/* compile name format templates after all arg types/names are resolved */
-	for (int i = 0; i < env.utrace_cfg_cnt; i++) {
-		struct utrace_cfg *cfg = &env.utrace_cfgs[i];
-
-		if (cfg->settings.name_tmpl)
-			utrace_cfg_compile_name(cfg);
-	}
+	/* compile name/id format templates after all arg types/names are resolved */
+	for (int i = 0; i < env.utrace_cfg_cnt; i++)
+		utrace_cfg_compile_tmpls(&env.utrace_cfgs[i]);
 	return 0;
 }
 
@@ -2155,6 +2151,8 @@ static void clone_cfg_with_pid(const struct utrace_cfg *src,
 	*dst = *src;
 	dst->settings.name_segs = NULL;
 	dst->settings.name_seg_cnt = 0;
+	dst->settings.id_segs = NULL;
+	dst->settings.id_seg_cnt = 0;
 
 	if (src->type == UTRACE_SPAN) {
 		enum utrace_pid_discovery d = cfg_pid_discovery(src);

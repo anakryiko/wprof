@@ -774,14 +774,26 @@ void utrace_compile_tmpl(const char *tmpl, const struct utrace_param *params, in
 	*out_seg_cnt = seg_cnt;
 }
 
+static bool tmpl_has_args(const struct utrace_tmpl_seg *segs, int seg_cnt)
+{
+	for (int i = 0; i < seg_cnt; i++) {
+		if (segs[i].type == UTRACE_TMPL_SEG_ARG)
+			return true;
+	}
+	return false;
+}
+
 /*
- * Compile the cfg's name-format template into name_segs, resolving placeholders
+ * Compile the cfg's name and id templates into segments, resolving placeholders
  * against the (entry-side) arg params. Runs both at capture (after arg types are
  * resolved) and on replay (after re-parsing the persisted definition), so that
- * replayed traces reproduce templated event names rather than the bare probe
- * name.
+ * replayed traces reproduce templated event names and track ids rather than the
+ * bare probe name.
+ *
+ * An id template that substitutes nothing renders to itself, so it keeps
+ * id_segs NULL and emit keeps using the id string as is.
  */
-void utrace_cfg_compile_name(struct utrace_cfg *cfg)
+void utrace_cfg_compile_tmpls(struct utrace_cfg *cfg)
 {
 	const struct utrace_param *params;
 	int param_cnt;
@@ -792,8 +804,19 @@ void utrace_cfg_compile_name(struct utrace_cfg *cfg)
 		params = cfg->params;
 		param_cnt = cfg->param_cnt;
 	}
-	utrace_compile_tmpl(cfg->settings.name_tmpl, params, param_cnt,
-			    &cfg->settings.name_segs, &cfg->settings.name_seg_cnt);
+	if (cfg->settings.name_tmpl) {
+		utrace_compile_tmpl(cfg->settings.name_tmpl, params, param_cnt,
+				    &cfg->settings.name_segs, &cfg->settings.name_seg_cnt);
+	}
+	if (cfg->settings.id) {
+		utrace_compile_tmpl(cfg->settings.id, params, param_cnt,
+				    &cfg->settings.id_segs, &cfg->settings.id_seg_cnt);
+		if (!tmpl_has_args(cfg->settings.id_segs, cfg->settings.id_seg_cnt)) {
+			free(cfg->settings.id_segs);
+			cfg->settings.id_segs = NULL;
+			cfg->settings.id_seg_cnt = 0;
+		}
+	}
 }
 
 static int parse_probe_def(struct sview orig, struct sview def, struct utrace_cfg *cfg)
