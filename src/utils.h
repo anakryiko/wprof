@@ -142,6 +142,31 @@ struct btf;
 /* Lazily parse and cache the running kernel's BTF; exits on failure. */
 struct btf *load_vmlinux_btf(void);
 
+/* Fetch (and cache) kernel BTF by object id; vmlinux for obj_id <= 1. */
+const struct btf *fetch_kernel_btf(__u32 obj_id);
+
+struct kernel_btf {
+	__u32 id;		/* kernel BTF object id (0 for the vmlinux entry) */
+	char name[64];		/* "vmlinux" or kernel module name */
+	const struct btf *btf;	/* for modules, split BTF on top of vmlinux */
+};
+
+/*
+ * Iterates vmlinux, then kernel module BTFs, parsing module BTFs lazily; use
+ * with wprof_for_each(kernel_btf, kb).
+ */
+struct kernel_btf_iter {
+	int idx;
+};
+
+int kernel_btf_iter_new(struct kernel_btf_iter *it);
+struct kernel_btf *kernel_btf_iter_next(struct kernel_btf_iter *it);
+/* nothing to release, but wprof_for_each() needs a destructor to call */
+static inline void kernel_btf_iter_destroy(struct kernel_btf_iter *it) {}
+
+/* btf__find_by_name_kind() limited to the BTF's own types, skipping any base BTF */
+__s32 btf_find_by_name_kind_own(const struct btf *btf, const char *name, __u32 kind);
+
 struct ksyms;
 /* Lazily load and cache /proc/kallsyms; NULL if unavailable. */
 struct ksyms *load_ksyms(void);

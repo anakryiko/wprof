@@ -70,35 +70,6 @@ static int query_prog(unsigned int prog_id)
 	return err;
 }
 
-static struct {
-	__u32 id;
-	struct btf *btf;
-} *mod_btfs;
-static int mod_btf_cnt;
-
-static const struct btf *fetch_kernel_btf(__u32 obj_id)
-{
-	struct btf *vmlinux_btf = load_vmlinux_btf();
-
-	if (obj_id <= 1)
-		return vmlinux_btf;
-
-	for (int i = 0; i < mod_btf_cnt; i++) {
-		if (mod_btfs[i].id == obj_id)
-			return mod_btfs[i].btf;
-	}
-
-	struct btf *btf = btf__load_from_kernel_by_id_split(obj_id, vmlinux_btf);
-	if (!btf)
-		return NULL;
-
-	mod_btfs = realloc(mod_btfs, (mod_btf_cnt + 1) * sizeof(*mod_btfs));
-	mod_btfs[mod_btf_cnt].id = obj_id;
-	mod_btfs[mod_btf_cnt].btf = btf;
-	mod_btf_cnt++;
-	return btf;
-}
-
 static const struct btf_type *btf_skip_mods(const struct btf *btf, __u32 id)
 {
 	const struct btf_type *t;
