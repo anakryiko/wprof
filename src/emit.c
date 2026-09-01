@@ -141,13 +141,14 @@ struct uscope_entry {
 };
 
 /*
- * A span exit event carries only its own (exit-leg) arguments, so it can't
- * re-render an id template written against entry arguments. The id its entry
- * rendered is remembered here instead, and matched back innermost-first.
+ * A span exit takes the track its entry opened: it carries no entry-side
+ * arguments to re-render a templated id from, and its thread may have migrated
+ * to another CPU meanwhile. The id the entry resolved is remembered here and
+ * matched back innermost-first.
  */
 struct utrace_open_span {
 	u32 cfg_id;			/* index of the utrace cfg the span belongs to */
-	u32 utrace_id;			/* id its entry rendered and opened a track with */
+	u32 utrace_id;			/* track id its entry resolved */
 };
 
 struct task_state {
@@ -195,14 +196,42 @@ static struct hashmap *tasks;
 static struct hashmap *emitted_descrs;
 
 /*
- * Ids from an id: setting continue the utrace_id space past the per-cfg ids
- * that -U positions define, so that they key tracks and JSON the same way a
- * cfg's own position does. Equal id strings intern to one id, and so share one
- * track, whether written literally or rendered from a template.
+ * A utrace_id identifies a track: the scope, the container within it, and the
+ * id: string (or the defining cfg, when there is none) intern to one dense id.
+ * Equal ids meet on one track whether written literally or rendered from a
+ * template, and everything a track needs rides on its id.
  */
-static struct hashmap *utrace_dyn_ids;	/* rendered id string -> utrace_id */
-static const char **utrace_dyn_names;	/* utrace_id - utrace_cfg_cnt -> rendered id string */
-static u32 utrace_dyn_cnt, utrace_dyn_cap;
+struct utrace_track {
+	enum utrace_scope scope;
+	u32 scope_id;		/* container: tid, pid, CPU, or 0 for global */
+	u32 cfg_id;		/* defining cfg, names the track and JSON when name is NULL */
+	const char *name;	/* interned id: string, NULL when the cfg has no id: */
+	u64 track_uuid;		/* assigned when the track descriptor is emitted, 0 before */
+};
+
+static struct hashmap *utrace_track_ids;	/* (scope, scope_id, name | cfg_id) -> utrace_id */
+static struct utrace_track *utrace_tracks;	/* utrace_id -> track; id 0 is reserved as "none" */
+static u32 utrace_track_next_id = 1;		/* id 0 is never handed out */
+static u32 utrace_track_cap;
+
+static size_t utrace_track_hash_fn(long id, void *ctx)
+{
+	const struct utrace_track *tr = &utrace_tracks[id];
+	size_t h = tr->name ? str_hash(tr->name) : tr->cfg_id;
+
+	return (h * 31 + tr->scope_id) * 31 + tr->scope;
+}
+
+static bool utrace_track_equal_fn(long a, long b, void *ctx)
+{
+	const struct utrace_track *x = &utrace_tracks[a], *y = &utrace_tracks[b];
+
+	if (x->scope != y->scope || x->scope_id != y->scope_id)
+		return false;
+	if (!x->name || !y->name)
+		return x->name == y->name && x->cfg_id == y->cfg_id;
+	return strcmp(x->name, y->name) == 0;
+}
 
 /*
  * Per (pmu_idx, cpu) snapshot of the previous PMU sample's absolute counter
@@ -232,6 +261,8 @@ enum track_kind {
 
 	TK_IDLE,		/* idle thread event track (by CPU), child of idle thread metadata */
 
+	TK_CPU,			/* per-CPU track (by CPU), child of the CPUS folder */
+
 	TK_SPECIAL,		/* special and fake groups (idle, kernel, requests, cuda, session) */
 
 	TK_DYNAMIC,		/* dynamically allocated track UUIDs (see enum dyn_track_kind) */
@@ -254,6 +285,9 @@ enum track_special {
 	TKS_CUDA = 5,
 
 	TKS_UNRESOLVED = 6,
+
+	TKS_UTRACE = 7,
+	TKS_CPUS = 8,
 };
 
 #define TRACK_UUID(kind, id) (((u64)(id) * TK_MULT) + (u64)kind)
@@ -264,6 +298,8 @@ enum track_special {
 #define TRACK_UUID_CUDA		TRACK_UUID(TK_SPECIAL, TKS_CUDA)
 #define TRACK_UUID_SESSION	TRACK_UUID(TK_SPECIAL, TKS_SESSION)
 #define TRACK_UUID_UNRESOLVED	TRACK_UUID(TK_SPECIAL, TKS_UNRESOLVED)
+#define TRACK_UUID_UTRACE	TRACK_UUID(TK_SPECIAL, TKS_UTRACE)
+#define TRACK_UUID_CPUS		TRACK_UUID(TK_SPECIAL, TKS_CPUS)
 
 enum dyn_track_kind {
 	__DTK_GAP = TK_MULT - 1,	/* we need to not overlap with enum track_kind */
@@ -295,7 +331,7 @@ enum dyn_track_kind {
 	DTK_THREAD_CUDA,		/* per-thread CUDA API calls track (id1 = tid) */
 	DTK_THREAD_CUDA_OVERHEAD,	/* per-thread CUDA/driver overhead track (id1 = tid) */
 	DTK_REQ_THREAD_EMBED,		/* first-event-per-thread tracking for embed mode (id1 = tid, id2 = req_id) */
-	DTK_UTRACE,			/* utrace per-config track (id1 = tid, id2 = utrace_id) */
+	DTK_UTRACE,			/* rank base for utrace tracks; they live in utrace_tracks[], not here */
 };
 
 struct track_key {
@@ -348,7 +384,6 @@ static size_t track_state_size(enum dyn_track_kind kind)
 	case DTK_REQ_THREAD_EMBED:
 	case DTK_PYTRACE:
 	case DTK_PYTORCH:
-	case DTK_UTRACE:
 	case DTK_TIMER:
 	case DTK_PMU_EVENT:
 	case DTK_CUDA_PROC:
@@ -490,8 +525,8 @@ int init_emit(struct worker_state *w)
 	if (!emitted_descrs)
 		return -ENOMEM;
 
-	utrace_dyn_ids = hashmap__new(str_hash_fn, str_equal_fn, NULL);
-	if (!utrace_dyn_ids)
+	utrace_track_ids = hashmap__new(utrace_track_hash_fn, utrace_track_equal_fn, NULL);
+	if (!utrace_track_ids)
 		return -ENOMEM;
 
 	cur_wpb_writer = w->wpb_writer;
@@ -1382,7 +1417,7 @@ static struct task_state *task_state(struct worker_state *w, const struct wprof_
 	return st;
 }
 
-enum { TDK_THREAD = 0, TDK_PROCESS = 1, TDK_THREAD_IDLE = 2 };
+enum { TDK_THREAD = 0, TDK_PROCESS = 1, TDK_THREAD_IDLE = 2, TDK_CPU = 3 };
 
 static bool track_descr_emitted(int kind, u32 id)
 {
@@ -1394,6 +1429,23 @@ static void track_descr_mark_emitted(int kind, u32 id)
 {
 	unsigned long key = (unsigned long)kind << 32 | id;
 	hashmap__set(emitted_descrs, key, (void *)1, NULL, NULL);
+}
+
+/* per-CPU track under the session's CPUS folder, both created on first use */
+static u64 trackid_cpu(u32 cpu)
+{
+	static bool cpus_folder;
+	u64 track_id = TRACK_UUID(TK_CPU, cpu);
+
+	if (!track_descr_emitted(TDK_CPU, cpu)) {
+		track_descr_mark_emitted(TDK_CPU, cpu);
+		if (!cpus_folder) {
+			emit_track_descr_explicit(TRACK_UUID_CPUS, TRACK_UUID_SESSION, "CPUS", TKS_CPUS);
+			cpus_folder = true;
+		}
+		emit_track_descr(track_id, TRACK_UUID_CPUS, sfmt("CPU %u", cpu), cpu);
+	}
+	return track_id;
 }
 
 static void emit_track_descrs(struct worker_state *w, const struct wprof_task *t)
@@ -4609,53 +4661,77 @@ static const char *utrace_probe_name(const struct utrace_cfg *cfg)
 	}
 }
 
-static bool utrace_id_is_dyn(u32 utrace_id)
+static u32 utrace_intern_track(enum utrace_scope scope, u32 scope_id, const char *name, u32 cfg_id)
 {
-	return utrace_id >= env.utrace_cfg_cnt;
-}
-
-static const char *utrace_dyn_name(u32 utrace_id)
-{
-	return utrace_dyn_names[utrace_id - env.utrace_cfg_cnt];
-}
-
-static u32 utrace_intern_id(const char *name)
-{
-	long id;
-
-	if (hashmap__find(utrace_dyn_ids, name, &id))
-		return id;
-
-	if (utrace_dyn_cnt == utrace_dyn_cap) {
-		utrace_dyn_cap = utrace_dyn_cap ? utrace_dyn_cap * 2 : 16;
-		utrace_dyn_names = realloc(utrace_dyn_names, utrace_dyn_cap * sizeof(*utrace_dyn_names));
+	if (!utrace_tracks) {
+		utrace_track_cap = 16;
+		utrace_tracks = calloc(utrace_track_cap, sizeof(*utrace_tracks));
+	} else if (utrace_track_next_id == utrace_track_cap) {
+		utrace_track_cap *= 2;
+		utrace_tracks = realloc(utrace_tracks, utrace_track_cap * sizeof(*utrace_tracks));
 	}
 
-	u32 utrace_id = env.utrace_cfg_cnt + utrace_dyn_cnt;
-	const char *key = strdup(name);
+	/* stage the candidate at the next id, where the hashmap callbacks see it */
+	struct utrace_track *tr = &utrace_tracks[utrace_track_next_id];
+	long id;
 
-	utrace_dyn_names[utrace_dyn_cnt++] = key;
-	hashmap__add(utrace_dyn_ids, key, utrace_id);
+	*tr = (struct utrace_track){ .scope = scope, .scope_id = scope_id, .cfg_id = cfg_id, .name = name };
+	if (hashmap__find(utrace_track_ids, utrace_track_next_id, &id))
+		return id;
 
-	return utrace_id;
+	if (name)
+		tr->name = strdup(name);
+	hashmap__add(utrace_track_ids, utrace_track_next_id, utrace_track_next_id);
+
+	return utrace_track_next_id++;
 }
 
-static u64 ensure_utrace_thread_track(const struct wprof_task *t, u32 utrace_id)
+static u32 utrace_scope_id(enum utrace_scope scope, const struct wprof_task *t, const struct wevent *e)
 {
-	struct track_state *s = track_state_get_or_add(DTK_UTRACE, t->tid, utrace_id);
+	switch (scope) {
+	case UTRACE_SCOPE_THREAD:	return t->tid;
+	case UTRACE_SCOPE_PROCESS:	return t->pid;
+	case UTRACE_SCOPE_CPU:		return e->cpu;
+	case UTRACE_SCOPE_GLOBAL:	return 0;
+	default:			BUG("unexpected utrace scope in utrace_scope_id(): %d\n", scope);
+	}
+}
 
-	if (!s->exists) {
+static u64 utrace_scope_parent(enum utrace_scope scope, const struct wprof_task *t, u32 scope_id)
+{
+	static bool utrace_folder;
+
+	switch (scope) {
+	case UTRACE_SCOPE_THREAD:
+		return trackid_thread(t);
+	case UTRACE_SCOPE_PROCESS:
+		return trackid_process(t);
+	case UTRACE_SCOPE_CPU:
+		return trackid_cpu(scope_id);
+	case UTRACE_SCOPE_GLOBAL:
+		if (!utrace_folder) {
+			emit_track_descr_explicit(TRACK_UUID_UTRACE, TRACK_UUID_SESSION, "UTRACE", TKS_UTRACE);
+			utrace_folder = true;
+		}
+		return TRACK_UUID_UTRACE;
+	default:
+		BUG("unexpected utrace scope in utrace_scope_parent(): %d\n", scope);
+	}
+}
+
+static u64 ensure_utrace_track(const struct wprof_task *t, u32 utrace_id)
+{
+	struct utrace_track *tr = &utrace_tracks[utrace_id];
+
+	if (!tr->track_uuid) {
+		tr->track_uuid = TRACK_UUID(TK_DYNAMIC, dyn_track_next_id++);
+
 		char span_name[256];
-		const char *name;
+		const char *name = tr->name;
+		if (!name) {
+			const struct utrace_cfg *cfg = &env.utrace_cfgs[tr->cfg_id];
 
-		if (utrace_id_is_dyn(utrace_id)) {
-			name = utrace_dyn_name(utrace_id);
-		} else {
-			const struct utrace_cfg *cfg = &env.utrace_cfgs[utrace_id];
-
-			if (cfg->settings.id) {
-				name = cfg->settings.id;
-			} else if (cfg->type == UTRACE_SPAN) {
+			if (cfg->type == UTRACE_SPAN) {
 				snprintf(span_name, sizeof(span_name), "%s — %s",
 					 utrace_probe_name(cfg->span.entry), utrace_probe_name(cfg->span.exit));
 				name = span_name;
@@ -4664,10 +4740,10 @@ static u64 ensure_utrace_thread_track(const struct wprof_task *t, u32 utrace_id)
 			}
 		}
 
-		emit_track_descr(s->track_id, trackid_thread(t), name, s->kind + utrace_id);
-		s->exists = true;
+		emit_track_descr(tr->track_uuid, utrace_scope_parent(tr->scope, t, tr->scope_id),
+				 name, DTK_UTRACE + utrace_id);
 	}
-	return s->track_id;
+	return tr->track_uuid;
 }
 
 static s64 read_int_blob(struct wprof_data_hdr *hdr, u32 bloboff, enum utrace_arg_type type)
@@ -4811,11 +4887,11 @@ static void utrace_span_push(struct task_state *st, u32 cfg_id, u32 utrace_id)
 }
 
 /*
- * Take back the id of the innermost span of this cfg still open on the thread.
- * Spans of different cfgs can interleave, so this isn't always the top entry.
- * Returns -1 if the thread has no such span open.
+ * Take back what the innermost span of this cfg still open on the thread
+ * resolved to. Spans of different cfgs can interleave, so this isn't always the
+ * top entry. Returns 0 if the thread has no such span open.
  */
-static int utrace_span_pop(struct task_state *st, u32 cfg_id)
+static u32 utrace_span_pop(struct task_state *st, u32 cfg_id)
 {
 	for (int i = st->utspan_cnt - 1; i >= 0; i--) {
 		if (st->utspans[i].cfg_id != cfg_id)
@@ -4828,32 +4904,34 @@ static int utrace_span_pop(struct task_state *st, u32 cfg_id)
 		st->utspan_cnt--;
 		return utrace_id;
 	}
-	return -1;
+	return 0;
 }
 
 /*
- * Resolve the utrace id an event's track and JSON id are keyed by: the interned
- * id: setting, rendered first if it is templated, or the cfg's own position
- * when it has no id:. Returns -1 for the exit of a span that was already open
- * when the capture (or the replay window) started, as the id its entry would
- * have rendered is unknown.
+ * Resolve the utrace id of the track an event belongs on: the id: setting,
+ * rendered first if it is templated, under the container of the cfg's scope. A
+ * span's exit takes back what its entry resolved. Returns 0 for the exit of a
+ * span that was already open when the capture (or the replay window) started,
+ * as what its entry resolved to is unknown.
  */
-static int utrace_event_id(struct worker_state *w, const struct wevent *e,
+static u32 utrace_event_id(struct worker_state *w, const struct wevent *e,
 			   const struct utrace_cfg *cfg, const struct wprof_task *t, int arg_cnt)
 {
 	u32 cfg_id = e->utrace.utrace_id;
+	const char *name = cfg->settings.id;
 	char buf[256];
 	u32 utrace_id;
-
-	if (!cfg->settings.id_segs)
-		return cfg->settings.id ? utrace_intern_id(cfg->settings.id) : cfg_id;
 
 	if (e->kind == EV_UTRACE_EXIT)
 		return utrace_span_pop(task_state(w, t), cfg_id);
 
-	utrace_render_tmpl(buf, sizeof(buf), w->dump_hdr, e, t, cfg->settings.id_segs,
-			   cfg->settings.id_seg_cnt, arg_cnt);
-	utrace_id = utrace_intern_id(buf);
+	if (cfg->settings.id_segs) {
+		utrace_render_tmpl(buf, sizeof(buf), w->dump_hdr, e, t, cfg->settings.id_segs,
+				   cfg->settings.id_seg_cnt, arg_cnt);
+		name = buf;
+	}
+	utrace_id = utrace_intern_track(cfg->settings.scope,
+					utrace_scope_id(cfg->settings.scope, t, e), name, cfg_id);
 
 	if (e->kind == EV_UTRACE_ENTRY)
 		utrace_span_push(task_state(w, t), cfg_id, utrace_id);
@@ -4916,7 +4994,7 @@ static void emit_utrace_event(struct worker_state *w, const struct wevent *e)
 			arg_cnt++;
 	}
 
-	int utrace_id = utrace_event_id(w, e, cfg, &task, arg_cnt);
+	u32 utrace_id = utrace_event_id(w, e, cfg, &task, arg_cnt);
 	enum event_kind emit_kind = e->kind;
 
 	/*
@@ -4924,13 +5002,15 @@ static void emit_utrace_event(struct worker_state *w, const struct wevent *e)
 	 * to the cfg's own track as a standalone instant, as an untemplated id
 	 * would have put it.
 	 */
-	if (utrace_id < 0) {
-		utrace_id = cfg_id;
+	if (!utrace_id) {
+		utrace_id = utrace_intern_track(cfg->settings.scope,
+						utrace_scope_id(cfg->settings.scope, &task, e),
+						cfg->settings.id, cfg_id);
 		emit_kind = EV_UTRACE_INSTANT;
 	}
 
 	emit_track_descrs(w, &task);
-	u64 track_uuid = ensure_utrace_thread_track(&task, utrace_id);
+	u64 track_uuid = ensure_utrace_track(&task, utrace_id);
 
 	/* Format the event name: use name_tmpl unless it needs the entry-side args an exit lacks */
 	char name_buf[256];
@@ -5004,16 +5084,14 @@ static void emit_utrace_json(struct worker_state *w, const struct wevent *e)
 	}
 
 	/* Emit formatted name and probe id */
-	int utrace_id = utrace_event_id(w, e, cfg, &task, arg_cnt);
-	if (utrace_id < 0)
-		utrace_id = cfg_id;
-	if (utrace_id_is_dyn(utrace_id)) {
-		json_kv_str(j, "utrace_id", utrace_dyn_name(utrace_id));
-	} else if (cfg->settings.id) {
-		json_kv_str(j, "utrace_id", cfg->settings.id);
+	u32 utrace_id = utrace_event_id(w, e, cfg, &task, arg_cnt);
+	const char *id_str = utrace_id ? utrace_tracks[utrace_id].name : cfg->settings.id;
+
+	if (id_str) {
+		json_kv_str(j, "utrace_id", id_str);
 	} else {
 		char id_buf[16];
-		snprintf(id_buf, sizeof(id_buf), "%u", utrace_id);
+		snprintf(id_buf, sizeof(id_buf), "%u", cfg_id);
 		json_kv_str(j, "utrace_id", id_buf);
 	}
 	char name_buf[256];

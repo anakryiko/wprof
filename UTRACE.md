@@ -344,12 +344,50 @@ placeholders. See **Perfetto rendering** below for details and examples.
 
 Sets a custom string identifier for the probe, used as `utrace_id` in
 JSON output instead of the default numeric index. Multiple probes
-sharing the same ID will have their events combined on the same
-per-thread track in Perfetto (see **Perfetto rendering** below).
+sharing the same ID will have their events combined on the same track
+in Perfetto (see **Perfetto rendering** below).
 
 Like `name:`, the identifier accepts `{...}` argument and `{env:...}`
 placeholders, in which case each distinct rendered value gets its own
 track.
+
+### Track scope
+
+`scope:thread` (the default), `scope:process`, `scope:cpu` or
+`scope:global`
+
+Chooses what a probe's tracks are grouped under. `id:` names the track;
+`scope:` says which container it lives in:
+
+| Scope     | Track lives under                                    |
+|-----------|------------------------------------------------------|
+| `thread`  | the thread the probe fired on                        |
+| `process` | the process the probe fired in                       |
+| `cpu`     | `CPU N` under the session's `CPUS` folder            |
+| `global`  | the session's `UTRACE` folder                        |
+
+```bash
+# one track per futex, carrying every thread of the process that contends on it
+-U 'tp:syscalls:sys_enter_futex (arg:uaddr/x) | scope:process, id:"futex {uaddr}" |'
+
+# where a kernel path runs, laid out per CPU
+-U 'kspan:submit_bio | scope:cpu |'
+```
+
+`id:` is optional: without one, each container gets a track named after
+the probe, the way a thread does at the default scope.
+
+Scope and `id:` are independent. Putting `{env:pid}` in an `id:` renames
+the track but leaves it under the thread; only `scope:` reparents it.
+
+A track wider than a thread can receive events from several threads at
+once. Perfetto requires the slices on one track to nest, so at these
+scopes an `id:` has to name something that is never concurrent with
+itself — one track per request, per queue or per connection, rather than
+one track for the probe as a whole. Instants have no such restriction.
+
+A span keeps the track its entry opened, so a `scope:cpu` span whose
+thread migrates while it is open still ends on the CPU it began on.
 
 ## Perfetto rendering
 
@@ -359,8 +397,9 @@ child track under the thread's scheduler track. The track is named after
 the probe target (e.g., `sched_switch`) or the custom `id:` setting.
 
 **Track grouping:** If multiple probes (whether instants, spans, or a
-mix) share the same `id:` value, all their events are rendered on the
-same per-thread child track. This is useful for grouping related probes:
+mix) share the same `id:` value (and the same `scope:`), all their
+events are rendered on the same track. This is useful for grouping
+related probes:
 
 ```bash
 # these two probes share a track per thread

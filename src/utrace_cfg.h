@@ -207,8 +207,18 @@ struct utrace_tmpl_seg {
 	};
 };
 
+/* what a probe's tracks are grouped under */
+enum utrace_scope {
+	UTRACE_SCOPE_UNSET,	/* not given, resolved to thread scope once parsed */
+	UTRACE_SCOPE_THREAD,
+	UTRACE_SCOPE_PROCESS,
+	UTRACE_SCOPE_CPU,
+	UTRACE_SCOPE_GLOBAL,
+};
+
 struct utrace_settings {
 	char *id;        /* user-defined probe identifier, NULL if unset */
+	enum utrace_scope scope;
 	char *name_tmpl; /* template string for slice/instant name, NULL if unset */
 	struct utrace_tmpl_seg *name_segs; /* pre-compiled name template segments */
 	int name_seg_cnt;

@@ -663,6 +663,25 @@ static int sv_consume_str_literal(struct sview orig, struct sview tok, const cha
 	return 0;
 }
 
+static const struct {
+	const char *name;
+	enum utrace_scope scope;
+} scope_table[] = {
+	{ "thread",  UTRACE_SCOPE_THREAD },
+	{ "process", UTRACE_SCOPE_PROCESS },
+	{ "cpu",     UTRACE_SCOPE_CPU },
+	{ "global",  UTRACE_SCOPE_GLOBAL },
+};
+
+static const char *scope_str(enum utrace_scope scope)
+{
+	for (int i = 0; i < ARRAY_SIZE(scope_table); i++) {
+		if (scope_table[i].scope == scope)
+			return scope_table[i].name;
+	}
+	return "???";
+}
+
 /* parse settings block: "id:value, name:'format {arg}'" */
 static int parse_settings(struct sview orig, struct sview def, struct utrace_settings *settings)
 {
@@ -682,6 +701,19 @@ static int parse_settings(struct sview orig, struct sview def, struct utrace_set
 			err = sv_consume_str_literal(orig, sv_trim(sv_consume_left(tok, 3)), "id", &settings->id);
 			if (err)
 				return err;
+		} else if (sv_starts_with(tok, "scope:")) {
+			struct sview val = sv_trim(sv_consume_left(tok, 6));
+			int i;
+
+			if (settings->scope)
+				return utrace_err(orig, tok, "duplicate 'scope' setting\n");
+			for (i = 0; i < ARRAY_SIZE(scope_table); i++) {
+				if (sv_eq(val, scope_table[i].name))
+					break;
+			}
+			if (i == ARRAY_SIZE(scope_table))
+				return utrace_err(orig, val, "unknown scope '%.*s'\n", val.len, val.s);
+			settings->scope = scope_table[i].scope;
 		} else if (sv_starts_with(tok, "name:")) {
 			err = sv_consume_str_literal(orig, sv_trim(sv_consume_left(tok, 5)), "name", &settings->name_tmpl);
 			if (err)
@@ -1102,9 +1134,13 @@ int utrace_cfg_parse(const char *def)
 {
 	env.utrace_cfgs = realloc(env.utrace_cfgs, (env.utrace_cfg_cnt + 1) * sizeof(*env.utrace_cfgs));
 
-	int err = parse_cfg(sv_new(def), &env.utrace_cfgs[env.utrace_cfg_cnt]);
+	struct utrace_cfg *cfg = &env.utrace_cfgs[env.utrace_cfg_cnt];
+	int err = parse_cfg(sv_new(def), cfg);
+
 	if (err)
 		return err;
+	if (cfg->settings.scope == UTRACE_SCOPE_UNSET)
+		cfg->settings.scope = UTRACE_SCOPE_THREAD;
 	env.utrace_cfg_cnt++;
 	return 0;
 }
@@ -1293,7 +1329,7 @@ static void format_setting_value(struct sbuf *sb, const char *val)
 
 static void format_settings(const struct utrace_settings *s, struct sbuf *sb)
 {
-	if (!s->id && !s->name_tmpl)
+	if (!s->id && !s->name_tmpl && s->scope == UTRACE_SCOPE_THREAD)
 		return;
 
 	sbuf_appendf(sb, " | ");
@@ -1301,6 +1337,12 @@ static void format_settings(const struct utrace_settings *s, struct sbuf *sb)
 	if (s->id) {
 		sbuf_appendf(sb, "id:");
 		format_setting_value(sb, s->id);
+		first = false;
+	}
+	if (s->scope != UTRACE_SCOPE_THREAD) {
+		if (!first)
+			sbuf_appendf(sb, ", ");
+		sbuf_appendf(sb, "scope:%s", scope_str(s->scope));
 		first = false;
 	}
 	if (s->name_tmpl) {
