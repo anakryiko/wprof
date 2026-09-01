@@ -25,6 +25,7 @@
 #include <math.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <bpf/bpf.h>
 #include <bpf/btf.h>
 
 #include "utils.h"
@@ -51,6 +52,114 @@ struct btf *load_vmlinux_btf(void)
 		}
 	}
 	return vmlinux_btf;
+}
+
+/*
+ * Kernel module BTFs, discovered once and parsed lazily; cached for the
+ * lifetime of the process, as resolved types keep pointing into them.
+ */
+static struct kernel_btf *mod_btfs;
+static int mod_btf_cnt;
+static bool mod_btfs_scanned;
+
+static void scan_mod_btfs(void)
+{
+	__u32 id = 0;
+
+	if (mod_btfs_scanned)
+		return;
+	mod_btfs_scanned = true;
+
+	while (bpf_btf_get_next_id(id, &id) == 0) {
+		struct bpf_btf_info info;
+		char name[64] = {};
+		__u32 len = sizeof(info);
+		int fd, err;
+
+		fd = bpf_btf_get_fd_by_id(id);
+		if (fd < 0)
+			continue; /* raced with module unload */
+
+		memset(&info, 0, sizeof(info));
+		info.name = (uintptr_t)name;
+		info.name_len = sizeof(name);
+		err = bpf_btf_get_info_by_fd(fd, &info, &len);
+		close(fd);
+		if (err || !info.kernel_btf || strcmp(name, "vmlinux") == 0)
+			continue;
+
+		mod_btfs = realloc(mod_btfs, (mod_btf_cnt + 1) * sizeof(*mod_btfs));
+
+		struct kernel_btf *kb = &mod_btfs[mod_btf_cnt++];
+		kb->id = id;
+		wprof_strlcpy(kb->name, name, sizeof(kb->name));
+		kb->btf = NULL; /* parsed lazily */
+	}
+}
+
+static const struct btf *kernel_btf_load(struct kernel_btf *kb)
+{
+	if (!kb->btf)
+		kb->btf = btf__load_from_kernel_by_id_split(kb->id, load_vmlinux_btf());
+	return kb->btf;
+}
+
+const struct btf *fetch_kernel_btf(__u32 obj_id)
+{
+	if (obj_id <= 1)
+		return load_vmlinux_btf();
+
+	scan_mod_btfs();
+	for (int i = 0; i < mod_btf_cnt; i++) {
+		if (mod_btfs[i].id == obj_id)
+			return kernel_btf_load(&mod_btfs[i]);
+	}
+	return NULL;
+}
+
+int kernel_btf_iter_new(struct kernel_btf_iter *it)
+{
+	it->idx = 0;
+	return 0;
+}
+
+struct kernel_btf *kernel_btf_iter_next(struct kernel_btf_iter *it)
+{
+	static struct kernel_btf vmlinux_entry = { .name = "vmlinux" };
+
+	if (it->idx == 0) {
+		it->idx++;
+		vmlinux_entry.btf = load_vmlinux_btf();
+		return &vmlinux_entry;
+	}
+
+	scan_mod_btfs();
+	while (it->idx - 1 < mod_btf_cnt) {
+		struct kernel_btf *kb = &mod_btfs[it->idx - 1];
+
+		it->idx++;
+		/* load failure = module unloaded since the scan */
+		if (kernel_btf_load(kb))
+			return kb;
+	}
+	return NULL;
+}
+
+__s32 btf_find_by_name_kind_own(const struct btf *btf, const char *name, __u32 kind)
+{
+	const struct btf *base = btf__base_btf(btf);
+	int start_id = base ? btf__type_cnt(base) : 1;
+	int n = btf__type_cnt(btf);
+
+	for (int id = start_id; id < n; id++) {
+		const struct btf_type *t = btf__type_by_id(btf, id);
+
+		if (btf_kind(t) != kind)
+			continue;
+		if (strcmp(btf__name_by_offset(btf, t->name_off), name) == 0)
+			return id;
+	}
+	return -ENOENT;
 }
 
 int append_str(char ***strs, int *cnt, const char *str)
