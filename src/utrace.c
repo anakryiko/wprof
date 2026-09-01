@@ -322,9 +322,51 @@ static int resolve_btf_proto_arg_type(const struct btf *btf, const struct btf_ty
 	}
 }
 
+/* A type to look for, by name and kind; alternatives are tried in order. */
+struct btf_type_key {
+	const char *name;
+	__u32 kind;
+};
+
+static __s32 btf_find_any_own(const struct btf *btf, const struct btf_type_key *keys, int key_cnt)
+{
+	for (int i = 0; i < key_cnt; i++) {
+		__s32 id = btf_find_by_name_kind_own(btf, keys[i].name, keys[i].kind);
+		if (id >= 0)
+			return id;
+	}
+	return -ENOENT;
+}
+
+/*
+ * Look for a type in vmlinux BTF first, then in each module's, so a probe on a
+ * module gets the module's own definitions.
+ */
+static struct kernel_btf *btf_find_kernel_type_alt(const struct btf_type_key *keys, int key_cnt, __s32 *id_out)
+{
+	struct kernel_btf *kbtf;
+
+	wprof_for_each(kernel_btf, kbtf) {
+		__s32 id = btf_find_any_own(kbtf->btf, keys, key_cnt);
+		if (id < 0)
+			continue;
+		if (id_out)
+			*id_out = id;
+		return kbtf;
+	}
+	return NULL;
+}
+
+static struct kernel_btf *btf_find_kernel_type(const char *name, __u32 kind, __s32 *id_out)
+{
+	struct btf_type_key key = { name, kind };
+
+	return btf_find_kernel_type_alt(&key, 1, id_out);
+}
+
 static const struct btf_type *btf_find_func_proto(const struct btf *btf, const char *func_name)
 {
-	__s32 func_id = btf__find_by_name_kind(btf, func_name, BTF_KIND_FUNC);
+	__s32 func_id = btf_find_by_name_kind_own(btf, func_name, BTF_KIND_FUNC);
 	if (func_id < 0)
 		return NULL;
 
@@ -539,13 +581,18 @@ static int normalize_cast_type(struct sview input, struct sview *name_out, bool 
 	return 0;
 }
 
-/* Resolve a cast type name to a BTF id in one BTF: >=1 found, 0 for void, -1 not found. */
-static __s32 utrace_lookup_type(const struct btf *btf, struct sview tname)
+/* An unprefixed cast name can name any of these, tried in this order. */
+#define UTRACE_MAX_TYPE_KEYS 6
+
+/* Spell a cast type name as the BTF types it may resolve to; name backs the returned keys. */
+static int utrace_type_keys(struct sview tname, char *name, size_t name_sz, struct btf_type_key *keys)
 {
+	static const __u32 any_kinds[] = {
+		BTF_KIND_TYPEDEF, BTF_KIND_INT, BTF_KIND_ENUM,
+		BTF_KIND_ENUM64, BTF_KIND_STRUCT, BTF_KIND_UNION,
+	};
 	struct sview lookup = tname;
 	int kind = 0;
-	char name[128];
-	__s32 id;
 
 	if (sv_starts_with(tname, "struct ")) {
 		lookup = sv_trim(sv_consume_left(tname, 7));
@@ -557,37 +604,27 @@ static __s32 utrace_lookup_type(const struct btf *btf, struct sview tname)
 		lookup = sv_trim(sv_consume_left(tname, 5));
 		kind = BTF_KIND_ENUM;
 	}
-	snprintf(name, sizeof(name), "%.*s", lookup.len, lookup.s);
+	snprintf(name, name_sz, "%.*s", lookup.len, lookup.s);
 
 	if (kind == BTF_KIND_ENUM) {
-		id = btf__find_by_name_kind(btf, name, BTF_KIND_ENUM);
-		if (id < 0)
-			id = btf__find_by_name_kind(btf, name, BTF_KIND_ENUM64);
-		return id;
+		keys[0] = (struct btf_type_key){ name, BTF_KIND_ENUM };
+		keys[1] = (struct btf_type_key){ name, BTF_KIND_ENUM64 };
+		return 2;
 	}
-	if (kind)
-		return btf__find_by_name_kind(btf, name, kind);
-	if (sv_eq(tname, "void"))
-		return 0;
-	id = btf__find_by_name_kind(btf, name, BTF_KIND_TYPEDEF);
-	if (id < 0)
-		id = btf__find_by_name_kind(btf, name, BTF_KIND_INT);
-	if (id < 0)
-		id = btf__find_by_name_kind(btf, name, BTF_KIND_ENUM);
-	if (id < 0)
-		id = btf__find_by_name_kind(btf, name, BTF_KIND_ENUM64);
-	if (id < 0)
-		id = btf__find_by_name_kind(btf, name, BTF_KIND_STRUCT);
-	if (id < 0)
-		id = btf__find_by_name_kind(btf, name, BTF_KIND_UNION);
-	return id;
+	if (kind) {
+		keys[0] = (struct btf_type_key){ name, kind };
+		return 1;
+	}
+	for (int i = 0; i < ARRAY_SIZE(any_kinds); i++)
+		keys[i] = (struct btf_type_key){ name, any_kinds[i] };
+	return ARRAY_SIZE(any_kinds);
 }
 
 /*
  * Resolve a ::cast / ::container_of type. Kernel types are looked up in vmlinux
- * first, so bpf chains reach the full kernel type namespace with correct layout;
- * a program-local type then resolves in the program's own BTF. For kprobe/raw_tp
- * the two BTFs are the same.
+ * and then kernel modules, so bpf chains reach the full kernel type namespace
+ * with correct layout; a program-local type then resolves in the program's own
+ * BTF. For kprobe/raw_tp there is no program BTF to fall back to.
  */
 static int utrace_resolve_type(const struct btf *prog_btf, const struct btf *vmlinux_btf,
 			       const struct utrace_param *p, const struct utrace_accessor *acc,
@@ -602,15 +639,29 @@ static int utrace_resolve_type(const struct btf *prog_btf, const struct btf *vml
 		return utrace_acc_err(p, acc, "pointer-to-pointer casts are not supported\n");
 	if (!is_ptr && sv_eq(tname, "void"))
 		return utrace_acc_err(p, acc, "cannot cast to void\n");
-
-	const struct btf *btf = vmlinux_btf;
-	__s32 id = utrace_lookup_type(vmlinux_btf, tname);
-
-	if (id < 0 && prog_btf != vmlinux_btf) {
-		btf = prog_btf;
-		id = utrace_lookup_type(prog_btf, tname);
+	if (sv_eq(tname, "void")) { /* void *: no pointee type to resolve */
+		*out = (struct utrace_type_ref){ .btf = vmlinux_btf, .id = 0, .is_ptr = is_ptr };
+		return 0;
 	}
-	if (id < 0)
+
+	char name[128];
+	struct btf_type_key keys[UTRACE_MAX_TYPE_KEYS];
+	int key_cnt = utrace_type_keys(tname, name, sizeof(name), keys);
+	__s32 id;
+	struct kernel_btf *kbtf = btf_find_kernel_type_alt(keys, key_cnt, &id);
+	const struct btf *btf = NULL;
+
+	if (kbtf) {
+		btf = kbtf->btf;
+		dprintf(1, "utrace: type '%.*s' resolved to BTF type #%d in '%s'\n",
+			tname.len, tname.s, id, kbtf->name);
+	} else if (!is_kernel_btf(prog_btf)) {
+		btf = prog_btf;
+		id = btf_find_any_own(prog_btf, keys, key_cnt);
+		if (id < 0)
+			btf = NULL;
+	}
+	if (!btf)
 		return utrace_acc_err(p, acc, "type '%.*s' not found\n", tname.len, tname.s);
 
 	*out = (struct utrace_type_ref){ .btf = btf, .id = id, .is_ptr = is_ptr };
@@ -624,13 +675,14 @@ static int utrace_resolve_type(const struct btf *prog_btf, const struct btf *vml
  * program-local type with no vmlinux match, or a type already in vmlinux
  * (kprobe/raw_tp), is returned unchanged.
  */
-static struct utrace_type_ref utrace_canon_ref(const struct btf *vmlinux_btf, struct utrace_type_ref ref)
+static struct utrace_type_ref utrace_canon_ref(struct utrace_type_ref ref)
 {
 	const struct btf_type *t = btf_skip_modifiers(ref.btf, ref.id, NULL);
 	const char *name = btf__name_by_offset(ref.btf, t->name_off);
-	__s32 vid = -1;
+	struct btf_type_key keys[2];
+	int key_cnt = 0;
 
-	if (ref.btf == vmlinux_btf || !name[0])
+	if (is_kernel_btf(ref.btf) || !name[0])
 		return ref;
 
 	switch (btf_kind(t)) {
@@ -638,22 +690,30 @@ static struct utrace_type_ref utrace_canon_ref(const struct btf *vmlinux_btf, st
 	case BTF_KIND_UNION:
 	case BTF_KIND_INT:
 	case BTF_KIND_FLOAT:
-		vid = btf__find_by_name_kind(vmlinux_btf, name, btf_kind(t));
+		keys[0] = (struct btf_type_key){ name, btf_kind(t) };
+		key_cnt = 1;
 		break;
 	case BTF_KIND_ENUM:
 	case BTF_KIND_ENUM64:
-		vid = btf__find_by_name_kind(vmlinux_btf, name, BTF_KIND_ENUM);
-		if (vid < 0)
-			vid = btf__find_by_name_kind(vmlinux_btf, name, BTF_KIND_ENUM64);
+		keys[0] = (struct btf_type_key){ name, BTF_KIND_ENUM };
+		keys[1] = (struct btf_type_key){ name, BTF_KIND_ENUM64 };
+		key_cnt = 2;
 		break;
 	case BTF_KIND_FWD:
-		vid = btf__find_by_name_kind(vmlinux_btf, name,
-					     btf_kflag(t) ? BTF_KIND_UNION : BTF_KIND_STRUCT);
+		keys[0] = (struct btf_type_key){ name, btf_kflag(t) ? BTF_KIND_UNION : BTF_KIND_STRUCT };
+		key_cnt = 1;
 		break;
 	default:
 		return ref;
 	}
-	return vid >= 0 ? UTRACE_TYPE_REF(vmlinux_btf, vid) : ref;
+
+	__s32 kid;
+	struct kernel_btf *kbtf = btf_find_kernel_type_alt(keys, key_cnt, &kid);
+	if (!kbtf)
+		return ref;
+
+	dprintf(1, "utrace: type '%s' resolved to BTF type #%d in '%s'\n", name, kid, kbtf->name);
+	return UTRACE_TYPE_REF(kbtf->btf, kid);
 }
 
 static int utrace_compile_field(struct utrace_arg_state *state, const struct btf *vmlinux_btf,
@@ -682,7 +742,7 @@ static int utrace_compile_field(struct utrace_arg_state *state, const struct btf
 		}
 	}
 
-	state->type = utrace_canon_ref(vmlinux_btf, state->type);
+	state->type = utrace_canon_ref(state->type);
 	const struct btf_type *t = utrace_ref_type(state->type, NULL);
 	if (!t || !btf_is_composite(t))
 		return utrace_acc_err(p, acc, "cannot select field '%s' from a non-struct type\n", acc->field);
@@ -694,7 +754,7 @@ static int utrace_compile_field(struct utrace_arg_state *state, const struct btf
 	if (err)
 		return utrace_acc_err(p, acc, "failed to resolve field '%s'\n", acc->field);
 	state->offset += member.byte_offset;
-	state->type = utrace_canon_ref(vmlinux_btf, member.type);
+	state->type = utrace_canon_ref(member.type);
 	return 0;
 }
 
@@ -731,7 +791,7 @@ static int utrace_compile_arrelem(struct utrace_arg_state *state, const struct b
 	if (stride <= 0)
 		return utrace_acc_err(p, acc, "cannot determine array element size\n");
 	state->offset += acc->arr_elem * stride;
-	state->type = utrace_canon_ref(vmlinux_btf, state->type);
+	state->type = utrace_canon_ref(state->type);
 	return 0;
 }
 
@@ -963,7 +1023,7 @@ static int resolve_raw_tp_btf(const struct btf *btf, struct utrace_cfg *cfg)
 
 	/* fall back to btf_trace_<name> TYPEDEF -> PTR -> FUNC_PROTO for types */
 	snprintf(buf, sizeof(buf), "btf_trace_%s", cfg->raw_tp.name);
-	__s32 btf_id = btf__find_by_name_kind(btf, buf, BTF_KIND_TYPEDEF);
+	__s32 btf_id = btf_find_by_name_kind_own(btf, buf, BTF_KIND_TYPEDEF);
 	if (btf_id < 0)
 		return -ESRCH;
 
@@ -1082,7 +1142,7 @@ static bool cfg_is_native_span(enum utrace_type t)
 /* Determine the number of positional args for wildcard expansion */
 static int btf_func_arg_cnt(const struct btf *btf, const char *func_name)
 {
-	__s32 func_id = btf__find_by_name_kind(btf, func_name, BTF_KIND_FUNC);
+	__s32 func_id = btf_find_by_name_kind_own(btf, func_name, BTF_KIND_FUNC);
 	if (func_id < 0)
 		return -1;
 
@@ -1514,7 +1574,24 @@ static int augment_cfg_args(struct utrace_cfg *cfg, const struct btf *vmlinux_bt
 	}
 	const struct btf *btf = cfg_is_bpf_type(cfg) ? cfg->bpf_prog.btf : vmlinux_btf;
 
-	if (cfg->type == UTRACE_RAW_TRACEPOINT) {
+	switch (cfg->type) {
+	case UTRACE_RAW_TRACEPOINT: {
+		char bpf_trace[256], btf_trace[256];
+
+		snprintf(bpf_trace, sizeof(bpf_trace), "__bpf_trace_%s", cfg->raw_tp.name);
+		snprintf(btf_trace, sizeof(btf_trace), "btf_trace_%s", cfg->raw_tp.name);
+		struct btf_type_key keys[] = {
+			{ bpf_trace, BTF_KIND_FUNC },
+			{ btf_trace, BTF_KIND_TYPEDEF },
+		};
+		__s32 id;
+		struct kernel_btf *kbtf = btf_find_kernel_type_alt(keys, ARRAY_SIZE(keys), &id);
+		if (kbtf) {
+			btf = kbtf->btf;
+			dprintf(1, "utrace: raw tracepoint '%s' resolved to BTF type #%d in '%s'\n",
+				cfg->raw_tp.name, id, kbtf->name);
+		}
+
 		if (resolve_raw_tp_btf(btf, cfg)) {
 			bool has_args = cfg->wildcard_args;
 
@@ -1528,10 +1605,26 @@ static int augment_cfg_args(struct utrace_cfg *cfg, const struct btf *vmlinux_bt
 			eprintf("utrace: no BTF for raw tracepoint '%s'; capturing event without arguments\n",
 				cfg->raw_tp.name);
 		}
+		break;
 	}
-	if (cfg->type == UTRACE_TRACEPOINT) {
+	case UTRACE_KPROBE:
+	case UTRACE_KRETPROBE:
+	case UTRACE_KPROBE_SPAN: {
+		__s32 id;
+		struct kernel_btf *kbtf = btf_find_kernel_type(cfg->kprobe.name, BTF_KIND_FUNC, &id);
+		if (kbtf) {
+			btf = kbtf->btf;
+			dprintf(1, "utrace: kernel function '%s' resolved to BTF type #%d in '%s'\n",
+				cfg->kprobe.name, id, kbtf->name);
+		}
+		break;
+	}
+	case UTRACE_TRACEPOINT:
 		if (resolve_tp_format(cfg))
 			eprintf("utrace: failed to parse format for tracepoint '%s:%s'\n", cfg->tp.cat, cfg->tp.name);
+		break;
+	default:
+		break;
 	}
 
 	/* resolve name-based arg references (arg:prev_pid) to indices */

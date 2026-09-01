@@ -213,10 +213,11 @@ struct/union capture is not supported.
 
 Typed chains currently work with zero-offset entry `k:` probes, `kret:`
 return values, `kspan:`, `raw_tp:`, `bpf:`/`bpfret:`/`bpfspan:`, and
-generic spans whose individual legs are supported. For `bpf:` probes each
-named type in the chain is resolved against vmlinux BTF (by name and kind)
-so kernel types use the running kernel's layout; a type with no vmlinux
-match is treated as program-local and read from the program's own BTF.
+generic spans whose individual legs are supported. Each named type in the
+chain is resolved (by name and kind) against vmlinux BTF first and then
+each loaded kernel module's, so kernel types use the running kernel's
+layout. For `bpf:` probes a type no kernel BTF defines is treated as
+program-local and read from the program's own BTF.
 
 ### BPF program arguments
 
@@ -420,10 +421,11 @@ a JSON string rather than a number.
 wprof automatically detects argument types and names when metadata is
 available:
 
-- **kprobes**: from kernel BTF
+- **kprobes**: from kernel BTF, vmlinux or the module defining the function
 - **BPF probes**: from the program's own BTF for subprograms, from the attach
   target for entry programs (see **BPF program arguments**)
-- **raw tracepoints**: from `__bpf_trace_<name>` BTF function prototype
+- **raw tracepoints**: from `__bpf_trace_<name>` BTF function prototype, in
+  vmlinux or the module defining the tracepoint
 - **classic tracepoints**: from `/sys/kernel/debug/tracing/events/<cat>/<name>/format`
 - **USDTs**: arg count and sizes from `.note.stapsdt` ELF section
 

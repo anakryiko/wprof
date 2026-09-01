@@ -145,6 +145,14 @@ struct kernel_btf *kernel_btf_iter_next(struct kernel_btf_iter *it)
 	return NULL;
 }
 
+bool is_kernel_btf(const struct btf *btf)
+{
+	const struct btf *vmlinux_btf = load_vmlinux_btf();
+
+	/* module BTFs are the only ones split on vmlinux; a BPF program's is standalone */
+	return btf == vmlinux_btf || btf__base_btf(btf) == vmlinux_btf;
+}
+
 __s32 btf_find_by_name_kind_own(const struct btf *btf, const char *name, __u32 kind)
 {
 	const struct btf *base = btf__base_btf(btf);

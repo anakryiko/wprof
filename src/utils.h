@@ -167,6 +167,9 @@ static inline void kernel_btf_iter_destroy(struct kernel_btf_iter *it) {}
 /* btf__find_by_name_kind() limited to the BTF's own types, skipping any base BTF */
 __s32 btf_find_by_name_kind_own(const struct btf *btf, const char *name, __u32 kind);
 
+/* Is this vmlinux BTF or a module's, as opposed to e.g. a BPF program's own BTF? */
+bool is_kernel_btf(const struct btf *btf);
+
 struct ksyms;
 /* Lazily load and cache /proc/kallsyms; NULL if unavailable. */
 struct ksyms *load_ksyms(void);
