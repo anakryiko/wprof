@@ -195,10 +195,10 @@ static struct hashmap *tasks;
 static struct hashmap *emitted_descrs;
 
 /*
- * Ids rendered from a templated id: setting continue the utrace_id space past
- * the per-cfg ids that -U positions define, so that a rendered id keys tracks
- * and JSON the same way a cfg's own id does. Equal renderings intern to one id,
- * and so share one track, across cfgs as well.
+ * Ids from an id: setting continue the utrace_id space past the per-cfg ids
+ * that -U positions define, so that they key tracks and JSON the same way a
+ * cfg's own position does. Equal id strings intern to one id, and so share one
+ * track, whether written literally or rendered from a template.
  */
 static struct hashmap *utrace_dyn_ids;	/* rendered id string -> utrace_id */
 static const char **utrace_dyn_names;	/* utrace_id - utrace_cfg_cnt -> rendered id string */
@@ -4832,11 +4832,11 @@ static int utrace_span_pop(struct task_state *st, u32 cfg_id)
 }
 
 /*
- * Resolve the utrace id an event's track and JSON id are keyed by: the cfg's
- * own id, unless its id: setting is templated, in which case the id rendered
- * from the event's arguments. Returns -1 for the exit of a span that was
- * already open when the capture (or the replay window) started, as the id its
- * entry would have rendered is unknown.
+ * Resolve the utrace id an event's track and JSON id are keyed by: the interned
+ * id: setting, rendered first if it is templated, or the cfg's own position
+ * when it has no id:. Returns -1 for the exit of a span that was already open
+ * when the capture (or the replay window) started, as the id its entry would
+ * have rendered is unknown.
  */
 static int utrace_event_id(struct worker_state *w, const struct wevent *e,
 			   const struct utrace_cfg *cfg, const struct wprof_task *t, int arg_cnt)
@@ -4846,7 +4846,7 @@ static int utrace_event_id(struct worker_state *w, const struct wevent *e,
 	u32 utrace_id;
 
 	if (!cfg->settings.id_segs)
-		return cfg_id;
+		return cfg->settings.id ? utrace_intern_id(cfg->settings.id) : cfg_id;
 
 	if (e->kind == EV_UTRACE_EXIT)
 		return utrace_span_pop(task_state(w, t), cfg_id);
