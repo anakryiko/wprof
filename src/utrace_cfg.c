@@ -718,6 +718,12 @@ static int parse_settings(struct sview orig, struct sview def, struct utrace_set
 			err = sv_consume_str_literal(orig, sv_trim(sv_consume_left(tok, 5)), "name", &settings->name_tmpl);
 			if (err)
 				return err;
+		} else if (sv_starts_with(tok, "flow:")) {
+			if (settings->flow_tmpl)
+				return utrace_err(orig, tok, "duplicate 'flow' setting\n");
+			err = sv_consume_str_literal(orig, sv_trim(sv_consume_left(tok, 5)), "flow", &settings->flow_tmpl);
+			if (err)
+				return err;
 		} else {
 			return utrace_err(orig, tok, "unknown setting\n");
 		}
@@ -869,11 +875,11 @@ static bool tmpl_is_dynamic(const struct utrace_tmpl_seg *segs, int seg_cnt)
 }
 
 /*
- * Compile the cfg's name and id templates into segments, resolving placeholders
- * against the (entry-side) arg params. Runs both at capture (after arg types are
- * resolved) and on replay (after re-parsing the persisted definition), so that
- * replayed traces reproduce templated event names and track ids rather than the
- * bare probe name.
+ * Compile the cfg's name, id and flow templates into segments, resolving
+ * placeholders against the (entry-side) arg params. Runs both at capture (after
+ * arg types are resolved) and on replay (after re-parsing the persisted
+ * definition), so that replayed traces reproduce templated event names, track
+ * ids and flows rather than the bare probe name.
  *
  * An id template that substitutes nothing renders to itself, so it keeps
  * id_segs NULL and emit keeps using the id string as is.
@@ -907,6 +913,12 @@ int utrace_cfg_compile_tmpls(struct utrace_cfg *cfg)
 			cfg->settings.id_segs = NULL;
 			cfg->settings.id_seg_cnt = 0;
 		}
+	}
+	if (cfg->settings.flow_tmpl) {
+		err = utrace_compile_tmpl(cfg->settings.flow_tmpl, params, param_cnt,
+					  &cfg->settings.flow_segs, &cfg->settings.flow_seg_cnt);
+		if (err)
+			return err;
 	}
 	return 0;
 }
@@ -1329,29 +1341,33 @@ static void format_setting_value(struct sbuf *sb, const char *val)
 
 static void format_settings(const struct utrace_settings *s, struct sbuf *sb)
 {
-	if (!s->id && !s->name_tmpl && s->scope == UTRACE_SCOPE_THREAD)
-		return;
-
-	sbuf_appendf(sb, " | ");
 	bool first = true;
+
 	if (s->id) {
+		sbuf_appendf(sb, first ? " | " : ", ");
 		sbuf_appendf(sb, "id:");
 		format_setting_value(sb, s->id);
 		first = false;
 	}
 	if (s->scope != UTRACE_SCOPE_THREAD) {
-		if (!first)
-			sbuf_appendf(sb, ", ");
+		sbuf_appendf(sb, first ? " | " : ", ");
 		sbuf_appendf(sb, "scope:%s", scope_str(s->scope));
 		first = false;
 	}
 	if (s->name_tmpl) {
-		if (!first)
-			sbuf_appendf(sb, ", ");
+		sbuf_appendf(sb, first ? " | " : ", ");
 		sbuf_appendf(sb, "name:");
 		format_setting_value(sb, s->name_tmpl);
+		first = false;
 	}
-	sbuf_appendf(sb, " |");
+	if (s->flow_tmpl) {
+		sbuf_appendf(sb, first ? " | " : ", ");
+		sbuf_appendf(sb, "flow:");
+		format_setting_value(sb, s->flow_tmpl);
+		first = false;
+	}
+	if (!first)
+		sbuf_appendf(sb, " |");
 }
 
 void utrace_cfg_format(const struct utrace_cfg *cfg, struct sbuf *sb)

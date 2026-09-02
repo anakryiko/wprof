@@ -827,6 +827,7 @@ Three event types are emitted depending on the probe kind:
 | `task`      | task            | Thread where the probe fired                                          |
 | `utrace_id` | string          | Custom probe ID (`id:` with placeholders rendered) or numeric index   |
 | `name`      | string          | Event name (probe name or formatted via `name:` template)             |
+| `flow_id`   | string          | *(optional)* Rendered `flow:` key, on entry and instant events only   |
 | `args`      | object          | *(optional)* Captured arguments as key-value pairs                    |
 | `stack_id`  | int             | *(optional)* Stack trace ID (when `stack` parameter is enabled)       |
 
