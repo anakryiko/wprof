@@ -731,6 +731,21 @@ static void emit_metadata(struct wpb_writer *writer, struct wprof_data_hdr *hdr)
 		.val = wpb_cstr(ts),
 	};
 
+	/* persist the same information --replay-info prints in its extras section */
+	size_t extras_start = attr_cnt;
+	for (u64 i = 0; i < hdr->extra_cnt; i++) {
+		struct wprof_extra_param *e = wevent_extra_param(hdr, i);
+
+		if (e->kind == WEXTRA_METADATA || e->kind == WEXTRA_STATS ||
+		    e->kind == WEXTRA_STACK_CAPTURE)
+			continue;
+		attrs[attr_cnt] = (struct wpb_attr) {
+			.key = wpb_cstr(sfmt("extra.%zu", attr_cnt - extras_start)),
+			.val = wpb_cstr(extra_param_str(hdr, e)),
+		};
+		attr_cnt++;
+	}
+
 	wpb_emit_trace_attributes(writer, attrs, attr_cnt);
 	free(attrs);
 }
