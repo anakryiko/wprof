@@ -4842,7 +4842,7 @@ static int utrace_render_env(char *buf, size_t buf_sz, const struct wevent *e,
 			     const struct wprof_task *t, enum utrace_env_ref ref)
 {
 	switch (ref) {
-	case UTRACE_ENV_TID:	return snprintf(buf, buf_sz, "%u", t->tid);
+	case UTRACE_ENV_TID:	return snprintf(buf, buf_sz, "%d", task_tid(t));
 	case UTRACE_ENV_PID:	return snprintf(buf, buf_sz, "%u", t->pid);
 	case UTRACE_ENV_PPID:	return snprintf(buf, buf_sz, "%u", t->ppid);
 	case UTRACE_ENV_COMM:	return snprintf(buf, buf_sz, "%s", t->comm);
