@@ -740,7 +740,7 @@ static void emit_metadata(struct wpb_writer *writer, struct wprof_data_hdr *hdr)
 		    e->kind == WEXTRA_STACK_CAPTURE)
 			continue;
 		attrs[attr_cnt] = (struct wpb_attr) {
-			.key = wpb_cstr(sfmt("extra.%zu", attr_cnt - extras_start)),
+			.key = wpb_cstr(sfmt("extra-arg.%zu", attr_cnt - extras_start + 1)),
 			.val = wpb_cstr(extra_param_str(hdr, e)),
 		};
 		attr_cnt++;
