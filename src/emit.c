@@ -233,6 +233,11 @@ static bool utrace_track_equal_fn(long a, long b, void *ctx)
 	return strcmp(x->name, y->name) == 0;
 }
 
+static struct hashmap *utrace_flow_ids;		/* rendered flow key -> flow id */
+static u64 utrace_flow_next_id = 1;
+
+#define UTRACE_FLOW_UUID(n) (((u64)0xF7 << 56) | (n))
+
 /*
  * Per (pmu_idx, cpu) snapshot of the previous PMU sample's absolute counter
  * values, so each sample reports the delta since the previous sample of the same
@@ -527,6 +532,10 @@ int init_emit(struct worker_state *w)
 
 	utrace_track_ids = hashmap__new(utrace_track_hash_fn, utrace_track_equal_fn, NULL);
 	if (!utrace_track_ids)
+		return -ENOMEM;
+
+	utrace_flow_ids = hashmap__new(str_hash_fn, str_equal_fn, NULL);
+	if (!utrace_flow_ids)
 		return -ENOMEM;
 
 	cur_wpb_writer = w->wpb_writer;
@@ -4686,6 +4695,18 @@ static u32 utrace_intern_track(enum utrace_scope scope, u32 scope_id, const char
 	return utrace_track_next_id++;
 }
 
+static u64 utrace_flow_id(const char *key)
+{
+	long id;
+
+	if (hashmap__find(utrace_flow_ids, key, &id))
+		return id;
+
+	id = UTRACE_FLOW_UUID(utrace_flow_next_id++);
+	hashmap__add(utrace_flow_ids, strdup(key), id);
+	return id;
+}
+
 static u32 utrace_scope_id(enum utrace_scope scope, const struct wprof_task *t, const struct wevent *e)
 {
 	switch (scope) {
@@ -4877,6 +4898,17 @@ static int utrace_render_name(char *buf, size_t buf_sz, struct wprof_data_hdr *h
 	}
 }
 
+static bool utrace_render_flow(char *buf, size_t buf_sz, struct wprof_data_hdr *hdr,
+			       const struct wevent *e, const struct wprof_task *t,
+			       const struct utrace_cfg *cfg, int arg_cnt)
+{
+	if (!cfg->settings.flow_segs || e->kind == EV_UTRACE_EXIT)
+		return false;
+	utrace_render_tmpl(buf, buf_sz, hdr, e, t, cfg->settings.flow_segs,
+			   cfg->settings.flow_seg_cnt, arg_cnt);
+	return true;
+}
+
 static void utrace_span_push(struct task_state *st, u32 cfg_id, u32 utrace_id)
 {
 	if (st->utspan_cnt == st->utspan_cap) {
@@ -5025,12 +5057,19 @@ static void emit_utrace_event(struct worker_state *w, const struct wevent *e)
 
 	u32 stack_id = (env.requested_stack_traces & ST_UTRACE) ? e->utrace.utrace_stack_id : 0;
 
+	char flow_buf[256];
+	u64 flow_id = 0;
+	if (utrace_render_flow(flow_buf, sizeof(flow_buf), hdr, e, &task, cfg, arg_cnt))
+		flow_id = utrace_flow_id(flow_buf);
+
 	switch (emit_kind) {
 	case EV_UTRACE_ENTRY:
 		emit_slice_begin(track_uuid, e->ts, iid_str(name_iid, name), IID_CAT_UTRACE) {
 			emit_utrace_args(w, e, arg_cfg, arg_cnt, ret_filter);
 			if (stack_id > 0)
 				emit_callstack(w, stack_id);
+			if (flow_id)
+				emit_flow_id(flow_id);
 		}
 		break;
 	case EV_UTRACE_EXIT:
@@ -5045,6 +5084,8 @@ static void emit_utrace_event(struct worker_state *w, const struct wevent *e)
 			emit_utrace_args(w, e, arg_cfg, arg_cnt, ret_filter);
 			if (stack_id > 0)
 				emit_callstack(w, stack_id);
+			if (flow_id)
+				emit_flow_id(flow_id);
 		}
 		break;
 	}
@@ -5103,6 +5144,10 @@ static void emit_utrace_json(struct worker_state *w, const struct wevent *e)
 		name = utrace_probe_name(arg_cfg);
 	}
 	json_kv_str(j, "name", name);
+
+	char flow_buf[256];
+	if (utrace_render_flow(flow_buf, sizeof(flow_buf), hdr, e, &task, cfg, arg_cnt))
+		json_kv_str(j, "flow_id", flow_buf);
 
 	/* Decode args from wevent trailing data */
 	const s32 *arg_refs = (const s32 *)((const void *)e + WEVENT_SZ(utrace));

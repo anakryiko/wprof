@@ -389,6 +389,15 @@ one track for the probe as a whole. Instants have no such restriction.
 A span keeps the track its entry opened, so a `scope:cpu` span whose
 thread migrates while it is open still ends on the CPU it began on.
 
+### Flow template
+
+`flow:<template>` or `flow:'template with spaces'`
+
+Connects related events across the trace with Perfetto flow arrows. The
+template renders to a *flow key* per event, and every event rendering
+the same key joins one flow, whatever probe, thread, process or CPU it
+came from. See **Flows** under **Perfetto rendering** below.
+
 ## Perfetto rendering
 
 Utrace events are captured in the context of the thread that was active
@@ -456,6 +465,32 @@ to a template. Captured argument values also appear as annotations on
 the Perfetto slice or instant event. An argument that could not be read
 is omitted from the annotations and renders empty in a template.
 
+**Flows:** A `flow:` template (same placeholder syntax as `name:`)
+renders to a string key per event, and events rendering equal keys are
+chained into one Perfetto flow, drawn as arrows between their slices and
+instants:
+
+```bash
+# arrow from where a work item was queued to where it ran
+-U 'raw_tp:workqueue_queue_work (arg:work/x) | flow:"work {work}" |'
+-U 'raw_tp:workqueue_execute_start (arg:work/x) | flow:"work {work}" |'
+```
+
+Flow keys share one trace-wide namespace: equal keys join across probes
+and processes. Keys that could collide by accident are disambiguated in
+the template itself — prefix a literal, or narrow with `{env:pid}` and
+friends when a value like a user-space pointer or an fd number is only
+unique within one process:
+
+```bash
+-U 'tp:syscalls:sys_enter_write (arg:fd) | flow:"{env:pid} fd {fd}" |'
+```
+
+A span's flow attaches at its entry; the exit neither renders the
+template nor needs to, as Perfetto draws a flow's outgoing arrow from
+the end of the slice. An exit with no entry to pair up with (see **Span
+rendering**) carries no flow either.
+
 **Capture environment:** A placeholder of the form `{env:...}` refers to
 the context the probe fired in rather than to an argument:
 
@@ -477,9 +512,9 @@ the context the probe fired in rather than to an argument:
 -U 'usdt:app:req_start (arg:0/name(req)) | name:"{env:comm} req {req}" |'
 ```
 
-These are available to both `name:` and `id:`, and unlike arguments they
-are available on every event, so a `name:` template built only from them
-also renders on span exit events. `env:` is a reserved namespace: an
+These are available to `name:`, `id:` and `flow:`, and unlike arguments
+they are available on every event, so a `name:` template built only from
+them also renders on span exit events. `env:` is a reserved namespace: an
 unknown key is rejected when the definition is parsed, whereas a
 placeholder naming no argument is left as literal text.
 
@@ -508,6 +543,10 @@ Event types: `utrace_instant`, `utrace_entry`, `utrace_exit`.
 `utrace_id` carries the rendered value when the `id:` setting is
 templated, so a span's entry and exit report the same one. An exit with
 no entry to pair up with reports the `id:` setting itself.
+
+`flow_id` carries the rendered `flow:` key when the probe has one, on
+`utrace_entry` and `utrace_instant` events only; exits don't render flow
+templates.
 
 Argument values are formatted by type: integers as decimal, pointers as
 `"0x..."` hex strings, strings as JSON strings. An argument whose value could

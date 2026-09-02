@@ -225,6 +225,9 @@ struct utrace_settings {
 	bool name_has_args; /* name template substitutes entry-side args, so exits can't render it */
 	struct utrace_tmpl_seg *id_segs; /* pre-compiled id segments, NULL unless id has placeholders */
 	int id_seg_cnt;
+	char *flow_tmpl; /* template string for the flow key, NULL if unset */
+	struct utrace_tmpl_seg *flow_segs; /* pre-compiled flow template segments */
+	int flow_seg_cnt;
 };
 
 struct utrace_cfg {
