@@ -184,6 +184,7 @@ static inline const char *fmt_timestamp_ns(u64 realtime_ns)
 	return buf;
 }
 const char *vsfmt(const char *fmt, va_list ap);
+void sfmt_reset(void);
 int parse_int_from_file(const char *file, const char *fmt, void *val);
 int parse_str_from_file(const char *file, char *buf, size_t buf_sz);
 int parse_cpu_mask(const char *fcpu, bool **mask, int *mask_sz);

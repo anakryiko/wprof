@@ -125,6 +125,12 @@ int process_events(struct worker_state *w, handle_event_fn *handlers, size_t han
 				event_kind_str(rec->e->kind), rec->e->kind, err);
 			return err; /* YEAH, I know about all the clean up, whatever */
 		}
+
+		/*
+		 * reset sfmt()'s thread-local state, invalidating all strings handed out by
+		 * sfmt() during event processing
+		 */
+		sfmt_reset();
 	}
 
 	return 0;
