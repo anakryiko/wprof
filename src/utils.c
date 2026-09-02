@@ -327,34 +327,50 @@ void file_pad(FILE *f, size_t align)
 	}
 }
 
-#define FMT_BUF_LEVELS 64
 #define FMT_BUF_LEN 1024
 
-static __thread char fmt_bufs[FMT_BUF_LEVELS][FMT_BUF_LEN];
-static __thread int fmt_buf_idx = 0;
+/*
+ * Buffers are allocated one at a time, so that growing the pool leaves every
+ * string handed out so far where it is. sfmt_reset() hands them out again.
+ */
+static __thread char **fmt_bufs;
+static __thread int fmt_buf_cnt;
+static __thread int fmt_buf_idx;
+
+static char *fmt_buf_next(void)
+{
+	if (fmt_buf_idx == fmt_buf_cnt) {
+		fmt_bufs = realloc(fmt_bufs, (fmt_buf_cnt + 1) * sizeof(*fmt_bufs));
+		fmt_bufs[fmt_buf_cnt++] = malloc(FMT_BUF_LEN);
+	}
+	return fmt_bufs[fmt_buf_idx++];
+}
 
 __attribute__((format(printf, 1, 2)))
 const char *sfmt(const char *fmt, ...)
 {
+	char *fmt_buf = fmt_buf_next();
 	va_list ap;
-	char *fmt_buf = fmt_bufs[fmt_buf_idx % FMT_BUF_LEVELS];
 
 	va_start(ap, fmt);
 	(void)vsnprintf(fmt_buf, FMT_BUF_LEN, fmt, ap);
 	va_end(ap);
 
-	fmt_buf_idx++;
 	return fmt_buf;
 }
 
 const char *vsfmt(const char *fmt, va_list ap)
 {
-	char *fmt_buf = fmt_bufs[fmt_buf_idx % FMT_BUF_LEVELS];
+	char *fmt_buf = fmt_buf_next();
 
 	(void)vsnprintf(fmt_buf, FMT_BUF_LEN, fmt, ap);
 
-	fmt_buf_idx++;
 	return fmt_buf;
+}
+
+void sfmt_reset(void)
+{
+	fmt_buf_idx = 0;
 }
 
 int parse_int_from_file(const char *file, const char *fmt, void *val)
