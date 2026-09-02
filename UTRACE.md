@@ -398,6 +398,24 @@ template renders to a *flow key* per event, and every event rendering
 the same key joins one flow, whatever probe, thread, process or CPU it
 came from. See **Flows** under **Perfetto rendering** below.
 
+### Annotations
+
+`ann:NAME=<template>` or `ann:NAME='template with spaces'`, repeatable
+
+Annotates every event with a NAME key, rendered from the same `{...}`
+argument and `{env:...}` placeholders as `name:`. The annotation appears
+next to the captured argument annotations in Perfetto and under `anns`
+in JSON output:
+
+```bash
+-U 'raw_tp:sched_switch | ann:cpu={env:cpu}, ann:who="{env:comm}/{env:tid}" |'
+```
+
+An annotation that references arguments is omitted on span exit events,
+which carry no entry-side arguments to render it from. One built only
+from `{env:...}` placeholders renders on every event, so a span's entry
+and exit report their own values.
+
 ## Perfetto rendering
 
 Utrace events are captured in the context of the thread that was active
@@ -512,9 +530,9 @@ the context the probe fired in rather than to an argument:
 -U 'usdt:app:req_start (arg:0/name(req)) | name:"{env:comm} req {req}" |'
 ```
 
-These are available to `name:`, `id:` and `flow:`, and unlike arguments
-they are available on every event, so a `name:` template built only from
-them also renders on span exit events. `env:` is a reserved namespace: an
+These are available to `name:`, `id:`, `flow:` and `ann:`, and unlike
+arguments they are available on every event, so a `name:` template built
+only from them also renders on span exit events. `env:` is a reserved namespace: an
 unknown key is rejected when the definition is parsed, whereas a
 placeholder naming no argument is left as literal text.
 
@@ -547,6 +565,9 @@ no entry to pair up with reports the `id:` setting itself.
 `flow_id` carries the rendered `flow:` key when the probe has one, on
 `utrace_entry` and `utrace_instant` events only; exits don't render flow
 templates.
+
+`anns` carries rendered `ann:` values as string key-values; annotations
+referencing arguments are omitted on `utrace_exit` events.
 
 Argument values are formatted by type: integers as decimal, pointers as
 `"0x..."` hex strings, strings as JSON strings. An argument whose value could

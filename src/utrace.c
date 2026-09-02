@@ -2158,6 +2158,14 @@ static void clone_cfg_with_pid(const struct utrace_cfg *src,
 	dst->settings.id_seg_cnt = 0;
 	dst->settings.flow_segs = NULL;
 	dst->settings.flow_seg_cnt = 0;
+	if (src->settings.ann_cnt) {
+		dst->settings.anns = malloc(src->settings.ann_cnt * sizeof(*dst->settings.anns));
+		for (int i = 0; i < src->settings.ann_cnt; i++) {
+			dst->settings.anns[i] = src->settings.anns[i];
+			dst->settings.anns[i].segs = NULL;
+			dst->settings.anns[i].seg_cnt = 0;
+		}
+	}
 
 	if (src->type == UTRACE_SPAN) {
 		enum utrace_pid_discovery d = cfg_pid_discovery(src);

@@ -5009,6 +5009,24 @@ static void emit_utrace_args(struct worker_state *w, const struct wevent *e,
 	}
 }
 
+static void emit_utrace_anns(struct worker_state *w, const struct wevent *e, const struct wprof_task *t,
+			      const struct utrace_cfg *cfg, int arg_cnt)
+{
+	for (int i = 0; i < cfg->settings.ann_cnt; i++) {
+		const struct utrace_ann *ann = &cfg->settings.anns[i];
+		char buf[256];
+
+		if (e->kind == EV_UTRACE_EXIT && ann->has_args)
+			continue;
+
+		utrace_render_tmpl(buf, sizeof(buf), w->dump_hdr, e, t, ann->segs, ann->seg_cnt, arg_cnt);
+
+		struct pb_str name = iid_str(emit_intern_str(w, ann->name), ann->name);
+
+		emit_kv_str(name, sfmt("%s", buf));
+	}
+}
+
 static void emit_utrace_event(struct worker_state *w, const struct wevent *e)
 {
 	struct wprof_data_hdr *hdr = w->dump_hdr;
@@ -5066,6 +5084,7 @@ static void emit_utrace_event(struct worker_state *w, const struct wevent *e)
 	case EV_UTRACE_ENTRY:
 		emit_slice_begin(track_uuid, e->ts, iid_str(name_iid, name), IID_CAT_UTRACE) {
 			emit_utrace_args(w, e, arg_cfg, arg_cnt, ret_filter);
+			emit_utrace_anns(w, e, &task, cfg, arg_cnt);
 			if (stack_id > 0)
 				emit_callstack(w, stack_id);
 			if (flow_id)
@@ -5075,6 +5094,7 @@ static void emit_utrace_event(struct worker_state *w, const struct wevent *e)
 	case EV_UTRACE_EXIT:
 		emit_slice_end(track_uuid, e->ts, iid_str(name_iid, name), IID_CAT_UTRACE) {
 			emit_utrace_args(w, e, arg_cfg, arg_cnt, ret_filter);
+			emit_utrace_anns(w, e, &task, cfg, arg_cnt);
 			if (stack_id > 0)
 				emit_callstack(w, stack_id);
 		}
@@ -5082,6 +5102,7 @@ static void emit_utrace_event(struct worker_state *w, const struct wevent *e)
 	default: /* EV_UTRACE_INSTANT */
 		emit_instant(track_uuid, e->ts, iid_str(name_iid, name), IID_CAT_UTRACE) {
 			emit_utrace_args(w, e, arg_cfg, arg_cnt, ret_filter);
+			emit_utrace_anns(w, e, &task, cfg, arg_cnt);
 			if (stack_id > 0)
 				emit_callstack(w, stack_id);
 			if (flow_id)
@@ -5195,6 +5216,23 @@ static void emit_utrace_json(struct worker_state *w, const struct wevent *e)
 		}
 		json_obj_end(j);
 	}
+
+	bool has_anns = false;
+	for (int i = 0; i < cfg->settings.ann_cnt; i++) {
+		const struct utrace_ann *ann = &cfg->settings.anns[i];
+		char abuf[256];
+
+		if (e->kind == EV_UTRACE_EXIT && ann->has_args)
+			continue;
+		if (!has_anns)
+			json_subobj_start(j, "anns");
+		has_anns = true;
+
+		utrace_render_tmpl(abuf, sizeof(abuf), hdr, e, &task, ann->segs, ann->seg_cnt, arg_cnt);
+		json_kv_str(j, ann->name, abuf);
+	}
+	if (has_anns)
+		json_obj_end(j);
 
 	if ((env.requested_stack_traces & ST_UTRACE) && e->utrace.utrace_stack_id > 0)
 		json_kv_int(j, "stack_id", e->utrace.utrace_stack_id);
