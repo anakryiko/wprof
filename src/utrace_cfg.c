@@ -724,6 +724,28 @@ static int parse_settings(struct sview orig, struct sview def, struct utrace_set
 			err = sv_consume_str_literal(orig, sv_trim(sv_consume_left(tok, 5)), "flow", &settings->flow_tmpl);
 			if (err)
 				return err;
+		} else if (sv_starts_with(tok, "ann:")) {
+			struct sview val;
+			struct sview name = sv_trim(sv_split(sv_consume_left(tok, 4), "=", &val));
+
+			if (sv_is_empty(val))
+				return utrace_err(orig, tok, "ann setting must be ann:NAME=VALUE\n");
+			if (sv_is_empty(name))
+				return utrace_err(orig, tok, "empty annotation name\n");
+			for (int i = 0; i < settings->ann_cnt; i++) {
+				if (sv_eq(name, settings->anns[i].name))
+					return utrace_err(orig, name, "duplicate annotation '%.*s'\n", name.len, name.s);
+			}
+
+			settings->anns = realloc(settings->anns, (settings->ann_cnt + 1) * sizeof(*settings->anns));
+			struct utrace_ann *ann = &settings->anns[settings->ann_cnt];
+
+			memset(ann, 0, sizeof(*ann));
+			ann->name = sv_strdup(name);
+			err = sv_consume_str_literal(orig, sv_trim(sv_consume_left(val, 1)), ann->name, &ann->tmpl);
+			if (err)
+				return err;
+			settings->ann_cnt++;
 		} else {
 			return utrace_err(orig, tok, "unknown setting\n");
 		}
@@ -919,6 +941,14 @@ int utrace_cfg_compile_tmpls(struct utrace_cfg *cfg)
 					  &cfg->settings.flow_segs, &cfg->settings.flow_seg_cnt);
 		if (err)
 			return err;
+	}
+	for (int i = 0; i < cfg->settings.ann_cnt; i++) {
+		struct utrace_ann *ann = &cfg->settings.anns[i];
+
+		err = utrace_compile_tmpl(ann->tmpl, params, param_cnt, &ann->segs, &ann->seg_cnt);
+		if (err)
+			return err;
+		ann->has_args = tmpl_has_args(ann->segs, ann->seg_cnt);
 	}
 	return 0;
 }
@@ -1364,6 +1394,12 @@ static void format_settings(const struct utrace_settings *s, struct sbuf *sb)
 		sbuf_appendf(sb, first ? " | " : ", ");
 		sbuf_appendf(sb, "flow:");
 		format_setting_value(sb, s->flow_tmpl);
+		first = false;
+	}
+	for (int i = 0; i < s->ann_cnt; i++) {
+		sbuf_appendf(sb, first ? " | " : ", ");
+		sbuf_appendf(sb, "ann:%s=", s->anns[i].name);
+		format_setting_value(sb, s->anns[i].tmpl);
 		first = false;
 	}
 	if (!first)

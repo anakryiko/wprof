@@ -327,7 +327,7 @@ void file_pad(FILE *f, size_t align)
 	}
 }
 
-#define FMT_BUF_LEVELS 16
+#define FMT_BUF_LEVELS 64
 #define FMT_BUF_LEN 1024
 
 static __thread char fmt_bufs[FMT_BUF_LEVELS][FMT_BUF_LEN];

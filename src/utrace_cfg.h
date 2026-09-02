@@ -216,6 +216,14 @@ enum utrace_scope {
 	UTRACE_SCOPE_GLOBAL,
 };
 
+struct utrace_ann {
+	char *name;
+	char *tmpl;
+	struct utrace_tmpl_seg *segs;
+	int seg_cnt;
+	bool has_args; /* references entry-side args, so exits can't render it */
+};
+
 struct utrace_settings {
 	char *id;        /* user-defined probe identifier, NULL if unset */
 	enum utrace_scope scope;
@@ -228,6 +236,8 @@ struct utrace_settings {
 	char *flow_tmpl; /* template string for the flow key, NULL if unset */
 	struct utrace_tmpl_seg *flow_segs; /* pre-compiled flow template segments */
 	int flow_seg_cnt;
+	struct utrace_ann *anns; /* ann: settings, in definition order */
+	int ann_cnt;
 };
 
 struct utrace_cfg {

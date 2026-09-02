@@ -829,6 +829,7 @@ Three event types are emitted depending on the probe kind:
 | `name`      | string          | Event name (probe name or formatted via `name:` template)             |
 | `flow_id`   | string          | *(optional)* Rendered `flow:` key, on entry and instant events only   |
 | `args`      | object          | *(optional)* Captured arguments as key-value pairs                    |
+| `anns`      | object          | *(optional)* Rendered `ann:` templates as string key-values           |
 | `stack_id`  | int             | *(optional)* Stack trace ID (when `stack` parameter is enabled)       |
 
 Argument values are formatted by type: integers as decimal numbers,
