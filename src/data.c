@@ -111,6 +111,9 @@ int process_events(struct worker_state *w, handle_event_fn *handlers, size_t han
 	handle_event_fn handler;
 	int err;
 
+	/* release the strings sfmt() handed out during setup, before per-event processing starts */
+	sfmt_reset();
+
 	wevent_for_each_event(rec, w->dump_hdr, env.sess_start_ts, env.sess_end_ts) {
 		e = rec->e;
 
