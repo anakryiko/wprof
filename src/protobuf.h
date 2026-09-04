@@ -271,6 +271,8 @@ enum pb_static_iid {
 		IID_ANNK_SCX_DSQ_ID,				/* scx_dsq_id */
 		IID_ANNK_REQ_TASK_ID,				/* task_id */
 		IID_ANNK_REQ_WAIT_TIME_NS,			/* wait_time_ns */
+		IID_ANNK_REQ_TASK_COMM,				/* task_comm */
+		IID_ANNK_REQ_TASK_TID,				/* task_tid */
 		IID_ANNK_CUDA_DEVICE_ID,			/* device_id */
 		IID_ANNK_CUDA_SRC_DEVICE_ID,			/* src_device_id */
 		IID_ANNK_CUDA_DST_DEVICE_ID,			/* dst_device_id */

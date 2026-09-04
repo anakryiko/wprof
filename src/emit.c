@@ -3440,6 +3440,7 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e)
 {
 	struct wprof_data_hdr *hdr = w->dump_hdr;
 	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
+	struct task_state *st = task_state(w, &task);
 
 	emit_track_descrs(w, &task);
 
@@ -3468,6 +3469,8 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e)
 		if (env.emit_req_split) {
 			emit_instant(req_thread_track_uuid, e->ts,
 				     IID_NAME_TASK_ENQUEUE, IID_CAT_REQ_TASK_ENQUEUE) {
+				emit_kv_str(IID_ANNK_REQ_TASK_COMM, iid_str(st->name_iid, st->comm));
+				emit_kv_int(IID_ANNK_REQ_TASK_TID, task_tid(&task));
 				emit_kv_int(IID_ANNK_REQ_ID, e->req_task.req_id);
 				emit_kv_int(IID_ANNK_REQ_TASK_ID, e->req_task.req_task_id);
 				emit_flow_id(hash_combine(req_id, e->req_task.req_task_id));
@@ -3491,6 +3494,8 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e)
 		if (env.emit_req_split) {
 			emit_instant(req_thread_track_uuid, e->ts,
 				     IID_NAME_TASK_DEQUEUE, IID_CAT_REQ_TASK_DEQUEUE) {
+				emit_kv_str(IID_ANNK_REQ_TASK_COMM, iid_str(st->name_iid, st->comm));
+				emit_kv_int(IID_ANNK_REQ_TASK_TID, task_tid(&task));
 				emit_kv_int(IID_ANNK_REQ_ID, e->req_task.req_id);
 				emit_kv_int(IID_ANNK_REQ_TASK_ID, e->req_task.req_task_id);
 				emit_kv_int(IID_ANNK_REQ_WAIT_TIME_NS, e->req_task.wait_time_ns);
@@ -3515,6 +3520,8 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e)
 		if (env.emit_req_split) {
 			emit_instant(req_thread_track_uuid, e->ts,
 				     IID_NAME_TASK_COMPLETE, IID_CAT_REQ_TASK_COMPLETE) {
+				emit_kv_str(IID_ANNK_REQ_TASK_COMM, iid_str(st->name_iid, st->comm));
+				emit_kv_int(IID_ANNK_REQ_TASK_TID, task_tid(&task));
 				emit_kv_int(IID_ANNK_REQ_ID, e->req_task.req_id);
 				emit_kv_int(IID_ANNK_REQ_TASK_ID, e->req_task.req_task_id);
 				emit_kv_int(IID_ANNK_REQ_WAIT_TIME_NS, e->req_task.wait_time_ns);
