@@ -728,11 +728,67 @@ static int setup_perf_timer_ticks(struct bpf_state *st, int num_cpus)
 	return 0;
 }
 
+/*
+ * Pick each --pmu counter's group leader: counters sharing a group= are opened
+ * as one perf event group, with members joining the leader through group_fd.
+ * A sampled counter (-S pmu=) has to lead, as the kernel lets a sampling event
+ * lead a group but not join one; otherwise the first member does. An ungrouped
+ * counter leads itself.
+ */
+static int assign_pmu_group_leaders(int *leader)
+{
+	for (int i = 0; i < env.pmu_real_cnt; i++) {
+		const struct pmu_event *ev = &env.pmu_reals[i];
+		bool sampled = ev->sampling_freq || ev->sampling_period;
+
+		leader[i] = i;
+		if (!ev->group)
+			continue;
+
+		for (int j = 0; j < i; j++) {
+			const struct pmu_event *lead = &env.pmu_reals[leader[j]];
+
+			if (!env.pmu_reals[j].group || strcmp(env.pmu_reals[j].group, ev->group) != 0)
+				continue;
+			if (!sampled) {
+				leader[i] = leader[j];
+				break;
+			}
+			if (lead->sampling_freq || lead->sampling_period) {
+				eprintf("PMU group '%s' has more than one sampled counter ('%s' and '%s')\n",
+					ev->group, lead->name, ev->name);
+				return -EINVAL;
+			}
+			/* a sampled counter takes over as leader of everything grouped so far */
+			for (int k = 0; k < i; k++) {
+				if (leader[k] == leader[j])
+					leader[k] = i;
+			}
+			break;
+		}
+	}
+	return 0;
+}
+
 static int setup_perf_counters(struct bpf_state *st, int num_cpus)
 {
 	struct perf_event_attr attr;
 	bool warned[env.pmu_real_cnt];
-	int err;
+	int leader[env.pmu_real_cnt];
+	int order[env.pmu_real_cnt];
+	int n = 0, err;
+
+	err = assign_pmu_group_leaders(leader);
+	if (err)
+		return err;
+	for (int i = 0; i < env.pmu_real_cnt; i++) {
+		if (leader[i] == i)
+			order[n++] = i;
+	}
+	for (int i = 0; i < env.pmu_real_cnt; i++) {
+		if (leader[i] != i)
+			order[n++] = i;
+	}
 
 	memset(warned, 0, sizeof(warned));
 	st->perf_counter_fds = calloc(st->perf_counter_fd_cnt, sizeof(int));
@@ -742,10 +798,12 @@ static int setup_perf_counters(struct bpf_state *st, int num_cpus)
 	}
 
 	for (int cpu = 0; cpu < num_cpus; cpu++) {
-		/* set up requested perf counters */
-		for (int j = 0; j < env.pmu_real_cnt; j++) {
+		for (int k = 0; k < env.pmu_real_cnt; k++) {
+			int j = order[k];
 			const struct pmu_event *ev = &env.pmu_reals[j];
 			int pe_idx = cpu * env.pmu_real_cnt + j;
+			/* a leader that failed to open on this CPU (-1) leaves its members ungrouped */
+			int group_fd = leader[j] == j ? -1 : st->perf_counter_fds[cpu * env.pmu_real_cnt + leader[j]];
 
 			memset(&attr, 0, sizeof(attr));
 			attr.size = sizeof(attr);
@@ -772,12 +830,17 @@ static int setup_perf_counters(struct bpf_state *st, int num_cpus)
 				attr.freq = 1;
 			}
 
-			int pefd = sys_perf_event_open(&attr, -1, cpu, -1, PERF_FLAG_FD_CLOEXEC);
+			int pefd = sys_perf_event_open(&attr, -1, cpu, group_fd, PERF_FLAG_FD_CLOEXEC);
 			if (pefd < 0) {
 				/* warn once per counter, not once per (online) CPU */
 				if (!warned[j]) {
-					eprintf("WARNING: failed to create PMU counter '%s': perf_event_open() failed with %s, skipping...\n",
-						ev->name, errstr(-errno));
+					if (group_fd >= 0) {
+						eprintf("WARNING: failed to add PMU counter '%s' to group '%s': %s, skipping...\n",
+							ev->name, ev->group, errstr(-errno));
+					} else {
+						eprintf("WARNING: failed to create PMU counter '%s': perf_event_open() failed with %s, skipping...\n",
+							ev->name, errstr(-errno));
+					}
 					warned[j] = true;
 				}
 			} else {

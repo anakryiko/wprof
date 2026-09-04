@@ -10,6 +10,7 @@
 
 #include "pmu.h"
 #include "utils.h"
+#include "strs.h"
 #include "env.h"
 #include "protobuf.h"
 
@@ -241,9 +242,9 @@ static int pmu_dev_field_mapping(const char *key, __u64 val, __u64 *config,
 	return 0;
 }
 
-/* Parse the format like "event=0x24,umask=0x01,name=foo" */
+/* Parse the format like "event=0x24,umask=0x01,name=foo,group=bar" */
 static int perf_event_parsing(char *attrs, __u64 *config, __u64 *config1, __u64 *config2,
-			      char **name_out)
+			      char **name_out, char **group_out)
 {
 	char *saveptr, *token;
 	int err = -ENOENT;
@@ -258,10 +259,19 @@ static int perf_event_parsing(char *attrs, __u64 *config, __u64 *config1, __u64 
 		if (sscanf(token, "%63[^=]=%63s%n", key, val_s, &n) != 2 || n != strlen(token))
 			return -EINVAL;
 
-		/* Handle name separately */
+		/* Handle name and group separately */
 		if (strcmp(key, "name") == 0) {
 			if (name_out)
 				*name_out = strdup(val_s);
+			err = 0;
+			continue;
+		}
+		if (group_out && strcmp(key, "group") == 0) {
+			if (*group_out) {
+				eprintf("duplicate group= in PMU event attributes\n");
+				return -EINVAL;
+			}
+			*group_out = strdup(val_s);
 			err = 0;
 			continue;
 		}
@@ -306,7 +316,7 @@ int pmu_resolve_symbolic_event(const char *pmu, const char *event_name,
 	/* Remove trailing newline */
 	buf[strcspn(buf, "\n")] = '\0';
 
-	return perf_event_parsing(buf, config, config1, config2, NULL);
+	return perf_event_parsing(buf, config, config1, config2, NULL, NULL);
 }
 
 /* Longest alias that is a prefix of @s ending at '-' or end-of-string. */
@@ -411,13 +421,30 @@ static int parse_pmu_style_event(const char *spec, struct pmu_event *ev)
 
 	ev->perf_type = pmu_type;
 
-	err = pmu_resolve_symbolic_event(pmu_dev, attrs, &ev->config, &ev->config1, &ev->config2);
+	char *rest = strchr(attrs, ',');
+	char sym[128];
+
+	if (sscanf(attrs, "%127[^,]", sym) != 1)
+		return -ENOENT;
+
+	err = pmu_resolve_symbolic_event(pmu_dev, sym, &ev->config, &ev->config1, &ev->config2);
 	if (err == 0) {
-		ev->name = strdup(sfmt("%s_%s", pmu_dev, attrs));
+		__u64 cfg, cfg1, cfg2;
+
+		ev->name = strdup(sfmt("%s_%s", pmu_dev, sym));
+		if (!rest)
+			return 0;
+		err = perf_event_parsing(rest + 1, &cfg, &cfg1, &cfg2, &ev->name, &ev->group);
+		if (err)
+			return -EINVAL;
+		if (cfg || cfg1 || cfg2) {
+			eprintf("only name= and group= can follow a symbolic PMU event in '%s'\n", spec);
+			return -EINVAL;
+		}
 		return 0;
 	}
 
-	err = perf_event_parsing(attrs, &ev->config, &ev->config1, &ev->config2, &ev->name);
+	err = perf_event_parsing(attrs, &ev->config, &ev->config1, &ev->config2, &ev->name, &ev->group);
 	if (err == 0) {
 		if (!ev->name)
 			ev->name = strdup(sfmt("%s_0x%llx", pmu_dev, (__u64)ev->config));
@@ -453,18 +480,9 @@ static int parse_derived_event(const char *spec, struct pmu_event *ev)
 	}
 }
 
-/*
- * parse_perf_counter() - Main entry point that tries all event format parsers.
- */
-int parse_perf_counter(const char *spec, struct pmu_event *out)
+static int parse_event_kind(const char *spec, struct pmu_event *out)
 {
 	int err;
-
-	memset(out, 0, sizeof(*out));
-
-	err = parse_derived_event(spec, out);
-	if (err == 0 || err != -ENOENT)
-		return err;
 
 	/*
 	 * Generic hardware aliases (cpu-cycles, instructions, ...) before the raw
@@ -479,10 +497,6 @@ int parse_perf_counter(const char *spec, struct pmu_event *out)
 	if (err == 0 || err != -ENOENT)
 		return err;
 
-	err = parse_pmu_style_event(spec, out);
-	if (err == 0 || err != -ENOENT)
-		return err;
-
 	err = parse_software_event(spec, out);
 	if (err == 0 || err != -ENOENT)
 		return err;
@@ -492,6 +506,72 @@ int parse_perf_counter(const char *spec, struct pmu_event *out)
 		return err;
 
 	return -EINVAL;
+}
+
+/*
+ * Split a trailing "/name=...,group=.../" attribute block off an event spec
+ * ("cycles/group=ipc/"), leaving the bare event for the per-kind parsers.
+ */
+static int split_event_attrs(const char *spec, char **event, char **name, char **group)
+{
+	struct sview attrs;
+	struct sview ev = sv_split(sv_new(spec), "/", &attrs);
+	__u64 cfg, cfg1, cfg2;
+	char *attrs_str;
+	int err;
+
+	*event = strdup(spec);
+	if (sv_is_empty(attrs))
+		return 0;
+	if (!sv_unwrap(&attrs, "/", "/") || sv_is_empty(ev) || sv_find(attrs, "/") >= 0)
+		return -EINVAL;
+
+	attrs_str = sv_strdup(attrs);
+	err = perf_event_parsing(attrs_str, &cfg, &cfg1, &cfg2, name, group);
+	free(attrs_str);
+	if (err)
+		return -EINVAL;
+	if (cfg || cfg1 || cfg2) {
+		eprintf("only name= and group= are accepted in the attributes of '%s'\n", spec);
+		return -EINVAL;
+	}
+
+	free(*event);
+	*event = sv_strdup(ev);
+	return 0;
+}
+
+int parse_perf_counter(const char *spec, struct pmu_event *out)
+{
+	char *event, *name = NULL, *group = NULL;
+	int err;
+
+	memset(out, 0, sizeof(*out));
+
+	err = parse_derived_event(spec, out);
+	if (err == 0 || err != -ENOENT)
+		return err;
+
+	/* PMU-style specs carry their attributes in their own block */
+	err = parse_pmu_style_event(spec, out);
+	if (err == 0 || err != -ENOENT)
+		return err;
+
+	err = split_event_attrs(spec, &event, &name, &group);
+	if (err)
+		return err;
+
+	err = parse_event_kind(event, out);
+	free(event);
+	if (err)
+		return err;
+
+	if (name) {
+		free(out->name);
+		out->name = name;
+	}
+	out->group = group;
+	return 0;
 }
 
 int parse_pmu_event_spec(const char *spec, struct pmu_event *out)

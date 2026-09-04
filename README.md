@@ -159,6 +159,66 @@ $ sudo ./wprof --prepare +1s --activate /10s -d 5s   # prep at +1s, start on the
   into `wprof.data` and shown by `wprof -R -I` and in JSON output, so a capture
   is self-describing.
 
+### PMU counters: `--pmu`
+
+`--pmu <event>` reads a hardware or software perf counter around every event
+wprof records, so each on-CPU slice, IRQ, and so on is annotated with how many
+of that event happened during it. Repeatable; each counter is one per-CPU
+`perf_event_open()`.
+
+| Form             | Examples                                                                                               | Counter name                          |
+|------------------|--------------------------------------------------------------------------------------------------------|---------------------------------------|
+| generic hardware | `cycles`, `cpu-cycles`, `instructions`, `cache-misses`, `branches`, `branch-misses`, `ref-cycles`, ... | as written                            |
+| raw              | `r003c`                                                                                                | `raw_0x3c`                            |
+| PMU-style        | `cpu/cpu-cycles/`, `cpu/event=0x3c,umask=0x01/`, `cpu/event=0x3c,name=my_ev/`                          | `cpu_cpu-cycles`, `cpu_0x3c`, `my_ev` |
+| software         | `page-faults`, `sw:cpu-clock`, `context-switches`, ...                                                 | as written                            |
+| hardware cache   | `l1-dcache-load-misses`, `LLC-loads`, `dTLB-store-misses`, ...                                         | as written                            |
+| derived ratio    | `derived:ipc=instructions/cycles`                                                                      | `ipc`                                 |
+
+PMU-style attributes are `event`, `umask`, `edge`, `pc`, `inv`, `cmask`,
+`config1`, `config2`, `name` and `group`; symbolic names inside `cpu/.../`
+resolve through `/sys/bus/event_source/devices/<dev>/events/`. A derived ratio
+names two other `--pmu` counters and is computed at emit time, so it costs no
+hardware counter.
+
+```
+$ sudo ./wprof -d 5s --pmu cycles --pmu instructions --pmu 'derived:ipc=instructions/cycles' -T trace.pb
+```
+
+**Counter groups: `group=`**
+
+A CPU has only a handful of hardware counters, and when more are requested the
+kernel *multiplexes*: it rotates counters on and off the PMU, and wprof scales
+each value by the fraction of a slice it was actually counting. Counters rotate
+independently, so during a slice one may be on the PMU while another is off — a
+derived ratio like IPC then can't be computed, and even when both are present
+they were measured over *different* parts of the slice.
+
+Tagging counters with the same `group=` opens them as one perf event group: the
+kernel puts all of them on the PMU together or none of them, so they always
+cover the same time. The tag goes in a trailing `/.../` attribute block on any
+form, or alongside the other attributes of a PMU-style spec:
+
+```
+$ sudo ./wprof -d 5s --pmu 'cycles/group=ipc/' --pmu 'instructions/group=ipc/' \
+                    --pmu 'derived:ipc=instructions/cycles' -T trace.pb
+$ sudo ./wprof -d 5s --pmu 'cpu/event=0x76,group=ipc/' --pmu 'cpu/event=0xc0,group=ipc/' -T trace.pb
+```
+
+Grouping changes only how counters are scheduled; their names, values and the
+ratios over them are unchanged, and a ratio of two counters in one group is
+exact even when the group was multiplexed, since the scaling cancels.
+
+**Gotchas and implications**
+
+- **A group must fit the PMU whole.** A group larger than the available
+  counters opens fine but never counts; its members show up in the end-of-capture
+  multiplexing warning as active 0.00%.
+- **One sampled counter per group.** A group can't have more than one counter
+  used by `-Spmu=`.
+- **Groups can't span PMUs** — core and uncore events, or the P-core and E-core
+  PMUs of a hybrid CPU, can't share a group.
+
 ### PMU event sampling: `-S pmu=...`
 
 Beyond the fixed-rate on-CPU `TIMER` profiler, wprof can sample on an arbitrary
@@ -175,7 +235,7 @@ It is a kind of `-S`/`--stacks` (stacks are intrinsic to it). `-S` takes an
 ```
 
 **Event** (before `@`) is either a full PMU spec — same syntax as `--pmu`
-(`cpu-cycles`, `cache-misses`, `r003c`, `cpu/event=0x3c/`, `sw:cpu-clock`, …) —
+(see above: `cpu-cycles`, `cache-misses`, `r003c`, `cpu/event=0x3c/`, `sw:cpu-clock`, ...) —
 or the **name of an event already declared with `--pmu`** (so you can both count
 and sample the same event without repeating its definition; order doesn't
 matter). Derived metrics can't be sampled and are rejected.
