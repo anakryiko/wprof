@@ -152,6 +152,7 @@ pub struct WpbTrackDescriptor {
     child_ordering: i32,
     sibling_order_rank: i32,
     sibling_merge_behavior: i32,
+    sibling_merge_key: u64,
     disallow_merging_with_system_tracks: u8,
     emit_disallow_merging_with_system_tracks: u8,
     interned_strings: WpbInternSet,
@@ -378,6 +379,11 @@ impl WpbWriter {
                     (desc.sibling_order_rank != 0).then_some(desc.sibling_order_rank);
                 td.sibling_merge_behavior =
                     (desc.sibling_merge_behavior != 0).then_some(desc.sibling_merge_behavior);
+                td.sibling_merge_key_field = (desc.sibling_merge_key != 0).then_some(
+                    track_descriptor::SiblingMergeKeyField::SiblingMergeKeyInt(
+                        desc.sibling_merge_key,
+                    ),
+                );
             }
             WPB_TRACK_DESCRIPTOR_PROCESS => {
                 td.process = Some(ProcessDescriptor {

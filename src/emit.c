@@ -1111,9 +1111,10 @@ static void emit_kind_track_descr(enum task_kind k)
 	wpb_emit_track_descriptor_with_interns(&desc);
 }
 
-static void emit_track_descr_impl(__u64 track_uuid, __u64 parent_track_uuid,
-				  const char *name, int rank,
-				  enum track_child_order child_order, enum track_merge_behavior merge)
+static void __emit_track_descr(__u64 track_uuid, __u64 parent_track_uuid,
+			       const char *name, int rank,
+			       enum track_child_order child_order, enum track_merge_behavior merge,
+			       __u64 merge_key)
 {
 	int child_ordering;
 	switch (child_order) {
@@ -1155,6 +1156,7 @@ static void emit_track_descr_impl(__u64 track_uuid, __u64 parent_track_uuid,
 		.child_ordering = child_ordering,
 		.sibling_order_rank = rank,
 		.sibling_merge_behavior = merge_behavior,
+		.sibling_merge_key = merge_key,
 		.emit_disallow_merging_with_system_tracks = 1,
 		.disallow_merging_with_system_tracks = 0,
 	};
@@ -1163,12 +1165,12 @@ static void emit_track_descr_impl(__u64 track_uuid, __u64 parent_track_uuid,
 
 static void emit_track_descr(__u64 track_uuid, __u64 parent_track_uuid, const char *name, int rank)
 {
-	emit_track_descr_impl(track_uuid, parent_track_uuid, name, rank, CHILD_ORDER_CHRONO, MERGE_DEFAULT);
+	__emit_track_descr(track_uuid, parent_track_uuid, name, rank, CHILD_ORDER_CHRONO, MERGE_DEFAULT, 0);
 }
 
 static void emit_track_descr_explicit(__u64 track_uuid, __u64 parent_track_uuid, const char *name, int rank)
 {
-	emit_track_descr_impl(track_uuid, parent_track_uuid, name, rank, CHILD_ORDER_EXPLICIT, MERGE_DEFAULT);
+	__emit_track_descr(track_uuid, parent_track_uuid, name, rank, CHILD_ORDER_EXPLICIT, MERGE_DEFAULT, 0);
 }
 
 /* UUID of the session track; init_pb_trace() anchors the START event on it. */
@@ -1587,8 +1589,8 @@ static u64 ensure_timer_thread_track(const struct wprof_task *t)
 	struct track_state *s = track_state_get_or_add(DTK_TIMER, t->tid, 0);
 
 	if (!s->exists) {
-		emit_track_descr_impl(s->track_id, trackid_thread(t),
-				      "TIMER", s->kind, CHILD_ORDER_CHRONO, MERGE_NONE);
+		__emit_track_descr(s->track_id, trackid_thread(t),
+				   "TIMER", s->kind, CHILD_ORDER_CHRONO, MERGE_NONE, 0);
 		s->exists = true;
 	}
 	return s->track_id;
@@ -1608,8 +1610,8 @@ static void emit_embed_callstack(struct worker_state *w, const struct wprof_task
 	struct track_state *s = track_state_get_or_add(DTK_TIMER_CALLSTACK, t->tid, 0);
 
 	if (!s->exists) {
-		emit_track_descr_impl(s->track_id, trackid_thread(t),
-				      "TIMER CALLSTACKS", s->kind, CHILD_ORDER_CHRONO, MERGE_NONE);
+		__emit_track_descr(s->track_id, trackid_thread(t),
+				   "TIMER CALLSTACKS", s->kind, CHILD_ORDER_CHRONO, MERGE_NONE, 0);
 		s->exists = true;
 	}
 
@@ -1774,8 +1776,8 @@ static u64 ensure_pmu_event_track(const struct wprof_task *t, u32 pmu_idx, const
 	struct track_state *s = track_state_get_or_add(DTK_PMU_EVENT, t->tid, pmu_idx);
 
 	if (!s->exists) {
-		emit_track_descr_impl(s->track_id, trackid_thread(t),
-				      name, s->kind, CHILD_ORDER_CHRONO, MERGE_NONE);
+		__emit_track_descr(s->track_id, trackid_thread(t),
+				   name, s->kind, CHILD_ORDER_CHRONO, MERGE_NONE, 0);
 		s->exists = true;
 	}
 	return s->track_id;
@@ -3207,8 +3209,8 @@ static u64 ensure_thread_req_track(const struct wprof_task *t)
 	struct track_state *s = track_state_get_or_add(DTK_REQ_THREAD_EMBED, t->tid, 0);
 
 	if (!s->exists) {
-		emit_track_descr_impl(s->track_id, trackid_thread(t),
-				      "REQUESTS", s->kind, CHILD_ORDER_CHRONO, MERGE_NONE);
+		__emit_track_descr(s->track_id, trackid_thread(t),
+				   "REQUESTS", s->kind, CHILD_ORDER_CHRONO, MERGE_NONE, 0);
 		s->exists = true;
 	}
 	return s->track_id;
@@ -3612,9 +3614,9 @@ static u64 ensure_cuda_proc_track(int pid, const char *proc_name)
 	struct track_state *s = track_state_get_or_add(DTK_CUDA_PROC, pid, 0);
 
 	if (!s->exists) {
-		emit_track_descr_impl(s->track_id, TRACK_UUID_CUDA,
-				      sfmt("%s %d (CUDA)", proc_name, pid), 0,
-				      CHILD_ORDER_CHRONO, MERGE_BY_NAME);
+		__emit_track_descr(s->track_id, TRACK_UUID_CUDA,
+				   sfmt("%s %d (CUDA)", proc_name, pid), 0,
+				   CHILD_ORDER_CHRONO, MERGE_BY_NAME, 0);
 		s->exists = true;
 	}
 	return s->track_id;
@@ -3639,9 +3641,9 @@ static u64 ensure_cuda_proc_stream_track(int pid, u32 gpu_id, u32 stream_id, con
 	if (!s->exists) {
 		struct track_state *gpu = track_state_find(DTK_CUDA_PROC_GPU, pid, gpu_id);
 		s->stream.gpu_track_id = gpu->track_id;
-		emit_track_descr_impl(s->track_id, gpu->track_id,
-				      sfmt("Stream #%u (%s %d)", stream_id, proc_name, pid), 0,
-				      CHILD_ORDER_CHRONO, MERGE_BY_NAME);
+		__emit_track_descr(s->track_id, gpu->track_id,
+				   sfmt("Stream #%u (%s %d)", stream_id, proc_name, pid), 0,
+				   CHILD_ORDER_CHRONO, MERGE_BY_NAME, 0);
 		s->exists = true;
 	}
 	return s->track_id;
@@ -3658,9 +3660,9 @@ static u64 ensure_cuda_proc_stream_sync_track(int pid, u32 stream_id, const char
 
 	if (!sync->exists) {
 		struct track_state *stream = track_state_find(DTK_CUDA_PROC_STREAM, pid, stream_id);
-		emit_track_descr_impl(sync->track_id, stream->stream.gpu_track_id,
-				      sfmt("Stream #%u (%s %d)", stream_id, proc_name, pid), 0,
-				      CHILD_ORDER_CHRONO, MERGE_BY_NAME);
+		__emit_track_descr(sync->track_id, stream->stream.gpu_track_id,
+				   sfmt("Stream #%u (%s %d)", stream_id, proc_name, pid), 0,
+				   CHILD_ORDER_CHRONO, MERGE_BY_NAME, 0);
 		sync->exists = true;
 	}
 	return sync->track_id;
@@ -3671,8 +3673,8 @@ static u64 ensure_cuda_api_track(int tid, const char *comm)
 	struct track_state *s = track_state_get_or_add(DTK_THREAD_CUDA, tid, 0);
 
 	if (!s->exists) {
-		emit_track_descr_impl(s->track_id, TRACK_UUID(TK_THREAD, tid),
-				      "CUDA", s->kind, CHILD_ORDER_CHRONO, MERGE_BY_NAME);
+		__emit_track_descr(s->track_id, TRACK_UUID(TK_THREAD, tid),
+				   "CUDA", s->kind, CHILD_ORDER_CHRONO, MERGE_BY_NAME, 0);
 		s->exists = true;
 	}
 	return s->track_id;
@@ -3688,8 +3690,8 @@ static u64 ensure_cuda_overhead_thread_track(int tid, const char *comm)
 	struct track_state *s = track_state_get_or_add(DTK_THREAD_CUDA_OVERHEAD, tid, 0);
 
 	if (!s->exists) {
-		emit_track_descr_impl(s->track_id, TRACK_UUID(TK_THREAD, tid),
-				      "CUDA", DTK_THREAD_CUDA, CHILD_ORDER_CHRONO, MERGE_BY_NAME);
+		__emit_track_descr(s->track_id, TRACK_UUID(TK_THREAD, tid),
+				   "CUDA", DTK_THREAD_CUDA, CHILD_ORDER_CHRONO, MERGE_BY_NAME, 0);
 		s->exists = true;
 	}
 	return s->track_id;
@@ -3704,9 +3706,9 @@ static u64 ensure_cuda_overhead_proc_track(int pid, const char *proc_name)
 	struct track_state *s = track_state_get_or_add(DTK_CUDA_PROC_OVERHEAD, pid, 0);
 
 	if (!s->exists) {
-		emit_track_descr_impl(s->track_id, TRACK_UUID_CUDA,
-				      sfmt("%s %d (CUDA)", proc_name, pid), 0,
-				      CHILD_ORDER_CHRONO, MERGE_BY_NAME);
+		__emit_track_descr(s->track_id, TRACK_UUID_CUDA,
+				   sfmt("%s %d (CUDA)", proc_name, pid), 0,
+				   CHILD_ORDER_CHRONO, MERGE_BY_NAME, 0);
 		s->exists = true;
 	}
 	return s->track_id;
@@ -4344,10 +4346,10 @@ static u64 ensure_pytrace_thread_track(int tid)
 	u64 track_uuid = trackid_pytrace_thread(tid);
 
 	if (!s->exists) {
-		emit_track_descr_impl(track_uuid,
-				      TRACK_UUID(TK_THREAD, tid),
-				      "PYTRACE", s->kind,
-				      CHILD_ORDER_CHRONO, MERGE_NONE);
+		__emit_track_descr(track_uuid,
+				   TRACK_UUID(TK_THREAD, tid),
+				   "PYTRACE", s->kind,
+				   CHILD_ORDER_CHRONO, MERGE_NONE, 0);
 		s->exists = true;
 	}
 	return track_uuid;
@@ -4359,10 +4361,10 @@ static u64 ensure_pytorch_thread_track(int tid)
 	u64 track_uuid = trackid_pytorch_thread(tid);
 
 	if (!s->exists) {
-		emit_track_descr_impl(track_uuid,
-				      TRACK_UUID(TK_THREAD, tid),
-				      "PYTORCH", s->kind,
-				      CHILD_ORDER_CHRONO, MERGE_NONE);
+		__emit_track_descr(track_uuid,
+				   TRACK_UUID(TK_THREAD, tid),
+				   "PYTORCH", s->kind,
+				   CHILD_ORDER_CHRONO, MERGE_NONE, 0);
 		s->exists = true;
 	}
 	return track_uuid;
