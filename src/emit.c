@@ -75,11 +75,6 @@ static enum wprof_task_run_state classify_task_state(u32 packed_state)
 	return WTRS_UNKNOWN;
 }
 
-static pb_iid task_state_name_iid(enum wprof_task_run_state state)
-{
-	return IID_NAME_RUNNING + state;
-}
-
 static pb_iid task_state_ann_iid(enum wprof_task_run_state state)
 {
 	return IID_ANNV_OFFCPU_STATE + state;
@@ -2026,14 +2021,6 @@ static void emit_switch(struct worker_state *w, const struct wevent *e, struct s
 		}
 	}
 
-	if (env.emit_req_split && s->prev_st->req_id) {
-		emit_slice_end(trackid_req_thread(s->prev_st->req_id, &task),
-			       e->ts, IID_NAME_RUNNING, IID_CAT_REQUEST_ONCPU);
-		emit_slice_begin(trackid_req_thread(s->prev_st->req_id, &task),
-				 e->ts, task_state_name_iid(s->prev_state),
-				 IID_CAT_REQUEST_OFFCPU);
-	}
-
 skip_prev_task:
 	if (!s->trace_next)
 		goto skip_next_task;
@@ -2113,14 +2100,6 @@ skip_waking:
 
 		if (s->has_waking && is_ts_in_range(s->waking_ts))
 			emit_flow_id(s->waking_ts);
-	}
-
-	if (env.emit_req_split && s->next_st->req_id) {
-		emit_slice_end(trackid_req_thread(s->next_st->req_id, &next),
-			       e->ts, task_state_name_iid(s->next_state),
-			       IID_CAT_REQUEST_OFFCPU);
-		emit_slice_begin(trackid_req_thread(s->next_st->req_id, &next),
-				 e->ts, IID_NAME_RUNNING, IID_CAT_REQUEST_ONCPU);
 	}
 
 skip_next_task:
@@ -3290,7 +3269,6 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e,
 				emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
 				emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
 			}
-			emit_slice_begin(req_thread_track_uuid, e->ts, IID_NAME_RUNNING, IID_CAT_REQUEST_ONCPU);
 		}
 
 		if (env.emit_req_embed) {
@@ -3312,7 +3290,6 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e,
 					emit_perf_counters(NULL, req_ctrs, true /* diffs */, req_oncpu_ns);
 				}
 			}
-			emit_slice_end(req_thread_track_uuid, e->ts, IID_NAME_RUNNING, IID_CAT_REQUEST_ONCPU);
 		}
 
 		if (env.emit_req_embed) {
