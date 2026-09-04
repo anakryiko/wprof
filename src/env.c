@@ -456,7 +456,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 
 			err = parse_pmu_event_spec(arg + 4, &ev);
 			if (err) {
-				eprintf("Invalid PMU sampling spec: %s\n", arg + 4);
+				eprintf("Invalid PMU sampling spec '%s'\n", arg + 4);
 				argp_usage(state);
 			}
 
@@ -857,6 +857,10 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		int err;
 
 		err = parse_perf_counter(arg, &ev);
+		if (err == -EINVAL) {
+			eprintf("Invalid PMU counter spec '%s'\n", arg);
+			argp_usage(state);
+		}
 		if (err) {
 			/* For replay mode, allow specifying just the stored event name.
 			 * Create a placeholder event with just the name - it will be

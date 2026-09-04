@@ -136,7 +136,10 @@ when the event occurred.
 **PMU counters:** When present, the `pmus` array contains hardware performance
 counter values accumulated during the event's time span (e.g., instructions
 executed during an interrupt handler, or during `prev`'s last on-CPU slice for
-`switch` events). Values are parallel to the header's `pmus` name array.
+`switch` events). Values are parallel to the header's `pmus` name array. A
+value is `null` when the counter was not on the PMU during the span (kernel
+multiplexing); counters declared in one `--pmu` group (`group=`) are always
+present or absent together.
 
 ---
 

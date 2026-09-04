@@ -41,6 +41,8 @@ struct pmu_event {
 	char *name;              /* trace output name (user-specified or auto) */
 	u32 name_iid;            /* pre-interned Perfetto annotation key IID */
 
+	char *group;       /* group= tag: counters sharing one are opened as a perf event group; NULL if none */
+
 	/* Original user-provided --pmu / -S pmu= spec; set at capture-time argv parse */
 	char *spec;
 
