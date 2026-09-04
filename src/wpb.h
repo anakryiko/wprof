@@ -157,6 +157,7 @@ struct wpb_track_descriptor {
 	int32_t child_ordering;
 	int32_t sibling_order_rank;
 	int32_t sibling_merge_behavior;
+	uint64_t sibling_merge_key;
 	uint8_t disallow_merging_with_system_tracks;
 	uint8_t emit_disallow_merging_with_system_tracks;
 	struct wpb_intern_set interned_strings;
