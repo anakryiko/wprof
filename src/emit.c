@@ -1158,6 +1158,13 @@ static void __emit_track_descr(__u64 track_uuid, __u64 parent_track_uuid,
 	wpb_emit_track_descriptor_with_interns(&desc);
 }
 
+static void emit_track_descr_merged(__u64 track_uuid, __u64 parent_track_uuid,
+				    const char *name, int rank, __u64 merge_key)
+{
+	__emit_track_descr(track_uuid, parent_track_uuid, name, rank,
+			   CHILD_ORDER_CHRONO, MERGE_BY_KEY, merge_key);
+}
+
 static void emit_track_descr(__u64 track_uuid, __u64 parent_track_uuid, const char *name, int rank)
 {
 	__emit_track_descr(track_uuid, parent_track_uuid, name, rank, CHILD_ORDER_CHRONO, MERGE_DEFAULT, 0);
@@ -3171,13 +3178,13 @@ static u64 ensure_req_track(const struct wprof_task *t, u64 req_id, const char *
 	return s->track_id;
 }
 
-static u64 ensure_req_thread_track(const struct wprof_task *t, u64 req_id, const char *req_name)
+static u64 ensure_req_thread_track(const struct wprof_task *t, u64 req_id)
 {
 	struct track_state *s = track_state_get_or_add(DTK_REQ_THREAD, t->tid, req_id);
 
 	if (!s->exists) {
-		emit_track_descr(s->track_id, trackid_req(req_id, t),
-				 sfmt("%s %u", t->comm, t->tid), 0);
+		emit_track_descr_merged(s->track_id, trackid_req(req_id, t),
+					sfmt("REQ TASKS (%llu)", req_id), 0, req_id);
 		s->exists = true;
 	}
 	return s->track_id;
@@ -3222,6 +3229,9 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e,
 	const char *thread_req_name = sfmt("REQ:%s (%llu)", req_name, req_id);
 	pb_iid thread_req_name_iid = emit_intern_str(w, thread_req_name);
 
+	const char *task_name = sfmt("%s (%d)", st->comm, st->tid);
+	pb_iid task_name_iid = emit_intern_str(w, task_name);
+
 	int req_stack_id = (env.requested_stack_traces & ST_REQ) ? e->req.req_stack_id : 0;
 
 	ensure_process_reqs_track(&task);
@@ -3229,7 +3239,7 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e,
 
 	u64 req_thread_track_uuid = 0;
 	if (env.emit_req_split)
-		req_thread_track_uuid = ensure_req_thread_track(&task, req_id, req_name);
+		req_thread_track_uuid = ensure_req_thread_track(&task, req_id);
 
 	u64 thread_req_track_uuid = 0;
 	bool first_embed_event = false;
@@ -3265,7 +3275,7 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e,
 	case REQ_SET:
 		if (env.emit_req_split) {
 			emit_slice_begin(req_thread_track_uuid,
-					 e->ts, iid_str(st->name_iid, st->comm), IID_CAT_REQUEST_THREAD) {
+					 e->ts, iid_str(task_name_iid, task_name), IID_CAT_REQUEST_THREAD) {
 				emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
 				emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
 			}
@@ -3284,7 +3294,7 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e,
 		break;
 	case REQ_UNSET:
 		if (env.emit_req_split) {
-			emit_slice_end(req_thread_track_uuid, e->ts, iid_str(st->name_iid, st->comm), IID_CAT_REQUEST_THREAD) {
+			emit_slice_end(req_thread_track_uuid, e->ts, iid_str(task_name_iid, task_name), IID_CAT_REQUEST_THREAD) {
 				if (req_ctrs) {
 					emit_kv_float(IID_ANNK_OFFCPU_DUR_US, "%.3lf", req_offcpu_ns / 1000.0);
 					emit_perf_counters(NULL, req_ctrs, true /* diffs */, req_oncpu_ns);
@@ -3439,7 +3449,7 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e)
 	if (env.emit_req_split) {
 		ensure_process_reqs_track(&task);
 		ensure_req_track(&task, req_id, NULL);
-		req_thread_track_uuid = ensure_req_thread_track(&task, req_id, NULL);
+		req_thread_track_uuid = ensure_req_thread_track(&task, req_id);
 	}
 
 	u64 thread_req_track_uuid = 0;
