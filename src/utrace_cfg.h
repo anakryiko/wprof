@@ -101,11 +101,23 @@ enum utrace_param_type {
 	UTRACE_PARAM_CAPTURE_STACK = 1000,
 	UTRACE_PARAM_BINARY_PATH,
 	UTRACE_PARAM_PID,
+	UTRACE_PARAM_NV_SMI,
+	UTRACE_PARAM_COMM,
 };
 
-enum utrace_pid_discovery {
-	UTRACE_PID_DISCOVER_NONE = 0,
-	UTRACE_PID_DISCOVER_NV_SMI,
+/*
+ * Which specifiers a probe uses to pick processes. A set, not a choice: the
+ * candidate PIDs are the intersection of everything specified, so comm: can
+ * narrow either an explicit pid: or the nv-smi set.
+ */
+enum utrace_pid_spec {
+	UTRACE_PID_SPEC_NONE = 0,
+	UTRACE_PID_SPEC_PID = 1 << 0,		/* pid:<N> */
+	UTRACE_PID_SPEC_NV_SMI = 1 << 1,	/* pid:nv-smi */
+	UTRACE_PID_SPEC_COMM = 1 << 2,		/* comm:<glob> */
+
+	/* specifiers that expand one probe into per-PID clones, resolved best-effort */
+	UTRACE_PID_SPEC_DISCOVERED = UTRACE_PID_SPEC_NV_SMI | UTRACE_PID_SPEC_COMM,
 };
 
 #define UTRACE_ARG_RET (-1)
@@ -170,8 +182,10 @@ struct utrace_param {
 		} binary;
 		struct {
 			int pid;
-			enum utrace_pid_discovery discovery;
 		} pid;
+		struct {
+			char *glob;	/* process name glob, matched against /proc/<pid>/comm */
+		} comm;
 	};
 };
 
@@ -243,6 +257,11 @@ struct utrace_settings {
 struct utrace_cfg {
 	enum utrace_type type;
 	bool wildcard_args;
+	int parent_idx;			/* probe this was expanded from by PID discovery, -1 otherwise */
+	struct {
+		int clone_cnt;		/* per-PID clones made from this probe, 0 unless this is a parent */
+		int resolve_cnt;	/* probes that resolved: 0 or 1 normally, matching clones for a parent */
+	} stats;
 
 	struct utrace_param *params;
 	int param_cnt;
@@ -402,7 +421,7 @@ static inline const char *utrace_arg_map_lookup(const struct utrace_arg_map *map
 int utrace_compile_tmpl(const char *tmpl, const struct utrace_param *params, int param_cnt,
 			struct utrace_tmpl_seg **out_segs, int *out_seg_cnt);
 int ucfg_compile_tmpls(struct utrace_cfg *cfg);
-void ucfg_add_pid(struct utrace_cfg *cfg, int pid, enum utrace_pid_discovery discovery);
+void ucfg_ensure_pid(struct utrace_cfg *cfg, int pid);
 int ucfg_parse(const char *def);
 int ucfg_parse_file(const char *path);
 void ucfg_format(const struct utrace_cfg *cfg, struct sbuf *sb);

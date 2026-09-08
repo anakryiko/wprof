@@ -175,17 +175,24 @@ static int cfg_pid(const struct utrace_cfg *cfg)
 	return -1; /* system-wide */
 }
 
-static enum utrace_pid_discovery cfg_pid_discovery(const struct utrace_cfg *cfg)
+/* Set of process specifiers a probe carries; span legs contribute to the union. */
+static enum utrace_pid_spec cfg_pid_specs(const struct utrace_cfg *cfg)
 {
 	if (cfg->type == UTRACE_SPAN)
-		return cfg_pid_discovery(cfg->span.entry) ?: cfg_pid_discovery(cfg->span.exit);
+		return cfg_pid_specs(cfg->span.entry) | cfg_pid_specs(cfg->span.exit);
+
+	enum utrace_pid_spec specs = UTRACE_PID_SPEC_NONE;
 
 	for (int i = 0; i < cfg->param_cnt; i++) {
-		if (cfg->params[i].type == UTRACE_PARAM_PID)
-			return cfg->params[i].pid.discovery;
+		switch (cfg->params[i].type) {
+		case UTRACE_PARAM_PID: specs |= UTRACE_PID_SPEC_PID; break;
+		case UTRACE_PARAM_NV_SMI: specs |= UTRACE_PID_SPEC_NV_SMI; break;
+		case UTRACE_PARAM_COMM: specs |= UTRACE_PID_SPEC_COMM; break;
+		default: break;
+		}
 	}
 
-	return UTRACE_PID_DISCOVER_NONE;
+	return specs;
 }
 
 static bool cfg_is_kprobe_type(const struct utrace_cfg *cfg)
@@ -2128,30 +2135,21 @@ static struct utrace_param *clone_params(const struct utrace_param *src, int cnt
 	return dst;
 }
 
-static void params_set_pid(struct utrace_param *params, int cnt, int pid)
-{
-	for (int i = 0; i < cnt; i++) {
-		if (params[i].type == UTRACE_PARAM_PID && params[i].pid.discovery != UTRACE_PID_DISCOVER_NONE) {
-			params[i].pid.pid = pid;
-			return;
-		}
-	}
-}
-
-static void clone_leg_with_pid(const struct utrace_cfg *src, struct utrace_cfg *dst,
-			       int pid, enum utrace_pid_discovery discovery)
+static void clone_leg_with_pid(const struct utrace_cfg *src, struct utrace_cfg *dst, int pid)
 {
 	*dst = *src;
 	dst->params = clone_params(src->params, src->param_cnt);
-	params_set_pid(dst->params, dst->param_cnt, pid);
 	if (is_uprobe_family(dst->type))
-		ucfg_add_pid(dst, pid, discovery);
+		ucfg_ensure_pid(dst, pid);
 }
 
 static void clone_cfg_with_pid(const struct utrace_cfg *src,
 			       struct utrace_cfg *dst, int pid)
 {
 	*dst = *src;
+	dst->parent_idx = -1;
+	dst->stats.clone_cnt = 0;
+	dst->stats.resolve_cnt = 0;
 	dst->settings.name_segs = NULL;
 	dst->settings.name_seg_cnt = 0;
 	dst->settings.id_segs = NULL;
@@ -2168,27 +2166,125 @@ static void clone_cfg_with_pid(const struct utrace_cfg *src,
 	}
 
 	if (src->type == UTRACE_SPAN) {
-		enum utrace_pid_discovery d = cfg_pid_discovery(src);
 		dst->span.entry = malloc(sizeof(*dst->span.entry));
-		clone_leg_with_pid(src->span.entry, dst->span.entry, pid, d);
+		clone_leg_with_pid(src->span.entry, dst->span.entry, pid);
 		dst->span.exit = malloc(sizeof(*dst->span.exit));
-		clone_leg_with_pid(src->span.exit, dst->span.exit, pid, d);
+		clone_leg_with_pid(src->span.exit, dst->span.exit, pid);
 	} else {
 		dst->params = clone_params(src->params, src->param_cnt);
-		params_set_pid(dst->params, dst->param_cnt, pid);
+		if (is_uprobe_family(dst->type))
+			ucfg_ensure_pid(dst, pid);
 	}
 }
 
+/* Probe target for diagnostics; discovery is uprobe-family only. */
+static const char *cfg_target_str(const struct utrace_cfg *cfg)
+{
+	if (cfg->type == UTRACE_SPAN)
+		return cfg_target_str(cfg->span.entry);
+	if (cfg->type == UTRACE_USDT)
+		return sfmt("usdt:%s:%s", cfg->usdt.provider, cfg->usdt.name);
+	return cfg->uprobe.name;
+}
+
+static const char *cfg_comm_glob(const struct utrace_cfg *cfg)
+{
+	if (cfg->type == UTRACE_SPAN)
+		return cfg_comm_glob(cfg->span.entry) ?: cfg_comm_glob(cfg->span.exit);
+
+	for (int i = 0; i < cfg->param_cnt; i++) {
+		if (cfg->params[i].type == UTRACE_PARAM_COMM)
+			return cfg->params[i].comm.glob;
+	}
+	return NULL;
+}
+
+struct utrace_pid_iter {
+	enum utrace_pid_spec specs;	/* what the probe asked for */
+	const char *glob;		/* comm: filter, NULL if unset */
+	int want_pid;			/* pid: filter, -1 if unset */
+	int idx;			/* cursor into the nv-smi set, or one-shot guard */
+	struct proc_iter proc;		/* only when sourcing every process */
+	int cur;
+};
+
 /*
- * Expand pid:nv-smi probes into concrete per-PID cfgs.  Discovers GPU PIDs
- * lazily (cached in env), then clones each discovery cfg once per PID.
- * Resolution and filtering happen later in the normal utrace_setup loop.
+ * Yields the PIDs a probe's specifiers select. PIDs come from the nv-smi set or
+ * from every running process, except that a known pid: needs no search at all;
+ * whatever isn't the source is applied as a filter, so the specifiers intersect.
+ */
+static int utrace_pid_iter_new(struct utrace_pid_iter *it, const struct utrace_cfg *cfg)
+{
+	memset(it, 0, sizeof(*it));
+	it->specs = cfg_pid_specs(cfg);
+	it->glob = cfg_comm_glob(cfg);
+	it->want_pid = cfg_pid(cfg);
+
+	if (it->specs & UTRACE_PID_SPEC_NV_SMI)
+		ensure_nv_smi_pids();
+	else if (!(it->specs & UTRACE_PID_SPEC_PID))
+		return proc_iter_new(&it->proc);
+
+	return 0;
+}
+
+/* Next candidate straight from the source, before filtering; NULL when drained. */
+static int *utrace_pid_iter_raw_next(struct utrace_pid_iter *it)
+{
+	if (it->specs & UTRACE_PID_SPEC_NV_SMI) {
+		if (it->idx >= env.nv_smi_pid_cnt)
+			return NULL;
+		it->cur = env.nv_smi_pids[it->idx++];
+		return &it->cur;
+	}
+	if (it->specs & UTRACE_PID_SPEC_PID) {
+		if (it->idx > 0)
+			return NULL;
+		it->idx++;
+		it->cur = it->want_pid;
+		return &it->cur;
+	}
+	return proc_iter_next(&it->proc);
+}
+
+static int *utrace_pid_iter_next(struct utrace_pid_iter *it)
+{
+	int *pidp;
+
+	while ((pidp = utrace_pid_iter_raw_next(it))) {
+		char comm[64];
+
+		if (it->want_pid >= 0 && *pidp != it->want_pid)
+			continue;
+		if (it->glob) {
+			/* a process can exit between listing and now, so a miss is not an error */
+			if (proc_name_by_pid(*pidp, comm, sizeof(comm)) < 0)
+				continue;
+			if (!wprof_glob_match(it->glob, comm))
+				continue;
+		}
+		return pidp;
+	}
+	return NULL;
+}
+
+static void utrace_pid_iter_destroy(struct utrace_pid_iter *it)
+{
+	if (!(it->specs & (UTRACE_PID_SPEC_NV_SMI | UTRACE_PID_SPEC_PID)))
+		proc_iter_destroy(&it->proc);
+}
+
+/*
+ * Expand probes carrying discovered specifiers into concrete per-PID cfgs, the
+ * candidates being the intersection of everything specified. Resolution happens
+ * later in the normal utrace_setup loop, but a probe matching no process at all
+ * is an error here: it would otherwise vanish silently and record nothing.
  */
 static int utrace_discover_pids(void)
 {
 	bool has_discovery = false;
 	for (int i = 0; i < env.utrace_cfg_cnt; i++) {
-		if (cfg_pid_discovery(&env.utrace_cfgs[i])) {
+		if (cfg_pid_specs(&env.utrace_cfgs[i]) & UTRACE_PID_SPEC_DISCOVERED) {
 			has_discovery = true;
 			break;
 		}
@@ -2196,26 +2292,54 @@ static int utrace_discover_pids(void)
 	if (!has_discovery)
 		return 0;
 
-	ensure_nv_smi_pids();
-
 	struct utrace_cfg *new_cfgs = NULL;
 	int new_cnt = 0;
 
 	for (int i = 0; i < env.utrace_cfg_cnt; i++) {
 		struct utrace_cfg *src = &env.utrace_cfgs[i];
+		enum utrace_pid_spec specs = cfg_pid_specs(src);
 
-		if (!cfg_pid_discovery(src)) {
-			new_cfgs = realloc(new_cfgs, (new_cnt + 1) * sizeof(*new_cfgs));
-			new_cfgs[new_cnt++] = *src;
+		new_cfgs = realloc(new_cfgs, (new_cnt + 1) * sizeof(*new_cfgs));
+		new_cfgs[new_cnt++] = *src;
+
+		if (!(specs & UTRACE_PID_SPEC_DISCOVERED))
 			continue;
-		}
 
-		for (int j = 0; j < env.nv_smi_pid_cnt; j++) {
+		/*
+		 * The source keeps its slot as the parent its clones are accounted
+		 * against, and is dropped once they are all resolved. Clones refer to
+		 * it by index, which realloc'ing the array below doesn't invalidate.
+		 */
+		int parent_idx = new_cnt - 1;
+		const char *glob = cfg_comm_glob(src);
+		int explicit_pid = cfg_pid(src), matched = 0, *pidp;
+
+		wprof_for_each(utrace_pid, pidp, src) {
 			struct utrace_cfg clone;
-			clone_cfg_with_pid(src, &clone, env.nv_smi_pids[j]);
+
+			clone_cfg_with_pid(src, &clone, *pidp);
+			clone.parent_idx = parent_idx;
 
 			new_cfgs = realloc(new_cfgs, (new_cnt + 1) * sizeof(*new_cfgs));
 			new_cfgs[new_cnt++] = clone;
+			matched++;
+		}
+		new_cfgs[parent_idx].stats.clone_cnt = matched;
+
+		if (matched == 0) {
+			const char *tgt = cfg_target_str(src);
+
+			if (explicit_pid >= 0 && (specs & UTRACE_PID_SPEC_NV_SMI))
+				eprintf("utrace: '%s': PID %d is not a GPU process\n", tgt, explicit_pid);
+			else if (glob && explicit_pid >= 0)
+				eprintf("utrace: '%s': PID %d doesn't match comm '%s'\n", tgt, explicit_pid, glob);
+			else if (glob && (specs & UTRACE_PID_SPEC_NV_SMI))
+				eprintf("utrace: '%s': no GPU process matches comm '%s'\n", tgt, glob);
+			else if (glob)
+				eprintf("utrace: '%s': no process matches comm '%s'\n", tgt, glob);
+			else
+				eprintf("utrace: '%s': no GPU processes found\n", tgt);
+			return -ESRCH;
 		}
 	}
 
@@ -2264,14 +2388,16 @@ int utrace_setup(struct wprof_bpf *skel)
 
 	for (int i = 0; i < env.utrace_cfg_cnt; i++) {
 		struct utrace_cfg *cfg = &env.utrace_cfgs[i];
-		bool discovered = cfg_pid_discovery(cfg);
 		int err = 0;
 
-		if (discovered)
+		/* a probe expanded by PID discovery isn't attached itself, only its clones are */
+		if (cfg->stats.clone_cnt > 0) {
 			had_discovery = true;
+			continue;
+		}
 
 		utrace_for_each_leg(leg, cfg) {
-			bool mandatory = cfg_pid_discovery(leg) == UTRACE_PID_DISCOVER_NONE;
+			bool mandatory = !(cfg_pid_specs(leg) & UTRACE_PID_SPEC_DISCOVERED);
 
 			switch (leg->type) {
 			case UTRACE_UPROBE:
@@ -2370,35 +2496,61 @@ int utrace_setup(struct wprof_bpf *skel)
 
 		if (err) {
 			int pid = cfg_pid(cfg);
-			wprintf("utrace: discovered PID %d (%s) doesn't contain matching probe, skipping...\n",
-				pid, proc_name(pid));
-			cfg->type = UTRACE_INVALID;
+
+			/*
+			 * A comm: glob can sweep every process on the box, so naming each
+			 * skipped one drowns out the real output; those are counted instead.
+			 */
+			if (cfg_pid_specs(cfg) & UTRACE_PID_SPEC_NV_SMI) {
+				wprintf("utrace: discovered PID %d (%s) doesn't contain matching probe, skipping...\n",
+					pid, proc_name(pid));
+			} else {
+				dprintf(1, "utrace: discovered PID %d (%s) doesn't contain matching probe, skipping...\n",
+					pid, proc_name(pid));
+			}
+			/* left unresolved, which is what drops it below */
 			continue;
 		}
 
+		cfg->stats.resolve_cnt = 1;
+		if (cfg->parent_idx >= 0)
+			env.utrace_cfgs[cfg->parent_idx].stats.resolve_cnt += 1;
 		map_cnt += cfg_is_span(cfg) ? 2 : 1;
 	}
 
-	/* Remove failed discovery cfgs and check if any survived */
+	/*
+	 * Report on each probe PID discovery expanded, then drop both the unresolved
+	 * clones and the now-spent parents. Parents have to be reported on before the
+	 * array is compacted, since compaction is what removes them.
+	 */
 	if (had_discovery) {
-		int nv_smi_ok = 0, j = 0;
+		int j = 0;
 
 		for (int i = 0; i < env.utrace_cfg_cnt; i++) {
-			if (env.utrace_cfgs[i].type == UTRACE_INVALID)
+			struct utrace_cfg *cfg = &env.utrace_cfgs[i];
+
+			if (cfg->stats.clone_cnt == 0)
 				continue;
 
-			if (cfg_pid_discovery(&env.utrace_cfgs[i]))
-				nv_smi_ok += 1;
+			if (cfg->stats.resolve_cnt == 0) {
+				eprintf("utrace: '%s': no matched process contains the probe\n", cfg_target_str(cfg));
+				return -ESRCH;
+			}
+			/* a comm: glob can sweep thousands of processes; say how many stuck */
+			if (cfg->stats.resolve_cnt < cfg->stats.clone_cnt &&
+			    !(cfg_pid_specs(cfg) & UTRACE_PID_SPEC_NV_SMI)) {
+				vprintf("utrace: '%s': %d of %d matched processes contain the probe\n",
+					cfg_target_str(cfg), cfg->stats.resolve_cnt, cfg->stats.clone_cnt);
+			}
+		}
 
+		for (int i = 0; i < env.utrace_cfg_cnt; i++) {
+			if (env.utrace_cfgs[i].stats.clone_cnt > 0 || env.utrace_cfgs[i].stats.resolve_cnt == 0)
+				continue;
 			env.utrace_cfgs[j] = env.utrace_cfgs[i];
 			j += 1;
 		}
 		env.utrace_cfg_cnt = j;
-
-		if (nv_smi_ok == 0) {
-			eprintf("utrace: no discovered PIDs contain matching probe(s)!\n");
-			return -ESRCH;
-		}
 	}
 
 	bpf_map__set_autocreate(skel->maps.utrace_probe_cfgs, true);

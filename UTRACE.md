@@ -305,27 +305,41 @@ Captures the call stack when the probe fires. Enable stack output with
 - `pid:<PID>` -- attach only to the given process; wprof scans its loaded
   binaries to find the target symbol/USDT
 - `path:<path>` -- attach to a specific binary
-- Both can be combined: `path:` identifies the binary, `pid:` scopes to
-  the process
+- `comm:<glob>` -- attach to every process whose name (`/proc/<pid>/comm`)
+  matches the glob
+- They can be combined: `path:` identifies the binary, `pid:`/`comm:` pick
+  the processes
 
-For generic spans with USDT, `path:`/`pid:` on the first probe are
+For generic spans with USDT, `path:`/`pid:`/`comm:` on the first probe are
 inherited by the second.
 
 #### Auto-discovery
 
 - `pid:nv-smi` (or `pid:nvidia-smi`) -- attach to every GPU process
-  reported by `nvidia-smi --query-compute-apps=pid`. Valid for all
-  uprobe-family probes (u/uret/uspan/usdt) and generic spans. The cfg
-  is expanded at setup time into one concrete attachment per discovered
-  PID; PIDs that don't expose the requested probe are skipped with a
-  warning. Setup fails only if no discovered PID exposes the probe.
-  Examples:
+  reported by `nvidia-smi --query-compute-apps=pid`
+- `comm:<glob>` -- attach to every process whose name matches the glob
+
+Both are valid for all uprobe-family probes (u/uret/uspan/usdt) and
+generic spans. The cfg is expanded at setup time into one concrete
+attachment per discovered PID; PIDs that don't expose the requested probe
+are skipped with a warning, and setup fails if none of them expose it.
+
+`comm:` selects from a PID source rather than being one, so it composes:
+on its own it filters every process, with `pid:nv-smi` it filters the GPU
+processes, and with `pid:<PID>` it acts as a guard on that one process.
+Setup fails if a probe ends up matching no process at all, rather than
+silently recording nothing. Examples:
 
   ```
   wprof -U 'usdt:myapp:request_start (arg:0, pid:nv-smi)'
   wprof -U 'u:my_func (pid:nvidia-smi)'
   wprof -U 'usdt:a:start (pid:nv-smi) ~~ usdt:a:end'
+  wprof -U 'u:execute_command (comm:bash)'
+  wprof -U 'u:my_func (pid:nv-smi, comm:python*)'
   ```
+
+Discovery runs once at startup, so processes that start later are not
+picked up.
 
 ## Settings
 
