@@ -401,11 +401,11 @@ static inline const char *utrace_arg_map_lookup(const struct utrace_arg_map *map
 
 int utrace_compile_tmpl(const char *tmpl, const struct utrace_param *params, int param_cnt,
 			struct utrace_tmpl_seg **out_segs, int *out_seg_cnt);
-int utrace_cfg_compile_tmpls(struct utrace_cfg *cfg);
-void utrace_cfg_add_pid(struct utrace_cfg *cfg, int pid, enum utrace_pid_discovery discovery);
-int utrace_cfg_parse(const char *def);
-int utrace_cfg_parse_file(const char *path);
-void utrace_cfg_format(const struct utrace_cfg *cfg, struct sbuf *sb);
+int ucfg_compile_tmpls(struct utrace_cfg *cfg);
+void ucfg_add_pid(struct utrace_cfg *cfg, int pid, enum utrace_pid_discovery discovery);
+int ucfg_parse(const char *def);
+int ucfg_parse_file(const char *path);
+void ucfg_format(const struct utrace_cfg *cfg, struct sbuf *sb);
 void utrace_highlight(struct sview orig, struct sview bad);
 
 #endif /* !__bpf__ */

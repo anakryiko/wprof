@@ -1748,7 +1748,7 @@ static int utrace_augment_args(void)
 
 	/* compile name/id templates after all arg types/names are resolved */
 	for (int i = 0; i < env.utrace_cfg_cnt; i++) {
-		int err = utrace_cfg_compile_tmpls(&env.utrace_cfgs[i]);
+		int err = ucfg_compile_tmpls(&env.utrace_cfgs[i]);
 		if (err)
 			return err;
 	}
@@ -2145,7 +2145,7 @@ static void clone_leg_with_pid(const struct utrace_cfg *src, struct utrace_cfg *
 	dst->params = clone_params(src->params, src->param_cnt);
 	params_set_pid(dst->params, dst->param_cnt, pid);
 	if (is_uprobe_family(dst->type))
-		utrace_cfg_add_pid(dst, pid, discovery);
+		ucfg_add_pid(dst, pid, discovery);
 }
 
 static void clone_cfg_with_pid(const struct utrace_cfg *src,

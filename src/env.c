@@ -923,9 +923,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	/* USER-DEFINED TRACING */
 	case 'U': {
 		if (arg[0] == '@')
-			err = utrace_cfg_parse_file(arg + 1);
+			err = ucfg_parse_file(arg + 1);
 		else
-			err = utrace_cfg_parse(arg);
+			err = ucfg_parse(arg);
 		if (err)
 			return err;
 		break;

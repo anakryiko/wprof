@@ -582,7 +582,7 @@ static const struct utrace_param *find_pid_param(const struct utrace_cfg *cfg)
 	return NULL;
 }
 
-void utrace_cfg_add_pid(struct utrace_cfg *cfg, int pid, enum utrace_pid_discovery discovery)
+void ucfg_add_pid(struct utrace_cfg *cfg, int pid, enum utrace_pid_discovery discovery)
 {
 	for (int i = 0; i < cfg->param_cnt; i++)
 		if (cfg->params[i].type == UTRACE_PARAM_PID)
@@ -906,7 +906,7 @@ static bool tmpl_is_dynamic(const struct utrace_tmpl_seg *segs, int seg_cnt)
  * An id template that substitutes nothing renders to itself, so it keeps
  * id_segs NULL and emit keeps using the id string as is.
  */
-int utrace_cfg_compile_tmpls(struct utrace_cfg *cfg)
+int ucfg_compile_tmpls(struct utrace_cfg *cfg)
 {
 	const struct utrace_param *params;
 	int param_cnt, err;
@@ -1161,9 +1161,9 @@ static int parse_cfg(struct sview def, struct utrace_cfg *cfg)
 			if (ep->pid.discovery != xp->pid.discovery || ep->pid.pid != xp->pid.pid)
 				return utrace_err(orig, def, "span legs have incompatible pid: specs\n");
 		} else if (ep && is_uprobe(cfg->span.exit->type)) {
-			utrace_cfg_add_pid(cfg->span.exit, ep->pid.pid, ep->pid.discovery);
+			ucfg_add_pid(cfg->span.exit, ep->pid.pid, ep->pid.discovery);
 		} else if (xp && is_uprobe(cfg->span.entry->type)) {
-			utrace_cfg_add_pid(cfg->span.entry, xp->pid.pid, xp->pid.discovery);
+			ucfg_add_pid(cfg->span.entry, xp->pid.pid, xp->pid.discovery);
 		}
 
 		return 0;
@@ -1172,7 +1172,7 @@ static int parse_cfg(struct sview def, struct utrace_cfg *cfg)
 	return 0;
 }
 
-int utrace_cfg_parse(const char *def)
+int ucfg_parse(const char *def)
 {
 	env.utrace_cfgs = realloc(env.utrace_cfgs, (env.utrace_cfg_cnt + 1) * sizeof(*env.utrace_cfgs));
 
@@ -1187,7 +1187,7 @@ int utrace_cfg_parse(const char *def)
 	return 0;
 }
 
-int utrace_cfg_parse_file(const char *path)
+int ucfg_parse_file(const char *path)
 {
 	FILE *f;
 	char *line = NULL;
@@ -1215,7 +1215,7 @@ int utrace_cfg_parse_file(const char *path)
 		if (*p == '\0' || *p == '#')
 			continue;
 
-		int err = utrace_cfg_parse(p);
+		int err = ucfg_parse(p);
 		if (err) {
 			eprintf("utrace: error parsing line #%d of '%s'\n", line_nr, path);
 			free(line);
@@ -1406,7 +1406,7 @@ static void format_settings(const struct utrace_settings *s, struct sbuf *sb)
 		sbuf_appendf(sb, " |");
 }
 
-void utrace_cfg_format(const struct utrace_cfg *cfg, struct sbuf *sb)
+void ucfg_format(const struct utrace_cfg *cfg, struct sbuf *sb)
 {
 	if (cfg->type == UTRACE_SPAN) {
 		format_probe(cfg->span.entry, sb);
