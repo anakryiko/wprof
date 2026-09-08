@@ -165,7 +165,7 @@ static void collect_extras(struct persist_state *ps, struct wprof_extra_param **
 
 		for (int i = 0; i < env.utrace_cfg_cnt; i++) {
 			sbuf_reset(&sb);
-			utrace_cfg_format(&env.utrace_cfgs[i], &sb);
+			ucfg_format(&env.utrace_cfgs[i], &sb);
 			add_extra(extras, cnt, WEXTRA_UTRACE_DEF, persist_stroff(ps, sbuf_str(&sb)));
 		}
 
