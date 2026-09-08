@@ -499,17 +499,23 @@ static int parse_params(struct sview orig, struct sview def, struct utrace_param
 		} else if (sv_starts_with(param, "pid:")) {
 			param = sv_trim(sv_consume_left(param, 4));
 
-			p->type = UTRACE_PARAM_PID;
 			if (sv_eq(param, "nvidia-smi") || sv_eq(param, "nv-smi")) {
-				p->pid.pid = 0;
-				p->pid.discovery = UTRACE_PID_DISCOVER_NV_SMI;
+				p->type = UTRACE_PARAM_NV_SMI;
 			} else {
 				long pid = -1;
 				if (!sv_as_long(param, &pid) || pid <= 0 || pid > INT_MAX)
 					return utrace_err(orig, param, "invalid PID value\n");
+				p->type = UTRACE_PARAM_PID;
 				p->pid.pid = (int)pid;
-				p->pid.discovery = UTRACE_PID_DISCOVER_NONE;
 			}
+		} else if (sv_starts_with(param, "comm:")) {
+			param = sv_trim(sv_consume_left(param, 5));
+
+			if (sv_is_empty(param))
+				return utrace_err(orig, param, "invalid empty comm glob\n");
+
+			p->type = UTRACE_PARAM_COMM;
+			p->comm.glob = sv_strdup(param);
 		} else if (sv_starts_with(param, "arg:")) {
 			param = sv_trim(sv_consume_left(param, 4));
 			int err = parse_arg_param(orig, param, p);
@@ -574,30 +580,43 @@ static bool probe_supports_accessors(const struct utrace_cfg *cfg)
 	}
 }
 
-static const struct utrace_param *find_pid_param(const struct utrace_cfg *cfg)
+static struct utrace_param *ucfg_find_param(const struct utrace_cfg *cfg, enum utrace_param_type type)
 {
 	for (int i = 0; i < cfg->param_cnt; i++)
-		if (cfg->params[i].type == UTRACE_PARAM_PID)
+		if (cfg->params[i].type == type)
 			return &cfg->params[i];
 	return NULL;
 }
 
-void ucfg_add_pid(struct utrace_cfg *cfg, int pid, enum utrace_pid_discovery discovery)
+static struct utrace_param *ucfg_add_param(struct utrace_cfg *cfg, enum utrace_param_type type)
 {
-	for (int i = 0; i < cfg->param_cnt; i++)
-		if (cfg->params[i].type == UTRACE_PARAM_PID)
-			return;
 	cfg->params = realloc(cfg->params, (cfg->param_cnt + 1) * sizeof(*cfg->params));
 	struct utrace_param *p = &cfg->params[cfg->param_cnt++];
 	memset(p, 0, sizeof(*p));
-	p->type = UTRACE_PARAM_PID;
+	p->type = type;
+	return p;
+}
+
+static void ucfg_ensure_comm(struct utrace_cfg *cfg, char *glob)
+{
+	struct utrace_param *p = ucfg_find_param(cfg, UTRACE_PARAM_COMM);
+	if (!p)
+		p = ucfg_add_param(cfg, UTRACE_PARAM_COMM);
+	p->comm.glob = glob;
+}
+
+/* Make cfg carry exactly this pid, updating the pid: param or adding one. */
+void ucfg_ensure_pid(struct utrace_cfg *cfg, int pid)
+{
+	struct utrace_param *p = ucfg_find_param(cfg, UTRACE_PARAM_PID);
+	if (!p)
+		p = ucfg_add_param(cfg, UTRACE_PARAM_PID);
 	p->pid.pid = pid;
-	p->pid.discovery = discovery;
 }
 
 static int validate_probe_def(struct sview orig, const struct utrace_cfg *cfg)
 {
-	int pid_param_cnt = 0;
+	int pid_cnt = 0, nv_smi_cnt = 0, comm_cnt = 0;
 
 	for (int i = 0; i < cfg->param_cnt; i++) {
 		const struct utrace_param *p = &cfg->params[i];
@@ -615,14 +634,24 @@ static int validate_probe_def(struct sview orig, const struct utrace_cfg *cfg)
 		}
 		if (p->type == UTRACE_PARAM_BINARY_PATH && !is_uprobe(cfg->type))
 			return utrace_err(orig, orig, "'path' parameter is only valid for uprobe-based probes\n");
-		if (p->type == UTRACE_PARAM_PID && p->pid.discovery != UTRACE_PID_DISCOVER_NONE && !is_uprobe(cfg->type))
+		if (p->type == UTRACE_PARAM_NV_SMI && !is_uprobe(cfg->type))
 			return utrace_err(orig, orig, "'pid:nv-smi' is only valid for uprobe-based probes (u/uret/uspan/usdt)\n");
+		if (p->type == UTRACE_PARAM_COMM && !is_uprobe(cfg->type))
+			return utrace_err(orig, orig, "'comm' parameter is only valid for uprobe-based probes (u/uret/uspan/usdt)\n");
 		if (p->type == UTRACE_PARAM_PID)
-			pid_param_cnt++;
+			pid_cnt++;
+		if (p->type == UTRACE_PARAM_NV_SMI)
+			nv_smi_cnt++;
+		if (p->type == UTRACE_PARAM_COMM)
+			comm_cnt++;
 	}
 
-	if (pid_param_cnt > 1)
-		return utrace_err(orig, orig, "only one 'pid:' parameter is allowed per probe\n");
+	if (pid_cnt > 1)
+		return utrace_err(orig, orig, "only one numeric 'pid:' parameter is allowed per probe\n");
+	if (nv_smi_cnt > 1)
+		return utrace_err(orig, orig, "only one 'pid:nv-smi' parameter is allowed per probe\n");
+	if (comm_cnt > 1)
+		return utrace_err(orig, orig, "only one 'comm:' parameter is allowed per probe\n");
 
 	return 0;
 }
@@ -1113,6 +1142,7 @@ static int parse_cfg(struct sview def, struct utrace_cfg *cfg)
 	int err;
 
 	memset(cfg, 0, sizeof(*cfg));
+	cfg->parent_idx = -1;
 
 	def = sv_trim(def);
 	if (sv_is_empty(def))
@@ -1155,15 +1185,35 @@ static int parse_cfg(struct sview def, struct utrace_cfg *cfg)
 			return utrace_err(orig, entry_is_span ? left : right, "nested spans are not allowed\n");
 
 		/* check and inherit `pid:` specs between compatible entry/exit spans */
-		const struct utrace_param *ep = find_pid_param(cfg->span.entry);
-		const struct utrace_param *xp = find_pid_param(cfg->span.exit);
+		const struct utrace_param *ep = ucfg_find_param(cfg->span.entry, UTRACE_PARAM_PID);
+		const struct utrace_param *xp = ucfg_find_param(cfg->span.exit, UTRACE_PARAM_PID);
 		if (ep && xp) {
-			if (ep->pid.discovery != xp->pid.discovery || ep->pid.pid != xp->pid.pid)
+			if (ep->pid.pid != xp->pid.pid)
 				return utrace_err(orig, def, "span legs have incompatible pid: specs\n");
 		} else if (ep && is_uprobe(cfg->span.exit->type)) {
-			ucfg_add_pid(cfg->span.exit, ep->pid.pid, ep->pid.discovery);
+			ucfg_ensure_pid(cfg->span.exit, ep->pid.pid);
 		} else if (xp && is_uprobe(cfg->span.entry->type)) {
-			ucfg_add_pid(cfg->span.entry, xp->pid.pid, xp->pid.discovery);
+			ucfg_ensure_pid(cfg->span.entry, xp->pid.pid);
+		}
+
+		/* pid:nv-smi is its own param, so it needs carrying over separately */
+		bool en = ucfg_find_param(cfg->span.entry, UTRACE_PARAM_NV_SMI);
+		bool xn = ucfg_find_param(cfg->span.exit, UTRACE_PARAM_NV_SMI);
+		if (en && !xn && is_uprobe(cfg->span.exit->type))
+			ucfg_add_param(cfg->span.exit, UTRACE_PARAM_NV_SMI);
+		else if (xn && !en && is_uprobe(cfg->span.entry->type))
+			ucfg_add_param(cfg->span.entry, UTRACE_PARAM_NV_SMI);
+
+		/* same for `comm:`, so both legs expand over the same processes */
+		const struct utrace_param *ec = ucfg_find_param(cfg->span.entry, UTRACE_PARAM_COMM);
+		const struct utrace_param *xc = ucfg_find_param(cfg->span.exit, UTRACE_PARAM_COMM);
+		if (ec && xc) {
+			if (strcmp(ec->comm.glob, xc->comm.glob) != 0)
+				return utrace_err(orig, def, "span legs have incompatible comm: specs\n");
+		} else if (ec && is_uprobe(cfg->span.exit->type)) {
+			ucfg_ensure_comm(cfg->span.exit, ec->comm.glob);
+		} else if (xc && is_uprobe(cfg->span.entry->type)) {
+			ucfg_ensure_comm(cfg->span.entry, xc->comm.glob);
 		}
 
 		return 0;
@@ -1302,10 +1352,13 @@ static void format_probe(const struct utrace_cfg *cfg, struct sbuf *sb)
 				sbuf_appendf(sb, "path:%s", p->binary.path);
 				break;
 			case UTRACE_PARAM_PID:
-				if (p->pid.pid > 0)
-					sbuf_appendf(sb, "pid:%d", p->pid.pid);
-				else if (p->pid.discovery == UTRACE_PID_DISCOVER_NV_SMI)
-					sbuf_appendf(sb, "pid:nv-smi");
+				sbuf_appendf(sb, "pid:%d", p->pid.pid);
+				break;
+			case UTRACE_PARAM_NV_SMI:
+				sbuf_appendf(sb, "pid:nv-smi");
+				break;
+			case UTRACE_PARAM_COMM:
+				sbuf_appendf(sb, "comm:%s", p->comm.glob);
 				break;
 			case UTRACE_PARAM_ARG:
 				if (p->arg.arg_idx == UTRACE_ARG_RET)
