@@ -25,8 +25,5 @@ int pystacks_init(struct wprof_bpf *skel)
 	skel->bss->pystacks_prog_cfg.read_leaf_frame = true;
 	skel->bss->pystacks_prog_cfg.enable_py_src_lines = true;
 
-	/* enable pystacks capture in timer/offcpu handlers */
-	skel->bss->capture_pystacks = true;
-
 	return 0;
 }

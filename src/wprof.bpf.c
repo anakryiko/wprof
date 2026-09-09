@@ -157,7 +157,7 @@ const volatile bool capture_task_life = true;
  */
 const volatile bool use_task_storage = true;
 
-bool capture_pystacks = false;
+const volatile bool capture_pystacks = true;
 
 static int zero = 0;
 static struct task_state empty_task_state;
