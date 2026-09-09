@@ -145,7 +145,7 @@ const volatile u64 rb_submit_threshold_bytes;
 
 const volatile enum stack_trace_kind requested_stack_traces = ST_ALL;
 const volatile bool capture_scx = true;
-const volatile bool capture_scx_layer_id = false;
+const volatile bool capture_scx_layer_id = true;
 const volatile bool capture_task_life = true;
 
 /*
