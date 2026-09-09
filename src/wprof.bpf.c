@@ -644,14 +644,25 @@ static __always_inline bool init_wprof_event(struct wprof_event *e, u32 sz, enum
 	     e && rb_ctx.ev && init_wprof_event(e, fix_sz + dyn_sz, kind, ts, task);		\
 	     rb_ctx.ev = NULL)
 
-#define MAX_TASK_INFO 3	/* bounded by the EF_TASK_INFO_MSK width */
-
 struct task_infos {
-	struct task_struct *tasks[MAX_TASK_INFO];
-	struct task_state *states[MAX_TASK_INFO];
 	u64 cnt;
 	u32 data_sz;
+	struct task_info_item {
+		struct task_struct *task;
+		struct task_state *state;
+	} items[];
 };
+
+/*
+ * Declare a task_infos with exactly CNT item slots. The header and its items
+ * have to be one allocation: items[] is indexed off the end of the header, and
+ * two separate stack declarations are laid out in whatever order LLVM picks.
+ */
+#define DEF_TASK_INFOS(NAME, CNT)								\
+	union {											\
+		struct task_infos infos;							\
+		u8 store[sizeof(struct task_infos) + (CNT) * sizeof(struct task_info_item)];	\
+	} NAME
 
 static void task_infos_init(struct task_infos *tis)
 {
@@ -673,8 +684,8 @@ static void __task_infos_add(struct task_infos *tis, struct task_struct *t, stru
 	if (!force && !fr_enabled && st && (st->flags & WTASK_F_INFO_EMITTED))
 		return;
 
-	tis->tasks[tis->cnt] = t;
-	tis->states[tis->cnt] = st;
+	tis->items[tis->cnt].task = t;
+	tis->items[tis->cnt].state = st;
 	tis->cnt += 1;
 	tis->data_sz += sizeof(struct wprof_thread);
 }
@@ -700,9 +711,9 @@ static u32 task_infos_emit(struct task_infos *tis, struct bpf_dynptr *dptr, u64 
 		if (!r)
 			return 0; /* can't happen */
 
-		fill_task_info(tis->tasks[i], r);
+		fill_task_info(tis->items[i].task, r);
 
-		struct task_state *st = tis->states[i];
+		struct task_state *st = tis->items[i].state;
 		if (st) {
 			barrier_var(st);
 			st->flags |= WTASK_F_INFO_EMITTED;
@@ -749,15 +760,15 @@ void emit_scx_dsq_event(u64 end_ts, struct task_struct *task, struct task_state 
 	struct bpf_dynptr *dptr;
 	size_t fix_sz = EV_SZ(scx_dsq);
 
-	struct task_infos tis;
-	task_infos_init(&tis);
-	task_infos_add(&tis, task, s);
-	size_t tasks_sz = tis.data_sz;
+	DEF_TASK_INFOS(tis, 1);
+	task_infos_init(&tis.infos);
+	task_infos_add(&tis.infos, task, s);
+	size_t tasks_sz = tis.infos.data_sz;
 
 	emit_task_event_dyn(e, dptr, fix_sz, tasks_sz, EV_SCX_DSQ_END, end_ts, task) {
 		e->scx_dsq = s->scx_dsq;
 		if (tasks_sz)
-			e->flags |= task_infos_emit(&tis, dptr, fix_sz);
+			e->flags |= task_infos_emit(&tis.infos, dptr, fix_sz);
 	}
 }
 
@@ -790,10 +801,10 @@ int wprof_timer_tick(void *ctx)
 		pymsg = capture_pystack(ctx, cur, &py_sz);
 	}
 
-	struct task_infos tis;
-	task_infos_init(&tis);
-	task_infos_add(&tis, cur, st);
-	size_t tasks_sz = tis.data_sz;
+	DEF_TASK_INFOS(tis, 1);
+	task_infos_init(&tis.infos);
+	task_infos_add(&tis.infos, cur, st);
+	size_t tasks_sz = tis.infos.data_sz;
 
 	emit_task_event_dyn(e, dptr, fix_sz, tr_sz + py_sz + tasks_sz, EV_TIMER, now_ts, cur) {
 		if (tr) {
@@ -805,7 +816,7 @@ int wprof_timer_tick(void *ctx)
 			e->flags |= EF_PYSTACK;
 		}
 		if (tasks_sz)
-			e->flags |= task_infos_emit(&tis, dptr, fix_sz + tr_sz + py_sz);
+			e->flags |= task_infos_emit(&tis.infos, dptr, fix_sz + tr_sz + py_sz);
 	}
 
 	put_stack_trace(tr);
@@ -842,10 +853,10 @@ int wprof_pmu_event(struct bpf_perf_event_data *ctx)
 	struct bpf_dynptr *dptr;
 	size_t fix_sz = EV_SZ(pmu_event);
 
-	struct task_infos tis;
-	task_infos_init(&tis);
-	task_infos_add(&tis, cur, task_state(cur));
-	size_t tasks_sz = tis.data_sz;
+	DEF_TASK_INFOS(tis, 1);
+	task_infos_init(&tis.infos);
+	task_infos_add(&tis.infos, cur, task_state(cur));
+	size_t tasks_sz = tis.infos.data_sz;
 
 	emit_task_event_dyn(e, dptr, fix_sz, pmu_sz + tr_sz + py_sz + tasks_sz, EV_PMU_EVENT, now_ts, cur) {
 		e->pmu_event.pmu_idx = bpf_get_attach_cookie(ctx);
@@ -864,7 +875,7 @@ int wprof_pmu_event(struct bpf_perf_event_data *ctx)
 			e->flags |= EF_PYSTACK;
 		}
 		if (tasks_sz)
-			e->flags |= task_infos_emit(&tis, dptr, fix_sz + pmu_sz + tr_sz + py_sz);
+			e->flags |= task_infos_emit(&tis.infos, dptr, fix_sz + pmu_sz + tr_sz + py_sz);
 	}
 
 	put_stack_trace(tr);
@@ -921,11 +932,11 @@ int BPF_PROG(wprof_task_switch,
 		handle_dsq(now_ts, next, snext);
 	}
 
-	struct task_infos tis;
-	task_infos_init(&tis);
-	task_infos_add(&tis, prev, sprev);
-	task_infos_add(&tis, next, snext);
-	size_t tasks_sz = tis.data_sz;
+	DEF_TASK_INFOS(tis, 2);
+	task_infos_init(&tis.infos);
+	task_infos_add(&tis.infos, prev, sprev);
+	task_infos_add(&tis.infos, next, snext);
+	size_t tasks_sz = tis.infos.data_sz;
 
 	emit_task_event_dyn(e, dptr, fix_sz, pmu_sz + tr_out_sz + py_sz + tasks_sz, EV_SWITCH, now_ts, prev) {
 		e->swtch.prev_task_state = packed_state;
@@ -951,7 +962,7 @@ int BPF_PROG(wprof_task_switch,
 			e->flags |= EF_PYSTACK;
 		}
 		if (tasks_sz)
-			e->flags |= task_infos_emit(&tis, dptr, fix_sz + pmu_sz + tr_out_sz + py_sz);
+			e->flags |= task_infos_emit(&tis.infos, dptr, fix_sz + pmu_sz + tr_out_sz + py_sz);
 	}
 
 	put_stack_trace(tr_out);
@@ -982,11 +993,11 @@ static __always_inline int handle_waking(void *ctx, struct task_struct *p, enum 
 	if (requested_stack_traces & ST_WAKER)
 		tr = grab_stack_trace(ctx, NULL, ST_WAKER, &dyn_sz);
 
-	struct task_infos tis;
-	task_infos_init(&tis);
-	task_infos_add(&tis, task, task_state(task));
-	task_infos_add(&tis, p, s);
-	size_t tasks_sz = tis.data_sz;
+	DEF_TASK_INFOS(tis, 2);
+	task_infos_init(&tis.infos);
+	task_infos_add(&tis.infos, task, task_state(task));
+	task_infos_add(&tis.infos, p, s);
+	size_t tasks_sz = tis.infos.data_sz;
 
 	emit_task_event_dyn(e, dptr, fix_sz, dyn_sz + tasks_sz, kind, now_ts, task) {
 		e->waking.wakee_task_id = task_id(p->pid);
@@ -997,7 +1008,7 @@ static __always_inline int handle_waking(void *ctx, struct task_struct *p, enum 
 			e->flags |= ST_WAKER;
 		}
 		if (tasks_sz)
-			e->flags |= task_infos_emit(&tis, dptr, fix_sz + dyn_sz);
+			e->flags |= task_infos_emit(&tis.infos, dptr, fix_sz + dyn_sz);
 	}
 
 	put_stack_trace(tr);
@@ -1061,15 +1072,15 @@ int BPF_PROG(wprof_task_rename, struct task_struct *task, const char *comm)
 	 * the null/idle task. task_infos_add is a no-op if the old identity was
 	 * already emitted.
 	 */
-	struct task_infos tis;
-	task_infos_init(&tis);
-	task_infos_add(&tis, task, s);
-	size_t tasks_sz = tis.data_sz;
+	DEF_TASK_INFOS(tis, 1);
+	task_infos_init(&tis.infos);
+	task_infos_add(&tis.infos, task, s);
+	size_t tasks_sz = tis.infos.data_sz;
 
 	emit_task_event_dyn(e, dptr, fix_sz, tasks_sz, EV_TASK_RENAME, now_ts, task) {
 		bpf_probe_read_kernel_str(e->rename.new_comm, sizeof(e->rename.new_comm), comm);
 		if (tasks_sz)
-			e->flags |= task_infos_emit(&tis, dptr, fix_sz);
+			e->flags |= task_infos_emit(&tis.infos, dptr, fix_sz);
 	}
 
 	/* identity changed; force re-emit of task info (new name) on the next event */
@@ -1091,16 +1102,16 @@ int BPF_PROG(wprof_task_fork, struct task_struct *parent, struct task_struct *ch
 
 	size_t fix_sz = EV_SZ(fork);
 
-	struct task_infos tis;
-	task_infos_init(&tis);
-	task_infos_add(&tis, parent, task_state(parent));
-	task_infos_add(&tis, child, task_state(child));
-	size_t tasks_sz = tis.data_sz;
+	DEF_TASK_INFOS(tis, 2);
+	task_infos_init(&tis.infos);
+	task_infos_add(&tis.infos, parent, task_state(parent));
+	task_infos_add(&tis.infos, child, task_state(child));
+	size_t tasks_sz = tis.infos.data_sz;
 
 	emit_task_event_dyn(e, dptr, fix_sz, tasks_sz, EV_FORK, now_ts, parent) {
 		e->fork.child_task_id = task_id(child->pid);
 		if (tasks_sz)
-			e->flags |= task_infos_emit(&tis, dptr, fix_sz);
+			e->flags |= task_infos_emit(&tis.infos, dptr, fix_sz);
 	}
 
 	return 0;
@@ -1126,16 +1137,16 @@ int BPF_PROG(wprof_task_exec, struct task_struct *p, int old_pid, struct linux_b
 	 * new identity inline: self-identifying (even on first sight) and the current
 	 * identity going forward, without racily clearing the emitted flag first.
 	 */
-	struct task_infos tis;
-	task_infos_init(&tis);
-	task_infos_force_add(&tis, p, s);
-	size_t tasks_sz = tis.data_sz;
+	DEF_TASK_INFOS(tis, 1);
+	task_infos_init(&tis.infos);
+	task_infos_force_add(&tis.infos, p, s);
+	size_t tasks_sz = tis.infos.data_sz;
 
 	emit_task_event_dyn(e, dptr, fix_sz, tasks_sz, EV_EXEC, now_ts, p) {
 		e->exec.old_tid = old_pid;
 		bpf_probe_read_kernel_str(e->exec.filename, sizeof(e->exec.filename), bprm->filename);
 		if (tasks_sz)
-			e->flags |= task_infos_emit(&tis, dptr, fix_sz);
+			e->flags |= task_infos_emit(&tis.infos, dptr, fix_sz);
 	}
 
 	return 0;
@@ -1153,14 +1164,14 @@ int BPF_PROG(wprof_task_exit, struct task_struct *p)
 
 	size_t fix_sz = EV_SZ(task_exit);
 
-	struct task_infos tis;
-	task_infos_init(&tis);
-	task_infos_add(&tis, p, task_state(p));
-	size_t tasks_sz = tis.data_sz;
+	DEF_TASK_INFOS(tis, 1);
+	task_infos_init(&tis.infos);
+	task_infos_add(&tis.infos, p, task_state(p));
+	size_t tasks_sz = tis.infos.data_sz;
 
 	emit_task_event_dyn(e, dptr, fix_sz, tasks_sz, EV_TASK_EXIT, now_ts, p) {
 		if (tasks_sz)
-			e->flags |= task_infos_emit(&tis, dptr, fix_sz);
+			e->flags |= task_infos_emit(&tis.infos, dptr, fix_sz);
 	}
 
 	return 0;
@@ -1191,14 +1202,14 @@ int BPF_PROG(wprof_task_free, struct task_struct *p)
 		 * in-window) rather than resolving to the null/idle task. No-op if the
 		 * identity was already emitted.
 		 */
-		struct task_infos tis;
-		task_infos_init(&tis);
-		task_infos_add(&tis, p, s);
-		size_t tasks_sz = tis.data_sz;
+		DEF_TASK_INFOS(tis, 1);
+		task_infos_init(&tis.infos);
+		task_infos_add(&tis.infos, p, s);
+		size_t tasks_sz = tis.infos.data_sz;
 
 		emit_task_event_dyn(e, dptr, fix_sz, tasks_sz, EV_TASK_FREE, now_ts, p) {
 			if (tasks_sz)
-				e->flags |= task_infos_emit(&tis, dptr, fix_sz);
+				e->flags |= task_infos_emit(&tis.infos, dptr, fix_sz);
 		}
 	}
 
@@ -1236,10 +1247,10 @@ static int handle_hardirq(u64 now_ts, struct task_struct *task,
 	struct bpf_dynptr *dptr;
 	size_t fix_sz = EV_SZ(hardirq);
 
-	struct task_infos tis;
-	task_infos_init(&tis);
-	task_infos_add(&tis, task, s);
-	size_t tasks_sz = tis.data_sz;
+	DEF_TASK_INFOS(tis, 1);
+	task_infos_init(&tis.infos);
+	task_infos_add(&tis.infos, task, s);
+	size_t tasks_sz = tis.infos.data_sz;
 
 	emit_task_event_dyn(e, dptr, fix_sz, pmu_sz + tasks_sz, EV_HARDIRQ_EXIT, now_ts, task) {
 		e->hardirq.hardirq_ts = s->hardirq_ts;
@@ -1251,7 +1262,7 @@ static int handle_hardirq(u64 now_ts, struct task_struct *task,
 			e->flags |= EF_PMU_VALS;
 		}
 		if (tasks_sz)
-			e->flags |= task_infos_emit(&tis, dptr, fix_sz + pmu_sz);
+			e->flags |= task_infos_emit(&tis.infos, dptr, fix_sz + pmu_sz);
 	}
 
 	s->hardirq_ts = 0;
@@ -1309,10 +1320,10 @@ static int handle_softirq(u64 now_ts, struct task_struct *task, int vec_nr, bool
 	struct bpf_dynptr *dptr;
 	size_t fix_sz = EV_SZ(softirq);
 
-	struct task_infos tis;
-	task_infos_init(&tis);
-	task_infos_add(&tis, task, s);
-	size_t tasks_sz = tis.data_sz;
+	DEF_TASK_INFOS(tis, 1);
+	task_infos_init(&tis.infos);
+	task_infos_add(&tis.infos, task, s);
+	size_t tasks_sz = tis.infos.data_sz;
 
 	emit_task_event_dyn(e, dptr, fix_sz, pmu_sz + tasks_sz, EV_SOFTIRQ_EXIT, now_ts, task) {
 		e->softirq.softirq_ts = s->softirq_ts;
@@ -1323,7 +1334,7 @@ static int handle_softirq(u64 now_ts, struct task_struct *task, int vec_nr, bool
 			e->flags |= EF_PMU_VALS;
 		}
 		if (tasks_sz)
-			e->flags |= task_infos_emit(&tis, dptr, fix_sz + pmu_sz);
+			e->flags |= task_infos_emit(&tis.infos, dptr, fix_sz + pmu_sz);
 	}
 
 	s->softirq_ts = 0;
@@ -1407,10 +1418,10 @@ static int handle_workqueue(u64 now_ts, struct task_struct *task, struct work_st
 	struct bpf_dynptr *dptr;
 	size_t fix_sz = EV_SZ(wq);
 
-	struct task_infos tis;
-	task_infos_init(&tis);
-	task_infos_add(&tis, task, s);
-	size_t tasks_sz = tis.data_sz;
+	DEF_TASK_INFOS(tis, 1);
+	task_infos_init(&tis.infos);
+	task_infos_add(&tis.infos, task, s);
+	size_t tasks_sz = tis.infos.data_sz;
 
 	emit_task_event_dyn(e, dptr, fix_sz, pmu_sz + tasks_sz, EV_WQ_END, now_ts, task) {
 		e->wq.wq_ts = s->wq_ts;
@@ -1421,7 +1432,7 @@ static int handle_workqueue(u64 now_ts, struct task_struct *task, struct work_st
 			e->flags |= EF_PMU_VALS;
 		}
 		if (tasks_sz)
-			e->flags |= task_infos_emit(&tis, dptr, fix_sz + pmu_sz);
+			e->flags |= task_infos_emit(&tis.infos, dptr, fix_sz + pmu_sz);
 	}
 
 	s->wq_ts = 0;
@@ -1479,17 +1490,17 @@ static int handle_ipi_send(u64 now_ts, struct task_struct *task,
 
 	size_t fix_sz = EV_SZ(ipi_send);
 
-	struct task_infos tis;
-	task_infos_init(&tis);
-	task_infos_add(&tis, task, task_state(task));
-	size_t tasks_sz = tis.data_sz;
+	DEF_TASK_INFOS(tis, 1);
+	task_infos_init(&tis.infos);
+	task_infos_add(&tis.infos, task, task_state(task));
+	size_t tasks_sz = tis.infos.data_sz;
 
 	emit_task_event_dyn(e, dptr, fix_sz, tasks_sz, EV_IPI_SEND, now_ts, task) {
 		e->ipi_send.kind = ipi_kind;
 		e->ipi_send.target_cpu = target_cpu;
 		e->ipi_send.ipi_id = s->ipi_counter | ((u64)target_cpu << 48);
 		if (tasks_sz)
-			e->flags |= task_infos_emit(&tis, dptr, fix_sz);
+			e->flags |= task_infos_emit(&tis.infos, dptr, fix_sz);
 	}
 
 	return 0;
@@ -1546,10 +1557,10 @@ static int handle_ipi(u64 now_ts, struct task_struct *task, enum wprof_ipi_kind 
 	struct bpf_dynptr *dptr;
 	size_t fix_sz = EV_SZ(ipi);
 
-	struct task_infos tis;
-	task_infos_init(&tis);
-	task_infos_add(&tis, task, task_state(task));
-	size_t tasks_sz = tis.data_sz;
+	DEF_TASK_INFOS(tis, 1);
+	task_infos_init(&tis.infos);
+	task_infos_add(&tis.infos, task, task_state(task));
+	size_t tasks_sz = tis.infos.data_sz;
 
 	emit_task_event_dyn(e, dptr, fix_sz, pmu_sz + tasks_sz, EV_IPI_EXIT, now_ts, task) {
 		e->ipi.kind = ipi_kind;
@@ -1574,7 +1585,7 @@ static int handle_ipi(u64 now_ts, struct task_struct *task, enum wprof_ipi_kind 
 			e->flags |= EF_PMU_VALS;
 		}
 		if (tasks_sz)
-			e->flags |= task_infos_emit(&tis, dptr, fix_sz + pmu_sz);
+			e->flags |= task_infos_emit(&tis.infos, dptr, fix_sz + pmu_sz);
 	}
 
 	s->ipi_ts = 0;
@@ -1816,10 +1827,10 @@ int BPF_USDT(wprof_req_ctx, u64 req_id, const char *endpoint, enum wprof_req_eve
 	if (requested_stack_traces & ST_REQ)
 		tr = grab_stack_trace_user(ctx, NULL, ST_REQ, &tr_sz);
 
-	struct task_infos tis;
-	task_infos_init(&tis);
-	task_infos_add(&tis, task, task_state(task));
-	size_t tasks_sz = tis.data_sz;
+	DEF_TASK_INFOS(tis, 1);
+	task_infos_init(&tis.infos);
+	task_infos_add(&tis.infos, task, task_state(task));
+	size_t tasks_sz = tis.infos.data_sz;
 
 	emit_task_event_dyn(e, dptr, fix_sz, pmu_sz + tr_sz + tasks_sz, EV_REQ_EVENT, now_ts, task) {
 		e->req.req_id = req_id;
@@ -1836,7 +1847,7 @@ int BPF_USDT(wprof_req_ctx, u64 req_id, const char *endpoint, enum wprof_req_eve
 			e->flags |= ST_REQ;
 		}
 		if (tasks_sz)
-			e->flags |= task_infos_emit(&tis, dptr, fix_sz + pmu_sz + tr_sz);
+			e->flags |= task_infos_emit(&tis.infos, dptr, fix_sz + pmu_sz + tr_sz);
 	}
 
 	if (event_kind == REQ_CLEAR)
@@ -1863,10 +1874,10 @@ int BPF_USDT(wprof_req_task_enqueue,
 	struct bpf_dynptr *dptr;
 	size_t fix_sz = EV_SZ(req_task);
 
-	struct task_infos tis;
-	task_infos_init(&tis);
-	task_infos_add(&tis, task, task_state(task));
-	size_t tasks_sz = tis.data_sz;
+	DEF_TASK_INFOS(tis, 1);
+	task_infos_init(&tis.infos);
+	task_infos_add(&tis.infos, task, task_state(task));
+	size_t tasks_sz = tis.infos.data_sz;
 
 	emit_task_event_dyn(e, dptr, fix_sz, tasks_sz, EV_REQ_TASK_EVENT, now_ts, task) {
 		e->req_task.req_task_event = REQ_TASK_ENQUEUE;
@@ -1876,7 +1887,7 @@ int BPF_USDT(wprof_req_task_enqueue,
 		e->req_task.wait_time_ns = 0;
 		e->req_task.run_time_ns = 0;
 		if (tasks_sz)
-			e->flags |= task_infos_emit(&tis, dptr, fix_sz);
+			e->flags |= task_infos_emit(&tis.infos, dptr, fix_sz);
 	}
 
 	return 0;
@@ -1898,10 +1909,10 @@ int BPF_USDT(wprof_req_task_dequeue,
 	struct bpf_dynptr *dptr;
 	size_t fix_sz = EV_SZ(req_task);
 
-	struct task_infos tis;
-	task_infos_init(&tis);
-	task_infos_add(&tis, task, task_state(task));
-	size_t tasks_sz = tis.data_sz;
+	DEF_TASK_INFOS(tis, 1);
+	task_infos_init(&tis.infos);
+	task_infos_add(&tis.infos, task, task_state(task));
+	size_t tasks_sz = tis.infos.data_sz;
 
 	emit_task_event_dyn(e, dptr, fix_sz, tasks_sz, EV_REQ_TASK_EVENT, now_ts, task) {
 		e->req_task.req_task_event = REQ_TASK_DEQUEUE;
@@ -1911,7 +1922,7 @@ int BPF_USDT(wprof_req_task_dequeue,
 		e->req_task.wait_time_ns = wait_time_ns;
 		e->req_task.run_time_ns = 0;
 		if (tasks_sz)
-			e->flags |= task_infos_emit(&tis, dptr, fix_sz);
+			e->flags |= task_infos_emit(&tis.infos, dptr, fix_sz);
 	}
 
 	return 0;
@@ -1933,10 +1944,10 @@ int BPF_USDT(wprof_req_task_stats,
 	struct bpf_dynptr *dptr;
 	size_t fix_sz = EV_SZ(req_task);
 
-	struct task_infos tis;
-	task_infos_init(&tis);
-	task_infos_add(&tis, task, task_state(task));
-	size_t tasks_sz = tis.data_sz;
+	DEF_TASK_INFOS(tis, 1);
+	task_infos_init(&tis.infos);
+	task_infos_add(&tis.infos, task, task_state(task));
+	size_t tasks_sz = tis.infos.data_sz;
 
 	emit_task_event_dyn(e, dptr, fix_sz, tasks_sz, EV_REQ_TASK_EVENT, now_ts, task) {
 		e->req_task.req_task_event = REQ_TASK_STATS;
@@ -1946,7 +1957,7 @@ int BPF_USDT(wprof_req_task_stats,
 		e->req_task.wait_time_ns = wait_time_ns;
 		e->req_task.run_time_ns = run_time_ns;
 		if (tasks_sz)
-			e->flags |= task_infos_emit(&tis, dptr, fix_sz);
+			e->flags |= task_infos_emit(&tis.infos, dptr, fix_sz);
 	}
 
 	return 0;
@@ -1970,10 +1981,10 @@ int BPF_USDT(wprof_cuda_call, int domain, int cbid, __u32 corr_id)
 	if (requested_stack_traces & ST_CUDA)
 		tr = grab_stack_trace_user(ctx, NULL, ST_CUDA, &dyn_sz);
 
-	struct task_infos tis;
-	task_infos_init(&tis);
-	task_infos_add(&tis, task, task_state(task));
-	size_t tasks_sz = tis.data_sz;
+	DEF_TASK_INFOS(tis, 1);
+	task_infos_init(&tis.infos);
+	task_infos_add(&tis.infos, task, task_state(task));
+	size_t tasks_sz = tis.infos.data_sz;
 
 	emit_task_event_dyn(e, dptr, fix_sz, dyn_sz + tasks_sz, EV_CUDA_CALL, now_ts, task) {
 		e->cuda_call.domain = domain;
@@ -1984,7 +1995,7 @@ int BPF_USDT(wprof_cuda_call, int domain, int cbid, __u32 corr_id)
 			e->flags |= ST_CUDA;
 		}
 		if (tasks_sz)
-			e->flags |= task_infos_emit(&tis, dptr, fix_sz + dyn_sz);
+			e->flags |= task_infos_emit(&tis.infos, dptr, fix_sz + dyn_sz);
 	}
 
 	put_stack_trace(tr);
@@ -2257,10 +2268,10 @@ out_arg:
 	struct bpf_dynptr *dptr;
 	size_t fix_sz = EV_SZ(utrace);
 
-	struct task_infos tis;
-	task_infos_init(&tis);
-	task_infos_add(&tis, task, task_state(task));
-	size_t tasks_sz = tis.data_sz;
+	DEF_TASK_INFOS(tis, 1);
+	task_infos_init(&tis.infos);
+	task_infos_add(&tis.infos, task, task_state(task));
+	size_t tasks_sz = tis.infos.data_sz;
 
 	/* task info records sit between the stack traces and the args blob */
 	size_t dyn_sz = tr_sz + tasks_sz + scratch_off;
@@ -2274,7 +2285,7 @@ out_arg:
 		}
 
 		if (tasks_sz)
-			e->flags |= task_infos_emit(&tis, dptr, fix_sz + tr_sz);
+			e->flags |= task_infos_emit(&tis.infos, dptr, fix_sz + tr_sz);
 
 		if (scratch_off > sizeof(scratch->buf))
 			scratch_off = sizeof(scratch->buf);
