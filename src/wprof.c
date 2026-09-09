@@ -1156,6 +1156,7 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 
 	skel->rodata->capture_scx = env.capture_scx == TRUE;
 	skel->rodata->capture_task_life = env.capture_task_life == TRUE;
+	skel->rodata->capture_pystacks = env.capture_pystacks == TRUE;
 
 	skel->rodata->rb_cnt = env.ringbuf_cnt;
 	bpf_map__set_max_entries(skel->maps.rbs, env.ringbuf_cnt);
