@@ -284,8 +284,8 @@ wprof: $(WPROF_HDRS) $(WPROF_OBJS)								\
 .PHONY: clean
 clean:
 	$(call msg,CLEAN)
-	$(Q)rm -rf $(OUTPUT)/*.o $(OUTPUT)/libwprofinj.* $(OUTPUT)/wprof_build_info.h wprof $(LIBWPB_OBJ) $(LIBWRUST_OBJ) 	\
-		$(LIBWPB_SRC)/target $(LIBWRUST_SRC)/target
+	$(Q)rm -rf $(OUTPUT)/*.o $(OUTPUT)/*.skel.h $(OUTPUT)/libwprofinj.* $(OUTPUT)/wprof_build_info.h wprof 		\
+		$(LIBWPB_OBJ) $(LIBWRUST_OBJ) $(LIBWPB_SRC)/target $(LIBWRUST_SRC)/target
 
 .PHONY: clean-all
 clean-all: clean
