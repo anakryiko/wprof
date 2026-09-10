@@ -236,6 +236,8 @@ struct env {
 	int req_path_cnt;
 	int *req_pids;
 	int req_pid_cnt;
+	char **req_globs;
+	int req_glob_cnt;
 	bool req_global_discovery;
 
 	struct hashmap *req_binaries;

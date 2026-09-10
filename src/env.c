@@ -181,7 +181,7 @@ static const struct argp_option opts[] = {
 
 	/* event subset targeting */
 	{ "feature", 'f', "FEAT", 0,
-	  "Data capture feature selector. Supported: ipi, req[=PATH|PID], scx, cuda[=nv-smi|all|PID], "
+	  "Data capture feature selector. Supported: ipi, req[=PATH|PID|comm:GLOB], scx, cuda[=nv-smi|all|PID], "
 	  "py-stacks[=nv-smi|PID], py-trace[=nv-smi|PID], py-torch[=nv-smi|PID], "
 	  "softirq, hardirq, irq, wq, sched (on by default), wakeup (on by default), task-life (on by default). "
 	  "All features can be prefixed with 'no-' to disable them explicitly." },
@@ -530,7 +530,25 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 				return -EINVAL;
 			}
 
-			if (sscanf(req_arg, "%d %n", &pid, &n) == 1 && req_arg[n] == '\0') {
+			if (strncmp(req_arg, "comm:", 5) == 0) {
+				err = append_str(&env.req_globs, &env.req_glob_cnt, req_arg + 5);
+				if (err) {
+					eprintf("Failed to record comm glob '%s' for request tracking!\n", req_arg + 5);
+					return err;
+				}
+			} else if (strncmp(req_arg, "pid:", 4) == 0) {
+				err = append_num(&env.req_pids, &env.req_pid_cnt, req_arg + 4);
+				if (err) {
+					eprintf("Failed to record PID '%s' for request tracking!\n", req_arg + 4);
+					return err;
+				}
+			} else if (strncmp(req_arg, "path:", 5) == 0) {
+				err = append_str(&env.req_paths, &env.req_path_cnt, req_arg + 5);
+				if (err) {
+					eprintf("Failed to record path '%s' for request tracking!\n", req_arg + 5);
+					return err;
+				}
+			} else if (sscanf(req_arg, "%d %n", &pid, &n) == 1 && req_arg[n] == '\0') {
 				err = append_num(&env.req_pids, &env.req_pid_cnt, req_arg);
 				if (err) {
 					eprintf("Failed to record PID '%s' for request tracking!\n", req_arg);
@@ -539,7 +557,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			} else {
 				err = append_str(&env.req_paths, &env.req_path_cnt, req_arg);
 				if (err) {
-					eprintf("Use -freq=<path-to-binary> or -freq=<PID> to enable request tracking!\n");
+					eprintf("Use -freq=PATH|PID|comm:GLOB to enable request tracking!\n");
 					return err;
 				}
 			}

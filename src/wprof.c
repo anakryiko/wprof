@@ -990,7 +990,7 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 		bpf_program__set_autoload(skel->progs.wprof_wq_exec_end, true);
 	}
 
-	if (env.req_pid_cnt > 0 || env.req_path_cnt > 0 || env.req_global_discovery) {
+	if (env.req_pid_cnt > 0 || env.req_path_cnt > 0 || env.req_glob_cnt > 0 || env.req_global_discovery) {
 		err = setup_req_tracking_discovery();
 		if (err) {
 			eprintf("Request tracking discovery step failed: %d\n", err);
