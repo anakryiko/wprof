@@ -1790,6 +1790,10 @@ int BPF_USDT(wprof_req_ctx, u64 req_id, const char *endpoint, enum wprof_req_eve
 
 	struct req_key key = { .req_id = req_id, .tgid = task->tgid };
 
+	/* TODO: drop this remap once the minor version bump frees 15 up (see data.h) */
+	if (event_kind == CROCHET_USDT_REPLY)
+		event_kind = REQ_REPLY;
+
 	switch (event_kind) {
 	case REQ_BEGIN:
 		s = bpf_map_lookup_elem(&req_states, &key);
@@ -1803,14 +1807,19 @@ int BPF_USDT(wprof_req_ctx, u64 req_id, const char *endpoint, enum wprof_req_eve
 		}
 		s->start_ts = now_ts;
 		break;
-	case REQ_CLEAR:
 	case REQ_SET:
 	case REQ_UNSET:
+	case REQ_REPLY:
+	case REQ_END:
+	case REQ_CLEAR:
+		/*
+		 * No state means the request began before the session started (or we
+		 * ran out of req_states space). Still report the event, just with an
+		 * unknown start; the endpoint name comes with every event, so only the
+		 * request's start timestamp is actually lost.
+		 */
 		s = bpf_map_lookup_elem(&req_states, &key);
-		if (!s) /* caught request in mid-flight or out of req_states space */
-			return 0;
 		break;
-	case REQ_END: /* CLEAR is the request end; END may never fire */
 	default:
 		return 0;
 	}
@@ -1834,7 +1843,7 @@ int BPF_USDT(wprof_req_ctx, u64 req_id, const char *endpoint, enum wprof_req_eve
 
 	emit_task_event_dyn(e, dptr, fix_sz, pmu_sz + tr_sz + tasks_sz, EV_REQ_EVENT, now_ts, task) {
 		e->req.req_id = req_id;
-		e->req.req_ts = s->start_ts;
+		e->req.req_ts = s ? s->start_ts : 0;
 		e->req.req_event = event_kind;
 		if (bpf_probe_read_user_str(e->req.req_name, sizeof(e->req.req_name), endpoint) < 0)
 			e->req.req_name[0] = '\0';

@@ -14,6 +14,13 @@ enum wprof_data_version {
 	WPROF_DATA_MINOR = 3,
 };
 
+/*
+ * TODO: whenever the minor version is next bumped, renumber REQ_TASK_ENQUEUE /
+ * DEQUEUE / STATS in enum wprof_req_event_kind out of the way (say to 100+).
+ * They start at 15, which is what the crochet USDT reports REPLY as, so
+ * REQ_REPLY has to sit at 18 and the USDT handler remaps 15 on the way in.
+ */
+
 /* Flags stored in hdr.flags. */
 enum wprof_data_flag {
 	/*
