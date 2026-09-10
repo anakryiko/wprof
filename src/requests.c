@@ -298,9 +298,10 @@ static const char *fmt_ts(s64 ns, char *buf, size_t buf_sz)
 }
 
 /*
- * A request we never saw CLEAR for is assumed to still be outstanding when the
- * session ended, so end_ns is a lower bound and latency is only known to be at
- * least end_ns - start_ns.
+ * A request we never saw end is assumed to still be outstanding when the session
+ * ended, and one already in flight when the session started is pinned to the
+ * session start. Either way the ends are bounds rather than measurements, so
+ * latency is only known to be at least end_ns - start_ns.
  */
 struct req_entry {
 	u64 id;
@@ -311,8 +312,20 @@ struct req_entry {
 	int tid;
 	s64 start_ns;
 	s64 end_ns;
-	bool complete;
+	bool complete;		/* request reported REPLY, CLEAR or END */
+	bool start_known;	/* request reported BEGIN, or BPF recorded its start */
 };
+
+static bool req_latency_known(const struct req_entry *e)
+{
+	return e->complete && e->start_known;
+}
+
+/* with neither end pinned to a real event there is no bound on latency at all */
+static bool req_latency_bounded(const struct req_entry *e)
+{
+	return e->complete || e->start_known;
+}
 
 enum req_match {
 	REQ_MATCH_NO,
@@ -392,7 +405,9 @@ static enum req_match req_entry_matches(const struct req_entry *e, const struct 
 	case REQ_FIELD_LATENCY: {
 		s64 latency_ns = e->end_ns - e->start_ns;
 
-		if (!e->complete)
+		if (!req_latency_bounded(e))
+			return REQ_MATCH_MAYBE;
+		if (!req_latency_known(e))
 			return filter_cmp_lower_bound(latency_ns, f->num_val, f->op);
 		cmp = (latency_ns > f->num_val) - (latency_ns < f->num_val);
 		break;
@@ -403,7 +418,7 @@ static enum req_match req_entry_matches(const struct req_entry *e, const struct 
 	return filter_cmp(cmp, f->op) ? REQ_MATCH_YES : REQ_MATCH_NO;
 }
 
-/* end and latency aren't known until a request reports REQ_CLEAR */
+/* end and latency aren't known until a request reports REPLY or CLEAR */
 static bool req_field_is_late(enum req_field field)
 {
 	return field == REQ_FIELD_END || field == REQ_FIELD_LATENCY;
@@ -484,6 +499,13 @@ static int req_entry_cmp(const void *_a, const void *_b, void *ctx)
 			break;
 		case REQ_FIELD_LATENCY: {
 			s64 la = a->end_ns - a->start_ns, lb = b->end_ns - b->start_ns;
+
+			/*
+			 * An unbounded latency isn't a big one, it is no measurement at
+			 * all, so keep those last whichever way the sort runs.
+			 */
+			if (req_latency_bounded(a) != req_latency_bounded(b))
+				return req_latency_bounded(a) ? -1 : 1;
 			cmp = (la > lb) - (la < lb);
 			break;
 		}
@@ -521,11 +543,12 @@ static s64 rel_ts(u64 ts)
 }
 
 /*
- * One entry per request, tracked from REQ_BEGIN so requests that never report
- * REQ_CLEAR are still listed. Those are assumed to have been outstanding until
- * the end of the session, which makes their end_ns (and latency) a lower bound.
- * Identity filters are known at REQ_BEGIN, so requests they reject never get an
- * entry; end and latency are only checked once known.
+ * One entry per request, so that requests which never report an end, and ones
+ * already in flight when the session started, are both still listed. The former
+ * are assumed outstanding until the session ended, the latter are pinned to the
+ * session start; either way end_ns or start_ns is a bound, which makes latency a
+ * lower bound. Identity filters are known from the first event, so requests they
+ * reject never get an entry; end and latency are only checked once known.
  */
 static void collect_req_entries(struct worker_state *w, struct req_entry **res, int *res_cnt)
 {
@@ -549,20 +572,29 @@ static void collect_req_entries(struct worker_state *w, struct req_entry **res, 
 
 		if (e->kind != EV_REQ_EVENT)
 			continue;
-		if (e->req.req_event != REQ_BEGIN && e->req.req_event != REQ_CLEAR)
+		if (e->req.req_event != REQ_BEGIN && e->req.req_event != REQ_REPLY &&
+		    e->req.req_event != REQ_CLEAR && e->req.req_event != REQ_END)
 			continue;
 
 		task = wevent_resolve_task(hdr, e->task_id);
 		key = (struct req_id){ .pid = task.pid, .req_id = e->req.req_id };
 
-		if (e->req.req_event == REQ_CLEAR) {
-			/* a request whose REQ_BEGIN we never saw isn't ours to report */
-			if (!hashmap__find(live, &key, &idx))
-				continue;
-			entries[idx].end_ns = rel_ts(e->ts);
-			entries[idx].complete = true;
-			hashmap__delete(live, &key, &pkey, NULL);
-			free(pkey);
+		if (e->req.req_event != REQ_BEGIN && hashmap__find(live, &key, &idx)) {
+			/*
+			 * REPLY ends the request's synchronous part. CLEAR and END only
+			 * bound it for a request we saw begin: on one already in flight
+			 * they might just be post-reply teardown, which says nothing.
+			 */
+			if (!entries[idx].complete &&
+			    (e->req.req_event == REQ_REPLY || entries[idx].start_known)) {
+				entries[idx].end_ns = rel_ts(e->ts);
+				entries[idx].complete = true;
+			}
+			/* END is the request's last event, nothing more will refer to it */
+			if (e->req.req_event == REQ_END) {
+				hashmap__delete(live, &key, &pkey, NULL);
+				free(pkey);
+			}
 			continue;
 		}
 
@@ -573,9 +605,15 @@ static void collect_req_entries(struct worker_state *w, struct req_entry **res, 
 			.pcomm = task.pcomm,
 			.pid = task.pid,
 			.tid = task.tid,
-			.start_ns = rel_ts(e->req.req_ts),
+			.start_ns = e->req.req_ts ? rel_ts(e->req.req_ts) : 0,
 			.end_ns = rel_ts(env.sess_end_ts),
+			.start_known = e->req.req_ts != 0,
 		};
+		/* a request already in flight when the session started has no REQ_BEGIN */
+		if (e->req.req_event == REQ_REPLY) {
+			ent.end_ns = rel_ts(e->ts);
+			ent.complete = true;
+		}
 		if (req_entry_matches_ident(&ent, cfg) == REQ_MATCH_NO)
 			continue;
 
@@ -629,12 +667,19 @@ int req_list_output(struct worker_state *w)
 		bool in_top = cfg->top_n > 0 && i < cfg->top_n;
 		bool in_bottom = cfg->bottom_n > 0 && i >= entry_cnt - cfg->bottom_n;
 		if (show_all || in_top || in_bottom) {
-			char ts1[32];
+			char ts1[32], lat[16];
 
-			fprintf(stderr, "%12s %9.6f%s %8d %8d %-15s %-15s %20llu  %s\n",
-			       fmt_ts(entries[i].start_ns, ts1, sizeof(ts1)),
-			       (entries[i].end_ns - entries[i].start_ns) / 1000000000.0,
-			       entries[i].complete ? " " : "*",
+			if (req_latency_bounded(&entries[i])) {
+				snprintf(lat, sizeof(lat), "%9.6f%s",
+					 (entries[i].end_ns - entries[i].start_ns) / 1000000000.0,
+					 req_latency_known(&entries[i]) ? " " : "*");
+			} else {
+				snprintf(lat, sizeof(lat), "%9s ", "?");
+			}
+
+			fprintf(stderr, "%12s %10s %8d %8d %-15s %-15s %20llu  %s\n",
+			       entries[i].start_known ? fmt_ts(entries[i].start_ns, ts1, sizeof(ts1)) : "?",
+			       lat,
 			       entries[i].pid, entries[i].tid,
 			       entries[i].pcomm, entries[i].comm,
 			       entries[i].id, entries[i].name);
