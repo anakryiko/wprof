@@ -353,7 +353,9 @@ struct track_state {
 	union {
 		/* DTK_REQ */
 		struct {
-			u64 start_ts;	/* earliest request start timestamp */
+			u64 start_ts;	/* earliest evidence of the request, 0 if none seen yet */
+			/* last lifecycle event: 0 = slice not open, REQ_BEGIN = open, anything else = closed */
+			enum wprof_req_event_kind last_event;
 		} req;
 
 		/* DTK_TIMER_CALLSTACK */
@@ -3248,17 +3250,47 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e,
 		first_embed_event = req_embed_first_event(&task, req_id);
 	}
 
+	struct track_state *rs = track_state_get_or_add(DTK_REQ, task.pid, req_id);
+
+	/*
+	 * The slice spans the request's synchronous part, so it needs a known end.
+	 * REQ_BEGIN opens it below; a request already in flight when the session
+	 * started gets one only once REPLY shows where that part finished, truncated
+	 * on the left at the session start. CLEAR and END say nothing about it, so a
+	 * request seen only through those renders as bare markers and no slice.
+	 */
+	if (rs->req.last_event == 0 && e->req.req_event == REQ_REPLY) {
+		u64 begin_ts = e->req.req_ts;
+
+		if (begin_ts && (!rs->req.start_ts || ts_before(begin_ts, rs->req.start_ts)))
+			rs->req.start_ts = begin_ts;
+		begin_ts = rs->req.start_ts ? clamp_ts(rs->req.start_ts) : env.sess_start_ts;
+
+		emit_slice_begin(req_track_uuid, begin_ts, iid_str(req_name_iid, req_name), IID_CAT_REQUEST) {
+			emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
+			emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
+			emit_flow_id(req_id);
+		}
+		rs->req.last_event = REQ_BEGIN;
+	}
+
 	switch (e->req.req_event) {
 	case REQ_BEGIN: {
-		struct track_state *rs = track_state_get_or_add(DTK_REQ, task.pid, req_id);
 		if (!rs->req.start_ts || ts_before(e->ts, rs->req.start_ts))
 			rs->req.start_ts = e->ts;
+
+		/* emitted before the slice opens, so the marker sits beside it instead of nesting */
+		emit_instant(req_track_uuid, e->ts, IID_NAME_REQUEST_BEGIN, IID_CAT_REQUEST_BEGIN) {
+			emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
+			emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
+		}
 
 		emit_slice_begin(req_track_uuid, rs->req.start_ts, iid_str(req_name_iid, req_name), IID_CAT_REQUEST) {
 			emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
 			emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
 			emit_flow_id(req_id);
 		}
+		rs->req.last_event = REQ_BEGIN;
 
 		if (env.emit_req_embed) {
 			emit_instant(thread_req_track_uuid, e->ts, iid_str(thread_req_name_iid, thread_req_name), IID_CAT_REQUEST_BEGIN) {
@@ -3313,17 +3345,43 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e,
 			}
 		}
 		break;
+	case REQ_REPLY:
 	case REQ_END:
-		break;
 	case REQ_CLEAR: {
-		struct track_state *rs = track_state_find(DTK_REQ, task.pid, req_id);
-		u64 req_start_ts = rs && rs->req.start_ts ? rs->req.start_ts : e->req.req_ts;
+		/*
+		 * The request's synchronous part ends at REPLY, so that is what closes
+		 * the slice and defines the latency; CLEAR, then END, close the ones
+		 * that never report a REPLY. Every event carries the start BPF recorded,
+		 * which is unset for a request that began before the session started.
+		 */
+		bool closes = rs->req.last_event == REQ_BEGIN;
+		bool latency_known = e->req.req_ts != 0;
+		double latency_us = (e->ts - e->req.req_ts) / 1000.0;
+		enum pb_static_iid cat, name;
+
+		switch (e->req.req_event) {
+		case REQ_REPLY:
+			cat = IID_CAT_REQUEST_REPLY;
+			name = IID_NAME_REQUEST_REPLY;
+			break;
+		case REQ_END:
+			cat = IID_CAT_REQUEST_END;
+			name = IID_NAME_REQUEST_END;
+			break;
+		case REQ_CLEAR:
+			cat = IID_CAT_REQUEST_CLEAR;
+			name = IID_NAME_REQUEST_CLEAR;
+			break;
+		default:
+			BUG("unhandled req event %d\n", e->req.req_event);
+		}
 
 		if (env.emit_req_embed) {
-			emit_instant(thread_req_track_uuid, e->ts, iid_str(thread_req_name_iid, thread_req_name), IID_CAT_REQUEST_END) {
+			emit_instant(thread_req_track_uuid, e->ts, iid_str(thread_req_name_iid, thread_req_name), cat) {
 				emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
 				emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
-				emit_kv_float(IID_ANNK_REQ_LATENCY_US, "%.6lf", (e->ts - req_start_ts) / 1000);
+				if (closes && latency_known)
+					emit_kv_float(IID_ANNK_REQ_LATENCY_US, "%.6lf", latency_us);
 				if (first_embed_event)
 					emit_flow_id(req_id);
 				emit_flow_id(hash_combine(req_id, task.tid));
@@ -3331,14 +3389,26 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e,
 			}
 		}
 
-		emit_slice_end(req_track_uuid, e->ts, iid_str(req_name_iid, req_name), IID_CAT_REQUEST) {
-			emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
-			emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
-			emit_kv_float(IID_ANNK_REQ_LATENCY_US, "%.6lf", (e->ts - req_start_ts) / 1000);
-			emit_flow_id(req_id);
+		if (closes) {
+			emit_slice_end(req_track_uuid, e->ts, iid_str(req_name_iid, req_name), IID_CAT_REQUEST) {
+				emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
+				emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
+				if (latency_known)
+					emit_kv_float(IID_ANNK_REQ_LATENCY_US, "%.6lf", latency_us);
+				emit_flow_id(req_id);
+			}
 		}
 
-		track_state_delete(DTK_REQ, task.pid, req_id);
+		/* emitted after any slice end, so the marker lands on the track rather than inside the slice */
+		emit_instant(req_track_uuid, e->ts, name, cat) {
+			emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
+			emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
+		}
+		rs->req.last_event = e->req.req_event;
+
+		/* END is the request object's last event, so the track state can go */
+		if (e->req.req_event == REQ_END)
+			track_state_delete(DTK_REQ, task.pid, req_id);
 		break;
 	}
 	default:
@@ -3354,6 +3424,7 @@ static const char *req_event_str(enum wprof_req_event_kind kind)
 	case REQ_UNSET:  return "unset";
 	case REQ_CLEAR:  return "clear";
 	case REQ_END:    return "end";
+	case REQ_REPLY:  return "reply";
 	default:         return "unknown";
 	}
 }
@@ -3375,7 +3446,8 @@ static void emit_req_event_json(struct worker_state *w, const struct wevent *e,
 	json_kv_str(j, "event", req_event_str(e->req.req_event));
 	json_kv_int(j, "req_id", e->req.req_id);
 	json_kv_str(j, "req_name", wevent_str(hdr, e->req.req_name_stroff));
-	if (e->req.req_event == REQ_CLEAR && e->req.req_ts)
+	if (e->req.req_event != REQ_BEGIN && e->req.req_event != REQ_SET &&
+	    e->req.req_event != REQ_UNSET && e->req.req_ts)
 		json_kv_ts(j, "latency", e->ts - e->req.req_ts);
 	if ((env.requested_stack_traces & ST_REQ) && e->req.req_stack_id > 0)
 		json_kv_int(j, "stack_id", e->req.req_stack_id);
@@ -3420,8 +3492,9 @@ static int process_req_event(struct worker_state *w, const struct wevent *e)
 		st->req_id = 0;
 		break;
 	case REQ_BEGIN:
-	case REQ_CLEAR:
+	case REQ_REPLY:
 	case REQ_END:
+	case REQ_CLEAR:
 		break;
 	default:
 		BUG("unhandled req event %d\n", e->req.req_event);

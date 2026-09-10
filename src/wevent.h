@@ -149,7 +149,7 @@ struct wevent {
 		struct wevent_req_ctx {
 			u64 req_ts;
 			u64 req_id;
-			enum wprof_req_event_kind req_event; /* START, END, SET, UNSET, CLEAR */
+			enum wprof_req_event_kind req_event; /* BEGIN, SET, UNSET, REPLY, END, CLEAR */
 			u32 req_name_stroff;
 			u32 req_stack_id;
 			u32 pmu_vals_id;

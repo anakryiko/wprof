@@ -280,7 +280,18 @@ enum wprof_req_event_kind {
 	REQ_TASK_ENQUEUE = 15,
 	REQ_TASK_DEQUEUE = 16,
 	REQ_TASK_STATS = 17,
+
+	REQ_REPLY = 18,
 };
+
+/*
+ * thrift:crochet_request_data_context reports its own REPLY as 15, which this
+ * enum already spends on REQ_TASK_ENQUEUE, so the USDT handler remaps it to
+ * REQ_REPLY. REPLY fires once the response has been serialized, ending the
+ * request's synchronous part; whatever runs up to CLEAR after it is post-reply
+ * work.
+ */
+#define CROCHET_USDT_REPLY 15
 
 enum scx_dsq_insert_type {
 	SCX_DSQ_INSERT = 0,
@@ -399,7 +410,7 @@ struct wprof_event {
 		struct wprof_req_ctx {
 			u64 req_ts; /* request start timestamp */
 			u64 req_id;
-			enum wprof_req_event_kind req_event; /* lifecycle event (START, END, SET, UNSET, CLEAR) */
+			enum wprof_req_event_kind req_event; /* lifecycle event (BEGIN, SET, UNSET, REPLY, END, CLEAR) */
 			char req_name[REQ_NAME_LEN];
 		} req;
 		struct wprof_req_task_ctx {
