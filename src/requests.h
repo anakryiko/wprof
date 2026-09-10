@@ -17,10 +17,16 @@ struct uprobe_binary {
 	char *attach_path;
 
 	bool required;	/* named path, so this binary itself has to attach */
-	u64 pid_mask;	/* bit N set if mapped by named PID env.req_pids[N] */
+	/*
+	 * One bit per thing the user named: env.req_pids[N] takes bit N, and each
+	 * env.req_globs[N] takes the bit after those, shared by every process it
+	 * matched. Set here if this binary was discovered on that PID's or glob's
+	 * behalf, so attachment can tell which of them ended up with a probe.
+	 */
+	u64 pid_mask;
 };
 
-/* named PIDs past this many aren't tracked in pid_mask and go unchecked */
+/* named PIDs and globs past this many aren't tracked in pid_mask and go unchecked */
 #define REQ_PID_MASK_BITS 64
 
 static inline size_t uprobe_binary_hash_fn(long key, void *ctx)

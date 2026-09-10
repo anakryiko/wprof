@@ -149,6 +149,35 @@ int setup_req_tracking_discovery(void)
 		}
 	}
 
+	for (int i = 0; i < env.req_glob_cnt; i++) {
+		int bit = env.req_pid_cnt + i;
+		/* one bit for the whole glob, however many processes it matches */
+		u64 pid_mask = bit < REQ_PID_MASK_BITS ? 1ULL << bit : 0;
+		const char *glob = env.req_globs[i];
+		int *pidp, matched = 0;
+
+		wprof_for_each(proc, pidp) {
+			char comm[TASK_COMM_FULL_LEN];
+
+			/* a process can exit between listing and now, so a miss is not an error */
+			if (proc_name_by_pid(*pidp, comm, sizeof(comm)) < 0)
+				continue;
+			if (!wprof_glob_match(glob, comm))
+				continue;
+
+			matched++;
+			/* a real failure is already reported by the VMA walk itself */
+			err = discover_pid_req_binaries(*pidp, pid_mask);
+			if (err < 0)
+				continue;
+		}
+
+		if (matched == 0) {
+			eprintf("No process matches '%s' for request tracking!\n", glob);
+			return -ESRCH;
+		}
+	}
+
 	return 0;
 }
 
@@ -808,6 +837,13 @@ int attach_req_tracking_usdts(struct bpf_state *st)
 			continue;
 		eprintf("No thrift:crochet_request_data_context USDT in any binary of PID %d!\n",
 			env.req_pids[i]);
+		return -ENOENT;
+	}
+
+	for (int i = 0; i < env.req_glob_cnt && env.req_pid_cnt + i < REQ_PID_MASK_BITS; i++) {
+		if (attached_pids & (1ULL << (env.req_pid_cnt + i)))
+			continue;
+		eprintf("No thrift:crochet_request_data_context USDT in any process matching '%s'!\n", env.req_globs[i]);
 		return -ENOENT;
 	}
 
