@@ -82,14 +82,18 @@ struct wevent {
 		struct wevent_waking {
 			u32 wakee_task_id;
 			u32 waker_stack_id;
-			u32 prio;
+			u8 prio;		/* 0xff is SCHED_DEADLINE's -1 */
+			u8 flags;		/* enum wprof_irqctx_flag bitmask */
+			u16 reserved;
 			int target_cpu;
 		} waking;
 
 		struct wevent_wakeup_new {
 			u32 wakee_task_id;
 			u32 waker_stack_id;
-			u32 prio;
+			u8 prio;		/* 0xff is SCHED_DEADLINE's -1 */
+			u8 flags;		/* enum wprof_irqctx_flag bitmask */
+			u16 reserved;
 			int target_cpu;
 		} wakeup_new;
 
@@ -263,6 +267,12 @@ struct wevent {
 };
 
 #define WEVENT_SZ(kind) offsetofend(struct wevent, kind)
+
+/* task->prio narrowed to u8 on the wire, where 0xff stands in for SCHED_DEADLINE's -1 */
+static inline int wevent_prio(u8 prio)
+{
+	return prio == 0xff ? -1 : prio;
+}
 
 /*
  * Get the fixed size of a wevent (not including trailing stack traces).
