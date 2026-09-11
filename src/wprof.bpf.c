@@ -970,6 +970,94 @@ int BPF_PROG(wprof_task_switch,
 	return 0;
 }
 
+extern bool CONFIG_PREEMPT_RT __kconfig __weak;
+
+#if defined(__TARGET_ARCH_x86)
+extern const int __preempt_count __ksym __weak;
+
+/*
+ * preempt_count moved out of struct pcpu_hot into its own per-CPU variable in
+ * v6.14; kernels in [v6.1, v6.14) keep it here.
+ */
+struct pcpu_hot___local {
+	int preempt_count;
+} __attribute__((preserve_access_index));
+
+extern struct pcpu_hot___local pcpu_hot __ksym __weak;
+#endif
+
+struct task_struct___preempt_rt {
+	int softirq_disable_cnt;
+} __attribute__((preserve_access_index));
+
+/*
+ * preempt_count layout, transcribed from include/linux/preempt.h (vmlinux.h
+ * carries types, not macros):
+ *
+ *	PREEMPT_MASK:	0x000000ff
+ *	SOFTIRQ_MASK:	0x0000ff00
+ *	HARDIRQ_MASK:	0x000f0000
+ *	    NMI_MASK:	0x00f00000
+ */
+#define PC_PREEMPT_BITS		8
+#define PC_SOFTIRQ_BITS		8
+#define PC_HARDIRQ_BITS		4
+#define PC_NMI_BITS		4
+
+#define PC_PREEMPT_SHIFT	0
+#define PC_SOFTIRQ_SHIFT	(PC_PREEMPT_SHIFT + PC_PREEMPT_BITS)
+#define PC_HARDIRQ_SHIFT	(PC_SOFTIRQ_SHIFT + PC_SOFTIRQ_BITS)
+#define PC_NMI_SHIFT		(PC_HARDIRQ_SHIFT + PC_HARDIRQ_BITS)
+
+#define PC_IRQ_MASK(x)		((1u << (x)) - 1)
+
+#define PC_HARDIRQ_MASK		(PC_IRQ_MASK(PC_HARDIRQ_BITS) << PC_HARDIRQ_SHIFT)
+#define PC_NMI_MASK		(PC_IRQ_MASK(PC_NMI_BITS) << PC_NMI_SHIFT)
+#define PC_SOFTIRQ_OFFSET	(1u << PC_SOFTIRQ_SHIFT)
+
+static __always_inline int get_preempt_count(void)
+{
+#if defined(__TARGET_ARCH_x86)
+	if (bpf_ksym_exists(&__preempt_count))
+		return *(int *)bpf_this_cpu_ptr(&__preempt_count);
+	if (bpf_core_field_exists(pcpu_hot.preempt_count))
+		return ((struct pcpu_hot___local *)bpf_this_cpu_ptr(&pcpu_hot))->preempt_count;
+#elif defined(__TARGET_ARCH_arm64)
+	return bpf_get_current_task_btf()->thread_info.preempt.count;
+#elif defined(__TARGET_ARCH_powerpc)
+	return bpf_get_current_task_btf()->thread_info.preempt_count;
+#endif
+	return 0;
+}
+
+/*
+ * Which interrupt context the current CPU is in. The softirq bit tracks
+ * in_serving_softirq(), so it tests SOFTIRQ_OFFSET rather than the whole
+ * softirq field: a plain BH-disabled section is not softirq context.
+ */
+static __always_inline u8 cur_irqctx_flags(void)
+{
+	int pc = get_preempt_count();
+	u8 flags = 0;
+
+	if (pc & PC_NMI_MASK)
+		flags |= WTF_NMI;
+	if (pc & PC_HARDIRQ_MASK)
+		flags |= WTF_HARDIRQ;
+
+	if (!CONFIG_PREEMPT_RT) {
+		if (pc & PC_SOFTIRQ_OFFSET)
+			flags |= WTF_SOFTIRQ;
+	} else {
+		struct task_struct___preempt_rt *tsk = (void *)bpf_get_current_task_btf();
+
+		if (tsk->softirq_disable_cnt & PC_SOFTIRQ_OFFSET)
+			flags |= WTF_SOFTIRQ;
+	}
+
+	return flags;
+}
+
 static __always_inline int handle_waking(void *ctx, struct task_struct *p, enum event_kind kind)
 {
 	u64 now_ts = bpf_ktime_get_ns();
@@ -1003,6 +1091,7 @@ static __always_inline int handle_waking(void *ctx, struct task_struct *p, enum 
 		e->waking.wakee_task_id = task_id(p->pid);
 		e->waking.prio = p->prio;
 		e->waking.target_cpu = wprof_task_cpu(p);
+		e->waking.flags = cur_irqctx_flags();
 		if (tr) {
 			emit_stack_trace(tr, dyn_sz, dptr, fix_sz);
 			e->flags |= ST_WAKER;

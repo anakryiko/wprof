@@ -238,6 +238,19 @@ enum waking_flags {
 };
 
 /*
+ * Interrupt context a wakeup was issued from, recorded in wprof_waking.flags.
+ * Any combination can be set at once: an NMI can land inside a hardirq, and a
+ * hardirq can interrupt softirq processing.
+ */
+enum wprof_irqctx_flag {
+	WTF_HARDIRQ	= 0x1,
+	WTF_SOFTIRQ	= 0x2,
+	WTF_NMI		= 0x4,
+
+	WTF_IRQ_CTX_MASK = WTF_HARDIRQ | WTF_SOFTIRQ | WTF_NMI,
+};
+
+/*
  * Bit ranges hand-packed into the u16 wprof_event.flags:
  *   bits 0-5   EF_STACK_TRACE_MSK  (ST_ALL; one bit per captured stack trace kind)
  *   bits 6-8   free (headroom for more stack trace kinds)
@@ -360,12 +373,16 @@ struct wprof_event {
 		} pmu_event;
 		struct wprof_waking {
 			int wakee_task_id;
-			u32 prio;
+			u8 prio;		/* 0xff is SCHED_DEADLINE's -1 */
+			u8 flags;		/* enum wprof_irqctx_flag bitmask */
+			u16 reserved;
 			int target_cpu;
 		} waking;
 		struct wprof_wakeup_new {
 			int wakee_task_id;
-			u32 prio;
+			u8 prio;		/* 0xff is SCHED_DEADLINE's -1 */
+			u8 flags;		/* enum wprof_irqctx_flag bitmask */
+			u16 reserved;
 			int target_cpu;
 		} wakeup_new;
 		struct wprof_hardirq {

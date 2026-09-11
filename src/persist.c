@@ -376,6 +376,8 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 		dst->waking.wakee_task_id = resolve_task_ref(ps, e->waking.wakee_task_id);
 		dst->waking.waker_stack_id = bpf_event_stack_id(e, ST_WAKER);
 		dst->waking.prio = e->waking.prio;
+		dst->waking.flags = e->waking.flags;
+		dst->waking.reserved = 0;
 		dst->waking.target_cpu = e->waking.target_cpu;
 		break;
 	}
@@ -385,6 +387,8 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 		dst->wakeup_new.wakee_task_id = resolve_task_ref(ps, e->wakeup_new.wakee_task_id);
 		dst->wakeup_new.waker_stack_id = bpf_event_stack_id(e, ST_WAKER);
 		dst->wakeup_new.prio = e->wakeup_new.prio;
+		dst->wakeup_new.flags = e->wakeup_new.flags;
+		dst->wakeup_new.reserved = 0;
 		dst->wakeup_new.target_cpu = e->wakeup_new.target_cpu;
 		break;
 	}
