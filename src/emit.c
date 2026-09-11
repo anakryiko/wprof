@@ -2644,6 +2644,8 @@ static void emit_waking(struct worker_state *w, const struct wevent *e, enum wak
 			emit_kv_int(IID_ANNK_WAKEE_TID, task_tid(&wakee));
 			emit_kv_int(IID_ANNK_WAKEE_PID, wakee.pid);
 		}
+		if (e->waking.flags & WTF_IRQ_CTX_MASK)
+			emit_kv_str(IID_ANNK_IRQ_CTX, IID_ANNV_IRQ_CTX + wirqctx_enum(e->waking.flags));
 		emit_flow_id(e->ts);
 		emit_callstack(w, tr_id);
 	}
@@ -2664,6 +2666,8 @@ static void emit_waking_json(struct worker_state *w, const struct wevent *e, enu
 	json_kv_int(j, "cpu", e->cpu);
 	if (env.emit_numa)
 		json_kv_int(j, "numa", e->numa_node);
+	if (e->waking.flags & WTF_IRQ_CTX_MASK)
+		json_kv_str(j, "irq_ctx", wirqctx_str(e->waking.flags));
 	if ((env.requested_stack_traces & ST_WAKER) && e->waking.waker_stack_id > 0)
 		json_kv_int(j, "waker_stack_id", e->waking.waker_stack_id);
 	json_obj_end(j);
@@ -2703,7 +2707,7 @@ emit:
 		fev->kind = flags == WF_WOKEN_NEW ? WPB_FTRACE_SCHED_WAKEUP_NEW : WPB_FTRACE_SCHED_WAKING;
 		fev->comm = wpb_str_from_cstr(0, wakee.comm);
 		fev->event_pid = task_tid(&wakee);
-		fev->prio = e->waking.prio;
+		fev->prio = wevent_prio(e->waking.prio);
 		fev->target_cpu = e->waking.target_cpu;
 	}
 

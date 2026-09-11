@@ -43,6 +43,23 @@ enum waking_reason {
 enum waking_reason wreason_enum(enum waking_flags flags);
 const char *wreason_str(enum waking_flags flags);
 
+/* named WTF_* bit combinations, indexing wirqctx_str_map[] and IID_ANNV_IRQ_CTX */
+enum wprof_irq_ctx {
+	WIRQCTX_NORMAL			= 0,
+	WIRQCTX_HARDIRQ			= 0x1,
+	WIRQCTX_SOFTIRQ			= 0x2,
+	WIRQCTX_HARDIRQ_SOFTIRQ		= 0x1 | 0x2,
+	WIRQCTX_NMI			= 0x4,
+	WIRQCTX_NMI_HARDIRQ		= 0x4 | 0x1,
+	WIRQCTX_NMI_SOFTIRQ		= 0x4 | 0x2,
+	WIRQCTX_NMI_HARDIRQ_SOFTIRQ	= 0x4 | 0x2 | 0x1,
+
+	NR_WIRQCTX,
+};
+
+enum wprof_irq_ctx wirqctx_enum(__u8 flags);
+const char *wirqctx_str(__u8 flags);
+
 /* numeric values match CUPTI_ACTIVITY_MEMCPY_KIND_xxx definitions */
 enum cuda_memcpy_kind {
 	CUDA_MEMCPY_UNKN = 0,
@@ -253,6 +270,7 @@ enum pb_static_iid {
 		IID_ANNK_WAKEE,					/* wakee */
 		IID_ANNK_WAKEE_TID,				/* wakee_tid */
 		IID_ANNK_WAKEE_PID,				/* wakee_pid */
+		IID_ANNK_IRQ_CTX,				/* irq_ctx */
 		IID_ANNK_FORKED_INTO,				/* forked_into */
 		IID_ANNK_FORKED_INTO_TID,			/* forked_into_tid */
 		IID_ANNK_FORKED_INTO_PID,			/* forked_into_pid */
@@ -305,6 +323,8 @@ enum pb_static_iid {
 		IID_ANNV_SOFTIRQ_ACTION_LAST = IID_ANNV_SOFTIRQ_ACTION + NR_SOFTIRQS - 1,
 		IID_ANNV_WAKING_REASON,				/* preempted, waking, etc. */
 		IID_ANNV_WAKING_REASON_LAST = IID_ANNV_WAKING_REASON + NR_WREASON - 1,
+		IID_ANNV_IRQ_CTX,				/* hardirq, nmi+softirq, etc. */
+		IID_ANNV_IRQ_CTX_LAST = IID_ANNV_IRQ_CTX + NR_WIRQCTX - 1,
 		IID_ANNV_OFFCPU_STATE,				/* runnable, preempted, etc. */
 		IID_ANNV_OFFCPU_STATE_LAST = IID_ANNV_OFFCPU_STATE + NR_WPROF_TASK_RUN_STATES - 1,
 		IID_ANNV_CUDA_MEMCPY_KIND,			/* DtoH, HtoD, etc. */

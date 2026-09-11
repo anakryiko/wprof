@@ -222,11 +222,17 @@ Emitted on every wakeup (`sched_waking`), including repeat wakeups before the
 woken thread runs. The same waker→wakee relationship is also reflected on the
 woken thread's subsequent `switch` (its `waker`/`waking_ts`/`waking_reason`).
 
-| Field            | Type | Description                                                               |
-|------------------|------|---------------------------------------------------------------------------|
-| `waker`          | task | Thread performing the wakeup (idle when woken from interrupt context)      |
-| `wakee`          | task | Thread being woken                                                         |
-| `waker_stack_id` | int  | *(optional)* Stack trace ID for the waker's stack (present with `-Swaker`) |
+| Field            | Type   | Description                                                                  |
+|------------------|--------|------------------------------------------------------------------------------|
+| `waker`          | task   | Thread performing the wakeup (idle when woken from interrupt context)        |
+| `wakee`          | task   | Thread being woken                                                           |
+| `irq_ctx`        | string | *(optional)* Interrupt context the wakeup was issued from; omitted if normal |
+| `waker_stack_id` | int    | *(optional)* Stack trace ID for the waker's stack (present with `-Swaker`)   |
+
+`irq_ctx` is one of `hardirq`, `softirq` or `nmi`. The three are independent,
+so they can combine, joined with `+` in that order (e.g. `hardirq+softirq`
+when a hardirq interrupted softirq processing). It is absent for wakeups
+issued from normal task context.
 
 ```json
 {
@@ -235,6 +241,7 @@ woken thread's subsequent `switch` (its `waker`/`waking_ts`/`waking_reason`).
   "waker": {"tid": 9999, "pid": 5000, "comm": "scheduler"},
   "wakee": {"tid": 5678, "pid": 5000, "comm": "myapp"},
   "cpu": 7,
+  "irq_ctx": "hardirq",
   "waker_stack_id": 99
 }
 ```
