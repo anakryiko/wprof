@@ -89,6 +89,27 @@ const char *wreason_str(enum waking_flags flags)
 	return wreason_str_map[wreason_enum(flags)];
 }
 
+static const char *wirqctx_str_map[] = {
+	[WIRQCTX_NORMAL] = "normal",
+	[WIRQCTX_HARDIRQ] = "hardirq",
+	[WIRQCTX_SOFTIRQ] = "softirq",
+	[WIRQCTX_HARDIRQ_SOFTIRQ] = "hardirq+softirq",
+	[WIRQCTX_NMI] = "nmi",
+	[WIRQCTX_NMI_HARDIRQ] = "nmi+hardirq",
+	[WIRQCTX_NMI_SOFTIRQ] = "nmi+softirq",
+	[WIRQCTX_NMI_HARDIRQ_SOFTIRQ] = "nmi+hardirq+softirq",
+};
+
+enum wprof_irq_ctx wirqctx_enum(__u8 flags)
+{
+	return flags & WTF_IRQ_CTX_MASK;
+}
+
+const char *wirqctx_str(__u8 flags)
+{
+	return wirqctx_str_map[wirqctx_enum(flags)];
+}
+
 static const char *cuda_memcpy_kind_str_map[] = {
 	[CUDA_MEMCPY_UNKN] = "???",
 	[CUDA_MEMCPY_HTOD] = "HtoD",	/* CUPTI_ACTIVITY_MEMCPY_KIND_HTOD */
@@ -353,6 +374,7 @@ static const char *pb_static_strs[] = {
 	[IID_ANNK_WAKEE] = "wakee",
 	[IID_ANNK_WAKEE_TID] = "wakee_tid",
 	[IID_ANNK_WAKEE_PID] = "wakee_pid",
+	[IID_ANNK_IRQ_CTX] = "irq_ctx",
 	[IID_ANNK_FORKED_INTO] = "forked_into",
 	[IID_ANNK_FORKED_INTO_TID] = "forked_into_tid",
 	[IID_ANNK_FORKED_INTO_PID] = "forked_into_pid",
@@ -415,6 +437,14 @@ static const char *pb_static_strs[] = {
 	[IID_ANNV_WAKING_REASON + WREASON_WOKEN_NEW] = "woken_new",
 	[IID_ANNV_WAKING_REASON + WREASON_PREEMPTED] = "preempted",
 	[IID_ANNV_WAKING_REASON + WREASON_INVALID] = "???",
+	[IID_ANNV_IRQ_CTX + WIRQCTX_NORMAL] = "normal",
+	[IID_ANNV_IRQ_CTX + WIRQCTX_HARDIRQ] = "hardirq",
+	[IID_ANNV_IRQ_CTX + WIRQCTX_SOFTIRQ] = "softirq",
+	[IID_ANNV_IRQ_CTX + WIRQCTX_HARDIRQ_SOFTIRQ] = "hardirq+softirq",
+	[IID_ANNV_IRQ_CTX + WIRQCTX_NMI] = "nmi",
+	[IID_ANNV_IRQ_CTX + WIRQCTX_NMI_HARDIRQ] = "nmi+hardirq",
+	[IID_ANNV_IRQ_CTX + WIRQCTX_NMI_SOFTIRQ] = "nmi+softirq",
+	[IID_ANNV_IRQ_CTX + WIRQCTX_NMI_HARDIRQ_SOFTIRQ] = "nmi+hardirq+softirq",
 
 	[IID_ANNV_CUDA_MEMCPY_KIND + CUDA_MEMCPY_UNKN] = "???",
 	[IID_ANNV_CUDA_MEMCPY_KIND + CUDA_MEMCPY_HTOD] = "HtoD",
