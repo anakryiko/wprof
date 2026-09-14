@@ -545,6 +545,8 @@ The counters cover on-CPU time only; `offcpu_dur` is excluded from them.
 | `req_id`      | int    | Request identifier                                   |
 | `req_task_id` | int    | Request task identifier                              |
 | `wait_time`   | float  | *(optional)* Time spent waiting, in seconds          |
+| `offcpu_dur`  | float  | *(optional)* Time spent off-CPU, in seconds          |
+| `pmus`        | array of float | *(optional)* PMU counter totals for the task run (on `"stats"` events) |
 
 ```json
 {
@@ -558,6 +560,8 @@ The counters cover on-CPU time only; `offcpu_dur` is excluded from them.
   "wait_time": 0.003200000
 }
 ```
+
+The counters cover on-CPU time only; `offcpu_dur` is excluded from them.
 
 ---
 

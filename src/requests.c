@@ -807,6 +807,9 @@ int attach_req_tracking_usdts(struct bpf_state *st)
 
 		attached_pids |= binary->pid_mask;
 
+		if (!env.capture_req_tasks)
+			continue;
+
 		err = attach_usdt_probe(st, st->skel->progs.wprof_req_task_enqueue,
 					binary->path, binary->attach_path,
 					"folly", "thread_pool_executor_task_enqueued", !binary->required);

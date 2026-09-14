@@ -161,6 +161,7 @@ struct wevent {
 
 		struct wevent_req_task_ctx {
 			enum wprof_req_event_kind req_task_event; /* ENQUEUE/DEQUEUE/STATS */
+			u32 pmu_vals_id;
 			u64 req_id;
 			u64 req_task_id;
 			u64 enqueue_ts;

@@ -478,6 +478,7 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 		fill_wevent_hdr(dst, e, task_id, WEVENT_SZ(req_task));
 
 		dst->req_task.req_task_event = e->req_task.req_task_event;
+		dst->req_task.pmu_vals_id = persist_pmu_vals_id(ps, bpf_event_pmu_vals(e));
 		dst->req_task.req_id = e->req_task.req_id;
 		dst->req_task.req_task_id = e->req_task.task_id;
 		dst->req_task.enqueue_ts = e->req_task.enqueue_ts;

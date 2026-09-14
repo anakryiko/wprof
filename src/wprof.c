@@ -172,6 +172,9 @@ const char *extra_param_str(struct wprof_data_hdr *hdr, const struct wprof_extra
 		default:		return sfmt("--stacks=!!unknown!!(%llu)", e->arg);
 		}
 	case WEXTRA_FR_SPEC:			return sfmt("--flight-record=%s", wevent_str(hdr, e->stroff));
+	case WEXTRA_REQ_PMU:			return sfmt("-f req-pmu=%s", req_pmu_layer_str(e->value));
+	case WEXTRA_REQ_CTXS:			return e->value ? "-f req-ctxs" : "-f no-req-ctxs";
+	case WEXTRA_REQ_TASKS:			return e->value ? "-f req-tasks" : "-f no-req-tasks";
 	default:
 		BUG("unknown extra param kind %d\n", e->kind);
 	}
@@ -1009,9 +1012,11 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 
 	if (env.req_binaries) {
 		bpf_program__set_autoload(skel->progs.wprof_req_ctx, true);
-		bpf_program__set_autoload(skel->progs.wprof_req_task_enqueue, true);
-		bpf_program__set_autoload(skel->progs.wprof_req_task_dequeue, true);
-		bpf_program__set_autoload(skel->progs.wprof_req_task_stats, true);
+		if (env.capture_req_tasks) {
+			bpf_program__set_autoload(skel->progs.wprof_req_task_enqueue, true);
+			bpf_program__set_autoload(skel->progs.wprof_req_task_dequeue, true);
+			bpf_program__set_autoload(skel->progs.wprof_req_task_stats, true);
+		}
 		bpf_map__set_max_entries(skel->maps.req_states, max(16 * 1024, env.task_state_sz));
 	} else {
 		bpf_map__set_autocreate(skel->maps.req_states, false);
@@ -1157,6 +1162,9 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 	skel->rodata->capture_scx = env.capture_scx == TRUE;
 	skel->rodata->capture_task_life = env.capture_task_life == TRUE;
 	skel->rodata->capture_pystacks = env.capture_pystacks == TRUE;
+	skel->rodata->capture_req_ctxs = env.capture_req_ctxs == TRUE;
+	skel->rodata->capture_req_ctxs_pmu = env.req_pmu_layer == REQ_PMU_CTXS;
+	skel->rodata->capture_req_tasks_pmu = env.req_pmu_layer == REQ_PMU_TASKS;
 
 	skel->rodata->rb_cnt = env.ringbuf_cnt;
 	bpf_map__set_max_entries(skel->maps.rbs, env.ringbuf_cnt);
@@ -2271,6 +2279,9 @@ int main(int argc, char **argv)
 			env.allow_tid_cnt || env.deny_tid_cnt ||
 			env.allow_pname_cnt || env.deny_pname_cnt ||
 			env.allow_tname_cnt || env.deny_tname_cnt;
+		enum tristate rec_req_ctxs = DEFAULT_CAPTURE_REQ_CTXS;
+		enum tristate rec_req_tasks = DEFAULT_CAPTURE_REQ_TASKS;
+		enum req_pmu_layer rec_req_pmu = DEFAULT_REQ_PMU_LAYER;
 		for (u64 i = 0; i < dump_hdr->extra_cnt; i++) {
 			struct wprof_extra_param *ep = wevent_extra_param(dump_hdr, i);
 			const char *val = ep->stroff ? wevent_str(dump_hdr, ep->stroff) : "";
@@ -2359,6 +2370,15 @@ int main(int argc, char **argv)
 			case WEXTRA_EMIT_PY_COMBINE:
 				env.emit_py_combine = env.emit_py_combine != UNSET ? env.emit_py_combine : ep->value;
 				break;
+			case WEXTRA_REQ_CTXS:
+				rec_req_ctxs = ep->value;
+				break;
+			case WEXTRA_REQ_TASKS:
+				rec_req_tasks = ep->value;
+				break;
+			case WEXTRA_REQ_PMU:
+				rec_req_pmu = ep->value;
+				break;
 			case WEXTRA_METADATA:
 			case WEXTRA_STATS:
 			case WEXTRA_PMU:
@@ -2375,6 +2395,33 @@ int main(int argc, char **argv)
 			if (err)
 				goto cleanup;
 		}
+		/*
+		 * Only narrowing is meaningful at replay: data that was captured can be
+		 * dropped, but data that was never recorded can't be asked for.
+		 */
+		if (env.capture_req_ctxs == TRUE && rec_req_ctxs != TRUE) {
+			eprintf("replay: request contexts requested, but not recorded in data dump!\n");
+			err = -EINVAL;
+			goto cleanup;
+		}
+		if (env.capture_req_tasks == TRUE && rec_req_tasks != TRUE) {
+			eprintf("replay: request tasks requested, but not recorded in data dump!\n");
+			err = -EINVAL;
+			goto cleanup;
+		}
+		if (env.req_pmu_layer != REQ_PMU_UNSET && env.req_pmu_layer != REQ_PMU_NONE &&
+		    env.req_pmu_layer != rec_req_pmu) {
+			eprintf("replay: request PMU layer '%s' requested, but '%s' recorded in data dump!\n",
+				req_pmu_layer_str(env.req_pmu_layer), req_pmu_layer_str(rec_req_pmu));
+			err = -EINVAL;
+			goto cleanup;
+		}
+		if (env.capture_req_ctxs == UNSET)
+			env.capture_req_ctxs = rec_req_ctxs;
+		if (env.capture_req_tasks == UNSET)
+			env.capture_req_tasks = rec_req_tasks;
+		if (env.req_pmu_layer == REQ_PMU_UNSET)
+			env.req_pmu_layer = rec_req_pmu;
 
 		/* resolve emit (-e) options not set on the CLI or in the data dump */
 		for (int i = 0; i < emit_feature_cnt; i++) {
@@ -2506,6 +2553,30 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
+	bool req_pmu = env.req_pmu_layer == REQ_PMU_CTXS || env.req_pmu_layer == REQ_PMU_TASKS;
+
+	if (env.capture_requests != TRUE &&
+	    (env.capture_req_ctxs == TRUE || env.capture_req_tasks == TRUE || req_pmu)) {
+		eprintf("-f req-... sub-features require request tracking; add -f req!\n");
+		err = -EINVAL;
+		goto cleanup;
+	}
+	if (env.req_pmu_layer == REQ_PMU_CTXS && env.capture_req_ctxs == FALSE) {
+		eprintf("-f req-pmu=ctxs requires request context events; drop -f no-req-ctxs!\n");
+		err = -EINVAL;
+		goto cleanup;
+	}
+	if (env.req_pmu_layer == REQ_PMU_TASKS && env.capture_req_tasks == FALSE) {
+		eprintf("-f req-pmu=tasks requires request task events; drop -f no-req-tasks!\n");
+		err = -EINVAL;
+		goto cleanup;
+	}
+	if (req_pmu && env.pmu_real_cnt <= 0) {
+		eprintf("-f req-pmu=%s requires PMU counters; add --pmu!\n", req_pmu_layer_str(env.req_pmu_layer));
+		err = -EINVAL;
+		goto cleanup;
+	}
+
 	for (int i = 0; i < ARRAY_SIZE(capture_features); i++) {
 		const struct capture_feature *f = &capture_features[i];
 		enum tristate *flag = (void *)&env + f->env_flag_off;
@@ -2513,6 +2584,13 @@ int main(int argc, char **argv)
 		if (*flag == UNSET)
 			*flag = f->default_val;
 	}
+	if (env.capture_req_ctxs == UNSET)
+		env.capture_req_ctxs = DEFAULT_CAPTURE_REQ_CTXS;
+	if (env.capture_req_tasks == UNSET)
+		env.capture_req_tasks = DEFAULT_CAPTURE_REQ_TASKS;
+	if (env.req_pmu_layer == REQ_PMU_UNSET)
+		env.req_pmu_layer = DEFAULT_REQ_PMU_LAYER;
+
 	/* resolve emit (-e) options not set on the CLI */
 	for (int i = 0; i < emit_feature_cnt; i++) {
 		const struct emit_feature *f = &emit_features[i];

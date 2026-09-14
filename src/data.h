@@ -102,6 +102,9 @@ enum wprof_extra_param_kind {
 	WEXTRA_FR_SPEC			= 28,
 	WEXTRA_STACK_CAPTURE		= 29,
 	WEXTRA_EMIT_PY_COMBINE		= 30,
+	WEXTRA_REQ_PMU			= 31,
+	WEXTRA_REQ_CTXS			= 32,
+	WEXTRA_REQ_TASKS		= 33,
 };
 
 struct wprof_extra_param {
