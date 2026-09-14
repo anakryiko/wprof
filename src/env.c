@@ -61,6 +61,9 @@ struct env env = {
 	.requested_stack_traces = ST_UNSET,
 	.capture_ipis = UNSET,
 	.capture_requests = UNSET,
+	.capture_req_ctxs = UNSET,
+	.capture_req_tasks = UNSET,
+	.req_pmu_layer = REQ_PMU_UNSET,
 	.capture_scx = UNSET,
 	.capture_cuda = UNSET,
 	.capture_pystacks = UNSET,
@@ -184,6 +187,8 @@ static const struct argp_option opts[] = {
 	  "Data capture feature selector. Supported: ipi, req[=PATH|PID|comm:GLOB], scx, cuda[=nv-smi|all|PID], "
 	  "py-stacks[=nv-smi|PID], py-trace[=nv-smi|PID], py-torch[=nv-smi|PID], "
 	  "softirq, hardirq, irq, wq, sched (on by default), wakeup (on by default), task-life (on by default). "
+	  "Request sub-features under -f req: req-ctxs, req-tasks (both on by default), "
+	  "req-pmu=ctxs|tasks|none (none by default). "
 	  "All features can be prefixed with 'no-' to disable them explicitly." },
 
 	/* trace emitting options */
@@ -562,6 +567,25 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 				}
 			}
 			env.capture_requests = val;
+		} else if (strcasecmp(arg, "req-ctxs") == 0) {
+			env.capture_req_ctxs = val;
+		} else if (strcasecmp(arg, "req-tasks") == 0) {
+			env.capture_req_tasks = val;
+		} else if (strncasecmp(arg, "req-pmu", 7) == 0) {
+			const char *layer = arg + 7;
+
+			if (val == FALSE && layer[0] == '\0') {
+				env.req_pmu_layer = REQ_PMU_NONE;
+			} else if (val == TRUE && (layer[0] == '\0' || strcasecmp(layer, "=ctxs") == 0)) {
+				env.req_pmu_layer = REQ_PMU_CTXS;
+			} else if (val == TRUE && strcasecmp(layer, "=tasks") == 0) {
+				env.req_pmu_layer = REQ_PMU_TASKS;
+			} else if (val == TRUE && strcasecmp(layer, "=none") == 0) {
+				env.req_pmu_layer = REQ_PMU_NONE;
+			} else {
+				eprintf("Use -f req-pmu=ctxs|tasks|none or -f no-req-pmu to pick which request layer gets PMU accounting!\n");
+				return -EINVAL;
+			}
 		} else if (strcasecmp(arg, "scx") == 0) {
 			env.capture_scx = val;
 			// TODO(patlu): unified cuda/py-stacks/py-trace

@@ -28,6 +28,9 @@
 #define DEFAULT_REQUESTED_STACK_TRACES ST_NONE
 #define DEFAULT_CAPTURE_IPIS FALSE
 #define DEFAULT_CAPTURE_REQUESTS FALSE
+#define DEFAULT_CAPTURE_REQ_CTXS TRUE
+#define DEFAULT_CAPTURE_REQ_TASKS TRUE
+#define DEFAULT_REQ_PMU_LAYER REQ_PMU_NONE
 #define DEFAULT_CAPTURE_SCX FALSE
 #define DEFAULT_CAPTURE_CUDA FALSE
 #define DEFAULT_CAPTURE_PYSTACKS FALSE
@@ -55,6 +58,13 @@
 extern bool env_verbose;
 extern int env_debug_level;
 extern enum log_subset env_log_set;
+
+enum req_pmu_layer {
+	REQ_PMU_UNSET = -1,
+	REQ_PMU_NONE,	/* --pmu counters without request-level accounting (default) */
+	REQ_PMU_CTXS,	/* charged to crochet request contexts */
+	REQ_PMU_TASKS,	/* charged to folly executor tasks */
+};
 
 enum cuda_discover_strategy {
 	CUDA_DISCOVER_NONE, /* no automatic discovery */
@@ -145,6 +155,9 @@ struct env {
 	/* data capture features */
 	enum tristate capture_ipis;
 	enum tristate capture_requests;
+	enum tristate capture_req_ctxs;		/* crochet REQ_SET/REQ_UNSET events */
+	enum tristate capture_req_tasks;	/* folly executor task enqueue/dequeue/stats */
+	enum req_pmu_layer req_pmu_layer;	/* which request layer PMU counters are charged to */
 	enum tristate capture_scx;
 	enum tristate capture_cuda;
 	enum tristate capture_pystacks;
@@ -317,6 +330,16 @@ static inline bool cfg_has_feat(u64 cfg_bits, const struct capture_feature *f)
 	bool bit = !!(cfg_bits & f->cfg_bit);
 
 	return f->inverted ? !bit : bit;
+}
+
+static inline const char *req_pmu_layer_str(enum req_pmu_layer layer)
+{
+	switch (layer) {
+	case REQ_PMU_NONE: return "none";
+	case REQ_PMU_CTXS: return "ctxs";
+	case REQ_PMU_TASKS: return "tasks";
+	default: return "unset";
+	}
 }
 
 /*

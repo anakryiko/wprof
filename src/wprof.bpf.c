@@ -147,6 +147,9 @@ const volatile enum stack_trace_kind requested_stack_traces = ST_ALL;
 const volatile bool capture_scx = true;
 const volatile bool capture_scx_layer_id = true;
 const volatile bool capture_task_life = true;
+const volatile bool capture_req_ctxs = true;
+const volatile bool capture_req_ctxs_pmu = true;
+const volatile bool capture_req_tasks_pmu = true;
 
 /*
  * Use BPF task-local storage for per-task state (the default). When false
@@ -1879,6 +1882,9 @@ int BPF_USDT(wprof_req_ctx, u64 req_id, const char *endpoint, enum wprof_req_eve
 
 	struct req_key key = { .req_id = req_id, .tgid = task->tgid };
 
+	if (!capture_req_ctxs && (event_kind == REQ_SET || event_kind == REQ_UNSET))
+		return 0;
+
 	/* TODO: drop this remap once the minor version bump frees 15 up (see data.h) */
 	if (event_kind == CROCHET_USDT_REPLY)
 		event_kind = REQ_REPLY;
@@ -1919,7 +1925,9 @@ int BPF_USDT(wprof_req_ctx, u64 req_id, const char *endpoint, enum wprof_req_eve
 	size_t fix_sz = EV_SZ(req);
 
 	struct perf_counters pmu_vals;
-	size_t pmu_sz = capture_perf_counters(&pmu_vals, NULL, bpf_get_smp_processor_id());
+	size_t pmu_sz = 0;
+	if (capture_req_ctxs_pmu)
+		pmu_sz = capture_perf_counters(&pmu_vals, NULL, bpf_get_smp_processor_id());
 
 	size_t tr_sz = 0;
 	if (requested_stack_traces & ST_REQ)
@@ -1936,7 +1944,7 @@ int BPF_USDT(wprof_req_ctx, u64 req_id, const char *endpoint, enum wprof_req_eve
 		e->req.req_event = event_kind;
 		if (bpf_probe_read_user_str(e->req.req_name, sizeof(e->req.req_name), endpoint) < 0)
 			e->req.req_name[0] = '\0';
-		if (perf_ctr_cnt) {
+		if (pmu_sz) {
 			emit_pmu_values(&pmu_vals, dptr, fix_sz);
 			e->flags |= EF_PMU_VALS;
 		}
@@ -2007,20 +2015,29 @@ int BPF_USDT(wprof_req_task_dequeue,
 	struct bpf_dynptr *dptr;
 	size_t fix_sz = EV_SZ(req_task);
 
+	struct perf_counters pmu_vals;
+	size_t pmu_sz = 0;
+	if (capture_req_tasks_pmu)
+		pmu_sz = capture_perf_counters(&pmu_vals, NULL, bpf_get_smp_processor_id());
+
 	DEF_TASK_INFOS(tis, 1);
 	task_infos_init(&tis.infos);
 	task_infos_add(&tis.infos, task, task_state(task));
 	size_t tasks_sz = tis.infos.data_sz;
 
-	emit_task_event_dyn(e, dptr, fix_sz, tasks_sz, EV_REQ_TASK_EVENT, now_ts, task) {
+	emit_task_event_dyn(e, dptr, fix_sz, pmu_sz + tasks_sz, EV_REQ_TASK_EVENT, now_ts, task) {
 		e->req_task.req_task_event = REQ_TASK_DEQUEUE;
 		e->req_task.req_id = req_id;
 		e->req_task.task_id = task_id;
 		e->req_task.enqueue_ts = enqueue_ts;
 		e->req_task.wait_time_ns = wait_time_ns;
 		e->req_task.run_time_ns = 0;
+		if (pmu_sz) {
+			emit_pmu_values(&pmu_vals, dptr, fix_sz);
+			e->flags |= EF_PMU_VALS;
+		}
 		if (tasks_sz)
-			e->flags |= task_infos_emit(&tis.infos, dptr, fix_sz);
+			e->flags |= task_infos_emit(&tis.infos, dptr, fix_sz + pmu_sz);
 	}
 
 	return 0;
@@ -2042,20 +2059,29 @@ int BPF_USDT(wprof_req_task_stats,
 	struct bpf_dynptr *dptr;
 	size_t fix_sz = EV_SZ(req_task);
 
+	struct perf_counters pmu_vals;
+	size_t pmu_sz = 0;
+	if (capture_req_tasks_pmu)
+		pmu_sz = capture_perf_counters(&pmu_vals, NULL, bpf_get_smp_processor_id());
+
 	DEF_TASK_INFOS(tis, 1);
 	task_infos_init(&tis.infos);
 	task_infos_add(&tis.infos, task, task_state(task));
 	size_t tasks_sz = tis.infos.data_sz;
 
-	emit_task_event_dyn(e, dptr, fix_sz, tasks_sz, EV_REQ_TASK_EVENT, now_ts, task) {
+	emit_task_event_dyn(e, dptr, fix_sz, pmu_sz + tasks_sz, EV_REQ_TASK_EVENT, now_ts, task) {
 		e->req_task.req_task_event = REQ_TASK_STATS;
 		e->req_task.req_id = req_id;
 		e->req_task.task_id = task_id;
 		e->req_task.enqueue_ts = enqueue_ts;
 		e->req_task.wait_time_ns = wait_time_ns;
 		e->req_task.run_time_ns = run_time_ns;
+		if (pmu_sz) {
+			emit_pmu_values(&pmu_vals, dptr, fix_sz);
+			e->flags |= EF_PMU_VALS;
+		}
 		if (tasks_sz)
-			e->flags |= task_infos_emit(&tis.infos, dptr, fix_sz);
+			e->flags |= task_infos_emit(&tis.infos, dptr, fix_sz + pmu_sz);
 	}
 
 	return 0;

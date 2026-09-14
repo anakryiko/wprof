@@ -224,6 +224,13 @@ static void collect_extras(struct persist_state *ps, struct wprof_extra_param **
 		if (*flag != f->default_val)
 			add_extra(extras, cnt, f->kind, *flag == TRUE);
 	}
+	/* persist -f req sub-features that differ from default */
+	if (env.capture_req_ctxs != DEFAULT_CAPTURE_REQ_CTXS)
+		add_extra(extras, cnt, WEXTRA_REQ_CTXS, env.capture_req_ctxs == TRUE);
+	if (env.capture_req_tasks != DEFAULT_CAPTURE_REQ_TASKS)
+		add_extra(extras, cnt, WEXTRA_REQ_TASKS, env.capture_req_tasks == TRUE);
+	if (env.req_pmu_layer != DEFAULT_REQ_PMU_LAYER)
+		add_extra(extras, cnt, WEXTRA_REQ_PMU, env.req_pmu_layer);
 
 	/* Persist built-in and user-provided metadata */
 	char hostname[256], uuid[UUID_STR_LEN];

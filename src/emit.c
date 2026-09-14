@@ -3466,6 +3466,8 @@ static int process_req_event(struct worker_state *w, const struct wevent *e)
 {
 	if (!env.capture_requests)
 		return 0;
+	if (!env.capture_req_ctxs && (e->req.req_event == REQ_SET || e->req.req_event == REQ_UNSET))
+		return 0;
 
 	struct wprof_data_hdr *hdr = w->dump_hdr;
 	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
@@ -3482,10 +3484,14 @@ static int process_req_event(struct worker_state *w, const struct wevent *e)
 
 	switch (e->req.req_event) {
 	case REQ_SET:
+		if (env.req_pmu_layer != REQ_PMU_CTXS)
+			break;
 		st->req_id = e->req.req_id;
 		req_task_reset(st, wevent_pmu_vals(hdr, e->req.pmu_vals_id), e->ts);
 		break;
 	case REQ_UNSET:
+		if (env.req_pmu_layer != REQ_PMU_CTXS)
+			break;
 		/* without a REQ_SET the request was caught in mid-flight; nothing was accumulated */
 		if (st->req_id && env.pmu_real_cnt) {
 			req_task_oncpu_end(st, wevent_pmu_vals(hdr, e->req.pmu_vals_id), e->ts);
@@ -3513,7 +3519,8 @@ static int process_req_event(struct worker_state *w, const struct wevent *e)
 }
 
 /* EV_REQ_TASK_EVENT */
-static void emit_req_task_event(struct worker_state *w, const struct wevent *e)
+static void emit_req_task_event(struct worker_state *w, const struct wevent *e,
+				const struct pmu_val *req_ctrs, u64 req_oncpu_ns, u64 req_offcpu_ns)
 {
 	struct wprof_data_hdr *hdr = w->dump_hdr;
 	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
@@ -3602,6 +3609,10 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e)
 				emit_kv_int(IID_ANNK_REQ_ID, e->req_task.req_id);
 				emit_kv_int(IID_ANNK_REQ_TASK_ID, e->req_task.req_task_id);
 				emit_kv_int(IID_ANNK_REQ_WAIT_TIME_NS, e->req_task.wait_time_ns);
+				if (req_ctrs) {
+					emit_kv_float(IID_ANNK_OFFCPU_DUR_US, "%.3lf", req_offcpu_ns / 1000.0);
+					emit_perf_counters(NULL, req_ctrs, true /* diffs */, req_oncpu_ns);
+				}
 				emit_flow_id(hash_combine(req_id, e->req_task.req_task_id));
 			}
 		}
@@ -3612,6 +3623,10 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e)
 				emit_kv_int(IID_ANNK_REQ_ID, e->req_task.req_id);
 				emit_kv_int(IID_ANNK_REQ_TASK_ID, e->req_task.req_task_id);
 				emit_kv_int(IID_ANNK_REQ_WAIT_TIME_NS, e->req_task.wait_time_ns);
+				if (req_ctrs) {
+					emit_kv_float(IID_ANNK_OFFCPU_DUR_US, "%.3lf", req_offcpu_ns / 1000.0);
+					emit_perf_counters(NULL, req_ctrs, true /* diffs */, req_oncpu_ns);
+				}
 				emit_flow_id(hash_combine(req_id, task.tid));
 				emit_flow_id(hash_combine(req_id, e->req_task.req_task_id));
 			}
@@ -3632,7 +3647,8 @@ static const char *req_task_event_str(enum wprof_req_event_kind kind)
 	}
 }
 
-static void emit_req_task_event_json(struct worker_state *w, const struct wevent *e)
+static void emit_req_task_event_json(struct worker_state *w, const struct wevent *e,
+				     const struct pmu_val *req_ctrs, u64 req_oncpu_ns, u64 req_offcpu_ns)
 {
 	struct json_state *j = &js;
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
@@ -3649,12 +3665,16 @@ static void emit_req_task_event_json(struct worker_state *w, const struct wevent
 	json_kv_int(j, "req_task_id", e->req_task.req_task_id);
 	if (e->req_task.wait_time_ns)
 		json_kv_ts(j, "wait_time", e->req_task.wait_time_ns);
+	if (req_ctrs) {
+		json_kv_ts(j, "offcpu_dur", req_offcpu_ns);
+		json_pmu_counters(j, NULL, req_ctrs, true /* diffs */, req_oncpu_ns);
+	}
 	json_obj_end(j);
 }
 
 static int process_req_task_event(struct worker_state *w, const struct wevent *e)
 {
-	if (!env.capture_requests)
+	if (!env.capture_requests || !env.capture_req_tasks)
 		return 0;
 
 	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
@@ -3665,10 +3685,39 @@ static int process_req_task_event(struct worker_state *w, const struct wevent *e
 	if (w->req_allowlist.ids && !req_allowlist_has(&w->req_allowlist, task.pid, e->req_task.req_id))
 		return 0;
 
+	struct wprof_data_hdr *hdr = w->dump_hdr;
+	const struct pmu_val *req_ctrs = NULL;
+	u64 req_oncpu_ns = 0, req_offcpu_ns = 0;
+
+	if (env.req_pmu_layer == REQ_PMU_TASKS) {
+		struct task_state *st = task_state(w, &task);
+
+		switch (e->req_task.req_task_event) {
+		case REQ_TASK_ENQUEUE:
+			break;
+		case REQ_TASK_DEQUEUE:
+			st->req_id = e->req_task.req_id;
+			req_task_reset(st, wevent_pmu_vals(hdr, e->req_task.pmu_vals_id), e->ts);
+			break;
+		case REQ_TASK_STATS:
+			/* without a DEQUEUE the task was caught in mid-flight; nothing was accumulated */
+			if (st->req_id && env.pmu_real_cnt) {
+				req_task_oncpu_end(st, wevent_pmu_vals(hdr, e->req_task.pmu_vals_id), e->ts);
+				req_ctrs = st->req_task_cum;
+				req_oncpu_ns = st->req_task_cum_ns;
+				req_offcpu_ns = (e->ts - st->req_task_set_ts) - req_oncpu_ns;
+			}
+			st->req_id = 0;
+			break;
+		default:
+			BUG("unhandled req task event %d\n", e->req_task.req_task_event);
+		}
+	}
+
 	if (env.json_path)
-		emit_req_task_event_json(w, e);
+		emit_req_task_event_json(w, e, req_ctrs, req_oncpu_ns, req_offcpu_ns);
 	else
-		emit_req_task_event(w, e);
+		emit_req_task_event(w, e, req_ctrs, req_oncpu_ns, req_offcpu_ns);
 	return 0;
 }
 
