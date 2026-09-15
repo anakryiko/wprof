@@ -31,39 +31,57 @@ The first line contains session metadata. Example:
 
 ```json
 {
-  "version": "3.1",
+  "version": "3.3",
+  "timestamp": "2026-09-15T17:04:31.783Z",
   "dur": 1.000000000,
   "timer_freq_hz": 997,
   "capture_ipis": false,
-  "capture_requests": false,
+  "capture_requests": true,
   "capture_scx": false,
   "capture_cuda": false,
   "capture_pystacks": false,
   "capture_pytrace": false,
   "capture_pytorch": false,
+  "capture_utrace": false,
+  "capture_softirq": true,
+  "capture_hardirq": true,
+  "capture_sched": true,
+  "capture_wakeup": true,
+  "capture_task_life": true,
+  "capture_wq": false,
   "stacks": ["timer", "offcpu"],
   "stack_cnt": 42,
-  "pmus": ["instructions", "cycles", "IPC"]
+  "pmus": ["instructions", "cycles", "IPC"],
+  "metadata": {"uuid": "9dfaa182-...", "hostname": "devgpu004", "kernel": "6.13.2", "arch": "x86_64"},
+  "extras": ["--pmu instructions", "-f req-pmu=tasks"]
 }
 ```
 
-| Field              | Type            | Description                                                          |
-|--------------------|-----------------|----------------------------------------------------------------------|
-| `version`          | string          | Format version (`"major.minor"`)                                     |
-| `dur`              | float           | Session duration in seconds                                          |
-| `timer_freq_hz`    | int             | On-CPU timer interrupt frequency (0 if timer stacks are not emitted) |
-| `capture_ipis`     | bool            | Whether IPI events were captured                                     |
-| `capture_requests` | bool            | Whether request tracing was enabled                                  |
-| `capture_scx`      | bool            | Whether sched-ext events were captured                               |
-| `capture_cuda`     | bool            | Whether CUDA activity was captured                                   |
-| `capture_pystacks` | bool            | Whether Python stack traces were captured                            |
-| `capture_pytrace`   | bool            | Whether Python function tracing was captured                         |
-| `capture_pytorch`   | bool            | Whether PyTorch RecordFunction tracing was captured                   |
-| `capture_utrace`   | bool            | Whether user-defined tracing (utrace) was enabled                    |
-| `stacks`           | array of string | Stack trace kinds emitted (e.g., `["timer","offcpu"]`, `[]` if none) |
-| `stack_cnt`        | int             | Number of stack trace lines that follow (0 if none)                  |
-| `pmus`             | array of string | PMU counter names (e.g., `["instructions","cycles"]`, `[]` if none)  |
-| `extras`           | array of string | *(optional)* Extra config (e.g., `--utrace` definitions)             |
+| Field               | Type            | Description                                                            |
+|---------------------|-----------------|------------------------------------------------------------------------|
+| `version`           | string          | Format version (`"major.minor"`)                                       |
+| `timestamp`         | string          | Session start wall-clock time, ISO 8601 UTC                            |
+| `dur`               | float           | Session duration in seconds                                            |
+| `timer_freq_hz`     | int             | On-CPU timer interrupt frequency (0 if timer stacks are not emitted)   |
+| `capture_ipis`      | bool            | Whether IPI events were captured                                       |
+| `capture_requests`  | bool            | Whether request tracing was enabled                                    |
+| `capture_scx`       | bool            | Whether sched-ext events were captured                                 |
+| `capture_cuda`      | bool            | Whether CUDA activity was captured                                     |
+| `capture_pystacks`  | bool            | Whether Python stack traces were captured                              |
+| `capture_pytrace`   | bool            | Whether Python function tracing was captured                           |
+| `capture_pytorch`   | bool            | Whether PyTorch RecordFunction tracing was captured                    |
+| `capture_utrace`    | bool            | Whether user-defined tracing (utrace) was enabled                      |
+| `capture_softirq`   | bool            | Whether softirq events were captured                                   |
+| `capture_hardirq`   | bool            | Whether hardirq events were captured                                   |
+| `capture_sched`     | bool            | Whether context switches were captured                                 |
+| `capture_wakeup`    | bool            | Whether wakeup events were captured                                    |
+| `capture_task_life` | bool            | Whether task fork/exec/exit events were captured                       |
+| `capture_wq`        | bool            | Whether workqueue events were captured                                 |
+| `stacks`            | array of string | Stack trace kinds emitted (e.g., `["timer","offcpu"]`, `[]` if none)   |
+| `stack_cnt`         | int             | Number of stack trace lines that follow (0 if none)                    |
+| `pmus`              | array of string | PMU counter names (e.g., `["instructions","cycles"]`, `[]` if none)    |
+| `metadata`          | object          | *(optional)* Capture environment: `uuid`, `hostname`, `kernel`, `arch` |
+| `extras`            | array of string | *(optional)* Non-default capture options, as command-line fragments    |
 
 ## Callstacks (stack traces)
 
@@ -514,7 +532,7 @@ previous name, and `comm` contains the new name.
 | Field      | Type   | Description                                                     |
 |------------|--------|-----------------------------------------------------------------|
 | `task`     | task   | Thread handling the request                                     |
-| `event`    | string | Event type: `"start"`, `"end"`, `"set"`, `"unset"`, `"clear"`  |
+| `event`    | string | Event type: `"begin"`, `"set"`, `"unset"`, `"reply"`, `"end"`, `"clear"` |
 | `req_id`   | int    | Request identifier                                              |
 | `req_name` | string | Request name                                                    |
 | `latency`  | float  | *(optional)* Request latency in seconds (on `"end"` events)     |
