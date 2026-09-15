@@ -169,11 +169,19 @@ struct task_state {
 
 	/* active request and the counters it ran up on this thread */
 	u64 req_id; /* active ongoing request ID */
-	u64 req_task_set_ts; /* when the request was set on this thread */
+	u64 req_task_set_ts; /* when the accounting interval began, 0 if none is running */
 	const struct pmu_val *req_task_ctrs; /* counters when the current on-cpu stretch began */
 	u64 req_task_ts; /* when that stretch began */
 	struct pmu_val req_task_cum[MAX_REAL_PMU_COUNTERS];
 	u64 req_task_cum_ns;
+	/*
+	 * Executor work item dequeued inside the active REQ_SET/REQ_UNSET stretch,
+	 * 0 if none. The dequeue lands after the slice has already opened, so it is
+	 * held here and annotated onto the slice when REQ_UNSET closes it.
+	 */
+	u64 req_task_id;
+	u64 req_task_wait_ns;
+	u64 req_task_pmu_dur_ns; /* folded work item's interval, awaiting its slice; 0 if none */
 
 	u64 compound_delay_ns; /* scheduling/running delay, including dependency tasks' ones */
 	u64 compound_chain_len; /* length of continuous waker-wakee chain */
@@ -2227,7 +2235,7 @@ static int process_switch(struct worker_state *w, const struct wevent *e)
 		s.prev_oncpu_ts = s.prev_st->oncpu_ts;
 		s.pmu_vals = wevent_pmu_vals(hdr, e->swtch.pmu_vals_id);
 
-		if (s.prev_st->req_id)
+		if (s.prev_st->req_task_set_ts)
 			req_task_oncpu_end(s.prev_st, s.pmu_vals, e->ts);
 
 		s.prev_st->rename_ts = 0;
@@ -2251,7 +2259,7 @@ static int process_switch(struct worker_state *w, const struct wevent *e)
 		s.next_st->oncpu_ctrs = wevent_pmu_vals(hdr, e->swtch.pmu_vals_id);
 		s.next_st->oncpu_ts = e->ts;
 
-		if (s.next_st->req_id)
+		if (s.next_st->req_task_set_ts)
 			req_task_oncpu_start(s.next_st, s.next_st->oncpu_ctrs, e->ts);
 
 		s.next_offcpu_dur_ns = s.next_st->offcpu_ts ? e->ts - s.next_st->offcpu_ts : e->ts - env.sess_start_ts;
@@ -3331,20 +3339,33 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e,
 	case REQ_UNSET:
 		if (env.emit_req_split) {
 			emit_slice_end(req_thread_track_uuid, e->ts, iid_str(task_name_iid, task_name), IID_CAT_REQUEST_THREAD) {
+				if (st->req_task_id) {
+					emit_kv_int(IID_ANNK_REQ_TASK_ID, st->req_task_id);
+					emit_kv_float(IID_ANNK_REQ_TASK_WAIT_US, "%.3lf", st->req_task_wait_ns / 1000.0);
+				}
 				if (req_ctrs) {
 					emit_kv_float(IID_ANNK_OFFCPU_DUR_US, "%.3lf", req_offcpu_ns / 1000.0);
 					emit_perf_counters(NULL, req_ctrs, true /* diffs */, req_oncpu_ns);
 				}
+				/* pairs this slice with the TASK_ENQUEUE that handed it the work item */
+				if (st->req_task_id)
+					emit_flow_id(hash_combine(req_id, st->req_task_id));
 			}
 		}
 
 		if (env.emit_req_embed) {
 			emit_slice_end(thread_req_track_uuid, e->ts, iid_str(thread_req_name_iid, thread_req_name), IID_CAT_REQUEST_THREAD) {
+				if (st->req_task_id) {
+					emit_kv_int(IID_ANNK_REQ_TASK_ID, st->req_task_id);
+					emit_kv_float(IID_ANNK_REQ_TASK_WAIT_US, "%.3lf", st->req_task_wait_ns / 1000.0);
+				}
 				if (req_ctrs) {
 					emit_kv_float(IID_ANNK_OFFCPU_DUR_US, "%.3lf", req_offcpu_ns / 1000.0);
 					emit_perf_counters(NULL, req_ctrs, true /* diffs */, req_oncpu_ns);
 				}
 				emit_flow_id(hash_combine(req_id, task.tid));
+				if (st->req_task_id)
+					emit_flow_id(hash_combine(req_id, st->req_task_id));
 				emit_callstack(w, req_stack_id);
 			}
 		}
@@ -3484,20 +3505,28 @@ static int process_req_event(struct worker_state *w, const struct wevent *e)
 
 	switch (e->req.req_event) {
 	case REQ_SET:
-		if (env.req_pmu_layer != REQ_PMU_CTXS)
-			break;
 		st->req_id = e->req.req_id;
-		req_task_reset(st, wevent_pmu_vals(hdr, e->req.pmu_vals_id), e->ts);
+		st->req_task_id = 0;
+		st->req_task_wait_ns = 0;
+		st->req_task_pmu_dur_ns = 0;
+		if (env.req_pmu_layer == REQ_PMU_CTXS)
+			req_task_reset(st, wevent_pmu_vals(hdr, e->req.pmu_vals_id), e->ts);
 		break;
 	case REQ_UNSET:
-		if (env.req_pmu_layer != REQ_PMU_CTXS)
-			break;
-		/* without a REQ_SET the request was caught in mid-flight; nothing was accumulated */
-		if (st->req_id && env.pmu_real_cnt) {
-			req_task_oncpu_end(st, wevent_pmu_vals(hdr, e->req.pmu_vals_id), e->ts);
+		if (env.req_pmu_layer == REQ_PMU_CTXS) {
+			/* without a REQ_SET the request was caught in mid-flight; nothing was accumulated */
+			if (st->req_task_set_ts && env.pmu_real_cnt) {
+				req_task_oncpu_end(st, wevent_pmu_vals(hdr, e->req.pmu_vals_id), e->ts);
+				req_ctrs = st->req_task_cum;
+				req_oncpu_ns = st->req_task_cum_ns;
+				req_offcpu_ns = (e->ts - st->req_task_set_ts) - req_oncpu_ns;
+			}
+			st->req_task_set_ts = 0;
+		} else if (st->req_task_pmu_dur_ns > 0) {
+			/* the work item folded into this slice ran these up between dequeue and stats */
 			req_ctrs = st->req_task_cum;
 			req_oncpu_ns = st->req_task_cum_ns;
-			req_offcpu_ns = (e->ts - st->req_task_set_ts) - req_oncpu_ns;
+			req_offcpu_ns = st->req_task_pmu_dur_ns - req_oncpu_ns;
 		}
 		st->req_id = 0;
 		break;
@@ -3575,6 +3604,18 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e,
 		break;
 	}
 	case REQ_TASK_DEQUEUE:
+		/*
+		 * A dequeue inside the REQ_SET/REQ_UNSET stretch this thread is already
+		 * running folds into that slice: the work item is held here and
+		 * annotated on when the slice closes, instead of being drawn as an event
+		 * of its own. Everything else has no slice to enhance and is still drawn.
+		 */
+		if (req_id != 0 && st->req_id == req_id && st->req_task_id == 0) {
+			st->req_task_id = e->req_task.req_task_id;
+			st->req_task_wait_ns = e->req_task.wait_time_ns;
+			break;
+		}
+
 		if (env.emit_req_split) {
 			emit_instant(req_thread_track_uuid, e->ts,
 				     IID_NAME_TASK_DEQUEUE, IID_CAT_REQ_TASK_DEQUEUE) {
@@ -3582,7 +3623,7 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e,
 				emit_kv_int(IID_ANNK_REQ_TASK_TID, task_tid(&task));
 				emit_kv_int(IID_ANNK_REQ_ID, e->req_task.req_id);
 				emit_kv_int(IID_ANNK_REQ_TASK_ID, e->req_task.req_task_id);
-				emit_kv_int(IID_ANNK_REQ_WAIT_TIME_NS, e->req_task.wait_time_ns);
+				emit_kv_float(IID_ANNK_REQ_TASK_WAIT_US, "%.3lf", e->req_task.wait_time_ns / 1000.0);
 				emit_flow_id(hash_combine(req_id, e->req_task.req_task_id));
 			}
 		}
@@ -3592,7 +3633,7 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e,
 				     IID_NAME_TASK_DEQUEUE, IID_CAT_REQ_TASK_DEQUEUE) {
 				emit_kv_int(IID_ANNK_REQ_ID, e->req_task.req_id);
 				emit_kv_int(IID_ANNK_REQ_TASK_ID, e->req_task.req_task_id);
-				emit_kv_int(IID_ANNK_REQ_WAIT_TIME_NS, e->req_task.wait_time_ns);
+				emit_kv_float(IID_ANNK_REQ_TASK_WAIT_US, "%.3lf", e->req_task.wait_time_ns / 1000.0);
 				if (first_embed_event)
 					emit_flow_id(req_id);
 				emit_flow_id(hash_combine(req_id, task.tid));
@@ -3601,6 +3642,13 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e,
 		}
 		break;
 	case REQ_TASK_STATS:
+		/* the slice this work item folded into carries it, counters included */
+		if (st->req_task_id != 0 && st->req_task_id == e->req_task.req_task_id && st->req_id == req_id) {
+			if (req_ctrs)
+				st->req_task_pmu_dur_ns = req_oncpu_ns + req_offcpu_ns;
+			break;
+		}
+
 		if (env.emit_req_split) {
 			emit_instant(req_thread_track_uuid, e->ts,
 				     IID_NAME_TASK_COMPLETE, IID_CAT_REQ_TASK_COMPLETE) {
@@ -3608,7 +3656,7 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e,
 				emit_kv_int(IID_ANNK_REQ_TASK_TID, task_tid(&task));
 				emit_kv_int(IID_ANNK_REQ_ID, e->req_task.req_id);
 				emit_kv_int(IID_ANNK_REQ_TASK_ID, e->req_task.req_task_id);
-				emit_kv_int(IID_ANNK_REQ_WAIT_TIME_NS, e->req_task.wait_time_ns);
+				emit_kv_float(IID_ANNK_REQ_TASK_WAIT_US, "%.3lf", e->req_task.wait_time_ns / 1000.0);
 				if (req_ctrs) {
 					emit_kv_float(IID_ANNK_OFFCPU_DUR_US, "%.3lf", req_offcpu_ns / 1000.0);
 					emit_perf_counters(NULL, req_ctrs, true /* diffs */, req_oncpu_ns);
@@ -3622,7 +3670,7 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e,
 				     IID_NAME_TASK_COMPLETE, IID_CAT_REQ_TASK_COMPLETE) {
 				emit_kv_int(IID_ANNK_REQ_ID, e->req_task.req_id);
 				emit_kv_int(IID_ANNK_REQ_TASK_ID, e->req_task.req_task_id);
-				emit_kv_int(IID_ANNK_REQ_WAIT_TIME_NS, e->req_task.wait_time_ns);
+				emit_kv_float(IID_ANNK_REQ_TASK_WAIT_US, "%.3lf", e->req_task.wait_time_ns / 1000.0);
 				if (req_ctrs) {
 					emit_kv_float(IID_ANNK_OFFCPU_DUR_US, "%.3lf", req_offcpu_ns / 1000.0);
 					emit_perf_counters(NULL, req_ctrs, true /* diffs */, req_oncpu_ns);
@@ -3696,18 +3744,17 @@ static int process_req_task_event(struct worker_state *w, const struct wevent *e
 		case REQ_TASK_ENQUEUE:
 			break;
 		case REQ_TASK_DEQUEUE:
-			st->req_id = e->req_task.req_id;
 			req_task_reset(st, wevent_pmu_vals(hdr, e->req_task.pmu_vals_id), e->ts);
 			break;
 		case REQ_TASK_STATS:
 			/* without a DEQUEUE the task was caught in mid-flight; nothing was accumulated */
-			if (st->req_id && env.pmu_real_cnt) {
+			if (st->req_task_set_ts && env.pmu_real_cnt) {
 				req_task_oncpu_end(st, wevent_pmu_vals(hdr, e->req_task.pmu_vals_id), e->ts);
 				req_ctrs = st->req_task_cum;
 				req_oncpu_ns = st->req_task_cum_ns;
 				req_offcpu_ns = (e->ts - st->req_task_set_ts) - req_oncpu_ns;
 			}
-			st->req_id = 0;
+			st->req_task_set_ts = 0;
 			break;
 		default:
 			BUG("unhandled req task event %d\n", e->req_task.req_task_event);
