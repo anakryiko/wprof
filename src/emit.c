@@ -366,6 +366,14 @@ struct track_state {
 			enum wprof_req_event_kind last_event;
 		} req;
 
+		/* DTK_REQ_THREAD */
+		struct {
+			u64 task_id;	/* executor work item the open slice runs, 0 if none */
+			u64 wait_ns;	/* how long that work item sat in the executor queue */
+			bool open;	/* a slice is open on this track */
+			bool saw_set;	/* REQ_SET fell inside it, so REQ_UNSET is what closes it */
+		} req_thread;
+
 		/* DTK_TIMER_CALLSTACK */
 		struct {
 			u64 last_ts;
@@ -385,12 +393,13 @@ static size_t track_state_size(enum dyn_track_kind kind)
 	switch (kind) {
 	case DTK_REQ:
 		return offsetofend(struct track_state, req);
+	case DTK_REQ_THREAD:
+		return offsetofend(struct track_state, req_thread);
 	case DTK_TIMER_CALLSTACK:
 		return offsetofend(struct track_state, cs);
 	case DTK_CUDA_PROC_STREAM:
 		return offsetofend(struct track_state, stream);
 	case DTK_PROC_REQS:
-	case DTK_REQ_THREAD:
 	case DTK_REQ_THREAD_EMBED:
 	case DTK_PYTRACE:
 	case DTK_PYTORCH:
@@ -3194,7 +3203,7 @@ static u64 ensure_req_track(const struct wprof_task *t, u64 req_id, const char *
 	return s->track_id;
 }
 
-static u64 ensure_req_thread_track(const struct wprof_task *t, u64 req_id)
+static struct track_state *ensure_req_thread_track(const struct wprof_task *t, u64 req_id)
 {
 	struct track_state *s = track_state_get_or_add(DTK_REQ_THREAD, t->tid, req_id);
 
@@ -3203,7 +3212,7 @@ static u64 ensure_req_thread_track(const struct wprof_task *t, u64 req_id)
 					sfmt("REQ TASKS (%llu)", req_id), 0, req_id);
 		s->exists = true;
 	}
-	return s->track_id;
+	return s;
 }
 
 static u64 ensure_thread_req_track(const struct wprof_task *t)
@@ -3225,6 +3234,38 @@ static bool req_embed_first_event(const struct wprof_task *t, u64 req_id)
 		return false;
 	s->exists = true;
 	return true;
+}
+
+/*
+ * The per-thread slice opens at whichever of REQ_SET and REQ_TASK_DEQUEUE comes
+ * first, so whichever of REQ_UNSET and REQ_TASK_STATS matches the opener closes
+ * it here, carrying the work item it ran and the counters of the closing event.
+ */
+static void req_thread_slice_end(struct worker_state *w, struct track_state *rts,
+				 u64 ts, u64 req_id, const struct task_state *st,
+				 const struct pmu_val *req_ctrs, u64 req_oncpu_ns, u64 req_offcpu_ns)
+{
+	const char *task_name = sfmt("%s (%d)", st->comm, st->tid);
+	struct pb_str name = iid_str(emit_intern_str(w, task_name), task_name);
+
+	emit_slice_end(rts->track_id, ts, name, IID_CAT_REQUEST_THREAD) {
+		if (rts->req_thread.task_id) {
+			emit_kv_int(IID_ANNK_REQ_TASK_ID, rts->req_thread.task_id);
+			emit_kv_float(IID_ANNK_REQ_TASK_WAIT_US, "%.3lf", rts->req_thread.wait_ns / 1000.0);
+		}
+		if (req_ctrs) {
+			emit_kv_float(IID_ANNK_OFFCPU_DUR_US, "%.3lf", req_offcpu_ns / 1000.0);
+			emit_perf_counters(NULL, req_ctrs, true /* diffs */, req_oncpu_ns);
+		}
+		/* pairs this slice with the TASK_ENQUEUE that handed it the work item */
+		if (rts->req_thread.task_id)
+			emit_flow_id(hash_combine(req_id, rts->req_thread.task_id));
+	}
+
+	rts->req_thread.open = false;
+	rts->req_thread.saw_set = false;
+	rts->req_thread.task_id = 0;
+	rts->req_thread.wait_ns = 0;
 }
 
 /* EV_REQ_EVENT */
@@ -3253,9 +3294,9 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e,
 	ensure_process_reqs_track(&task);
 	u64 req_track_uuid = ensure_req_track(&task, req_id, req_name);
 
-	u64 req_thread_track_uuid = 0;
+	struct track_state *rts = NULL;
 	if (env.emit_req_split)
-		req_thread_track_uuid = ensure_req_thread_track(&task, req_id);
+		rts = ensure_req_thread_track(&task, req_id);
 
 	u64 thread_req_track_uuid = 0;
 	bool first_embed_event = false;
@@ -3320,11 +3361,15 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e,
 	}
 	case REQ_SET:
 		if (env.emit_req_split) {
-			emit_slice_begin(req_thread_track_uuid,
-					 e->ts, iid_str(task_name_iid, task_name), IID_CAT_REQUEST_THREAD) {
-				emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
-				emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
+			if (!rts->req_thread.open) {
+				emit_slice_begin(rts->track_id,
+						 e->ts, iid_str(task_name_iid, task_name), IID_CAT_REQUEST_THREAD) {
+					emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
+					emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
+				}
+				rts->req_thread.open = true;
 			}
+			rts->req_thread.saw_set = true;
 		}
 
 		if (env.emit_req_embed) {
@@ -3339,21 +3384,8 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e,
 		}
 		break;
 	case REQ_UNSET:
-		if (env.emit_req_split) {
-			emit_slice_end(req_thread_track_uuid, e->ts, iid_str(task_name_iid, task_name), IID_CAT_REQUEST_THREAD) {
-				if (st->req_task_id) {
-					emit_kv_int(IID_ANNK_REQ_TASK_ID, st->req_task_id);
-					emit_kv_float(IID_ANNK_REQ_TASK_WAIT_US, "%.3lf", st->req_task_wait_ns / 1000.0);
-				}
-				if (req_ctrs) {
-					emit_kv_float(IID_ANNK_OFFCPU_DUR_US, "%.3lf", req_offcpu_ns / 1000.0);
-					emit_perf_counters(NULL, req_ctrs, true /* diffs */, req_oncpu_ns);
-				}
-				/* pairs this slice with the TASK_ENQUEUE that handed it the work item */
-				if (st->req_task_id)
-					emit_flow_id(hash_combine(req_id, st->req_task_id));
-			}
-		}
+		if (env.emit_req_split && rts->req_thread.saw_set)
+			req_thread_slice_end(w, rts, e->ts, req_id, st, req_ctrs, req_oncpu_ns, req_offcpu_ns);
 
 		if (env.emit_req_embed) {
 			emit_slice_end(thread_req_track_uuid, e->ts, iid_str(thread_req_name_iid, thread_req_name), IID_CAT_REQUEST_THREAD) {
@@ -3561,11 +3593,11 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e,
 
 	u64 req_id = e->req_task.req_id;
 
-	u64 req_thread_track_uuid = 0;
+	struct track_state *rts = NULL;
 	if (env.emit_req_split) {
 		ensure_process_reqs_track(&task);
 		ensure_req_track(&task, req_id, NULL);
-		req_thread_track_uuid = ensure_req_thread_track(&task, req_id);
+		rts = ensure_req_thread_track(&task, req_id);
 	}
 
 	u64 thread_req_track_uuid = 0;
@@ -3582,7 +3614,7 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e,
 			rs->req.start_ts = e->ts;
 
 		if (env.emit_req_split) {
-			emit_instant(req_thread_track_uuid, e->ts,
+			emit_instant(rts->track_id, e->ts,
 				     IID_NAME_TASK_ENQUEUE, IID_CAT_REQ_TASK_ENQUEUE) {
 				emit_kv_str(IID_ANNK_REQ_TASK_COMM, iid_str(st->name_iid, st->comm));
 				emit_kv_int(IID_ANNK_REQ_TASK_TID, task_tid(&task));
@@ -3605,32 +3637,36 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e,
 		}
 		break;
 	}
-	case REQ_TASK_DEQUEUE:
-		/*
-		 * A dequeue inside the REQ_SET/REQ_UNSET stretch this thread is already
-		 * running folds into that slice: the work item is held here and
-		 * annotated on when the slice closes, instead of being drawn as an event
-		 * of its own. Everything else has no slice to enhance and is still drawn.
-		 */
-		if (req_id != 0 && st->req_id == req_id && st->req_task_id == 0) {
+	case REQ_TASK_DEQUEUE: {
+		bool folded = req_id != 0 && st->req_id == req_id && st->req_task_id == 0;
+
+		if (folded) {
 			st->req_task_id = e->req_task.req_task_id;
 			st->req_task_wait_ns = e->req_task.wait_time_ns;
-			break;
 		}
 
 		if (env.emit_req_split) {
-			emit_instant(req_thread_track_uuid, e->ts,
-				     IID_NAME_TASK_DEQUEUE, IID_CAT_REQ_TASK_DEQUEUE) {
-				emit_kv_str(IID_ANNK_REQ_TASK_COMM, iid_str(st->name_iid, st->comm));
-				emit_kv_int(IID_ANNK_REQ_TASK_TID, task_tid(&task));
-				emit_kv_int(IID_ANNK_REQ_ID, e->req_task.req_id);
-				emit_kv_int(IID_ANNK_REQ_TASK_ID, e->req_task.req_task_id);
-				emit_kv_float(IID_ANNK_REQ_TASK_WAIT_US, "%.3lf", e->req_task.wait_time_ns / 1000.0);
-				emit_flow_id(hash_combine(req_id, e->req_task.req_task_id));
+			const char *task_name = sfmt("%s (%d)", st->comm, st->tid);
+			struct pb_str name = iid_str(emit_intern_str(w, task_name), task_name);
+
+			if (!rts->req_thread.open) {
+				emit_slice_begin(rts->track_id, e->ts, name, IID_CAT_REQUEST_THREAD) {
+					emit_kv_int(IID_ANNK_REQ_ID, e->req_task.req_id);
+					emit_kv_int(IID_ANNK_REQ_TASK_ID, e->req_task.req_task_id);
+				}
+				rts->req_thread.open = true;
 			}
+			rts->req_thread.task_id = e->req_task.req_task_id;
+			rts->req_thread.wait_ns = e->req_task.wait_time_ns;
 		}
 
-		if (env.emit_req_embed) {
+		/*
+		 * A dequeue inside the REQ_SET/REQ_UNSET stretch this thread is already
+		 * running folds into that slice: the work item is held above and
+		 * annotated on when the slice closes, instead of being drawn as an event
+		 * of its own. Everything else has no slice to enhance and is still drawn.
+		 */
+		if (env.emit_req_embed && !folded) {
 			emit_instant(thread_req_track_uuid, e->ts,
 				     IID_NAME_TASK_DEQUEUE, IID_CAT_REQ_TASK_DEQUEUE) {
 				emit_kv_int(IID_ANNK_REQ_ID, e->req_task.req_id);
@@ -3643,31 +3679,20 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e,
 			}
 		}
 		break;
-	case REQ_TASK_STATS:
+	}
+	case REQ_TASK_STATS: {
+		bool folded = st->req_task_id != 0 && st->req_task_id == e->req_task.req_task_id &&
+			      st->req_id == req_id;
+
 		/* the slice this work item folded into carries it, counters included */
-		if (st->req_task_id != 0 && st->req_task_id == e->req_task.req_task_id && st->req_id == req_id) {
-			if (req_ctrs)
-				st->req_task_pmu_dur_ns = req_oncpu_ns + req_offcpu_ns;
-			break;
-		}
+		if (folded && req_ctrs)
+			st->req_task_pmu_dur_ns = req_oncpu_ns + req_offcpu_ns;
 
-		if (env.emit_req_split) {
-			emit_instant(req_thread_track_uuid, e->ts,
-				     IID_NAME_TASK_COMPLETE, IID_CAT_REQ_TASK_COMPLETE) {
-				emit_kv_str(IID_ANNK_REQ_TASK_COMM, iid_str(st->name_iid, st->comm));
-				emit_kv_int(IID_ANNK_REQ_TASK_TID, task_tid(&task));
-				emit_kv_int(IID_ANNK_REQ_ID, e->req_task.req_id);
-				emit_kv_int(IID_ANNK_REQ_TASK_ID, e->req_task.req_task_id);
-				emit_kv_float(IID_ANNK_REQ_TASK_WAIT_US, "%.3lf", e->req_task.wait_time_ns / 1000.0);
-				if (req_ctrs) {
-					emit_kv_float(IID_ANNK_OFFCPU_DUR_US, "%.3lf", req_offcpu_ns / 1000.0);
-					emit_perf_counters(NULL, req_ctrs, true /* diffs */, req_oncpu_ns);
-				}
-				emit_flow_id(hash_combine(req_id, e->req_task.req_task_id));
-			}
-		}
+		/* a REQ_SET inside this slice hands the close over to its REQ_UNSET */
+		if (env.emit_req_split && rts->req_thread.open && !rts->req_thread.saw_set)
+			req_thread_slice_end(w, rts, e->ts, req_id, st, req_ctrs, req_oncpu_ns, req_offcpu_ns);
 
-		if (env.emit_req_embed) {
+		if (env.emit_req_embed && !folded) {
 			emit_instant(thread_req_track_uuid, e->ts,
 				     IID_NAME_TASK_COMPLETE, IID_CAT_REQ_TASK_COMPLETE) {
 				emit_kv_int(IID_ANNK_REQ_ID, e->req_task.req_id);
@@ -3682,6 +3707,7 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e,
 			}
 		}
 		break;
+	}
 	default:
 		BUG("unhandled req task event %d\n", e->req_task.req_task_event);
 	}
@@ -3716,7 +3742,7 @@ static void emit_req_rpc_event(struct worker_state *w, const struct wevent *e)
 	if (env.emit_req_split) {
 		ensure_process_reqs_track(&task);
 		ensure_req_track(&task, req_id, NULL);
-		u64 req_thread_track_uuid = ensure_req_thread_track(&task, req_id);
+		u64 req_thread_track_uuid = ensure_req_thread_track(&task, req_id)->track_id;
 
 		emit_instant(req_thread_track_uuid, e->ts, name, cat) {
 			emit_kv_int(IID_ANNK_REQ_ID, req_id);
