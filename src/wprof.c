@@ -181,6 +181,23 @@ const char *extra_param_str(struct wprof_data_hdr *hdr, const struct wprof_extra
 	}
 }
 
+/*
+ * Counters are spliced at context switches, so without them the closing
+ * subtraction charges the request with everything else that ran on that CPU,
+ * and a migration subtracts two different CPUs' counters.
+ */
+static int req_pmu_check_sched(void)
+{
+	if (env.req_pmu_layer != REQ_PMU_CTXS && env.req_pmu_layer != REQ_PMU_TASKS)
+		return 0;
+	if (env.capture_sched)
+		return 0;
+
+	eprintf("-f req-pmu=%s requires context-switch tracking; drop -f no-sched!\n",
+		req_pmu_layer_str(env.req_pmu_layer));
+	return -EINVAL;
+}
+
 static volatile bool exiting;
 
 static void sig_term(int sig)
@@ -2439,6 +2456,10 @@ int main(int argc, char **argv)
 		if (env.req_pmu_layer == REQ_PMU_UNSET)
 			env.req_pmu_layer = rec_req_pmu;
 
+		err = req_pmu_check_sched();
+		if (err)
+			goto cleanup;
+
 		/* resolve emit (-e) options not set on the CLI or in the data dump */
 		for (int i = 0; i < emit_feature_cnt; i++) {
 			const struct emit_feature *f = &emit_features[i];
@@ -2609,6 +2630,10 @@ int main(int argc, char **argv)
 		env.capture_req_rpc = DEFAULT_CAPTURE_REQ_RPC;
 	if (env.req_pmu_layer == REQ_PMU_UNSET)
 		env.req_pmu_layer = DEFAULT_REQ_PMU_LAYER;
+
+	err = req_pmu_check_sched();
+	if (err)
+		goto cleanup;
 
 	/* resolve emit (-e) options not set on the CLI */
 	for (int i = 0; i < emit_feature_cnt; i++) {
