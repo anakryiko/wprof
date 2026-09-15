@@ -2738,18 +2738,19 @@ static void emit_hardirq_exit(struct worker_state *w, const struct wevent *e)
 
 	emit_track_descrs(w, &task);
 
+	const char *action = wevent_str(hdr, e->hardirq.name_stroff);
+	const char *slice_name = sfmt("HARDIRQ:%s", action);
+	struct pb_str name = iid_str(emit_intern_str(w, slice_name), slice_name);
+
 	u64 start_ts = clamp_ts(e->hardirq.hardirq_ts);
-	emit_slice_begin(trackid_thread(&task),
-			 start_ts, IID_NAME_HARDIRQ, IID_CAT_HARDIRQ) {
+	emit_slice_begin(trackid_thread(&task), start_ts, name, IID_CAT_HARDIRQ) {
 		emit_kv_int(IID_ANNK_CPU, e->cpu);
 		if (env.emit_numa)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
 		emit_kv_int(IID_ANNK_IRQ, e->hardirq.irq);
-		const char *action = wevent_str(hdr, e->hardirq.name_stroff);
 		emit_kv_str(IID_ANNK_ACTION, iid_str(emit_intern_str(w, action), action));
 	}
-	emit_slice_end(trackid_thread(&task),
-		       e->ts, IID_NAME_HARDIRQ, IID_CAT_HARDIRQ) {
+	emit_slice_end(trackid_thread(&task), e->ts, name, IID_CAT_HARDIRQ) {
 		const struct pmu_val *pmu_vals = wevent_pmu_vals(hdr, e->hardirq.pmu_vals_id);
 		emit_perf_counters(NULL, pmu_vals, true /* diffs */, e->ts - e->hardirq.hardirq_ts);
 	}
