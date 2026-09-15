@@ -14,6 +14,7 @@
 
 #include "protobuf.h"
 #include "env.h"
+#include "flightrec.h"
 #include "stacktrace.h"
 #include "data.h"
 #include "pysym.h"
@@ -65,13 +66,10 @@ static int pystacks_write_frames(struct worker_state *workers, int worker_cnt,
 	struct py_stack *py_stacks = NULL;
 	size_t py_stack_cnt = 0, py_stack_cap = 0;
 
-	for (int i = 0; i < worker_cnt; i++) {
-		struct worker_state *w = &workers[i];
-		void *data = w->dump_mem;
-		size_t data_sz = w->dump_sz;
-
+	for (int i = 0; i < worker_cnt; i++)
+	for (struct fr_chunk *c = workers[i].chunks; c; c = c->next) {
 		const struct bpf_event_record *rec;
-		for_each_bpf_event(rec, data, data_sz) {
+		for_each_bpf_event(rec, c->mmap, c->byte_sz) {
 			if (!(rec->e->flags & EF_PYSTACK))
 				continue;
 
@@ -132,13 +130,10 @@ static void pystacks_resolve_native_ids(struct worker_state *workers, int worker
 					struct py_stack *py_stacks, size_t py_stack_cnt)
 {
 	size_t psi = 0;
-	for (int i = 0; i < worker_cnt && psi < py_stack_cnt; i++) {
-		struct worker_state *w = &workers[i];
-		void *data = w->dump_mem;
-		size_t data_sz = w->dump_sz;
-
+	for (int i = 0; i < worker_cnt && psi < py_stack_cnt; i++)
+	for (struct fr_chunk *c = workers[i].chunks; c; c = c->next) {
 		const struct bpf_event_record *rec;
-		for_each_bpf_event(rec, data, data_sz) {
+		for_each_bpf_event(rec, c->mmap, c->byte_sz) {
 			if (!(rec->e->flags & EF_PYSTACK))
 				continue;
 
@@ -743,13 +738,10 @@ int process_stack_traces(struct worker_state *workers, int worker_cnt, FILE *sta
 skip_ksyms:
 
 	/* Collect stack traces across all ringbuf dumps */
-	for (int i = 0; i < worker_cnt; i++) {
-		struct worker_state *w = &workers[i];
-		void *data = w->dump_mem;
-		size_t data_sz = w->dump_sz;
-
+	for (int i = 0; i < worker_cnt; i++)
+	for (struct fr_chunk *c = workers[i].chunks; c; c = c->next) {
 		const struct bpf_event_record *rec;
-		for_each_bpf_event(rec, data, data_sz) {
+		for_each_bpf_event(rec, c->mmap, c->byte_sz) {
 			err = process_stack_trace(state, rec->e);
 			if (err) {
 				eprintf("Failed to pre-process stack trace for event #%d (kind %d, size %u): %d\n",

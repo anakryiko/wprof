@@ -604,18 +604,19 @@ static void finalize_stats(struct wprof_stats *s)
 }
 
 /*
- * Size and mmap one event chunk read-only for the merge loop, keeping the mapping
- * on c->mmap (released in cleanup). A chunk is either still open (c->f -- the
+ * Size and mmap one event chunk for the merge loop, keeping the mapping on
+ * c->mmap (released in cleanup). A chunk is either still open (c->f -- the
  * non-flight-recorder single events file) or a completed chunk reopened by path.
  * Either way the fd/FILE is closed once mapped (the mapping outlives it); the size
  * comes from the file, since current/spare chunks were never CHUNK_DONE-stamped.
- * An empty chunk (e.g. an untouched spare) maps to nothing.
+ * An empty chunk (e.g. an untouched spare) maps to nothing. Every chunk is mapped
+ * writable, since stack processing patches stack IDs into the events in place.
  */
 static int fr_chunk_map(struct fr_chunk *c)
 {
 	struct stat st;
 	int err = 0;
-	int fd = c->f ? fileno(c->f) : open(c->path, O_RDONLY);
+	int fd = c->f ? fileno(c->f) : open(c->path, O_RDWR);
 
 	if (c->f)
 		fflush(c->f);
@@ -632,13 +633,7 @@ static int fr_chunk_map(struct fr_chunk *c)
 	}
 	c->byte_sz = st.st_size;
 	if (c->byte_sz > 0) {
-		/*
-		 * A still-open chunk (c->f, always O_RDWR-backed) may be written in
-		 * place -- BPF stack processing patches the current chunk's events -- so
-		 * map it writable; a reopened chunk (O_RDONLY) is read-only.
-		 */
-		int prot = c->f ? (PROT_READ | PROT_WRITE) : PROT_READ;
-		c->mmap = mmap(NULL, c->byte_sz, prot, MAP_SHARED, fd, 0);
+		c->mmap = mmap(NULL, c->byte_sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 		if (c->mmap == MAP_FAILED) {
 			err = -errno;
 			c->mmap = NULL;
@@ -735,8 +730,7 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers,
 	 * the worker's chunk list and map every chunk up front. The current chunk
 	 * is still open (fr_chunk_map flushes, maps, and closes it); merge owns them
 	 * all now, so clear the worker aliases to keep teardown from double-freeing.
-	 * dump_mem/dump_sz keep pointing at the current chunk's map for the stack
-	 * processing below.
+	 * w->chunks is the list the stack processing below walks.
 	 */
 	for (int i = 0; i < env.ringbuf_cnt; i++) {
 		struct worker_state *w = &workers[i];
@@ -749,8 +743,7 @@ int wprof_persist_data(const char *workdir_name, struct worker_state *workers,
 			if (err)
 				return err;
 		}
-		w->dump_mem = cur->mmap;
-		w->dump_sz = cur->byte_sz;
+		w->chunks = fr_lists[i];
 		w->cur_chunk = NULL;
 		w->dump = NULL;
 		w->dump_path = NULL;
