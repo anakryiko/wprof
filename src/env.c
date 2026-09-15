@@ -63,6 +63,7 @@ struct env env = {
 	.capture_requests = UNSET,
 	.capture_req_ctxs = UNSET,
 	.capture_req_tasks = UNSET,
+	.capture_req_rpc = UNSET,
 	.req_pmu_layer = REQ_PMU_UNSET,
 	.capture_scx = UNSET,
 	.capture_cuda = UNSET,
@@ -187,7 +188,7 @@ static const struct argp_option opts[] = {
 	  "Data capture feature selector. Supported: ipi, req[=PATH|PID|comm:GLOB], scx, cuda[=nv-smi|all|PID], "
 	  "py-stacks[=nv-smi|PID], py-trace[=nv-smi|PID], py-torch[=nv-smi|PID], "
 	  "softirq, hardirq, irq, wq, sched (on by default), wakeup (on by default), task-life (on by default). "
-	  "Request sub-features under -f req: req-ctxs, req-tasks (both on by default), "
+	  "Request sub-features under -f req: req-ctxs, req-tasks, req-rpc (all on by default), "
 	  "req-pmu=ctxs|tasks|none (none by default). "
 	  "All features can be prefixed with 'no-' to disable them explicitly." },
 
@@ -571,6 +572,8 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			env.capture_req_ctxs = val;
 		} else if (strcasecmp(arg, "req-tasks") == 0) {
 			env.capture_req_tasks = val;
+		} else if (strcasecmp(arg, "req-rpc") == 0) {
+			env.capture_req_rpc = val;
 		} else if (strncasecmp(arg, "req-pmu", 7) == 0) {
 			const char *layer = arg + 7;
 

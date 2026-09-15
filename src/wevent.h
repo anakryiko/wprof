@@ -159,6 +159,14 @@ struct wevent {
 			u32 pmu_vals_id;
 		} req;
 
+		struct wevent_req_rpc_ctx {
+			enum wprof_req_event_kind rpc_event; /* RPC_REQUEST/RPC_RESPONSE */
+			u64 req_id;
+			u64 rpc_id;
+			u32 service_stroff; /* request only */
+			u32 method_stroff;  /* request only */
+		} req_rpc;
+
 		struct wevent_req_task_ctx {
 			enum wprof_req_event_kind req_task_event; /* ENQUEUE/DEQUEUE/STATS */
 			u32 pmu_vals_id;
@@ -342,6 +350,7 @@ static inline const char *wevent_kind_name(enum event_kind kind)
 	case EV_IPI_EXIT:	return "ipi_exit";
 	case EV_REQ_EVENT:	return "req_event";
 	case EV_REQ_TASK_EVENT:	return "req_task_event";
+	case EV_REQ_RPC_EVENT:	return "req_rpc_event";
 	case EV_SCX_DSQ_END:	return "scx_dsq_end";
 	case EV_CUDA_CALL:	return "cuda_call";
 	case EV_CUDA_KERNEL:	return "cuda_kernel";

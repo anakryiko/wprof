@@ -1964,6 +1964,73 @@ int BPF_USDT(wprof_req_ctx, u64 req_id, const char *endpoint, enum wprof_req_eve
 	return 0;
 }
 
+/* thrift:client_rpc_request_v1 USDT handler */
+SEC("?usdt")
+int BPF_USDT(wprof_req_rpc_request,
+	     u64 req_id, u64 rpc_id, const char *service, const char *method)
+{
+	u64 now_ts = bpf_ktime_get_ns();
+	struct task_struct *task = bpf_get_current_task_btf();
+
+	if (!should_trace_task(task, now_ts))
+		return 0;
+
+	struct wprof_event *e;
+	struct bpf_dynptr *dptr;
+	size_t fix_sz = EV_SZ(req_rpc);
+
+	DEF_TASK_INFOS(tis, 1);
+	task_infos_init(&tis.infos);
+	task_infos_add(&tis.infos, task, task_state(task));
+	size_t tasks_sz = tis.infos.data_sz;
+
+	emit_task_event_dyn(e, dptr, fix_sz, tasks_sz, EV_REQ_RPC_EVENT, now_ts, task) {
+		e->req_rpc.rpc_event = REQ_RPC_REQUEST;
+		e->req_rpc.req_id = req_id;
+		e->req_rpc.rpc_id = rpc_id;
+		if (bpf_probe_read_user_str(e->req_rpc.service, sizeof(e->req_rpc.service), service) < 0)
+			e->req_rpc.service[0] = '\0';
+		if (bpf_probe_read_user_str(e->req_rpc.method, sizeof(e->req_rpc.method), method) < 0)
+			e->req_rpc.method[0] = '\0';
+		if (tasks_sz)
+			e->flags |= task_infos_emit(&tis.infos, dptr, fix_sz);
+	}
+
+	return 0;
+}
+
+/* thrift:client_rpc_response_v1 USDT handler */
+SEC("?usdt")
+int BPF_USDT(wprof_req_rpc_response, u64 req_id, u64 rpc_id)
+{
+	u64 now_ts = bpf_ktime_get_ns();
+	struct task_struct *task = bpf_get_current_task_btf();
+
+	if (!should_trace_task(task, now_ts))
+		return 0;
+
+	struct wprof_event *e;
+	struct bpf_dynptr *dptr;
+	size_t fix_sz = EV_SZ(req_rpc);
+
+	DEF_TASK_INFOS(tis, 1);
+	task_infos_init(&tis.infos);
+	task_infos_add(&tis.infos, task, task_state(task));
+	size_t tasks_sz = tis.infos.data_sz;
+
+	emit_task_event_dyn(e, dptr, fix_sz, tasks_sz, EV_REQ_RPC_EVENT, now_ts, task) {
+		e->req_rpc.rpc_event = REQ_RPC_RESPONSE;
+		e->req_rpc.req_id = req_id;
+		e->req_rpc.rpc_id = rpc_id;
+		e->req_rpc.service[0] = '\0';
+		e->req_rpc.method[0] = '\0';
+		if (tasks_sz)
+			e->flags |= task_infos_emit(&tis.infos, dptr, fix_sz);
+	}
+
+	return 0;
+}
+
 /* folly:thread_pool_executor_task_enqueued USDT handler */
 SEC("?usdt")
 int BPF_USDT(wprof_req_task_enqueue,

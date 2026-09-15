@@ -808,13 +808,13 @@ int attach_req_tracking_usdts(struct bpf_state *st)
 		attached_pids |= binary->pid_mask;
 
 		if (!env.capture_req_tasks)
-			continue;
+			goto rpc_probes;
 
 		err = attach_usdt_probe(st, st->skel->progs.wprof_req_task_enqueue,
 					binary->path, binary->attach_path,
 					"folly", "thread_pool_executor_task_enqueued", !binary->required);
 		if (err == -ENOENT)
-			continue;
+			goto rpc_probes;
 		if (err)
 			return err;
 
@@ -822,13 +822,33 @@ int attach_req_tracking_usdts(struct bpf_state *st)
 					binary->path, binary->attach_path,
 					"folly", "thread_pool_executor_task_dequeued", !binary->required);
 		if (err == -ENOENT)
-			continue;
+			goto rpc_probes;
 		if (err)
 			return err;
 
 		err = attach_usdt_probe(st, st->skel->progs.wprof_req_task_stats,
 					binary->path, binary->attach_path,
 					"folly", "thread_pool_executor_task_stats", !binary->required);
+		if (err == -ENOENT)
+			goto rpc_probes;
+		if (err)
+			return err;
+
+rpc_probes:
+		if (!env.capture_req_rpc)
+			continue;
+
+		err = attach_usdt_probe(st, st->skel->progs.wprof_req_rpc_request,
+					binary->path, binary->attach_path,
+					"thrift", "client_rpc_request_v1", !binary->required);
+		if (err == -ENOENT)
+			continue;
+		if (err)
+			return err;
+
+		err = attach_usdt_probe(st, st->skel->progs.wprof_req_rpc_response,
+					binary->path, binary->attach_path,
+					"thrift", "client_rpc_response_v1", !binary->required);
 		if (err == -ENOENT)
 			continue;
 		if (err)

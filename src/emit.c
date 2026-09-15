@@ -1407,6 +1407,7 @@ static void req_task_reset(struct task_state *st, const struct pmu_val *ctrs, u6
 		memset(st->req_task_cum, 0, env.pmu_real_cnt * sizeof(*st->req_task_cum));
 	st->req_task_cum_ns = 0;
 	st->req_task_set_ts = ts;
+	st->req_task_pmu_dur_ns = 0;
 	req_task_oncpu_start(st, ctrs, ts);
 }
 
@@ -3685,6 +3686,119 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e,
 	}
 }
 
+/* EV_REQ_RPC_EVENT */
+static void emit_req_rpc_event(struct worker_state *w, const struct wevent *e)
+{
+	struct wprof_data_hdr *hdr = w->dump_hdr;
+	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
+
+	emit_track_descrs(w, &task);
+
+	u64 req_id = e->req_rpc.req_id;
+	u64 rpc_id = e->req_rpc.rpc_id;
+	bool is_request = e->req_rpc.rpc_event == REQ_RPC_REQUEST;
+	const char *service = wevent_str(hdr, e->req_rpc.service_stroff);
+	const char *method = wevent_str(hdr, e->req_rpc.method_stroff);
+	struct pb_str name;
+	pb_iid cat;
+
+	if (is_request) {
+		const char *s = sfmt("RPC:%s.%s", service, method);
+
+		name = iid_str(emit_intern_str(w, s), s);
+		cat = IID_CAT_REQ_RPC_REQUEST;
+	} else {
+		name = iid_str(IID_NAME_RPC_RESPONSE, "RPC_RESPONSE");
+		cat = IID_CAT_REQ_RPC_RESPONSE;
+	}
+
+	if (env.emit_req_split) {
+		ensure_process_reqs_track(&task);
+		ensure_req_track(&task, req_id, NULL);
+		u64 req_thread_track_uuid = ensure_req_thread_track(&task, req_id);
+
+		emit_instant(req_thread_track_uuid, e->ts, name, cat) {
+			emit_kv_int(IID_ANNK_REQ_ID, req_id);
+			emit_kv_int(IID_ANNK_RPC_ID, rpc_id);
+			if (is_request) {
+				emit_kv_str(IID_ANNK_RPC_SERVICE, service);
+				emit_kv_str(IID_ANNK_RPC_METHOD, method);
+			}
+			emit_flow_id(hash_combine(req_id, rpc_id));
+		}
+	}
+
+	if (env.emit_req_embed) {
+		u64 thread_req_track_uuid = ensure_thread_req_track(&task);
+		bool first_embed_event = req_embed_first_event(&task, req_id);
+
+		emit_instant(thread_req_track_uuid, e->ts, name, cat) {
+			emit_kv_int(IID_ANNK_REQ_ID, req_id);
+			emit_kv_int(IID_ANNK_RPC_ID, rpc_id);
+			if (is_request) {
+				emit_kv_str(IID_ANNK_RPC_SERVICE, service);
+				emit_kv_str(IID_ANNK_RPC_METHOD, method);
+			}
+			if (first_embed_event)
+				emit_flow_id(req_id);
+			emit_flow_id(hash_combine(req_id, task.tid));
+			emit_flow_id(hash_combine(req_id, rpc_id));
+		}
+	}
+}
+
+static const char *req_rpc_event_str(enum wprof_req_event_kind kind)
+{
+	switch (kind) {
+	case REQ_RPC_REQUEST:  return "rpc_request";
+	case REQ_RPC_RESPONSE: return "rpc_response";
+	default:               return "unknown";
+	}
+}
+
+static void emit_req_rpc_event_json(struct worker_state *w, const struct wevent *e)
+{
+	struct json_state *j = &js;
+	struct wprof_data_hdr *hdr = w->dump_hdr;
+	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
+
+	json_obj_start(j);
+	json_kv_ts(j, "ts", e->ts - env.sess_start_ts);
+	json_kv_str(j, "t", "req_rpc_event");
+	json_task(j, "task", &task);
+	json_kv_int(j, "cpu", e->cpu);
+	if (env.emit_numa)
+		json_kv_int(j, "numa", e->numa_node);
+	json_kv_str(j, "event", req_rpc_event_str(e->req_rpc.rpc_event));
+	json_kv_int(j, "req_id", e->req_rpc.req_id);
+	json_kv_int(j, "rpc_id", e->req_rpc.rpc_id);
+	if (e->req_rpc.rpc_event == REQ_RPC_REQUEST) {
+		json_kv_str(j, "service", wevent_str(hdr, e->req_rpc.service_stroff));
+		json_kv_str(j, "method", wevent_str(hdr, e->req_rpc.method_stroff));
+	}
+	json_obj_end(j);
+}
+
+static int process_req_rpc_event(struct worker_state *w, const struct wevent *e)
+{
+	if (!env.capture_requests || !env.capture_req_rpc)
+		return 0;
+
+	struct wprof_task task = wevent_resolve_task(w->dump_hdr, e->task_id);
+
+	if (!should_trace_task(&task))
+		return 0;
+
+	if (w->req_allowlist.ids && !req_allowlist_has(&w->req_allowlist, task.pid, e->req_rpc.req_id))
+		return 0;
+
+	if (env.json_path)
+		emit_req_rpc_event_json(w, e);
+	else
+		emit_req_rpc_event(w, e);
+	return 0;
+}
+
 static const char *req_task_event_str(enum wprof_req_event_kind kind)
 {
 	switch (kind) {
@@ -5457,6 +5571,7 @@ static handle_event_fn emit_fns[] = {
 	[EV_IPI_EXIT] = process_ipi_exit,
 	[EV_REQ_EVENT] = process_req_event,
 	[EV_REQ_TASK_EVENT] = process_req_task_event,
+	[EV_REQ_RPC_EVENT] = process_req_rpc_event,
 	[EV_SCX_DSQ_END] = process_scx_dsq_end,
 	[EV_CUDA_KERNEL] = process_cuda_kernel,
 	[EV_CUDA_MEMCPY] = process_cuda_memcpy,

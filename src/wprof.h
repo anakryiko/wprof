@@ -13,6 +13,7 @@
 
 #define FILEPATH_LEN 64
 #define REQ_NAME_LEN 64
+#define RPC_NAME_LEN 48
 #define HARDIRQ_NAME_LEN 32
 
 #define TASK_COMM_FULL_LEN (2 * TASK_COMM_LEN + 4)
@@ -142,6 +143,7 @@ enum event_kind {
 	EV_REQ_TASK_EVENT = 17,
 	EV_SCX_DSQ_END = 18,
 	EV_PMU_EVENT = 19,
+	EV_REQ_RPC_EVENT = 20,
 
 	EV_CUDA_CALL = 49,
 
@@ -295,6 +297,10 @@ enum wprof_req_event_kind {
 	REQ_TASK_STATS = 17,
 
 	REQ_REPLY = 18,
+
+	/* thrift client RPC events; numbered apart, they share no history with the above */
+	REQ_RPC_REQUEST = 1000,
+	REQ_RPC_RESPONSE = 1001,
 };
 
 /*
@@ -430,6 +436,13 @@ struct wprof_event {
 			enum wprof_req_event_kind req_event; /* lifecycle event (BEGIN, SET, UNSET, REPLY, END, CLEAR) */
 			char req_name[REQ_NAME_LEN];
 		} req;
+		struct wprof_req_rpc_ctx {
+			enum wprof_req_event_kind rpc_event; /* RPC_REQUEST/RPC_RESPONSE */
+			u64 req_id;
+			u64 rpc_id;
+			char service[RPC_NAME_LEN]; /* request only */
+			char method[RPC_NAME_LEN];  /* request only */
+		} req_rpc;
 		struct wprof_req_task_ctx {
 			enum wprof_req_event_kind req_task_event; /* ENQUEUE/DEQUEUE/STATS */
 			u64 req_id;
@@ -531,6 +544,7 @@ static inline u16 bpf_event_fix_sz(const struct wprof_event *e)
 	case EV_IPI_EXIT:	return EV_SZ(ipi);
 	case EV_REQ_EVENT:	return EV_SZ(req);
 	case EV_REQ_TASK_EVENT:	return EV_SZ(req_task);
+	case EV_REQ_RPC_EVENT:	return EV_SZ(req_rpc);
 	case EV_SCX_DSQ_END:	return EV_SZ(scx_dsq);
 	case EV_CUDA_CALL:	return EV_SZ(cuda_call);
 	case EV_UTRACE_INSTANT:

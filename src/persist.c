@@ -474,6 +474,16 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 		dst->req.pmu_vals_id = persist_pmu_vals_id(ps, bpf_event_pmu_vals(e));
 		break;
 
+	case EV_REQ_RPC_EVENT:
+		fill_wevent_hdr(dst, e, task_id, WEVENT_SZ(req_rpc));
+
+		dst->req_rpc.rpc_event = e->req_rpc.rpc_event;
+		dst->req_rpc.req_id = e->req_rpc.req_id;
+		dst->req_rpc.rpc_id = e->req_rpc.rpc_id;
+		dst->req_rpc.service_stroff = persist_stroff(ps, e->req_rpc.service);
+		dst->req_rpc.method_stroff = persist_stroff(ps, e->req_rpc.method);
+		break;
+
 	case EV_REQ_TASK_EVENT:
 		fill_wevent_hdr(dst, e, task_id, WEVENT_SZ(req_task));
 
