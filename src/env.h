@@ -30,6 +30,7 @@
 #define DEFAULT_CAPTURE_REQUESTS FALSE
 #define DEFAULT_CAPTURE_REQ_CTXS TRUE
 #define DEFAULT_CAPTURE_REQ_TASKS TRUE
+#define DEFAULT_CAPTURE_REQ_RPC TRUE
 #define DEFAULT_REQ_PMU_LAYER REQ_PMU_NONE
 #define DEFAULT_CAPTURE_SCX FALSE
 #define DEFAULT_CAPTURE_CUDA FALSE
@@ -157,6 +158,7 @@ struct env {
 	enum tristate capture_requests;
 	enum tristate capture_req_ctxs;		/* crochet REQ_SET/REQ_UNSET events */
 	enum tristate capture_req_tasks;	/* folly executor task enqueue/dequeue/stats */
+	enum tristate capture_req_rpc;		/* thrift client RPC request/response */
 	enum req_pmu_layer req_pmu_layer;	/* which request layer PMU counters are charged to */
 	enum tristate capture_scx;
 	enum tristate capture_cuda;

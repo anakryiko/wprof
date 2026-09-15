@@ -175,6 +175,7 @@ const char *extra_param_str(struct wprof_data_hdr *hdr, const struct wprof_extra
 	case WEXTRA_REQ_PMU:			return sfmt("-f req-pmu=%s", req_pmu_layer_str(e->value));
 	case WEXTRA_REQ_CTXS:			return e->value ? "-f req-ctxs" : "-f no-req-ctxs";
 	case WEXTRA_REQ_TASKS:			return e->value ? "-f req-tasks" : "-f no-req-tasks";
+	case WEXTRA_REQ_RPC:			return e->value ? "-f req-rpc" : "-f no-req-rpc";
 	default:
 		BUG("unknown extra param kind %d\n", e->kind);
 	}
@@ -1016,6 +1017,10 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 			bpf_program__set_autoload(skel->progs.wprof_req_task_enqueue, true);
 			bpf_program__set_autoload(skel->progs.wprof_req_task_dequeue, true);
 			bpf_program__set_autoload(skel->progs.wprof_req_task_stats, true);
+		}
+		if (env.capture_req_rpc) {
+			bpf_program__set_autoload(skel->progs.wprof_req_rpc_request, true);
+			bpf_program__set_autoload(skel->progs.wprof_req_rpc_response, true);
 		}
 		bpf_map__set_max_entries(skel->maps.req_states, max(16 * 1024, env.task_state_sz));
 	} else {
@@ -2281,6 +2286,7 @@ int main(int argc, char **argv)
 			env.allow_tname_cnt || env.deny_tname_cnt;
 		enum tristate rec_req_ctxs = DEFAULT_CAPTURE_REQ_CTXS;
 		enum tristate rec_req_tasks = DEFAULT_CAPTURE_REQ_TASKS;
+		enum tristate rec_req_rpc = DEFAULT_CAPTURE_REQ_RPC;
 		enum req_pmu_layer rec_req_pmu = DEFAULT_REQ_PMU_LAYER;
 		for (u64 i = 0; i < dump_hdr->extra_cnt; i++) {
 			struct wprof_extra_param *ep = wevent_extra_param(dump_hdr, i);
@@ -2376,6 +2382,9 @@ int main(int argc, char **argv)
 			case WEXTRA_REQ_TASKS:
 				rec_req_tasks = ep->value;
 				break;
+			case WEXTRA_REQ_RPC:
+				rec_req_rpc = ep->value;
+				break;
 			case WEXTRA_REQ_PMU:
 				rec_req_pmu = ep->value;
 				break;
@@ -2409,6 +2418,11 @@ int main(int argc, char **argv)
 			err = -EINVAL;
 			goto cleanup;
 		}
+		if (env.capture_req_rpc == TRUE && rec_req_rpc != TRUE) {
+			eprintf("replay: request RPCs requested, but not recorded in data dump!\n");
+			err = -EINVAL;
+			goto cleanup;
+		}
 		if (env.req_pmu_layer != REQ_PMU_UNSET && env.req_pmu_layer != REQ_PMU_NONE &&
 		    env.req_pmu_layer != rec_req_pmu) {
 			eprintf("replay: request PMU layer '%s' requested, but '%s' recorded in data dump!\n",
@@ -2420,6 +2434,8 @@ int main(int argc, char **argv)
 			env.capture_req_ctxs = rec_req_ctxs;
 		if (env.capture_req_tasks == UNSET)
 			env.capture_req_tasks = rec_req_tasks;
+		if (env.capture_req_rpc == UNSET)
+			env.capture_req_rpc = rec_req_rpc;
 		if (env.req_pmu_layer == REQ_PMU_UNSET)
 			env.req_pmu_layer = rec_req_pmu;
 
@@ -2556,7 +2572,8 @@ int main(int argc, char **argv)
 	bool req_pmu = env.req_pmu_layer == REQ_PMU_CTXS || env.req_pmu_layer == REQ_PMU_TASKS;
 
 	if (env.capture_requests != TRUE &&
-	    (env.capture_req_ctxs == TRUE || env.capture_req_tasks == TRUE || req_pmu)) {
+	    (env.capture_req_ctxs == TRUE || env.capture_req_tasks == TRUE ||
+	     env.capture_req_rpc == TRUE || req_pmu)) {
 		eprintf("-f req-... sub-features require request tracking; add -f req!\n");
 		err = -EINVAL;
 		goto cleanup;
@@ -2588,6 +2605,8 @@ int main(int argc, char **argv)
 		env.capture_req_ctxs = DEFAULT_CAPTURE_REQ_CTXS;
 	if (env.capture_req_tasks == UNSET)
 		env.capture_req_tasks = DEFAULT_CAPTURE_REQ_TASKS;
+	if (env.capture_req_rpc == UNSET)
+		env.capture_req_rpc = DEFAULT_CAPTURE_REQ_RPC;
 	if (env.req_pmu_layer == REQ_PMU_UNSET)
 		env.req_pmu_layer = DEFAULT_REQ_PMU_LAYER;
 

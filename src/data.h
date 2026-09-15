@@ -105,6 +105,7 @@ enum wprof_extra_param_kind {
 	WEXTRA_REQ_PMU			= 31,
 	WEXTRA_REQ_CTXS			= 32,
 	WEXTRA_REQ_TASKS		= 33,
+	WEXTRA_REQ_RPC			= 34,
 };
 
 struct wprof_extra_param {

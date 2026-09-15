@@ -229,6 +229,8 @@ static void collect_extras(struct persist_state *ps, struct wprof_extra_param **
 		add_extra(extras, cnt, WEXTRA_REQ_CTXS, env.capture_req_ctxs == TRUE);
 	if (env.capture_req_tasks != DEFAULT_CAPTURE_REQ_TASKS)
 		add_extra(extras, cnt, WEXTRA_REQ_TASKS, env.capture_req_tasks == TRUE);
+	if (env.capture_req_rpc != DEFAULT_CAPTURE_REQ_RPC)
+		add_extra(extras, cnt, WEXTRA_REQ_RPC, env.capture_req_rpc == TRUE);
 	if (env.req_pmu_layer != DEFAULT_REQ_PMU_LAYER)
 		add_extra(extras, cnt, WEXTRA_REQ_PMU, env.req_pmu_layer);
 

@@ -581,6 +581,31 @@ The counters cover on-CPU time only; `offcpu_dur` is excluded from them.
 
 The counters cover on-CPU time only; `offcpu_dur` is excluded from them.
 
+#### `req_rpc_event` — thrift client RPC event
+
+| Field     | Type   | Description                                     |
+|-----------|--------|-------------------------------------------------|
+| `task`    | task   | Thread the event fired on                       |
+| `event`   | string | Event type: `"rpc_request"` or `"rpc_response"` |
+| `req_id`  | int    | Request identifier the RPC belongs to           |
+| `rpc_id`  | int    | RPC identifier, unique within the process       |
+| `service` | string | *(request only)* Callee service name            |
+| `method`  | string | *(request only)* Callee method name             |
+
+```json
+{
+  "ts": 0.200500000,
+  "t": "req_rpc_event",
+  "task": {"tid": 1234, "pid": 1000, "comm": "server"},
+  "cpu": 3,
+  "event": "rpc_request",
+  "req_id": 42,
+  "rpc_id": 87123,
+  "service": "Ards",
+  "method": "getAds"
+}
+```
+
 ---
 
 ### Sched-ext events
