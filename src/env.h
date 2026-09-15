@@ -376,6 +376,7 @@ struct worker_state {
 	struct ring_buffer *rb_manager;
 
 	struct fr_chunk *cur_chunk;   /* current/open chunk; owns dump/dump_path aliases */
+	struct fr_chunk *chunks;      /* merge-time: all this worker's chunks, current first */
 
 	/* stack trace usage markers */
 	u64 *stacks_used; /* bitmask */
