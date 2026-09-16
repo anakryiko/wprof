@@ -3686,8 +3686,23 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e,
 				}
 				rts->req_thread.open = true;
 			}
-			rts->req_thread.task_id = e->req_task.req_task_id;
-			rts->req_thread.wait_ns = e->req_task.wait_time_ns;
+
+			/*
+			 * The slice carries one work item, annotated on when it closes. A
+			 * second one dequeued inside it keeps its own events rather than
+			 * displacing the first, which is what embed mode does as well.
+			 */
+			if (rts->req_thread.task_id) {
+				emit_instant(rts->track_id, e->ts, IID_NAME_TASK_DEQUEUE, IID_CAT_REQ_TASK_DEQUEUE) {
+					emit_kv_int(IID_ANNK_REQ_ID, e->req_task.req_id);
+					emit_kv_int(IID_ANNK_REQ_TASK_ID, e->req_task.req_task_id);
+					emit_kv_float(IID_ANNK_REQ_TASK_WAIT_US, "%.3lf", e->req_task.wait_time_ns / 1000.0);
+					emit_flow_id(hash_combine(req_id, e->req_task.req_task_id));
+				}
+			} else {
+				rts->req_thread.task_id = e->req_task.req_task_id;
+				rts->req_thread.wait_ns = e->req_task.wait_time_ns;
+			}
 		}
 
 		/*
@@ -3718,9 +3733,25 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e,
 		if (folded && req_ctrs)
 			st->req_task_pmu_dur_ns = req_oncpu_ns + req_offcpu_ns;
 
-		/* a REQ_SET inside this slice hands the close over to its REQ_UNSET */
-		if (env.emit_req_split && rts->req_thread.open && !rts->req_thread.saw_set)
-			req_thread_slice_end(w, rts, e->ts, req_id, st, req_ctrs, req_oncpu_ns, req_offcpu_ns);
+		if (env.emit_req_split) {
+			/* a REQ_SET inside this slice hands the close over to its REQ_UNSET */
+			if (rts->req_thread.open && !rts->req_thread.saw_set &&
+			    rts->req_thread.task_id == e->req_task.req_task_id) {
+				req_thread_slice_end(w, rts, e->ts, req_id, st, req_ctrs, req_oncpu_ns, req_offcpu_ns);
+			} else if (rts->req_thread.task_id && rts->req_thread.task_id != e->req_task.req_task_id) {
+				/* the work item this slice didn't take reports on its own */
+				emit_instant(rts->track_id, e->ts, IID_NAME_TASK_COMPLETE, IID_CAT_REQ_TASK_COMPLETE) {
+					emit_kv_int(IID_ANNK_REQ_ID, e->req_task.req_id);
+					emit_kv_int(IID_ANNK_REQ_TASK_ID, e->req_task.req_task_id);
+					emit_kv_float(IID_ANNK_REQ_TASK_WAIT_US, "%.3lf", e->req_task.wait_time_ns / 1000.0);
+					if (req_ctrs) {
+						emit_kv_float(IID_ANNK_OFFCPU_DUR_US, "%.3lf", req_offcpu_ns / 1000.0);
+						emit_perf_counters(NULL, req_ctrs, true /* diffs */, req_oncpu_ns);
+					}
+					emit_flow_id(hash_combine(req_id, e->req_task.req_task_id));
+				}
+			}
+		}
 
 		if (env.emit_req_embed && !folded) {
 			emit_instant(thread_req_track_uuid, e->ts,
