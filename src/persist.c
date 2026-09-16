@@ -480,6 +480,7 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 		dst->req_rpc.rpc_event = e->req_rpc.rpc_event;
 		dst->req_rpc.req_id = e->req_rpc.req_id;
 		dst->req_rpc.rpc_id = e->req_rpc.rpc_id;
+		dst->req_rpc.success = e->req_rpc.success;
 		dst->req_rpc.service_stroff = persist_stroff(ps, e->req_rpc.service);
 		dst->req_rpc.method_stroff = persist_stroff(ps, e->req_rpc.method);
 		break;

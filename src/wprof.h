@@ -438,6 +438,7 @@ struct wprof_event {
 		} req;
 		struct wprof_req_rpc_ctx {
 			enum wprof_req_event_kind rpc_event; /* RPC_REQUEST/RPC_RESPONSE */
+			u8 success; /* response only */
 			u64 req_id;
 			u64 rpc_id;
 			char service[RPC_NAME_LEN]; /* request only */

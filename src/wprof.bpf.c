@@ -1988,6 +1988,7 @@ int BPF_USDT(wprof_req_rpc_request,
 		e->req_rpc.rpc_event = REQ_RPC_REQUEST;
 		e->req_rpc.req_id = req_id;
 		e->req_rpc.rpc_id = rpc_id;
+		e->req_rpc.success = 0;
 		if (bpf_probe_read_user_str(e->req_rpc.service, sizeof(e->req_rpc.service), service) < 0)
 			e->req_rpc.service[0] = '\0';
 		if (bpf_probe_read_user_str(e->req_rpc.method, sizeof(e->req_rpc.method), method) < 0)
@@ -2001,7 +2002,7 @@ int BPF_USDT(wprof_req_rpc_request,
 
 /* thrift:client_rpc_response_v1 USDT handler */
 SEC("?usdt")
-int BPF_USDT(wprof_req_rpc_response, u64 req_id, u64 rpc_id)
+int BPF_USDT(wprof_req_rpc_response, u64 req_id, u64 rpc_id, u64 success)
 {
 	u64 now_ts = bpf_ktime_get_ns();
 	struct task_struct *task = bpf_get_current_task_btf();
@@ -2022,6 +2023,7 @@ int BPF_USDT(wprof_req_rpc_response, u64 req_id, u64 rpc_id)
 		e->req_rpc.rpc_event = REQ_RPC_RESPONSE;
 		e->req_rpc.req_id = req_id;
 		e->req_rpc.rpc_id = rpc_id;
+		e->req_rpc.success = success != 0;
 		e->req_rpc.service[0] = '\0';
 		e->req_rpc.method[0] = '\0';
 		if (tasks_sz)
