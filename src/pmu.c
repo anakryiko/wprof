@@ -505,7 +505,11 @@ static int parse_event_kind(const char *spec, struct pmu_event *out)
 	if (err == 0 || err != -ENOENT)
 		return err;
 
-	return -EINVAL;
+	/*
+	 * No parser claimed the name. It is not malformed, just unknown here, and
+	 * in replay mode it can still name a counter recorded in the data dump.
+	 */
+	return -ENOENT;
 }
 
 /*
