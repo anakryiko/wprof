@@ -723,7 +723,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		} else if (strcasecmp(arg, "wq") == 0) {
 			env.capture_wq = val;
 		} else {
-			fprintf(stderr, "Unrecognized data feature '%s!\n", arg);
+			fprintf(stderr, "Unrecognized data feature '%s'!\n", arg);
 			return -EINVAL;
 		}
 		break;
