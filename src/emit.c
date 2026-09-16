@@ -5674,8 +5674,12 @@ static void emit_header_json(struct worker_state *w)
 		json_arr_str(j, "waker");
 	if (env.requested_stack_traces & ST_CUDA)
 		json_arr_str(j, "cuda");
+	if (env.requested_stack_traces & ST_REQ)
+		json_arr_str(j, "req");
 	if (env.requested_stack_traces & ST_UTRACE)
 		json_arr_str(j, "utrace");
+	if (env.requested_stack_traces & ST_PMU)
+		json_arr_str(j, "pmu");
 	json_arr_end(j);
 
 	json_kv_int(j, "stack_cnt", stack_cnt);
