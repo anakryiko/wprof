@@ -374,6 +374,11 @@ struct track_state {
 			bool saw_set;	/* REQ_SET fell inside it, so REQ_UNSET is what closes it */
 		} req_thread;
 
+		/* DTK_REQ_THREAD_EMBED */
+		struct {
+			bool open;	/* a slice is open on this thread's REQUESTS track */
+		} req_embed;
+
 		/* DTK_TIMER_CALLSTACK */
 		struct {
 			u64 last_ts;
@@ -395,12 +400,13 @@ static size_t track_state_size(enum dyn_track_kind kind)
 		return offsetofend(struct track_state, req);
 	case DTK_REQ_THREAD:
 		return offsetofend(struct track_state, req_thread);
+	case DTK_REQ_THREAD_EMBED:
+		return offsetofend(struct track_state, req_embed);
 	case DTK_TIMER_CALLSTACK:
 		return offsetofend(struct track_state, cs);
 	case DTK_CUDA_PROC_STREAM:
 		return offsetofend(struct track_state, stream);
 	case DTK_PROC_REQS:
-	case DTK_REQ_THREAD_EMBED:
 	case DTK_PYTRACE:
 	case DTK_PYTORCH:
 	case DTK_TIMER:
@@ -3217,7 +3223,7 @@ static struct track_state *ensure_req_thread_track(const struct wprof_task *t, u
 	return s;
 }
 
-static u64 ensure_thread_req_track(const struct wprof_task *t)
+static struct track_state *ensure_thread_req_track(const struct wprof_task *t)
 {
 	struct track_state *s = track_state_get_or_add(DTK_REQ_THREAD_EMBED, t->tid, 0);
 
@@ -3226,7 +3232,7 @@ static u64 ensure_thread_req_track(const struct wprof_task *t)
 				   "REQUESTS", s->kind, CHILD_ORDER_CHRONO, MERGE_NONE, 0);
 		s->exists = true;
 	}
-	return s->track_id;
+	return s;
 }
 
 static bool req_embed_first_event(const struct wprof_task *t, u64 req_id)
@@ -3300,10 +3306,12 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e,
 	if (env.emit_req_split)
 		rts = ensure_req_thread_track(&task, req_id);
 
+	struct track_state *ets = NULL;
 	u64 thread_req_track_uuid = 0;
 	bool first_embed_event = false;
 	if (env.emit_req_embed) {
-		thread_req_track_uuid = ensure_thread_req_track(&task);
+		ets = ensure_thread_req_track(&task);
+		thread_req_track_uuid = ets->track_id;
 		first_embed_event = req_embed_first_event(&task, req_id);
 	}
 
@@ -3383,13 +3391,25 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e,
 				emit_flow_id(hash_combine(req_id, task.tid));
 				emit_callstack(w, req_stack_id);
 			}
+			ets->req_embed.open = true;
 		}
 		break;
 	case REQ_UNSET:
-		if (env.emit_req_split && rts->req_thread.saw_set)
+		/*
+		 * A request already in flight when the window started has no REQ_SET
+		 * here, so there is no slice to close and the event is drawn on its
+		 * own instead.
+		 */
+		if (env.emit_req_split && rts->req_thread.saw_set) {
 			req_thread_slice_end(w, rts, e->ts, req_id, st, req_ctrs, req_oncpu_ns, req_offcpu_ns);
+		} else if (env.emit_req_split) {
+			emit_instant(rts->track_id, e->ts, IID_NAME_REQUEST_UNSET, IID_CAT_REQUEST_UNSET) {
+				emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
+				emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
+			}
+		}
 
-		if (env.emit_req_embed) {
+		if (env.emit_req_embed && ets->req_embed.open) {
 			emit_slice_end(thread_req_track_uuid, e->ts, iid_str(thread_req_name_iid, thread_req_name), IID_CAT_REQUEST_THREAD) {
 				if (st->req_task_id) {
 					emit_kv_int(IID_ANNK_REQ_TASK_ID, st->req_task_id);
@@ -3402,6 +3422,14 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e,
 				emit_flow_id(hash_combine(req_id, task.tid));
 				if (st->req_task_id)
 					emit_flow_id(hash_combine(req_id, st->req_task_id));
+				emit_callstack(w, req_stack_id);
+			}
+			ets->req_embed.open = false;
+		} else if (env.emit_req_embed) {
+			emit_instant(thread_req_track_uuid, e->ts, iid_str(thread_req_name_iid, thread_req_name), IID_CAT_REQUEST_UNSET) {
+				emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
+				emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
+				emit_flow_id(hash_combine(req_id, task.tid));
 				emit_callstack(w, req_stack_id);
 			}
 		}
@@ -3605,7 +3633,7 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e,
 	u64 thread_req_track_uuid = 0;
 	bool first_embed_event = false;
 	if (env.emit_req_embed) {
-		thread_req_track_uuid = ensure_thread_req_track(&task);
+		thread_req_track_uuid = ensure_thread_req_track(&task)->track_id;
 		first_embed_event = req_embed_first_event(&task, req_id);
 	}
 
@@ -3758,7 +3786,7 @@ static void emit_req_rpc_event(struct worker_state *w, const struct wevent *e)
 	}
 
 	if (env.emit_req_embed) {
-		u64 thread_req_track_uuid = ensure_thread_req_track(&task);
+		u64 thread_req_track_uuid = ensure_thread_req_track(&task)->track_id;
 		bool first_embed_event = req_embed_first_event(&task, req_id);
 
 		emit_instant(thread_req_track_uuid, e->ts, name, cat) {
