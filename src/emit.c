@@ -1345,7 +1345,7 @@ static void emit_perf_counters(const struct pmu_val *st_ctrs, const struct pmu_v
 		int denom_idx = (int)ev->config2;
 		double num = pmu_value(st_ctrs, ev_ctrs, num_idx, diffs, dt_ns);
 		double denom = pmu_value(st_ctrs, ev_ctrs, denom_idx, diffs, dt_ns);
-		double value = num / denom;
+		double value = denom == 0 ? NAN : num / denom;
 
 		if (!isnan(value))
 			emit_kv_float(iid_str(ev->name_iid, ev->name), "%.6lf", value);
@@ -1376,7 +1376,7 @@ static void json_pmu_counters(struct json_state *j, const struct pmu_val *st_ctr
 		int denom_idx = (int)ev->config2;
 		double num = pmu_value(st_ctrs, ev_ctrs, num_idx, diffs, dt_ns);
 		double denom = pmu_value(st_ctrs, ev_ctrs, denom_idx, diffs, dt_ns);
-		double value = num / denom;
+		double value = denom == 0 ? NAN : num / denom;
 
 		if (isnan(value))
 			json_arr_null(j);
