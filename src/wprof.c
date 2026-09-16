@@ -2522,7 +2522,8 @@ int main(int argc, char **argv)
 	for (int i = 0; i < env.pmu_event_cnt; i++) {
 		struct pmu_event *s = &env.pmu_events[i];
 
-		err = pmu_event_resolve(s, env.pmu_derivs, env.pmu_deriv_cnt);
+		err = pmu_event_resolve(s, env.pmu_reals, env.pmu_real_cnt,
+					env.pmu_derivs, env.pmu_deriv_cnt);
 		if (err)
 			goto cleanup;
 		if (s->sampling_freq == 0 && s->sampling_period == 0)

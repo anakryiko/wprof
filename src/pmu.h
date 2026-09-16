@@ -90,15 +90,19 @@ int parse_pmu_event_spec(const char *spec, struct pmu_event *out);
  * pmu_event_resolve - resolve a sampled event's spec into its perf identity + rate
  * @e: event to resolve in place (e->spec set); perf identity and sampling rate
  *     are filled, e->spec preserved.
+ * @reals: --pmu real counters (to sample one by the name it was declared under)
+ * @real_cnt: number of real counters
  * @derivs: --pmu derived counters (to reject sampling them by name)
  * @deriv_cnt: number of derived counters
  *
- * Parses the event part of e->spec with parse_perf_counter() and the @rate part
- * for the sampling frequency/period. Rejects derived/unresolved events.
+ * Takes the event identity from the @reals counter of that name, or parses the
+ * event part of e->spec with parse_perf_counter(); the @rate part gives the
+ * sampling frequency/period. Rejects derived/unresolved events.
  *
  * Returns 0 on success, negative error code on failure.
  */
-int pmu_event_resolve(struct pmu_event *e, const struct pmu_event *derivs, int deriv_cnt);
+int pmu_event_resolve(struct pmu_event *e, const struct pmu_event *reals, int real_cnt,
+		      const struct pmu_event *derivs, int deriv_cnt);
 
 /**
  * parse_perf_counter - Parse event specification string into pmu_event struct

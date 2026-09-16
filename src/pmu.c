@@ -599,11 +599,13 @@ int parse_pmu_event_spec(const char *spec, struct pmu_event *out)
 	return 0;
 }
 
-int pmu_event_resolve(struct pmu_event *e, const struct pmu_event *derivs, int deriv_cnt)
+int pmu_event_resolve(struct pmu_event *e, const struct pmu_event *reals, int real_cnt,
+		      const struct pmu_event *derivs, int deriv_cnt)
 {
 	char *spec = e->spec;
 	const char *at = strchr(spec, '@');
 	char *name = strndup(spec, at ? (size_t)(at - spec) : strlen(spec));
+	const struct pmu_event *decl = NULL;
 	int err;
 
 	/* a derived metric (ratio) can be named but not sampled -- reject up front */
@@ -614,9 +616,26 @@ int pmu_event_resolve(struct pmu_event *e, const struct pmu_event *derivs, int d
 		}
 	}
 
-	/* resolve the event identity exactly like a --pmu counter */
-	err = parse_perf_counter(name, e);
-	if (err) {
+	for (int i = 0; i < real_cnt; i++) {
+		if (strcasecmp(reals[i].name, name) == 0) {
+			decl = &reals[i];
+			break;
+		}
+	}
+
+	if (decl) {
+		/*
+		 * A --pmu counter is sampled by the name it was declared under, and
+		 * that name is an event spec of its own only by coincidence: name=
+		 * and the generated names of raw and PMU-style counters never are.
+		 */
+		e->perf_type = decl->perf_type;
+		e->config = decl->config;
+		e->config1 = decl->config1;
+		e->config2 = decl->config2;
+		e->name = strdup(decl->name);
+	} else if ((err = parse_perf_counter(name, e)) < 0) {
+		/* otherwise resolve the event identity exactly like a --pmu counter */
 		eprintf("Failed to resolve PMU sampling event '%s'\n", name);
 		return err;
 	} else if (e->perf_type == PERF_TYPE_DERIVED) {
@@ -625,10 +644,10 @@ int pmu_event_resolve(struct pmu_event *e, const struct pmu_event *derivs, int d
 	} else if (e->perf_type == PERF_TYPE_UNRESOLVED) {
 		eprintf("Unresolved PMU event '%s' can't be sampled\n", name);
 		return -EINVAL;
+	} else {
+		/* parse_perf_counter() memset()'s the event, so reattach the owned spec string afterwards */
+		e->spec = spec;
 	}
-
-	/* parse_perf_counter() memset()'s the event, so reattach the owned spec string afterwards */
-	e->spec = spec;
 
 	/* we'll apply default rate later */
 	if (!at)
