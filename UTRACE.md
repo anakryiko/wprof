@@ -455,7 +455,7 @@ across tracks by whatever its arguments identify:
 
 ```bash
 # one track per (thread, ring) instead of a single track for the probe
--U 'uspan:io_submit (arg:0.ring_id/name(ring)) | id:"ring {ring}" |'
+-U 'uspan:io_submit (arg:0/name(ring)) | id:"ring {ring}" |'
 ```
 
 Equal renderings share a track, across probes as well, so the grouping
