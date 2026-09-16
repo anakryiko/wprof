@@ -1359,6 +1359,8 @@ static void json_pmu_counters(struct json_state *j, const struct pmu_val *st_ctr
 		return;
 	if (!diffs && !st_ctrs)
 		return;
+	if (env.pmu_real_cnt + env.pmu_deriv_cnt == 0)
+		return;
 
 	json_subarr_start(j, "pmus");
 	for (int i = 0; i < env.pmu_real_cnt; i++) {
@@ -5651,11 +5653,10 @@ static void emit_header_json(struct worker_state *w)
 	json_kv_int(j, "stack_cnt", stack_cnt);
 
 	json_subarr_start(j, "pmus");
-	int pmu_total = hdr->pmu_def_real_cnt + hdr->pmu_def_deriv_cnt;
-	for (int i = 0; i < pmu_total; i++) {
-		struct wevent_pmu_def *def = wevent_pmu_def(hdr, i);
-		json_arr_str(j, wevent_str(hdr, def->name_stroff));
-	}
+	for (int i = 0; i < env.pmu_real_cnt; i++)
+		json_arr_str(j, env.pmu_reals[i].name);
+	for (int i = 0; i < env.pmu_deriv_cnt; i++)
+		json_arr_str(j, env.pmu_derivs[i].name);
 	json_arr_end(j);
 
 	{
