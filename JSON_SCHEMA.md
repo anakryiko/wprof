@@ -20,8 +20,9 @@ in a fixed order:
   ```json
   {"tid": 1234, "pid": 1000, "comm": "myapp"}
   ```
-- All header fields are always present (no conditional omission) so consumers
-  can rely on a fixed schema.
+- Header fields are always present, except `metadata` and `extras`, which are
+  omitted when the capture has neither, so consumers can rely on a fixed schema
+  for the rest.
 - JSON examples below are shown multi-line for readability; in actual output
   each record is a single compact line.
 
@@ -535,7 +536,8 @@ previous name, and `comm` contains the new name.
 | `event`    | string | Event type: `"begin"`, `"set"`, `"unset"`, `"reply"`, `"end"`, `"clear"` |
 | `req_id`   | int    | Request identifier                                              |
 | `req_name` | string | Request name                                                    |
-| `latency`  | float  | *(optional)* Request latency in seconds (on `"end"` events)     |
+| `latency`  | float  | *(optional)* Request latency in seconds, on the `"reply"` or `"clear"` that ended it, if its `"begin"` was recorded |
+| `stack_id` | int    | *(optional)* Stack trace ID (present with `-Sreq`)               |
 | `offcpu_dur` | float | *(optional)* Time spent off-CPU                                |
 | `pmus`     | array of float | *(optional)* PMU counter totals for request task slice           |
 
