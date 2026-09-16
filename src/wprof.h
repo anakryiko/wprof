@@ -366,8 +366,8 @@ struct wprof_event {
 			int next_task_id;
 			u32 prev_task_state;
 			u32 last_next_task_state;
-			u32 prev_prio;
-			u32 next_prio;
+			int prev_prio;
+			int next_prio;
 			int next_task_scx_layer_id; /* sched-ext specific */
 			int next_task_scx_dsq_id; /* sched-ext specific */
 		} swtch;
