@@ -3406,6 +3406,8 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e,
 			emit_instant(rts->track_id, e->ts, IID_NAME_REQUEST_UNSET, IID_CAT_REQUEST_UNSET) {
 				emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
 				emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
+				emit_kv_str(IID_ANNK_REQ_TASK_COMM, iid_str(st->name_iid, st->comm));
+				emit_kv_int(IID_ANNK_REQ_TASK_TID, task_tid(&task));
 			}
 		}
 
@@ -3694,6 +3696,8 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e,
 			 */
 			if (rts->req_thread.task_id) {
 				emit_instant(rts->track_id, e->ts, IID_NAME_TASK_DEQUEUE, IID_CAT_REQ_TASK_DEQUEUE) {
+					emit_kv_str(IID_ANNK_REQ_TASK_COMM, iid_str(st->name_iid, st->comm));
+					emit_kv_int(IID_ANNK_REQ_TASK_TID, task_tid(&task));
 					emit_kv_int(IID_ANNK_REQ_ID, e->req_task.req_id);
 					emit_kv_int(IID_ANNK_REQ_TASK_ID, e->req_task.req_task_id);
 					emit_kv_float(IID_ANNK_REQ_TASK_WAIT_US, "%.3lf", e->req_task.wait_time_ns / 1000.0);
@@ -3741,6 +3745,8 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e,
 			} else if (rts->req_thread.task_id && rts->req_thread.task_id != e->req_task.req_task_id) {
 				/* the work item this slice didn't take reports on its own */
 				emit_instant(rts->track_id, e->ts, IID_NAME_TASK_COMPLETE, IID_CAT_REQ_TASK_COMPLETE) {
+					emit_kv_str(IID_ANNK_REQ_TASK_COMM, iid_str(st->name_iid, st->comm));
+					emit_kv_int(IID_ANNK_REQ_TASK_TID, task_tid(&task));
 					emit_kv_int(IID_ANNK_REQ_ID, e->req_task.req_id);
 					emit_kv_int(IID_ANNK_REQ_TASK_ID, e->req_task.req_task_id);
 					emit_kv_float(IID_ANNK_REQ_TASK_WAIT_US, "%.3lf", e->req_task.wait_time_ns / 1000.0);
@@ -3806,6 +3812,8 @@ static void emit_req_rpc_event(struct worker_state *w, const struct wevent *e)
 		u64 req_thread_track_uuid = ensure_req_thread_track(&task, req_id)->track_id;
 
 		emit_instant(req_thread_track_uuid, e->ts, name, cat) {
+			emit_kv_str(IID_ANNK_REQ_TASK_COMM, task.comm);
+			emit_kv_int(IID_ANNK_REQ_TASK_TID, task_tid(&task));
 			emit_kv_int(IID_ANNK_REQ_ID, req_id);
 			emit_kv_int(IID_ANNK_RPC_ID, rpc_id);
 			if (is_request) {
