@@ -401,6 +401,7 @@ static const char *pb_static_strs[] = {
 	[IID_ANNK_RPC_ID] = "rpc_id",
 	[IID_ANNK_RPC_SERVICE] = "service",
 	[IID_ANNK_RPC_METHOD] = "method",
+	[IID_ANNK_RPC_SUCCESS] = "success",
 	[IID_ANNK_REQ_TASK_WAIT_US] = "task_wait_time_us",
 	[IID_ANNK_REQ_TASK_COMM] = "task_comm",
 	[IID_ANNK_REQ_TASK_TID] = "task_tid",
@@ -580,6 +581,14 @@ void anns_add_uint(struct pb_anns *anns, pb_iid key_iid, const char *key, uint64
 
 	val->kind = PB_ANN_UINT;
 	val->val_int = value;
+}
+
+void anns_add_bool(struct pb_anns *anns, pb_iid key_iid, const char *key, bool value)
+{
+	struct pb_ann_val *val = anns_add_val(anns, key_iid, key);
+
+	val->kind = PB_ANN_BOOL;
+	val->val_bool = value;
 }
 
 void anns_add_int(struct pb_anns *anns, pb_iid key_iid, const char *key, int64_t value)

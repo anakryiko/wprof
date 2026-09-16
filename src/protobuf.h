@@ -297,6 +297,7 @@ enum pb_static_iid {
 		IID_ANNK_RPC_ID,				/* rpc_id */
 		IID_ANNK_RPC_SERVICE,				/* service */
 		IID_ANNK_RPC_METHOD,				/* method */
+		IID_ANNK_RPC_SUCCESS,				/* success */
 		IID_ANNK_REQ_TASK_WAIT_US,			/* task_wait_time_us */
 		IID_ANNK_REQ_TASK_COMM,				/* task_comm */
 		IID_ANNK_REQ_TASK_TID,				/* task_tid */
@@ -404,6 +405,7 @@ void anns_reset(struct pb_anns *anns);
 struct pb_ann_val *anns_add_val(struct pb_anns *anns, pb_iid key_iid, const char *key);
 void anns_add_str(struct pb_anns *anns, pb_iid key_iid, const char *key, pb_iid value_iid, const char *value);
 void anns_add_uint(struct pb_anns *anns, pb_iid key_iid, const char *key, uint64_t value);
+void anns_add_bool(struct pb_anns *anns, pb_iid key_iid, const char *key, bool value);
 void anns_add_int(struct pb_anns *anns, pb_iid key_iid, const char *key, int64_t value);
 void anns_add_double(struct pb_anns *anns, pb_iid key_iid, const char *key, double value);
 

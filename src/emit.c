@@ -618,6 +618,14 @@ static void __emit_kv_int(struct pb_str key, int64_t value)
 #define emit_kv_int(key, value) __emit_kv_int(__pb_str((key)), (value))
 
 __unused
+static void __emit_kv_bool(struct pb_str key, bool value)
+{
+	anns_add_bool(&em.anns, key.iid, key.s, value);
+}
+
+#define emit_kv_bool(key, value) __emit_kv_bool(__pb_str((key)), (value))
+
+__unused
 static void __emit_kv_float(struct pb_str key, const char *fmt, double value)
 {
 	anns_add_double(&em.anns, key.iid, key.s, value);
@@ -3819,6 +3827,8 @@ static void emit_req_rpc_event(struct worker_state *w, const struct wevent *e)
 			if (is_request) {
 				emit_kv_str(IID_ANNK_RPC_SERVICE, service);
 				emit_kv_str(IID_ANNK_RPC_METHOD, method);
+			} else {
+				emit_kv_bool(IID_ANNK_RPC_SUCCESS, e->req_rpc.success);
 			}
 			emit_flow_id(hash_combine(req_id, rpc_id));
 		}
@@ -3834,6 +3844,8 @@ static void emit_req_rpc_event(struct worker_state *w, const struct wevent *e)
 			if (is_request) {
 				emit_kv_str(IID_ANNK_RPC_SERVICE, service);
 				emit_kv_str(IID_ANNK_RPC_METHOD, method);
+			} else {
+				emit_kv_bool(IID_ANNK_RPC_SUCCESS, e->req_rpc.success);
 			}
 			if (first_embed_event)
 				emit_flow_id(req_id);
@@ -3871,6 +3883,8 @@ static void emit_req_rpc_event_json(struct worker_state *w, const struct wevent 
 	if (e->req_rpc.rpc_event == REQ_RPC_REQUEST) {
 		json_kv_str(j, "service", wevent_str(hdr, e->req_rpc.service_stroff));
 		json_kv_str(j, "method", wevent_str(hdr, e->req_rpc.method_stroff));
+	} else {
+		json_kv_bool(j, "success", e->req_rpc.success);
 	}
 	json_obj_end(j);
 }

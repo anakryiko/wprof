@@ -593,6 +593,7 @@ The counters cover on-CPU time only; `offcpu_dur` is excluded from them.
 | `rpc_id`  | int    | RPC identifier, unique within the process       |
 | `service` | string | *(request only)* Callee service name            |
 | `method`  | string | *(request only)* Callee method name             |
+| `success` | bool   | *(response only)* Whether the RPC succeeded     |
 
 ```json
 {
