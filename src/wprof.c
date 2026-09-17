@@ -3085,6 +3085,11 @@ skip_data_collection:
 		}
 
 		fflush(w->trace);
+		if (ferror(w->trace)) {
+			err = -EIO;
+			eprintf("Failed to write trace file '%s': %d\n", output_path, err);
+			goto cleanup;
+		}
 		if (w->trace != stdout) {
 			ssize_t file_sz = file_size(w->trace);
 			wprintf("Produced %.3lfMB trace file at '%s'.\n",
