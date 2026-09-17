@@ -2,6 +2,7 @@
 /* Copyright (c) 2025 Meta Platforms, Inc. */
 #define _GNU_SOURCE
 #define _FILE_OFFSET_BITS 64
+#include <limits.h>
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -230,12 +231,13 @@ int append_int(int **nums, int *cnt, int val)
 
 int append_num(int **nums, int *cnt, const char *arg)
 {
-	int pid;
+	char *end;
+	long pid;
 
 	errno = 0;
-	pid = strtol(arg, NULL, 10);
-	if (errno || pid < 0) {
-		eprintf("Invalid PID: %d\n", pid);
+	pid = strtol(arg, &end, 10);
+	if (errno || end == arg || *end != '\0' || pid < 0 || pid > INT_MAX) {
+		eprintf("Invalid PID: %s\n", arg);
 		return -EINVAL;
 	}
 
