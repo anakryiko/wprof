@@ -500,14 +500,12 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	case OPT_NO_STACK_TRACES: {
 		enum stack_trace_kind kinds;
 
-		kinds = parse_stack_kinds(arg);
+		/* a bare --no-stacks denies every kind, not just the default ones */
+		kinds = arg ? parse_stack_kinds(arg) : ST_ALL;
 		if (kinds < 0)
 			return -EINVAL;
 
-		if (env.requested_stack_traces == ST_UNSET)
-			env.requested_stack_traces = ST_DEFAULT;
-
-		env.requested_stack_traces &= ~kinds;
+		env.denied_stack_traces |= kinds;
 		break;
 	}
 	/* FEATURES SELECTION */

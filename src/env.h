@@ -152,6 +152,7 @@ struct env {
 	s64 replay_end_offset_ns;
 
 	enum stack_trace_kind requested_stack_traces;
+	enum stack_trace_kind denied_stack_traces;
 
 	/* data capture features */
 	enum tristate capture_ipis;

@@ -2282,6 +2282,7 @@ int main(int argc, char **argv)
 
 		if (env.requested_stack_traces == ST_UNSET)
 			env.requested_stack_traces = captured_stack_traces;
+		env.requested_stack_traces &= ~env.denied_stack_traces;
 		if ((env.requested_stack_traces & captured_stack_traces) != env.requested_stack_traces) {
 			eprintf("replay: some of requested kinds of stack traces were not captured (check --replay-info)!\n");
 			err = -EINVAL;
@@ -2562,6 +2563,7 @@ int main(int argc, char **argv)
 		env.capture_sched = DEFAULT_CAPTURE_SCHED;
 	if (env.requested_stack_traces == ST_UNSET)
 		env.requested_stack_traces = DEFAULT_REQUESTED_STACK_TRACES;
+	env.requested_stack_traces &= ~env.denied_stack_traces;
 	/*
 	 * wakeup tracking defaults on with sched and off under -f no-sched, but
 	 * -Swaker forces it on (the waker stack is rendered standalone). An explicit
