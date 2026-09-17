@@ -1789,7 +1789,7 @@ static void emit_timer_json(struct worker_state *w, const struct wevent *e)
 	json_kv_int(j, "cpu", e->cpu);
 	if (env.emit_numa)
 		json_kv_int(j, "numa", e->numa_node);
-	json_kv_int(j, "stack_id", e->timer.timer_stack_id);
+	json_kv_int(j, "stack_id", e->timer.pystack_id ?: e->timer.timer_stack_id);
 	json_obj_end(j);
 }
 
@@ -1869,7 +1869,7 @@ static void emit_pmu_event_json(struct worker_state *w, const struct wevent *e,
 	if (e->pmu_event.sample_period)
 		json_kv_int(j, "sample_period", e->pmu_event.sample_period);
 	if ((env.requested_stack_traces & ST_PMU) && e->pmu_event.pmu_stack_id > 0)
-		json_kv_int(j, "stack_id", e->pmu_event.pmu_stack_id);
+		json_kv_int(j, "stack_id", e->pmu_event.pystack_id ?: e->pmu_event.pmu_stack_id);
 	json_pmu_counters(j, st_ctrs, pmu_vals, false, dt_ns);
 	json_obj_end(j);
 }
@@ -2197,7 +2197,7 @@ static void emit_switch_json(struct worker_state *w, const struct wevent *e, str
 		json_kv_str(j, "next_state", task_state_str(s->next_state));
 	}
 	if ((env.requested_stack_traces & ST_OFFCPU) && e->swtch.offcpu_stack_id > 0)
-		json_kv_int(j, "offcpu_stack_id", e->swtch.offcpu_stack_id);
+		json_kv_int(j, "offcpu_stack_id", e->swtch.pystack_id ?: e->swtch.offcpu_stack_id);
 	if (s->next_st && s->next_st->compound_delay_ns) {
 		json_kv_ts(j, "compound_delay", s->next_st->compound_delay_ns);
 		json_kv_int(j, "compound_chain_len", s->next_st->compound_chain_len);
