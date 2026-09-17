@@ -3139,8 +3139,12 @@ static void emit_ipi_exit(struct worker_state *w, const struct wevent *e)
 			emit_flow_id(e->ipi.ipi_id);
 		if (e->ipi.send_ts > 0) {
 			emit_kv_int(IID_ANNK_SENDER_CPU, e->ipi.send_cpu);
-			emit_kv_float(IID_ANNK_IPI_DELAY_US,
-				      "%.3lf", (e->ipi.ipi_ts - e->ipi.send_ts) / 1000.0);
+			/*
+			 * The two timestamps are taken on different CPUs, so the send can
+			 * read as the later of the two and the unsigned difference wrap.
+			 */
+			if (ts_after_or_at(e->ipi.ipi_ts, e->ipi.send_ts))
+				emit_kv_float(IID_ANNK_IPI_DELAY_US, "%.3lf", (e->ipi.ipi_ts - e->ipi.send_ts) / 1000.0);
 		}
 		const struct pmu_val *pmu_vals = wevent_pmu_vals(hdr, e->ipi.pmu_vals_id);
 		emit_perf_counters(NULL, pmu_vals, true /* diffs */, e->ts - e->ipi.ipi_ts);
@@ -3166,7 +3170,8 @@ static void emit_ipi_exit_json(struct worker_state *w, const struct wevent *e)
 	json_kv_str(j, "kind", ipi_kind_str(e->ipi.kind));
 	if (e->ipi.send_ts > 0) {
 		json_kv_int(j, "sender_cpu", e->ipi.send_cpu);
-		json_kv_ts(j, "ipi_delay", e->ipi.ipi_ts - e->ipi.send_ts);
+		if (ts_after_or_at(e->ipi.ipi_ts, e->ipi.send_ts))
+			json_kv_ts(j, "ipi_delay", e->ipi.ipi_ts - e->ipi.send_ts);
 	}
 	json_pmu_counters(j, NULL, wevent_pmu_vals(w->dump_hdr, e->ipi.pmu_vals_id), true,
 			  e->ts - e->ipi.ipi_ts);
