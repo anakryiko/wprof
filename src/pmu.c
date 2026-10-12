@@ -220,7 +220,12 @@ static int pmu_dev_field_mapping(const char *key, __u64 val, __u64 *config,
 																 __u64 *config1, __u64 *config2)
 {
 	if (strcmp(key, "event") == 0) {
-		*config |= val;
+		/*
+		 * AMD's 12-bit EventSelect is split: the low byte at config[7:0], the
+		 * high nibble at config[35:32] ("config:0-7,32-35"). Intel's is 8 bits
+		 * ("config:0-7"), so the high term is zero there.
+		 */
+		*config |= (val & 0xff) | ((val & 0xf00) << 24);
 	} else if (strcmp(key, "umask") == 0) {
 		*config |= (val << 8);
 	} else if (strcmp(key, "edge") == 0) {
