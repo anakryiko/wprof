@@ -191,7 +191,7 @@ int append_str(char ***strs, int *cnt, const char *str)
 
 int append_str_file(char ***strs, int *cnt, const char *file)
 {
-	char buf[256];
+	char buf[4096];
 	FILE *f;
 	int err = 0;
 
@@ -202,7 +202,7 @@ int append_str_file(char ***strs, int *cnt, const char *file)
 		return err;
 	}
 
-	while (fscanf(f, "%s", buf) == 1) {
+	while (fscanf(f, "%4095s", buf) == 1) {
 		if (append_str(strs, cnt, buf)) {
 			err = -ENOMEM;
 			goto cleanup;
