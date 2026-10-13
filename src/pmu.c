@@ -214,41 +214,82 @@ int pmu_resolve_type(const char *pmu_name, __u32 *type)
 }
 
 /*
- * See a list of supported fields in /sys/devices/cpu/format/
+ * Encode @val into the config word and bits that @pmu's sysfs format file for
+ * @key declares, e.g. "config:0-7,32-35". Value bits fill the declared bits
+ * from the lowest one up, the same way perf does.
  */
-static int pmu_dev_field_mapping(const char *key, __u64 val, __u64 *config,
-																 __u64 *config1, __u64 *config2)
+static int pmu_format_encode(const char *pmu, const char *key, __u64 val,
+			     __u64 *config, __u64 *config1, __u64 *config2)
 {
-	if (strcmp(key, "event") == 0) {
-		/*
-		 * AMD's 12-bit EventSelect is split: the low byte at config[7:0], the
-		 * high nibble at config[35:32] ("config:0-7,32-35"). Intel's is 8 bits
-		 * ("config:0-7"), so the high term is zero there.
-		 */
-		*config |= (val & 0xff) | ((val & 0xf00) << 24);
-	} else if (strcmp(key, "umask") == 0) {
-		*config |= (val << 8);
-	} else if (strcmp(key, "edge") == 0) {
-		*config |= (val << 18);
-	} else if (strcmp(key, "pc") == 0) {
-		*config |= (val << 19);
-	} else if (strcmp(key, "inv") == 0) {
-		*config |= (val << 23);
-	} else if (strcmp(key, "cmask") == 0) {
-		*config |= (val << 24);
-	} else if (strcmp(key, "config1") == 0) {
-		*config1 = val;
-	} else if (strcmp(key, "config2") == 0) {
-		*config2 = val;
+	char path[256], buf[256], *s;
+	__u64 mask = 0, *dst;
+	FILE *f;
+
+	snprintf(path, sizeof(path), "/sys/bus/event_source/devices/%s/format/%s", pmu, key);
+	f = fopen(path, "r");
+	if (!f) {
+		eprintf("PMU '%s' has no '%s' field\n", pmu, key);
+		return -EINVAL;
+	}
+	s = fgets(buf, sizeof(buf), f);
+	fclose(f);
+	if (!s)
+		return -EINVAL;
+	buf[strcspn(buf, "\n")] = '\0';
+
+	if (strncmp(s, "config:", 7) == 0) {
+		dst = config;
+		s += 7;
+	} else if (strncmp(s, "config1:", 8) == 0) {
+		dst = config1;
+		s += 8;
+	} else if (strncmp(s, "config2:", 8) == 0) {
+		dst = config2;
+		s += 8;
 	} else {
+		eprintf("unsupported format '%s' for PMU field '%s/%s'\n", buf, pmu, key);
+		return -EINVAL;
+	}
+
+	while (true) {
+		unsigned long lo, hi;
+
+		lo = strtoul(s, &s, 10);
+		hi = lo;
+		if (*s == '-')
+			hi = strtoul(s + 1, &s, 10);
+		if (lo > hi || hi > 63) {
+			eprintf("invalid format for PMU field '%s/%s'\n", pmu, key);
+			return -EINVAL;
+		}
+		mask |= (~0ULL >> (63 - hi)) & (~0ULL << lo);
+		if (*s != ',')
+			break;
+		s++;
+	}
+
+	for (int bit = 0; bit < 64 && val; bit++) {
+		if (!(mask & (1ULL << bit)))
+			continue;
+		if (val & 1)
+			*dst |= 1ULL << bit;
+		val >>= 1;
+	}
+	if (val) {
+		eprintf("value too big for PMU field '%s/%s' (%d bits)\n",
+			pmu, key, __builtin_popcountll(mask));
 		return -EINVAL;
 	}
 
 	return 0;
 }
 
-/* Parse the format like "event=0x24,umask=0x01,name=foo,group=bar" */
-static int perf_event_parsing(char *attrs, __u64 *config, __u64 *config1, __u64 *config2,
+/*
+ * Parse the format like "event=0x24,umask=0x01,name=foo,group=bar". Without
+ * @pmu only name= and group= are accepted, others fail with -EOPNOTSUPP.
+ */
+static int perf_event_parsing(const char *pmu, char *attrs,
+			      __u64 *config, __u64 *config1, __u64 *config2,
 			      char **name_out, char **group_out)
 {
 	char *saveptr, *token;
@@ -290,9 +331,21 @@ static int perf_event_parsing(char *attrs, __u64 *config, __u64 *config1, __u64 
 			return -EINVAL;
 		}
 
-		err = pmu_dev_field_mapping(key, val, config, config1, config2);
-		if (err)
-			return err;
+		if (!pmu)
+			return -EOPNOTSUPP;
+
+		if (strcmp(key, "config") == 0) {
+			*config |= val;
+		} else if (strcmp(key, "config1") == 0) {
+			*config1 |= val;
+		} else if (strcmp(key, "config2") == 0) {
+			*config2 |= val;
+		} else {
+			err = pmu_format_encode(pmu, key, val, config, config1, config2);
+			if (err)
+				return err;
+		}
+		err = 0;
 	}
 
 	return err;
@@ -321,7 +374,7 @@ int pmu_resolve_symbolic_event(const char *pmu, const char *event_name,
 	/* Remove trailing newline */
 	buf[strcspn(buf, "\n")] = '\0';
 
-	return perf_event_parsing(buf, config, config1, config2, NULL, NULL);
+	return perf_event_parsing(pmu, buf, config, config1, config2, NULL, NULL);
 }
 
 /* Longest alias that is a prefix of @s ending at '-' or end-of-string. */
@@ -439,24 +492,22 @@ static int parse_pmu_style_event(const char *spec, struct pmu_event *ev)
 		ev->name = strdup(sfmt("%s_%s", pmu_dev, sym));
 		if (!rest)
 			return 0;
-		err = perf_event_parsing(rest + 1, &cfg, &cfg1, &cfg2, &ev->name, &ev->group);
+		err = perf_event_parsing(NULL, rest + 1, &cfg, &cfg1, &cfg2, &ev->name, &ev->group);
+		if (err == -EOPNOTSUPP)
+			eprintf("only name= and group= can follow a symbolic PMU event in '%s'\n", spec);
 		if (err)
 			return -EINVAL;
-		if (cfg || cfg1 || cfg2) {
-			eprintf("only name= and group= can follow a symbolic PMU event in '%s'\n", spec);
-			return -EINVAL;
-		}
 		return 0;
 	}
 
-	err = perf_event_parsing(attrs, &ev->config, &ev->config1, &ev->config2, &ev->name, &ev->group);
-	if (err == 0) {
-		if (!ev->name)
-			ev->name = strdup(sfmt("%s_0x%llx", pmu_dev, (__u64)ev->config));
-		return 0;
-	}
+	err = perf_event_parsing(pmu_dev, attrs, &ev->config, &ev->config1, &ev->config2,
+				 &ev->name, &ev->group);
+	if (err)
+		return err;
 
-	return -ENOENT;
+	if (!ev->name)
+		ev->name = strdup(sfmt("%s_0x%llx", pmu_dev, (__u64)ev->config));
+	return 0;
 }
 
 /*
@@ -536,14 +587,12 @@ static int split_event_attrs(const char *spec, char **event, char **name, char *
 		return -EINVAL;
 
 	attrs_str = sv_strdup(attrs);
-	err = perf_event_parsing(attrs_str, &cfg, &cfg1, &cfg2, name, group);
+	err = perf_event_parsing(NULL, attrs_str, &cfg, &cfg1, &cfg2, name, group);
 	free(attrs_str);
+	if (err == -EOPNOTSUPP)
+		eprintf("only name= and group= are accepted in the attributes of '%s'\n", spec);
 	if (err)
 		return -EINVAL;
-	if (cfg || cfg1 || cfg2) {
-		eprintf("only name= and group= are accepted in the attributes of '%s'\n", spec);
-		return -EINVAL;
-	}
 
 	free(*event);
 	*event = sv_strdup(ev);

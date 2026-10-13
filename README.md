@@ -175,9 +175,11 @@ of that event happened during it. Repeatable; each counter is one per-CPU
 | hardware cache   | `l1-dcache-load-misses`, `LLC-loads`, `dTLB-store-misses`, ...                                         | as written                            |
 | derived ratio    | `derived:ipc=instructions/cycles`                                                                      | `ipc`                                 |
 
-PMU-style attributes are `event`, `umask`, `edge`, `pc`, `inv`, `cmask`,
-`config1`, `config2`, `name` and `group`; symbolic names inside `cpu/.../`
-resolve through `/sys/bus/event_source/devices/<dev>/events/`. A derived ratio
+PMU-style attributes are any field the PMU declares in
+`/sys/bus/event_source/devices/<dev>/format/` (`event`, `umask`, `edge`,
+`inv`, `cmask`, ... on `cpu`), plus raw `config`, `config1`, `config2`, and
+`name` and `group`; symbolic names inside `cpu/.../` resolve through
+`/sys/bus/event_source/devices/<dev>/events/`. A derived ratio
 names two other `--pmu` counters and is computed at emit time, so it costs no
 hardware counter.
 
