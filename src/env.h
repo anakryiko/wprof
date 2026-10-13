@@ -120,6 +120,11 @@ struct req_list_cfg;
 struct ksyms;
 struct injectee;
 
+enum seal_kind {
+	SEAL_FILE_OUTPUT = 1 << 0,	/* --seal file-output (alias --seal-output) */
+	SEAL_UPROBE_ARGS = 1 << 1,	/* --seal uprobe-args */
+};
+
 struct env {
 	bool verbose;
 	int debug_level;
@@ -220,7 +225,7 @@ struct env {
 	char *data_path;
 	char *trace_path;
 	char *json_path;
-	bool output_sealed;
+	enum seal_kind seals;		/* bitmask */
 
 	bool pb_debug_interns;
 	bool pb_disable_interns;

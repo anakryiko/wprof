@@ -133,6 +133,15 @@ enum {
 
 	OPT_SEAL_OUTPUT = 4000,
 	OPT_RECORD = 4001,
+	OPT_SEAL = 4002,
+};
+
+static const struct {
+	const char *name;
+	enum seal_kind kind;
+} seal_kinds[] = {
+	{ "file-output", SEAL_FILE_OUTPUT },
+	{ "uprobe-args", SEAL_UPROBE_ARGS },
 };
 
 static const struct argp_option opts[] = {
@@ -157,7 +166,10 @@ static const struct argp_option opts[] = {
 	{ "json-schema", OPT_JSON_SCHEMA, NULL, 0, "Print JSON output data model/schema and exit" },
 
 	{ "record", OPT_RECORD, NULL, 0, "Record mode (default, mutually exclusive with --replay)" },
-	{ "seal-output", OPT_SEAL_OUTPUT, NULL, OPTION_HIDDEN, "Prevent subsequent file-output options" },
+	{ "seal-output", OPT_SEAL_OUTPUT, NULL, OPTION_HIDDEN, "Alias for --seal file-output" },
+	{ "seal", OPT_SEAL, "KIND", OPTION_HIDDEN,
+	  "Restrict subsequent options: file-output (reject -D/-T/-J), "
+	  "uprobe-args (reject arg capture on u:/uret:/uspan: utrace probes)" },
 
 	{ "replay", 'R', NULL, 0, "Replay mode" },
 	{ "replay-start", OPT_REPLAY_OFFSET_START, "TIME_OFFSET", 0, "Session start time offset (replay mode only). Supported syntax: 2s, 1.03s, 10.5ms, 12us, 101213ns" },
@@ -396,8 +408,8 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		env.activate_spec_str = strdup(arg);
 		break;
 	case 'D':
-		if (env.output_sealed) {
-			fprintf(stderr, "Output file options are disabled by --seal-output\n");
+		if (env.seals & SEAL_FILE_OUTPUT) {
+			fprintf(stderr, "Output file options are disabled by --seal file-output\n");
 			return -EINVAL;
 		}
 		env.data_path = strdup(arg);
@@ -427,8 +439,8 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		}
 		break;
 	case 'T':
-		if (env.output_sealed) {
-			fprintf(stderr, "Output file options are disabled by --seal-output\n");
+		if (env.seals & SEAL_FILE_OUTPUT) {
+			fprintf(stderr, "Output file options are disabled by --seal file-output\n");
 			return -EINVAL;
 		}
 		if (env.trace_path || env.json_path) {
@@ -438,8 +450,8 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		env.trace_path = strdup(arg);
 		break;
 	case 'J':
-		if (env.output_sealed) {
-			fprintf(stderr, "Output file options are disabled by --seal-output\n");
+		if (env.seals & SEAL_FILE_OUTPUT) {
+			fprintf(stderr, "Output file options are disabled by --seal file-output\n");
 			return -EINVAL;
 		}
 		if (env.trace_path || env.json_path) {
@@ -965,12 +977,27 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	}
 	/* USER-DEFINED TRACING */
 	case 'U': {
+		int first_cfg = env.utrace_cfg_cnt;
+
 		if (arg[0] == '@')
 			err = ucfg_parse_file(arg + 1);
 		else
 			err = ucfg_parse(arg);
 		if (err)
 			return err;
+		if (!(env.seals & SEAL_UPROBE_ARGS))
+			break;
+		for (int i = first_cfg; i < env.utrace_cfg_cnt; i++) {
+			if (!ucfg_has_uprobe_args(&env.utrace_cfgs[i]))
+				continue;
+
+			struct sbuf sb = sbuf_new();
+			ucfg_format(&env.utrace_cfgs[i], &sb);
+			fprintf(stderr, "Uprobe argument capture is disabled by --seal uprobe-args: '%s'\n",
+				sbuf_str(&sb));
+			sbuf_free(&sb);
+			return -EINVAL;
+		}
 		break;
 	}
 	/* METADATA */
@@ -1049,8 +1076,21 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		env.record = true;
 		break;
 	case OPT_SEAL_OUTPUT:
-		env.output_sealed = true;
+		env.seals |= SEAL_FILE_OUTPUT;
 		break;
+	case OPT_SEAL: {
+		int i;
+		for (i = 0; i < ARRAY_SIZE(seal_kinds); i++) {
+			if (strcmp(arg, seal_kinds[i].name) == 0)
+				break;
+		}
+		if (i == ARRAY_SIZE(seal_kinds)) {
+			fprintf(stderr, "Unknown --seal kind '%s' (supported: file-output, uprobe-args)\n", arg);
+			return -EINVAL;
+		}
+		env.seals |= seal_kinds[i].kind;
+		break;
+	}
 	case ARGP_KEY_ARG:
 		argp_usage(state);
 		break;
