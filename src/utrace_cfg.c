@@ -588,6 +588,17 @@ static struct utrace_param *ucfg_find_param(const struct utrace_cfg *cfg, enum u
 	return NULL;
 }
 
+/* Does @cfg capture any argument on a u:, uret: or uspan: probe? */
+bool ucfg_has_uprobe_args(const struct utrace_cfg *cfg)
+{
+	if (cfg->type == UTRACE_SPAN)
+		return ucfg_has_uprobe_args(cfg->span.entry) || ucfg_has_uprobe_args(cfg->span.exit);
+	if (cfg->type != UTRACE_UPROBE && cfg->type != UTRACE_URETPROBE &&
+	    cfg->type != UTRACE_UPROBE_SPAN)
+		return false;
+	return cfg->wildcard_args || ucfg_find_param(cfg, UTRACE_PARAM_ARG);
+}
+
 static struct utrace_param *ucfg_add_param(struct utrace_cfg *cfg, enum utrace_param_type type)
 {
 	cfg->params = realloc(cfg->params, (cfg->param_cnt + 1) * sizeof(*cfg->params));

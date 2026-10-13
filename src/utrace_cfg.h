@@ -425,6 +425,7 @@ void ucfg_ensure_pid(struct utrace_cfg *cfg, int pid);
 int ucfg_parse(const char *def);
 int ucfg_parse_file(const char *path);
 void ucfg_format(const struct utrace_cfg *cfg, struct sbuf *sb);
+bool ucfg_has_uprobe_args(const struct utrace_cfg *cfg);
 void utrace_highlight(struct sview orig, struct sview bad);
 
 #endif /* !__bpf__ */
