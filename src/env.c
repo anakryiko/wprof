@@ -141,6 +141,7 @@ static const struct {
 	enum seal_kind kind;
 } seal_kinds[] = {
 	{ "file-output", SEAL_FILE_OUTPUT },
+	{ "file-input", SEAL_FILE_INPUT },
 	{ "uprobe-args", SEAL_UPROBE_ARGS },
 };
 
@@ -169,6 +170,7 @@ static const struct argp_option opts[] = {
 	{ "seal-output", OPT_SEAL_OUTPUT, NULL, OPTION_HIDDEN, "Alias for --seal file-output" },
 	{ "seal", OPT_SEAL, "KIND", OPTION_HIDDEN,
 	  "Restrict subsequent options: file-output (reject -D/-T/-J), "
+	  "file-input (reject @FILE for -U/-n/-N/--thread-name/--no-thread-name), "
 	  "uprobe-args (reject arg capture on u:/uret:/uspan: utrace probes)" },
 
 	{ "replay", 'R', NULL, 0, "Replay mode" },
@@ -810,6 +812,10 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	case 'n':
 		if (arg[0] == '@') {
+			if (env.seals & SEAL_FILE_INPUT) {
+				fprintf(stderr, "Input file options (@FILE) are disabled by --seal file-input\n");
+				return -EINVAL;
+			}
 			err = append_str_file(&env.allow_pnames, &env.allow_pname_cnt, arg + 1);
 			if (err)
 				return err;
@@ -819,6 +825,10 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	case 'N':
 		if (arg[0] == '@') {
+			if (env.seals & SEAL_FILE_INPUT) {
+				fprintf(stderr, "Input file options (@FILE) are disabled by --seal file-input\n");
+				return -EINVAL;
+			}
 			err = append_str_file(&env.deny_pnames, &env.deny_pname_cnt, arg + 1);
 			if (err)
 				return err;
@@ -828,6 +838,10 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	case OPT_ALLOW_TNAME:
 		if (arg[0] == '@') {
+			if (env.seals & SEAL_FILE_INPUT) {
+				fprintf(stderr, "Input file options (@FILE) are disabled by --seal file-input\n");
+				return -EINVAL;
+			}
 			err = append_str_file(&env.allow_tnames, &env.allow_tname_cnt, arg + 1);
 			if (err)
 				return err;
@@ -837,6 +851,10 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	case OPT_DENY_TNAME:
 		if (arg[0] == '@') {
+			if (env.seals & SEAL_FILE_INPUT) {
+				fprintf(stderr, "Input file options (@FILE) are disabled by --seal file-input\n");
+				return -EINVAL;
+			}
 			err = append_str_file(&env.deny_tnames, &env.deny_tname_cnt, arg + 1);
 			if (err)
 				return err;
@@ -979,10 +997,15 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	case 'U': {
 		int first_cfg = env.utrace_cfg_cnt;
 
-		if (arg[0] == '@')
+		if (arg[0] == '@') {
+			if (env.seals & SEAL_FILE_INPUT) {
+				fprintf(stderr, "Input file options (@FILE) are disabled by --seal file-input\n");
+				return -EINVAL;
+			}
 			err = ucfg_parse_file(arg + 1);
-		else
+		} else {
 			err = ucfg_parse(arg);
+		}
 		if (err)
 			return err;
 		if (!(env.seals & SEAL_UPROBE_ARGS))
@@ -1085,7 +1108,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 				break;
 		}
 		if (i == ARRAY_SIZE(seal_kinds)) {
-			fprintf(stderr, "Unknown --seal kind '%s' (supported: file-output, uprobe-args)\n", arg);
+			fprintf(stderr, "Unknown --seal kind '%s' (supported: file-output, file-input, uprobe-args)\n", arg);
 			return -EINVAL;
 		}
 		env.seals |= seal_kinds[i].kind;

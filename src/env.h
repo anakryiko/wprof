@@ -122,7 +122,8 @@ struct injectee;
 
 enum seal_kind {
 	SEAL_FILE_OUTPUT = 1 << 0,	/* --seal file-output (alias --seal-output) */
-	SEAL_UPROBE_ARGS = 1 << 1,	/* --seal uprobe-args */
+	SEAL_FILE_INPUT = 1 << 1,	/* --seal file-input */
+	SEAL_UPROBE_ARGS = 1 << 2,	/* --seal uprobe-args */
 };
 
 struct env {
