@@ -96,6 +96,16 @@ static inline void json_float(struct json_state *js, const char *fmt, double val
 	json_write(js, buf, n);
 }
 
+static inline void json_ts(struct json_state *js, u64 ns)
+{
+	static const u64 ns_per_sec = 1000000000ULL;
+	char frac[] = ".000000000";
+
+	json_uint(js, ns / ns_per_sec);
+	json_decimal(frac + 1, sizeof(frac) - 1, ns % ns_per_sec);
+	json_write(js, frac, sizeof(frac) - 1);
+}
+
 static inline void json_escape(struct json_state *js, unsigned char c)
 {
 	static const char hex[] = "0123456789abcdef";
@@ -289,7 +299,8 @@ static inline void json_kv_float(struct json_state *js, const char *key, const c
 
 static inline void json_kv_ts(struct json_state *js, const char *key, u64 ns)
 {
-	json_kv_float(js, key, "%.9lf", ns / 1e9);
+	json_key(js, key);
+	json_ts(js, ns);
 }
 
 static inline void json_kv_bool(struct json_state *js, const char *key, bool value)
