@@ -25,6 +25,7 @@
 struct pysym_entry {
 	char filename[PYSYM_FILE_NAME_LEN];
 	char qualname[PYSYM_QUAL_NAME_LEN];
+	bool trampoline;
 };
 
 struct pysym_linetable {
@@ -97,6 +98,7 @@ int pysym_init(int symbols_map_fd, int linetables_map_fd)
 
 				snprintf(e->filename, sizeof(e->filename), "%s", key.filename);
 				pysym_set_qualname(e, key.qualname);
+				e->trampoline = strcmp(e->qualname, "<interpreter trampoline>") == 0;
 
 				if (symbol_id >= pysym_cnt)
 					pysym_cnt = symbol_id + 1;
@@ -178,6 +180,11 @@ const char *pysym_qualname(uint32_t id)
 	if (!pysym_entries || id >= pysym_cnt)
 		return NULL;
 	return pysym_entries[id].qualname[0] ? pysym_entries[id].qualname : NULL;
+}
+
+bool pysym_is_trampoline(uint32_t id)
+{
+	return pysym_entries && id < pysym_cnt && pysym_entries[id].trampoline;
 }
 
 uint32_t pysym_line_number(uint32_t symbol_id, int32_t inst_idx)

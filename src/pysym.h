@@ -3,6 +3,7 @@
 #ifndef __PYSYM_H_
 #define __PYSYM_H_
 
+#include <stdbool.h>
 #include <stdint.h>
 
 struct pysym_frame {
@@ -44,6 +45,7 @@ int pysym_init(int symbols_map_fd, int linetables_map_fd);
 void pysym_free(void);
 const char *pysym_filename(uint32_t id);
 const char *pysym_qualname(uint32_t id);
+bool pysym_is_trampoline(uint32_t id);
 uint32_t pysym_line_number(uint32_t symbol_id, int32_t inst_idx);
 
 #endif /* __PYSYM_H_ */
