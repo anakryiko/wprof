@@ -66,20 +66,34 @@ static inline void json_putc(struct json_buf *b, char c)
 	b->data[b->len++] = c;
 }
 
+static inline char *json_decimal(char *end, unsigned long long value)
+{
+	do {
+		*--end = '0' + value % 10;
+		value /= 10;
+	} while (value);
+	return end;
+}
+
 static inline void json_int(struct json_buf *b, long long value)
 {
-	char buf[21];
-	int n = snprintf(buf, sizeof(buf), "%lld", value);
+	char buf[20], *end = buf + sizeof(buf);
+	unsigned long long magnitude = value;
 
-	json_write(b, buf, n);
+	if (value < 0)
+		magnitude = 0ULL - magnitude; /* unsigned subtraction also handles LLONG_MIN */
+	char *p = json_decimal(end, magnitude);
+	if (value < 0)
+		*--p = '-';
+	json_write(b, p, end - p);
 }
 
 static inline void json_uint(struct json_buf *b, unsigned long long value)
 {
-	char buf[21];
-	int n = snprintf(buf, sizeof(buf), "%llu", value);
+	char buf[20], *end = buf + sizeof(buf);
+	char *p = json_decimal(end, value);
 
-	json_write(b, buf, n);
+	json_write(b, p, end - p);
 }
 
 /* Fixed-precision %f formats, including %.9lf of DBL_MAX, fit in this buffer. */
@@ -95,10 +109,10 @@ static inline void json_float(struct json_buf *b, const char *fmt, double value)
 
 static inline void json_escape(struct json_buf *b, unsigned char c)
 {
-	char buf[7];
-	int n = snprintf(buf, sizeof(buf), "\\u%04x", c);
+	const char hex[] = "0123456789abcdef";
+	char buf[] = { '\\', 'u', '0', '0', hex[c >> 4], hex[c & 15] };
 
-	json_write(b, buf, n);
+	json_write(b, buf, sizeof(buf));
 }
 
 /*
