@@ -179,17 +179,11 @@ int py_find_binary(int pid, struct py_binary_info *bi)
 /*
  * Build PyPidData for a discovered Python process and populate BPF maps.
  */
-static int setup_pid(const struct py_binary_info *bi, struct wprof_bpf *skel)
+static int setup_pid(const struct py_binary_info *bi, const OffsetConfig *offsets, struct wprof_bpf *skel)
 {
 	int pid = bi->pid;
-	struct PyPidData pid_data = {};
+	struct PyPidData pid_data = { .offsets = *offsets };
 	int err;
-
-	err = pyoffsets_for_version(bi->py_major, bi->py_minor, &pid_data.offsets);
-	if (err) {
-		eprintf("Unsupported Python version %d.%d for PID %d\n", bi->py_major, bi->py_minor, pid);
-		return -EOPNOTSUPP;
-	}
 
 	/* resolve _PyRuntime address */
 	const char *syms[] = { "_PyRuntime" };
@@ -263,6 +257,7 @@ static int setup_pid(const struct py_binary_info *bi, struct wprof_bpf *skel)
 static int discover_pid(int pid, struct wprof_bpf *skel, bool force)
 {
 	struct py_binary_info bi;
+	OffsetConfig offsets;
 	int err;
 
 	if (is_py_tracee(pid))
@@ -275,17 +270,17 @@ static int discover_pid(int pid, struct wprof_bpf *skel, bool force)
 		return err == -ENOENT ? 1 : err;
 	}
 
-	if (bi.py_major != 3 || bi.py_minor < 10) {
+	if (pyoffsets_for_version(bi.py_major, bi.py_minor, &offsets)) {
 		if (force)
-			eprintf("PID %d (%s): Python %d.%d is not supported (need 3.10+)\n",
+			eprintf("PID %d (%s): Python %d.%d is not supported (need 3.10-3.13)\n",
 				pid, proc_name(pid), bi.py_major, bi.py_minor);
 		else
-			vprintf("PID %d (%s): Python %d.%d is not supported (need 3.10+), skipping\n",
+			vprintf("PID %d (%s): Python %d.%d is not supported (need 3.10-3.13), skipping\n",
 				pid, proc_name(pid), bi.py_major, bi.py_minor);
 		return -EOPNOTSUPP;
 	}
 
-	err = setup_pid(&bi, skel);
+	err = setup_pid(&bi, &offsets, skel);
 	if (err) {
 		eprintf("Failed to set up Python stack tracing for PID %d (%s): %d\n", pid, proc_name(pid), err);
 		return err;

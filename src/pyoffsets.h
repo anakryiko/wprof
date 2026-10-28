@@ -222,7 +222,6 @@ static inline void pyoffsets_v3_13(OffsetConfig *c)
 
 /*
  * Returns 0 on success, -1 if version is unsupported.
- * Falls back to 3.13 for unknown minor versions > 13.
  */
 static inline int pyoffsets_for_version(int major, int minor, OffsetConfig *c)
 {
@@ -234,12 +233,7 @@ static inline int pyoffsets_for_version(int major, int minor, OffsetConfig *c)
 	case 11: pyoffsets_v3_11(c); return 0;
 	case 12: pyoffsets_v3_12(c); return 0;
 	case 13: pyoffsets_v3_13(c); return 0;
-	default:
-		if (minor > 13) {
-			pyoffsets_v3_13(c); /* fallback to latest known */
-			return 0;
-		}
-		return -1;
+	default: return -1;
 	}
 }
 
