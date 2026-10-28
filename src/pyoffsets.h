@@ -126,6 +126,7 @@ static inline void pyoffsets_v3_11(OffsetConfig *c)
 		.PyCodeObject_qualname = 128,
 		.PyCodeObject_linetable = 136,
 		.PyCodeObject_firstlineno = 72,
+		.PyCodeObject_code_adaptive = 184,
 		.TLSKey_offset = 596,
 		.TCurrentState_offset = 576,
 		.PyGIL_offset = 376,
