@@ -85,6 +85,22 @@ static bool has_pyruntime_sym(const char *binary_path)
 	return elf_find_syms(binary_path, STT_OBJECT, syms, ARRAY_SIZE(offs), offs) == 0;
 }
 
+/* _PyRuntime starts with statically initialized _Py_DebugOffsets since 3.13 */
+static bool py_is_free_threaded(const char *binary_path)
+{
+	struct {
+		char cookie[8];
+		__u64 version;
+		__u64 free_threaded;
+	} dbg;
+
+	if (elf_read_sym_value(binary_path, "_PyRuntime", STT_OBJECT, &dbg, sizeof(dbg)) != 0)
+		return false;
+	if (memcmp(dbg.cookie, "xdebugpy", sizeof(dbg.cookie)) != 0 || (dbg.version >> 16) < 0x030d)
+		return false;
+	return dbg.free_threaded != 0;
+}
+
 /*
  * Derive the CPython minor version from the ABI tag (e.g. "cpython-312") in a
  * loaded extension module's soname. Returns the minor version (e.g. 12), or -1
@@ -156,8 +172,10 @@ int py_find_binary(int pid, struct py_binary_info *bi)
 		bi->py_major = 3;
 		bi->py_minor = 10;
 
-		if (py_read_elf_version(bi->host_path, &bi->py_major, &bi->py_minor) == 0)
+		if (py_read_elf_version(bi->host_path, &bi->py_major, &bi->py_minor) == 0) {
+			bi->free_threaded = py_is_free_threaded(bi->host_path);
 			return 0;
+		}
 
 		/* Py_Version absent (e.g. stripped by LTO); it's Python only if _PyRuntime is here */
 		if (!has_pyruntime_sym(bi->host_path))
@@ -170,6 +188,7 @@ int py_find_binary(int pid, struct py_binary_info *bi)
 			wprintf("PID %d (%s): could not determine Python version, assuming %d.%d\n",
 				pid, proc_name(pid), bi->py_major, bi->py_minor);
 		}
+		bi->free_threaded = py_is_free_threaded(bi->host_path);
 		return 0;
 	}
 
@@ -270,13 +289,14 @@ static int discover_pid(int pid, struct wprof_bpf *skel, bool force)
 		return err == -ENOENT ? 1 : err;
 	}
 
-	if (pyoffsets_for_version(bi.py_major, bi.py_minor, &offsets)) {
+	const char *ft = bi.free_threaded ? "t" : "";
+	if (pyoffsets_for_version(bi.py_major, bi.py_minor, bi.free_threaded, &offsets)) {
 		if (force)
-			eprintf("PID %d (%s): Python %d.%d is not supported (need 3.10-3.13)\n",
-				pid, proc_name(pid), bi.py_major, bi.py_minor);
+			eprintf("PID %d (%s): Python %d.%d%s is not supported (need 3.10-3.13)\n",
+				pid, proc_name(pid), bi.py_major, bi.py_minor, ft);
 		else
-			vprintf("PID %d (%s): Python %d.%d is not supported (need 3.10-3.13), skipping\n",
-				pid, proc_name(pid), bi.py_major, bi.py_minor);
+			vprintf("PID %d (%s): Python %d.%d%s is not supported (need 3.10-3.13), skipping\n",
+				pid, proc_name(pid), bi.py_major, bi.py_minor, ft);
 		return -EOPNOTSUPP;
 	}
 
@@ -290,8 +310,8 @@ static int discover_pid(int pid, struct wprof_bpf *skel, bool force)
 	if (err)
 		return err;
 
-	vprintf("Discovered Python %d.%d process PID=%d (%s) binary='%s'\n",
-		bi.py_major, bi.py_minor, pid, proc_name(pid), bi.host_path);
+	vprintf("Discovered Python %d.%d%s process PID=%d (%s) binary='%s'\n",
+		bi.py_major, bi.py_minor, ft, pid, proc_name(pid), bi.host_path);
 	return 0;
 }
 

@@ -3,6 +3,7 @@
 #ifndef __PYDISC_H_
 #define __PYDISC_H_
 
+#include <stdbool.h>
 #include <linux/limits.h>
 
 struct py_binary_info {
@@ -13,6 +14,7 @@ struct py_binary_info {
 	unsigned long vma_offset;
 	int py_major;
 	int py_minor;
+	bool free_threaded;
 };
 
 int py_find_binary(int pid, struct py_binary_info *bi);
