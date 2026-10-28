@@ -292,10 +292,10 @@ static int discover_pid(int pid, struct wprof_bpf *skel, bool force)
 	const char *ft = bi.free_threaded ? "t" : "";
 	if (pyoffsets_for_version(bi.py_major, bi.py_minor, bi.free_threaded, &offsets)) {
 		if (force)
-			eprintf("PID %d (%s): Python %d.%d%s is not supported (need 3.10-3.14)\n",
+			eprintf("PID %d (%s): Python %d.%d%s is not supported (need 3.10-3.14 or 3.14t)\n",
 				pid, proc_name(pid), bi.py_major, bi.py_minor, ft);
 		else
-			vprintf("PID %d (%s): Python %d.%d%s is not supported (need 3.10-3.14), skipping\n",
+			vprintf("PID %d (%s): Python %d.%d%s is not supported (need 3.10-3.14 or 3.14t), skipping\n",
 				pid, proc_name(pid), bi.py_major, bi.py_minor, ft);
 		return -EOPNOTSUPP;
 	}

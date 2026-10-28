@@ -4,7 +4,8 @@
 #define __PYOFFSETS_H_
 
 /*
- * Pre-computed CPython struct field offsets for Python 3.10 through 3.14.
+ * Pre-computed CPython struct field offsets for Python 3.10 through 3.14,
+ * plus the free-threaded 3.14t build.
  *
  * Each version function sets only the fields relevant to that version;
  * all other fields remain at BPF_LIB_DEFAULT_FIELD_OFFSET (9999) sentinel,
@@ -258,6 +259,46 @@ static inline void pyoffsets_v3_14(OffsetConfig *c)
 	};
 }
 
+/*
+ * CPython 3.14t (free-threaded) offsets.
+ * Free-threading fields in the PyObject header move ob_type from 8 to 24,
+ * shifting every object struct by 16 bytes. _PyInterpreterFrame gains
+ * tlbc_index, moving owner to 78. There is no GIL.
+ */
+static inline void pyoffsets_v3_14t(OffsetConfig *c)
+{
+	*c = (OffsetConfig){
+		PYOFFSETS_DEFAULTS,
+		.PyObject_type = 24,
+		.PyTypeObject_name = 40,
+		.PyVarObject_size = 32,
+		.PyTupleObject_item = 48,
+		.PyBytesObject_data = 48,
+		.String_data = 56,
+		.PyThreadState_current_frame = 72,
+		.PyThreadState_thread = 152,
+		.PyThreadState_interp = 16,
+		.PyInterpreterFrame_code = 0,
+		.PyInterpreterFrame_previous = 8,
+		.PyInterpreterFrame_localsplus = 80,
+		.PyInterpreterFrame_prev_instr = 56,
+		.PyCodeObject_co_flags = 64,
+		.PyCodeObject_filename = 128,
+		.PyCodeObject_name = 136,
+		.PyCodeObject_qualname = 144,
+		.PyCodeObject_linetable = 152,
+		.PyCodeObject_firstlineno = 84,
+		.PyCodeObject_code_adaptive = 232,
+		.PyGenObject_iframe = 88,
+		.PyFrameObject_owner = 78,
+		.TLSKey_offset = 2340,
+		.PyInterpreterState_modules = 7720,
+		.PyDebugOffsets_free_threaded = 16,
+		.PyVersion_major = 3,
+		.PyVersion_minor = 14,
+	};
+}
+
 #undef _D
 
 /*
@@ -265,8 +306,15 @@ static inline void pyoffsets_v3_14(OffsetConfig *c)
  */
 static inline int pyoffsets_for_version(int major, int minor, bool free_threaded, OffsetConfig *c)
 {
-	if (major != 3 || free_threaded)
+	if (major != 3)
 		return -1;
+
+	if (free_threaded) {
+		if (minor != 14)
+			return -1;
+		pyoffsets_v3_14t(c);
+		return 0;
+	}
 
 	switch (minor) {
 	case 10: pyoffsets_v3_10(c); return 0;
