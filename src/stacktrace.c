@@ -74,7 +74,10 @@ static int pystacks_write_frames(struct worker_state *workers, int worker_cnt,
 				continue;
 
 			struct pystack_msg *pymsg = (void *)bpf_event_pystack(rec->e);
-			if (!pymsg || pymsg->stack_len == 0)
+			if (!pymsg)
+				continue;
+			pymsg->pystack_id = 0;
+			if (pymsg->stack_len == 0)
 				continue;
 
 			u32 n = pymsg->stack_len;
