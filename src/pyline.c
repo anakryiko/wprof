@@ -32,10 +32,6 @@ static uint32_t pyline_resolve_310(const uint8_t *data, size_t data_len,
 		uint8_t offset_delta = data[i * 2];
 		int8_t line_delta = (int8_t)data[i * 2 + 1];
 
-		if (line_delta == 0) {
-			end += offset_delta;
-			continue;
-		}
 		start = end;
 		end = start + offset_delta;
 
@@ -44,9 +40,6 @@ static uint32_t pyline_resolve_310(const uint8_t *data, size_t data_len,
 			continue;
 
 		line += line_delta;
-
-		if (end == start)
-			continue;
 
 		if (start <= offset && offset < end)
 			return (uint32_t)line;
