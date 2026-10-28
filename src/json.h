@@ -44,22 +44,43 @@ static inline void json_putc(struct json_state *js, char c)
 	sbuf_putc(&js->out, c);
 }
 
+/* Write a NUL-terminated decimal string backward from the buffer's end; return its start. */
+static inline char *json_decimal(char *buf, size_t size, unsigned long long value)
+{
+	char *end = buf + size - 1;
+
+	*end = '\0';
+	do {
+		--end;
+		*end = '0' + value % 10;
+		value /= 10;
+	} while (value);
+	return end;
+}
+
 static inline void json_int(struct json_state *js, long long value)
 {
-	/* 19 decimal digits + sign + NUL terminator. */
-	char buf[21];
-	int n = snprintf(buf, sizeof(buf), "%lld", value);
+	/* 19 decimal digits + sign + NUL. */
+	char buf[21], *end = buf + sizeof(buf) - 1;
+	unsigned long long magnitude = value;
 
-	json_write(js, buf, n);
+	if (value < 0)
+		magnitude = 0ULL - magnitude; /* unsigned subtraction also handles LLONG_MIN */
+	char *p = json_decimal(buf, sizeof(buf), magnitude);
+	if (value < 0) {
+		--p;
+		*p = '-';
+	}
+	json_write(js, p, end - p);
 }
 
 static inline void json_uint(struct json_state *js, unsigned long long value)
 {
-	/* 20 decimal digits + NUL terminator. */
-	char buf[21];
-	int n = snprintf(buf, sizeof(buf), "%llu", value);
+	/* 20 decimal digits + NUL. */
+	char buf[21], *end = buf + sizeof(buf) - 1;
+	char *p = json_decimal(buf, sizeof(buf), value);
 
-	json_write(js, buf, n);
+	json_write(js, p, end - p);
 }
 
 static inline void json_float(struct json_state *js, const char *fmt, double value)
@@ -77,10 +98,10 @@ static inline void json_float(struct json_state *js, const char *fmt, double val
 
 static inline void json_escape(struct json_state *js, unsigned char c)
 {
-	char buf[7];
-	int n = snprintf(buf, sizeof(buf), "\\u%04x", c);
+	static const char hex[] = "0123456789abcdef";
+	char buf[] = { '\\', 'u', '0', '0', hex[c >> 4], hex[c & 15] };
 
-	json_write(js, buf, n);
+	json_write(js, buf, sizeof(buf));
 }
 
 /*
