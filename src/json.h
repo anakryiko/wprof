@@ -107,6 +107,22 @@ static inline void json_float(struct json_buf *b, const char *fmt, double value)
 	json_write(b, buf, n);
 }
 
+static inline void json_ts(struct json_buf *b, u64 ns)
+{
+	/* Below 2^22 seconds, double division error is less than half a nanosecond,
+	 * so %.9lf rounds back to ns with the default rounding mode and C locale.
+	 */
+	if (ns >= (1ULL << 22) * 1000000000ULL) {
+		json_float(b, "%.9lf", ns / 1e9);
+		return;
+	}
+	char frac[] = ".000000000";
+
+	json_uint(b, ns / 1000000000ULL);
+	json_decimal(frac + sizeof(frac) - 1, ns % 1000000000ULL);
+	json_write(b, frac, sizeof(frac) - 1);
+}
+
 static inline void json_escape(struct json_buf *b, unsigned char c)
 {
 	const char hex[] = "0123456789abcdef";
@@ -299,7 +315,8 @@ static inline void json_kv_float(struct json_state *js, const char *key, const c
 
 static inline void json_kv_ts(struct json_state *js, const char *key, u64 ns)
 {
-	json_kv_float(js, key, "%.9lf", ns / 1e9);
+	json_key(js, key);
+	json_ts(&js->out, ns);
 }
 
 static inline void json_kv_bool(struct json_state *js, const char *key, bool value)
