@@ -76,16 +76,17 @@ static int pystacks_write_frames(struct worker_state *workers, int worker_cnt,
 			if (!pymsg)
 				continue;
 			pymsg->pystack_id = 0;
-			if (pymsg->stack_len == 0)
-				continue;
 
-			u32 n = pymsg->stack_len;
 			u32 start_iid = hdr->frame_cnt;
 
 			/* BPF records Python frames innermost first */
-			for (int fi = n - 1; fi >= 0; fi--) {
+			for (int fi = pymsg->stack_len - 1; fi >= 0; fi--) {
 				u32 sym_id = pymsg->frames[fi].symbol_id;
 				int32_t inst_idx = pymsg->frames[fi].inst_idx;
+
+				if (pysym_is_trampoline(sym_id))
+					continue;
+
 				const char *func_name = pysym_qualname(sym_id);
 				const char *src_path = pysym_filename(sym_id);
 
@@ -103,6 +104,9 @@ static int pystacks_write_frames(struct worker_state *workers, int worker_cnt,
 				hdr->frame_cnt += 1;
 			}
 
+			if (hdr->frame_cnt == start_iid)
+				continue;
+
 			if (py_stack_cnt == py_stack_cap) {
 				size_t new_cap = py_stack_cnt < 64 ? 64 : py_stack_cnt * 4 / 3;
 				py_stacks = realloc(py_stacks, new_cap * sizeof(*py_stacks));
@@ -112,7 +116,7 @@ static int pystacks_write_frames(struct worker_state *workers, int worker_cnt,
 				.e = rec->e,
 				.pymsg = pymsg,
 				.start_frame_iid = start_iid,
-				.frame_cnt = n,
+				.frame_cnt = hdr->frame_cnt - start_iid,
 			};
 		}
 	}
