@@ -14,6 +14,7 @@
  * upstream CPython and may differ on other architectures.
  */
 
+#include <stdbool.h>
 #include "strobelight/bpf_lib/python/include/OffsetConfig.h"
 
 #define _D BPF_LIB_DEFAULT_FIELD_OFFSET
@@ -223,9 +224,9 @@ static inline void pyoffsets_v3_13(OffsetConfig *c)
 /*
  * Returns 0 on success, -1 if version is unsupported.
  */
-static inline int pyoffsets_for_version(int major, int minor, OffsetConfig *c)
+static inline int pyoffsets_for_version(int major, int minor, bool free_threaded, OffsetConfig *c)
 {
-	if (major != 3)
+	if (major != 3 || free_threaded)
 		return -1;
 
 	switch (minor) {
