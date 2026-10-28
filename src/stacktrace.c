@@ -80,7 +80,8 @@ static int pystacks_write_frames(struct worker_state *workers, int worker_cnt,
 			u32 n = pymsg->stack_len;
 			u32 start_iid = hdr->frame_cnt;
 
-			for (u32 fi = 0; fi < n; fi++) {
+			/* BPF records Python frames innermost first */
+			for (int fi = n - 1; fi >= 0; fi--) {
 				u32 sym_id = pymsg->frames[fi].symbol_id;
 				int32_t inst_idx = pymsg->frames[fi].inst_idx;
 				const char *func_name = pysym_qualname(sym_id);
