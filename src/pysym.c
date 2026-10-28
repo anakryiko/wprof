@@ -17,6 +17,7 @@
 #define PYSYM_MAX_ENTRIES 1024
 
 #define PYSYM_FILE_NAME_LEN 192
+#define PYSYM_CLASS_NAME_LEN 128
 #define PYSYM_QUAL_NAME_LEN 224
 
 #define PYSYM_MAX_LINETABLE_SIZE (1 * 1024 * 1024)
@@ -36,6 +37,21 @@ struct pysym_linetable {
 static struct pysym_entry *pysym_entries;
 static struct pysym_linetable *pysym_linetables;
 static uint32_t pysym_cnt;
+
+/* without co_qualname (3.10), BPF reports class and function names separately */
+static void pysym_set_qualname(struct pysym_entry *e, const char *qualname)
+{
+	const char *func = qualname + PYSYM_CLASS_NAME_LEN;
+	int len = strnlen(qualname, PYSYM_QUAL_NAME_LEN);
+	int func_len = PYSYM_QUAL_NAME_LEN - PYSYM_CLASS_NAME_LEN;
+
+	if (len > PYSYM_CLASS_NAME_LEN || func[0] == '\0')
+		snprintf(e->qualname, sizeof(e->qualname), "%.*s", len, qualname);
+	else if (len > 0)
+		snprintf(e->qualname, sizeof(e->qualname), "%s.%.*s", qualname, func_len, func);
+	else
+		snprintf(e->qualname, sizeof(e->qualname), "%.*s", func_len, func);
+}
 
 /*
  * BPF map key: struct pystacks_symbol { read_file_name (200), read_qualified_name (232), pid_t (4) }
@@ -80,7 +96,7 @@ int pysym_init(int symbols_map_fd, int linetables_map_fd)
 				struct pysym_entry *e = &pysym_entries[symbol_id];
 
 				snprintf(e->filename, sizeof(e->filename), "%s", key.filename);
-				snprintf(e->qualname, sizeof(e->qualname), "%s", key.qualname);
+				pysym_set_qualname(e, key.qualname);
 
 				if (symbol_id >= pysym_cnt)
 					pysym_cnt = symbol_id + 1;
