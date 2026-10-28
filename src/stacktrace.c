@@ -38,6 +38,8 @@ struct py_stack {
 	struct pystack_msg *pymsg;
 	u32 start_frame_iid;
 	u32 frame_cnt;
+	u32 seg_cnt;
+	bool has_markers;
 	u32 mapped_frame_idx;
 	u32 mapped_frame_cnt;
 	u32 callstack_iid;
@@ -55,7 +57,7 @@ struct native_stack_info {
  * Python frame records end up in the frame_mappings region and
  * generate_stack_traces() reads garbage when resolving frame IDs.
  *
- * Populates py_stacks with one entry per pystack event.
+ * Populates py_stacks with one entry per pystack event with Python frames.
  */
 static int pystacks_write_frames(struct worker_state *workers, int worker_cnt,
 				 struct strset *strs, FILE *stacks_dump,
@@ -78,14 +80,21 @@ static int pystacks_write_frames(struct worker_state *workers, int worker_cnt,
 			pymsg->pystack_id = 0;
 
 			u32 start_iid = hdr->frame_cnt;
+			u32 seg_cnt = 0;
+			bool has_markers = false;
 
 			/* BPF records Python frames innermost first */
 			for (int fi = pymsg->stack_len - 1; fi >= 0; fi--) {
 				u32 sym_id = pymsg->frames[fi].symbol_id;
 				int32_t inst_idx = pymsg->frames[fi].inst_idx;
 
-				if (pysym_is_trampoline(sym_id))
+				if (pysym_is_trampoline(sym_id)) {
+					has_markers = true;
+					seg_cnt++;
 					continue;
+				}
+				if (seg_cnt == 0)
+					seg_cnt = 1;
 
 				const char *func_name = pysym_qualname(sym_id);
 				const char *src_path = pysym_filename(sym_id);
@@ -117,6 +126,8 @@ static int pystacks_write_frames(struct worker_state *workers, int worker_cnt,
 				.pymsg = pymsg,
 				.start_frame_iid = start_iid,
 				.frame_cnt = hdr->frame_cnt - start_iid,
+				.seg_cnt = seg_cnt,
+				.has_markers = has_markers,
 			};
 		}
 	}
@@ -127,21 +138,32 @@ static int pystacks_write_frames(struct worker_state *workers, int worker_cnt,
 }
 
 /*
+ * Write frame IDs of a native stack frame, starting from its from_k-th
+ * (possibly inlined) frame.
+ */
+static int write_native_frame(const struct stack_frame_index *f, int from_k,
+			      FILE *stacks_dump, struct wstack_hdr *hdr, u32 *mapped_cnt)
+{
+	for (int k = from_k; k < f->frame_cnt; k++) {
+		u32 fiid = f->frame_cnt > 1 ? f->frame_iids[k] : f->frame_iid;
+		if (fwrite(&fiid, sizeof(fiid), 1, stacks_dump) != 1)
+			return -errno;
+		hdr->frame_mapping_cnt += 1;
+		*mapped_cnt += 1;
+	}
+	return 0;
+}
+
+/*
  * Write a range of native frame IDs from a stack frame index into stacks_dump.
  */
 static int write_native_frame_ids(struct symb_state *state, int start_idx, int from, int to,
 				  FILE *stacks_dump, struct wstack_hdr *hdr, u32 *mapped_cnt)
 {
 	for (int j = from; j < to; j++) {
-		const struct stack_frame_index *f = &state->sframe_idx[start_idx + j];
-
-		for (int k = 0; k < f->frame_cnt; k++) {
-			u32 fiid = f->frame_cnt > 1 ? f->frame_iids[k] : f->frame_iid;
-			if (fwrite(&fiid, sizeof(fiid), 1, stacks_dump) != 1)
-				return -errno;
-			hdr->frame_mapping_cnt += 1;
-			*mapped_cnt += 1;
-		}
+		int err = write_native_frame(&state->sframe_idx[start_idx + j], 0, stacks_dump, hdr, mapped_cnt);
+		if (err)
+			return err;
 	}
 	return 0;
 }
@@ -162,32 +184,94 @@ static int write_py_frame_ids(u32 start_iid, u32 cnt, FILE *stacks_dump,
 	return 0;
 }
 
+static bool is_py_eval_frame(const struct stack_frame_index *f)
+{
+	const char *name = f->sym ? f->sym->name : NULL;
+
+	if (!name)
+		return false;
+	if (strncmp(name, "_PyEval_EvalFrameDefault", 24) == 0)
+		return true;
+	return strncmp(name, "_TAIL_CALL_", 11) == 0;
+}
+
 /*
- * Python frames are inserted at the PyEval position in the native stack.
+ * Count Python frames of the next activation, advancing *fi (outermost-first
+ * index into BPF-recorded frames) past them and their leading marker.
+ */
+static u32 py_next_segment(const struct pystack_msg *pymsg, int *fi)
+{
+	u32 cnt = 0;
+
+	if (*fi >= 0 && pysym_is_trampoline(pymsg->frames[*fi].symbol_id))
+		*fi -= 1;
+	for (; *fi >= 0 && !pysym_is_trampoline(pymsg->frames[*fi].symbol_id); *fi -= 1)
+		cnt++;
+	return cnt;
+}
+
+/*
+ * Each native interpreter frame (_PyEval_EvalFrameDefault() or, with the 3.14+
+ * tail-calling interpreter, a _TAIL_CALL_<opcode>() handler) is replaced by
+ * Python frames of its interpreter activation: frames up to the next
+ * <interpreter trampoline> marker (3.12, 3.14+), or a single frame (3.10).
+ * Otherwise (e.g., multiple activations on 3.11 and 3.13, which have no
+ * markers), all Python frames go in front of the outermost native interpreter
+ * frame.
  */
 static int pystacks_write_stitched(struct symb_state *state, const struct native_stack_info *ns,
 				   struct py_stack *ps, FILE *stacks_dump, struct wstack_hdr *hdr)
 {
 	const struct stack_frame_index *frames = &state->sframe_idx[ns->start_frame_idx];
 	int uframe_cnt = ns->frame_cnt - ns->kframe_cnt;
-	int insert_pos = 0, err;
+	u32 eval_cnt = 0;
+	int first_eval = -1, err;
 
 	for (int j = 0; j < uframe_cnt; j++) {
-		if (frames[j].sym && frames[j].sym->name && strstr(frames[j].sym->name, "PyEval_EvalFrame")) {
-			insert_pos = j;
-			break;
-		}
+		if (!is_py_eval_frame(&frames[j]))
+			continue;
+		if (first_eval < 0)
+			first_eval = j;
+		eval_cnt++;
 	}
 
-	err = write_native_frame_ids(state, ns->start_frame_idx, 0, insert_pos,
-				     stacks_dump, hdr, &ps->mapped_frame_cnt);
-	if (err)
-		return err;
-	err = write_py_frame_ids(ps->start_frame_iid, ps->frame_cnt, stacks_dump, hdr, &ps->mapped_frame_cnt);
-	if (err)
-		return err;
-	return write_native_frame_ids(state, ns->start_frame_idx, insert_pos, ns->frame_cnt,
-				      stacks_dump, hdr, &ps->mapped_frame_cnt);
+	bool by_segment = eval_cnt > 0 && ps->seg_cnt == eval_cnt;
+	bool by_frame = eval_cnt > 0 && !ps->has_markers && ps->frame_cnt == eval_cnt;
+
+	if (!by_segment && !by_frame) {
+		int insert_pos = first_eval >= 0 ? first_eval : 0;
+
+		err = write_native_frame_ids(state, ns->start_frame_idx, 0, insert_pos,
+					     stacks_dump, hdr, &ps->mapped_frame_cnt);
+		if (err)
+			return err;
+		err = write_py_frame_ids(ps->start_frame_iid, ps->frame_cnt, stacks_dump, hdr, &ps->mapped_frame_cnt);
+		if (err)
+			return err;
+		return write_native_frame_ids(state, ns->start_frame_idx, insert_pos, ns->frame_cnt,
+					      stacks_dump, hdr, &ps->mapped_frame_cnt);
+	}
+
+	u32 py_iid = ps->start_frame_iid;
+	int fi = ps->pymsg->stack_len - 1;
+
+	for (int j = 0; j < ns->frame_cnt; j++) {
+		int from_k = 0;
+
+		if (j < uframe_cnt && is_py_eval_frame(&frames[j])) {
+			u32 cnt = by_segment ? py_next_segment(ps->pymsg, &fi) : 1;
+
+			err = write_py_frame_ids(py_iid, cnt, stacks_dump, hdr, &ps->mapped_frame_cnt);
+			if (err)
+				return err;
+			py_iid += cnt;
+			from_k = 1;
+		}
+		err = write_native_frame(&frames[j], from_k, stacks_dump, hdr, &ps->mapped_frame_cnt);
+		if (err)
+			return err;
+	}
+	return 0;
 }
 
 /*
