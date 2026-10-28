@@ -4,7 +4,7 @@
 #define __PYOFFSETS_H_
 
 /*
- * Pre-computed CPython struct field offsets for Python 3.10 through 3.13.
+ * Pre-computed CPython struct field offsets for Python 3.10 through 3.14.
  *
  * Each version function sets only the fields relevant to that version;
  * all other fields remain at BPF_LIB_DEFAULT_FIELD_OFFSET (9999) sentinel,
@@ -219,6 +219,45 @@ static inline void pyoffsets_v3_13(OffsetConfig *c)
 	};
 }
 
+/*
+ * CPython 3.14 offsets.
+ * _PyInterpreterFrame's int stacktop becomes a stackpointer pointer, shifting
+ * owner to 74 and localsplus to 80. PyTupleObject gains a cached ob_hash,
+ * moving ob_item to 32. Coroutines no longer have an awaiter field.
+ */
+static inline void pyoffsets_v3_14(OffsetConfig *c)
+{
+	*c = (OffsetConfig){
+		PYOFFSETS_DEFAULTS,
+		.PyObject_type = 8,
+		.PyTypeObject_name = 24,
+		.PyVarObject_size = 16,
+		.PyTupleObject_item = 32,
+		.PyBytesObject_data = 32,
+		.String_data = 40,
+		.PyThreadState_current_frame = 72,
+		.PyThreadState_thread = 152,
+		.PyThreadState_interp = 16,
+		.PyInterpreterFrame_code = 0,
+		.PyInterpreterFrame_previous = 8,
+		.PyInterpreterFrame_localsplus = 80,
+		.PyInterpreterFrame_prev_instr = 56,
+		.PyCodeObject_co_flags = 48,
+		.PyCodeObject_filename = 112,
+		.PyCodeObject_name = 120,
+		.PyCodeObject_qualname = 128,
+		.PyCodeObject_linetable = 136,
+		.PyCodeObject_firstlineno = 68,
+		.PyCodeObject_code_adaptive = 208,
+		.PyGenObject_iframe = 72,
+		.PyFrameObject_owner = 74,
+		.TLSKey_offset = 2340,
+		.PyInterpreterState_modules = 7688,
+		.PyVersion_major = 3,
+		.PyVersion_minor = 14,
+	};
+}
+
 #undef _D
 
 /*
@@ -234,6 +273,7 @@ static inline int pyoffsets_for_version(int major, int minor, bool free_threaded
 	case 11: pyoffsets_v3_11(c); return 0;
 	case 12: pyoffsets_v3_12(c); return 0;
 	case 13: pyoffsets_v3_13(c); return 0;
+	case 14: pyoffsets_v3_14(c); return 0;
 	default: return -1;
 	}
 }
