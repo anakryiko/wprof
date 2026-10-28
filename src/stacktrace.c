@@ -34,14 +34,13 @@ struct symb_state {
 };
 
 struct py_stack {
+	const struct wprof_event *e;
 	struct pystack_msg *pymsg;
 	u32 start_frame_iid;
 	u32 frame_cnt;
 	u32 mapped_frame_idx;
 	u32 mapped_frame_cnt;
 	u32 callstack_iid;
-	u32 native_id;
-	int pyeval_pos;
 };
 
 struct native_stack_info {
@@ -110,10 +109,10 @@ static int pystacks_write_frames(struct worker_state *workers, int worker_cnt,
 				py_stack_cap = new_cap;
 			}
 			py_stacks[py_stack_cnt++] = (struct py_stack){
+				.e = rec->e,
 				.pymsg = pymsg,
 				.start_frame_iid = start_iid,
 				.frame_cnt = n,
-				.pyeval_pos = -1,
 			};
 		}
 	}
@@ -121,50 +120,6 @@ static int pystacks_write_frames(struct worker_state *workers, int worker_cnt,
 	*py_stacks_out = py_stacks;
 	*py_stack_cnt_out = py_stack_cnt;
 	return 0;
-}
-
-/*
- * Resolve native stack IDs and PyEval insertion positions for each py_stack.
- * Must be called after native callstack IIDs are assigned, so that
- * bpf_event_stack_id() returns the correct callstack_iid.
- */
-static void pystacks_resolve_native_ids(struct worker_state *workers, int worker_cnt,
-					struct symb_state *state,
-					struct native_stack_info *native_stacks, u32 trace_iid,
-					struct py_stack *py_stacks, size_t py_stack_cnt)
-{
-	size_t psi = 0;
-	for (int i = 0; i < worker_cnt && psi < py_stack_cnt; i++)
-	for (struct fr_chunk *c = workers[i].chunks; c; c = c->next) {
-		const struct bpf_event_record *rec;
-		for_each_bpf_event(rec, c->mmap, c->byte_sz) {
-			if (!(rec->e->flags & EF_PYSTACK))
-				continue;
-
-			struct pystack_msg *pymsg = (void *)bpf_event_pystack(rec->e);
-			if (!pymsg || pymsg->stack_len == 0)
-				continue;
-
-			struct py_stack *ps = &py_stacks[psi++];
-
-			u32 native_id = bpf_event_any_stack_id(rec->e);
-			ps->native_id = native_id;
-
-			if (native_id > 0 && native_id < trace_iid && native_stacks[native_id].frame_cnt > 0) {
-				struct native_stack_info *ns = &native_stacks[native_id];
-				int uframe_cnt = ns->frame_cnt - ns->kframe_cnt;
-
-				for (int j = 0; j < uframe_cnt; j++) {
-					const struct stack_frame_index *f = &state->sframe_idx[ns->start_frame_idx + j];
-
-					if (f->sym && f->sym->name && strstr(f->sym->name, "PyEval_EvalFrame")) {
-						ps->pyeval_pos = j;
-						break;
-					}
-				}
-			}
-		}
-	}
 }
 
 /*
@@ -204,8 +159,37 @@ static int write_py_frame_ids(u32 start_iid, u32 cnt, FILE *stacks_dump,
 }
 
 /*
- * Write stitched frame mappings that interleave native and Python frames.
  * Python frames are inserted at the PyEval position in the native stack.
+ */
+static int pystacks_write_stitched(struct symb_state *state, const struct native_stack_info *ns,
+				   struct py_stack *ps, FILE *stacks_dump, struct wstack_hdr *hdr)
+{
+	const struct stack_frame_index *frames = &state->sframe_idx[ns->start_frame_idx];
+	int uframe_cnt = ns->frame_cnt - ns->kframe_cnt;
+	int insert_pos = 0, err;
+
+	for (int j = 0; j < uframe_cnt; j++) {
+		if (frames[j].sym && frames[j].sym->name && strstr(frames[j].sym->name, "PyEval_EvalFrame")) {
+			insert_pos = j;
+			break;
+		}
+	}
+
+	err = write_native_frame_ids(state, ns->start_frame_idx, 0, insert_pos,
+				     stacks_dump, hdr, &ps->mapped_frame_cnt);
+	if (err)
+		return err;
+	err = write_py_frame_ids(ps->start_frame_iid, ps->frame_cnt, stacks_dump, hdr, &ps->mapped_frame_cnt);
+	if (err)
+		return err;
+	return write_native_frame_ids(state, ns->start_frame_idx, insert_pos, ns->frame_cnt,
+				      stacks_dump, hdr, &ps->mapped_frame_cnt);
+}
+
+/*
+ * Write stitched frame mappings that interleave native and Python frames.
+ * Must be called after native callstack IIDs are assigned, so that
+ * bpf_event_any_stack_id() returns the correct callstack_iid.
  */
 static int pystacks_write_frame_mappings(struct symb_state *state,
 					 struct native_stack_info *native_stacks, u32 trace_iid,
@@ -216,37 +200,18 @@ static int pystacks_write_frame_mappings(struct symb_state *state,
 
 	for (size_t i = 0; i < py_stack_cnt; i++) {
 		struct py_stack *ps = &py_stacks[i];
+		u32 native_id = bpf_event_any_stack_id(ps->e);
 
 		ps->mapped_frame_idx = hdr->frame_mapping_cnt;
 		ps->mapped_frame_cnt = 0;
 
-		struct native_stack_info *ns = NULL;
-		if (ps->native_id > 0 && ps->native_id < trace_iid)
-			ns = &native_stacks[ps->native_id];
-
-		if (ns && ns->frame_cnt > 0) {
-			int insert_pos = ps->pyeval_pos >= 0 ? ps->pyeval_pos : 0;
-
-			err = write_native_frame_ids(state, ns->start_frame_idx, 0, insert_pos,
-						     stacks_dump, hdr, &ps->mapped_frame_cnt);
-			if (err)
-				return err;
-
+		if (native_id > 0 && native_stacks[native_id].frame_cnt > 0)
+			err = pystacks_write_stitched(state, &native_stacks[native_id], ps, stacks_dump, hdr);
+		else
 			err = write_py_frame_ids(ps->start_frame_iid, ps->frame_cnt,
 						 stacks_dump, hdr, &ps->mapped_frame_cnt);
-			if (err)
-				return err;
-
-			err = write_native_frame_ids(state, ns->start_frame_idx, insert_pos, ns->frame_cnt,
-						     stacks_dump, hdr, &ps->mapped_frame_cnt);
-			if (err)
-				return err;
-		} else {
-			err = write_py_frame_ids(ps->start_frame_iid, ps->frame_cnt,
-						 stacks_dump, hdr, &ps->mapped_frame_cnt);
-			if (err)
-				return err;
-		}
+		if (err)
+			return err;
 
 		ps->callstack_iid = trace_iid;
 		ps->pymsg->pystack_id = trace_iid;
@@ -1145,10 +1110,7 @@ skip_ksyms:
 		trace_iid += 1;
 	}
 
-	/*
-	 * Native+Python stack stitching: resolve native stack IDs,
-	 * find PyEval insertion positions, and write stitched frame mappings.
-	 */
+	/* Native+Python stack stitching */
 	struct native_stack_info *native_stacks = calloc(trace_iid, sizeof(*native_stacks));
 
 	for (int i = 0; i < state->strace_cnt; i++) {
@@ -1163,9 +1125,6 @@ skip_ksyms:
 			};
 		}
 	}
-
-	pystacks_resolve_native_ids(workers, worker_cnt, state, native_stacks, trace_iid,
-				    py_stacks, py_stack_cnt);
 
 	err = pystacks_write_frame_mappings(state, native_stacks, trace_iid, stacks_dump, &hdr,
 					    py_stacks, py_stack_cnt);
