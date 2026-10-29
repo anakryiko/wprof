@@ -5835,6 +5835,7 @@ int emit_trace(struct worker_state *w)
 	js = (struct json_state)JSON_STATE_INIT(env.json_path ? w->trace : NULL);
 
 	if (env.json_path) {
+		json_init(&js);
 		emit_header_json(w);
 		if (env.requested_stack_traces)
 			emit_stacks_json(w);
@@ -5867,6 +5868,8 @@ int emit_trace(struct worker_state *w)
 	}
 
 	err = process_events(w, emit_fns, ARRAY_SIZE(emit_fns));
+	if (env.json_path)
+		json_finish(&js);
 	if (err)
 		return err;
 
