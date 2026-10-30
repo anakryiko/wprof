@@ -88,6 +88,120 @@ static Elf_Scn *elf_find_next_scn_by_type(Elf *elf, int sh_type, Elf_Scn *scn)
 	return NULL;
 }
 
+struct elf_dynsym_hash {
+	Elf_Data *hash;
+	bool wide_bloom;
+	Elf_Data *syms;
+	Elf_Data *versyms;
+	size_t strtabidx;
+};
+
+/* Find .gnu.hash and the dynamic symbol table it indexes. */
+static int elf_dynsym_hash_init(Elf *elf, struct elf_dynsym_hash *h)
+{
+	Elf_Scn *scn, *sym_scn;
+	GElf_Shdr sh, sym_sh;
+
+	memset(h, 0, sizeof(*h));
+
+	scn = elf_find_next_scn_by_type(elf, SHT_GNU_HASH, NULL);
+	if (!scn || !gelf_getshdr(scn, &sh))
+		return -ENOENT;
+
+	sym_scn = elf_getscn(elf, sh.sh_link);
+	if (!sym_scn || !gelf_getshdr(sym_scn, &sym_sh) || sym_sh.sh_type != SHT_DYNSYM)
+		return -ENOENT;
+
+	h->hash = elf_getdata(scn, NULL);
+	h->syms = elf_getdata(sym_scn, NULL);
+	if (!h->hash || !h->hash->d_buf || !h->syms)
+		return -ENOENT;
+	h->strtabidx = sym_sh.sh_link;
+	h->wide_bloom = gelf_getclass(elf) == ELFCLASS64;
+
+	scn = elf_find_next_scn_by_type(elf, SHT_GNU_versym, NULL);
+	if (scn)
+		h->versyms = elf_getdata(scn, NULL);
+
+	return 0;
+}
+
+static bool elf_dynsym_match(const struct elf_dynsym_hash *h, Elf *elf, size_t idx,
+			     const char *name, int st_type, GElf_Sym *sym, bool *hidden)
+{
+	GElf_Versym versym;
+	const char *sym_name;
+
+	if (!gelf_getsym(h->syms, idx, sym))
+		return false;
+	if (GELF_ST_TYPE(sym->st_info) != st_type || sym->st_shndx == SHN_UNDEF)
+		return false;
+	sym_name = elf_strptr(elf, h->strtabidx, sym->st_name);
+	if (!sym_name || strcmp(sym_name, name) != 0)
+		return false;
+
+	*hidden = h->versyms && gelf_getversym(h->versyms, idx, &versym) && (versym & VERSYM_HIDDEN);
+	return true;
+}
+
+/*
+ * Look up a defined dynamic symbol of st_type through .gnu.hash,
+ * preferring the default version of versioned symbols.
+ */
+static bool elf_dynsym_hash_lookup(const struct elf_dynsym_hash *h, Elf *elf,
+				   const char *name, int st_type, GElf_Sym *sym)
+{
+	const unsigned char *p = (const unsigned char *)name;
+	const uint32_t *w = h->hash->d_buf;
+	size_t sz = h->hash->d_size;
+	bool found = false, hidden;
+	uint32_t hash = 5381;
+	GElf_Sym cand;
+
+	for (; *p; p++)
+		hash = hash * 33 + *p;
+
+	/* nbuckets, sym_idx, bloom_size, bloom_shift, bloom[bloom_size], buckets[nbuckets], chain[] */
+	if (sz < 16 || w[0] == 0 || w[2] == 0)
+		return false;
+
+	uint32_t nbuckets = w[0], sym_idx = w[1], bloom_size = w[2], bloom_shift = w[3];
+	size_t bloom_bits = h->wide_bloom ? 64 : 32;
+	size_t buckets_off = 16 + bloom_size * bloom_bits / 8;
+	if (buckets_off + (size_t)nbuckets * 4 > sz)
+		return false;
+
+	const char *base = h->hash->d_buf;
+	size_t bloom_idx = (hash / bloom_bits) % bloom_size;
+	uint64_t bloom = h->wide_bloom ? ((const uint64_t *)(base + 16))[bloom_idx]
+				       : ((const uint32_t *)(base + 16))[bloom_idx];
+	uint64_t mask = (1ULL << (hash % bloom_bits)) | (1ULL << ((hash >> bloom_shift) % bloom_bits));
+	if ((bloom & mask) != mask)
+		return false;
+
+	const uint32_t *buckets = (const uint32_t *)(base + buckets_off);
+	const uint32_t *chain = buckets + nbuckets;
+	size_t chain_cnt = (sz - buckets_off) / 4 - nbuckets;
+	uint32_t idx = buckets[hash % nbuckets];
+	if (idx < sym_idx)
+		return false;
+
+	for (; idx - sym_idx < chain_cnt; idx++) {
+		uint32_t chain_hash = chain[idx - sym_idx];
+
+		if ((chain_hash | 1) == (hash | 1) &&
+		    elf_dynsym_match(h, elf, idx, name, st_type, &cand, &hidden)) {
+			*sym = cand;
+			found = true;
+			if (!hidden)
+				break;
+		}
+		if (chain_hash & 1)
+			break;
+	}
+	return found;
+}
+
 int elf_sym_iter_new(struct elf_sym_iter *it,
 		     Elf *elf, const char *binary_path,
 		     int sh_type, int st_type)
@@ -188,41 +302,66 @@ struct elf_sym *elf_sym_iter_next(struct elf_sym_iter *it)
 	return NULL;
 }
 
+static int elf_copy_sym_value(Elf *elf, const GElf_Sym *sym, void *buf, size_t buf_sz)
+{
+	Elf_Scn *scn = elf_getscn(elf, sym->st_shndx);
+	if (!scn)
+		return -ENOENT;
+
+	GElf_Shdr shdr;
+	if (!gelf_getshdr(scn, &shdr))
+		return -ENOENT;
+
+	Elf_Data *data = elf_getdata(scn, NULL);
+	if (!data || !data->d_buf)
+		return -ENOENT;
+
+	size_t offset = sym->st_value - shdr.sh_addr;
+	if (offset + buf_sz > data->d_size)
+		return -ENOENT;
+
+	memcpy(buf, (char *)data->d_buf + offset, buf_sz);
+	return 0;
+}
+
 int elf_read_sym_value(const char *binary_path, const char *sym_name,
 		       int st_type, void *buf, size_t buf_sz)
 {
 	int sh_types[2] = { SHT_DYNSYM, SHT_SYMTAB };
+	struct elf_dynsym_hash dh;
 	struct elf_fd elf_fd;
+	bool has_dynsym_hash;
+	GElf_Sym hsym;
 	int err;
 
 	err = elf_open(binary_path, &elf_fd);
 	if (err)
 		return err;
 
+	/* with a hash table, .dynsym needs no scanning, only .symtab might */
+	has_dynsym_hash = elf_dynsym_hash_init(elf_fd.elf, &dh) == 0;
+	if (!has_dynsym_hash)
+		goto scan;
+
+	if (elf_dynsym_hash_lookup(&dh, elf_fd.elf, sym_name, st_type, &hsym) &&
+	    elf_copy_sym_value(elf_fd.elf, &hsym, buf, buf_sz) == 0) {
+		elf_close(&elf_fd);
+		return 0;
+	}
+
+scan:
 	for (int i = 0; i < ARRAY_SIZE(sh_types); i++) {
 		struct elf_sym *sym;
+
+		if (has_dynsym_hash && sh_types[i] == SHT_DYNSYM)
+			continue;
 
 		wprof_for_each(elf_sym, sym, elf_fd.elf, binary_path, sh_types[i], st_type) {
 			if (strcmp(sym->name, sym_name) != 0)
 				continue;
-
-			Elf_Scn *scn = elf_getscn(elf_fd.elf, sym->sym.st_shndx);
-			if (!scn)
+			if (elf_copy_sym_value(elf_fd.elf, &sym->sym, buf, buf_sz) != 0)
 				continue;
 
-			GElf_Shdr shdr;
-			if (!gelf_getshdr(scn, &shdr))
-				continue;
-
-			Elf_Data *data = elf_getdata(scn, NULL);
-			if (!data || !data->d_buf)
-				continue;
-
-			size_t offset = sym->sym.st_value - shdr.sh_addr;
-			if (offset + buf_sz > data->d_size)
-				continue;
-
-			memcpy(buf, (char *)data->d_buf + offset, buf_sz);
 			elf_close(&elf_fd);
 			return 0;
 		}
@@ -241,6 +380,9 @@ int elf_find_syms(const char *binary_path, int st_type,
 		  const char **syms, size_t cnt, unsigned long *file_offs)
 {
 	int sh_types[2] = { SHT_DYNSYM, SHT_SYMTAB };
+	struct elf_dynsym_hash dh;
+	bool has_dynsym_hash;
+	bool hashed[cnt];
 	int cnt_done = 0;
 	struct elf_fd elf_fd;
 	int err;
@@ -250,9 +392,34 @@ int elf_find_syms(const char *binary_path, int st_type,
 		return err;
 
 	memset(file_offs, 0, sizeof(*file_offs) * cnt);
+	memset(hashed, 0, sizeof(hashed));
 
+	/* with a hash table, .dynsym needs no scanning, only .symtab might */
+	has_dynsym_hash = elf_dynsym_hash_init(elf_fd.elf, &dh) == 0;
+	if (!has_dynsym_hash)
+		goto scan;
+
+	for (int i = 0; i < cnt; i++) {
+		Elf_Scn *scn;
+		GElf_Shdr sh;
+		GElf_Sym sym;
+
+		if (!elf_dynsym_hash_lookup(&dh, elf_fd.elf, syms[i], st_type, &sym))
+			continue;
+		scn = elf_getscn(elf_fd.elf, sym.st_shndx);
+		if (!scn || !gelf_getshdr(scn, &sh))
+			continue;
+		file_offs[i] = sym.st_value - sh.sh_addr + sh.sh_offset;
+		hashed[i] = true;
+		cnt_done++;
+	}
+
+scan:
 	for (int ti = 0; ti < ARRAY_SIZE(sh_types) && cnt_done < cnt; ti++) {
 		struct elf_sym *sym;
+
+		if (has_dynsym_hash && sh_types[ti] == SHT_DYNSYM)
+			continue;
 
 		wprof_for_each(elf_sym, sym, elf_fd.elf, binary_path, sh_types[ti], st_type) {
 			int bind = GELF_ST_BIND(sym->sym.st_info);
@@ -260,6 +427,8 @@ int elf_find_syms(const char *binary_path, int st_type,
 			for (int i = 0; i < cnt; i++) {
 				if (strcmp(syms[i], sym->name) != 0)
 					continue;
+				if (hashed[i])
+					break;
 				if (file_offs[i] && bind == STB_WEAK)
 					continue;
 				unsigned long off = sym->sym.st_value - sym->sh.sh_addr + sym->sh.sh_offset;
@@ -295,13 +464,17 @@ int elf_resolve_syms(int pid, unsigned long vma_start, unsigned long vma_end,
 {
 	int sh_types[2] = { SHT_DYNSYM, SHT_SYMTAB };
 	unsigned long st_values[cnt];
+	struct elf_dynsym_hash dh;
+	bool has_dynsym_hash;
 	int cnt_done = 0;
+	bool hashed[cnt];
 	char path[128];
 	struct elf_fd ef;
 	long base = -ENOENT;
 	int err;
 
 	memset(st_values, 0, sizeof(st_values));
+	memset(hashed, 0, sizeof(hashed));
 
 	snprintf(path, sizeof(path), "/proc/%d/map_files/%llx-%llx",
 		 pid, (unsigned long long)vma_start, (unsigned long long)vma_end);
@@ -335,9 +508,27 @@ int elf_resolve_syms(int pid, unsigned long vma_start, unsigned long vma_end,
 		return base;
 	}
 
-	/* resolve symbol st_values */
+	/* resolve symbol st_values; with a hash table, .dynsym needs no scanning */
+	has_dynsym_hash = elf_dynsym_hash_init(ef.elf, &dh) == 0;
+	if (!has_dynsym_hash)
+		goto scan;
+
+	for (int i = 0; i < cnt; i++) {
+		GElf_Sym sym;
+
+		if (!elf_dynsym_hash_lookup(&dh, ef.elf, syms[i], st_type, &sym))
+			continue;
+		st_values[i] = sym.st_value;
+		hashed[i] = true;
+		cnt_done++;
+	}
+
+scan:
 	for (int ti = 0; ti < ARRAY_SIZE(sh_types) && cnt_done < cnt; ti++) {
 		struct elf_sym *sym;
+
+		if (has_dynsym_hash && sh_types[ti] == SHT_DYNSYM)
+			continue;
 
 		wprof_for_each(elf_sym, sym, ef.elf, path, sh_types[ti], st_type) {
 			int bind = GELF_ST_BIND(sym->sym.st_info);
@@ -345,6 +536,8 @@ int elf_resolve_syms(int pid, unsigned long vma_start, unsigned long vma_end,
 			for (int i = 0; i < cnt; i++) {
 				if (strcmp(syms[i], sym->name) != 0)
 					continue;
+				if (hashed[i])
+					break;
 				if (st_values[i] && bind == STB_WEAK)
 					continue;
 				if (st_values[i] && st_values[i] != sym->sym.st_value) {
