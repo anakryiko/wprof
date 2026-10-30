@@ -47,6 +47,11 @@ void elf_init(void);
 int elf_read_sym_value(const char *binary_path, const char *sym_name,
 		       int st_type, void *buf, size_t buf_sz);
 
+/* Whether a defined symbol is in .dynsym; .symtab is not searched. */
+bool elf_has_dynsym(const char *binary_path, const char *sym_name, int st_type);
+
+bool elf_has_sec(const char *binary_path, const char *sec_name);
+
 int elf_find_syms(const char *binary_path, int st_type,
 		  const char **syms, size_t cnt, unsigned long *file_offs);
 

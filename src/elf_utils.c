@@ -371,6 +371,32 @@ scan:
 	return -ENOENT;
 }
 
+bool elf_has_dynsym(const char *binary_path, const char *sym_name, int st_type)
+{
+	struct elf_dynsym_hash dh;
+	struct elf_fd elf_fd;
+	struct elf_sym *sym;
+	GElf_Sym hsym;
+	bool found = false;
+
+	if (elf_open(binary_path, &elf_fd))
+		return false;
+
+	if (elf_dynsym_hash_init(elf_fd.elf, &dh) == 0) {
+		found = elf_dynsym_hash_lookup(&dh, elf_fd.elf, sym_name, st_type, &hsym);
+	} else {
+		wprof_for_each(elf_sym, sym, elf_fd.elf, binary_path, SHT_DYNSYM, st_type) {
+			if (strcmp(sym->name, sym_name) == 0) {
+				found = true;
+				break;
+			}
+		}
+	}
+
+	elf_close(&elf_fd);
+	return found;
+}
+
 /*
  * Find ELF symbols and return their file offsets (for uprobe attach).
  * File offset is computed per-symbol via its containing section's
@@ -589,6 +615,18 @@ static Elf_Scn *elf_find_sec_by_name(Elf *elf, const char *name, GElf_Shdr *shdr
 		}
 	}
 	return NULL;
+}
+
+bool elf_has_sec(const char *binary_path, const char *sec_name)
+{
+	struct elf_fd elf_fd;
+	bool found;
+
+	if (elf_open(binary_path, &elf_fd))
+		return false;
+	found = elf_find_sec_by_name(elf_fd.elf, sec_name, NULL) != NULL;
+	elf_close(&elf_fd);
+	return found;
 }
 
 /*

@@ -77,14 +77,6 @@ static bool is_py_tracee(int pid)
 	return false;
 }
 
-static bool has_pyruntime_sym(const char *binary_path)
-{
-	const char *syms[] = { "_PyRuntime" };
-	unsigned long offs[1] = {};
-
-	return elf_find_syms(binary_path, STT_OBJECT, syms, ARRAY_SIZE(offs), offs) == 0;
-}
-
 /* _PyRuntime starts with statically initialized _Py_DebugOffsets since 3.13 */
 static bool py_is_free_threaded(const char *binary_path)
 {
@@ -124,7 +116,7 @@ static int py_minor_from_abi_tag(int pid)
 
 /*
  * Find the Python binary for a process by scanning executable VMAs for
- * Py_Version (3.11+) or _PyRuntime (3.10) symbols. Checks both the main
+ * _PyRuntime, then reading Py_Version (3.11+). Checks both the main
  * executable (statically-linked Python) and libpython*.so shared libraries.
  *
  * Returns 0 if found (bi populated), -ENOENT if not Python.
@@ -168,6 +160,11 @@ int py_find_binary(int pid, struct py_binary_info *bi)
 		bi->vma_end = vma->vma_end;
 		bi->vma_offset = vma->vma_offset;
 
+		/* only Python defines _PyRuntime, in the .PyRuntime section on Linux */
+		if (!elf_has_sec(bi->host_path, ".PyRuntime") &&
+		    !elf_has_dynsym(bi->host_path, "_PyRuntime", STT_OBJECT))
+			continue;
+
 		/* assume 3.10, refined via Py_Version or the ABI tag below */
 		bi->py_major = 3;
 		bi->py_minor = 10;
@@ -177,10 +174,7 @@ int py_find_binary(int pid, struct py_binary_info *bi)
 			return 0;
 		}
 
-		/* Py_Version absent (e.g. stripped by LTO); it's Python only if _PyRuntime is here */
-		if (!has_pyruntime_sym(bi->host_path))
-			continue;
-
+		/* Py_Version absent (e.g. stripped by LTO) */
 		int minor = py_minor_from_abi_tag(pid);
 		if (minor > 0) {
 			bi->py_minor = minor;
