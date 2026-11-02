@@ -1,3 +1,5 @@
+#include "strs.h"
+
 /*
  * LOW-LEVEL JSON BUILDER PRIMITIVES
  *
@@ -13,12 +15,73 @@ enum json_scope {
 
 struct json_state {
 	FILE *f;
+	struct sbuf out;
 	int lvl;
 	enum json_scope scope[5];
 	int cnt[5]; /* comma tracking per level */
 };
 
 #define JSON_STATE_INIT(file) { .f = (file), .lvl = -1 }
+
+static inline void json_flush(struct json_state *js)
+{
+	fwrite(js->out.buf, 1, js->out.len, js->f);
+	sbuf_reset(&js->out);
+}
+
+static inline void json_finish(struct json_state *js)
+{
+	sbuf_free(&js->out);
+}
+
+static inline void json_write(struct json_state *js, const void *p, size_t n)
+{
+	sbuf_append(&js->out, p, n);
+}
+
+static inline void json_putc(struct json_state *js, char c)
+{
+	sbuf_putc(&js->out, c);
+}
+
+static inline void json_int(struct json_state *js, long long value)
+{
+	/* 19 decimal digits + sign + NUL terminator. */
+	char buf[21];
+	int n = snprintf(buf, sizeof(buf), "%lld", value);
+
+	json_write(js, buf, n);
+}
+
+static inline void json_uint(struct json_state *js, unsigned long long value)
+{
+	/* 20 decimal digits + NUL terminator. */
+	char buf[21];
+	int n = snprintf(buf, sizeof(buf), "%llu", value);
+
+	json_write(js, buf, n);
+}
+
+static inline void json_float(struct json_state *js, const char *fmt, double value)
+{
+	char buf[32];
+	int n = snprintf(buf, sizeof(buf), fmt, value);
+
+	if (n < 0)
+		BUG("JSON float formatting failed for format '%s'\n", fmt);
+	if ((size_t)n >= sizeof(buf))
+		BUG("JSON float buffer too small for format '%s': need %zu bytes, have %zu\n",
+		    fmt, (size_t)n + 1, sizeof(buf));
+	json_write(js, buf, n);
+}
+
+static inline void json_escape(struct json_state *js, unsigned char c)
+{
+	char buf[7];
+	int n = snprintf(buf, sizeof(buf), "\\u%04x", c);
+
+	json_write(js, buf, n);
+}
 
 /*
  * Length of the well-formed UTF-8 sequence starting at p, or 0 if p[0] is not a
@@ -60,7 +123,6 @@ static inline int json_utf8_seq_len(const unsigned char *p)
  */
 static inline void json_puts(struct json_state *js, const char *s)
 {
-	FILE *f = js->f;
 	const unsigned char *p = (const unsigned char *)s;
 
 	while (*p) {
@@ -69,30 +131,30 @@ static inline void json_puts(struct json_state *js, const char *s)
 		while (*p >= 0x20 && *p < 0x80 && *p != '"' && *p != '\\')
 			p++;
 		if (p > run)
-			fwrite(run, 1, p - run, f);
+			json_write(js, run, p - run);
 
 		unsigned char c = *p;
 		switch (c) {
 		case 0: return;
-		case '"':  fputs("\\\"", f); p++; break;
-		case '\\': fputs("\\\\", f); p++; break;
-		case '\n': fputs("\\n", f); p++; break;
-		case '\t': fputs("\\t", f); p++; break;
-		case '\r': fputs("\\r", f); p++; break;
-		case '\b': fputs("\\b", f); p++; break;
-		case '\f': fputs("\\f", f); p++; break;
+		case '"':  json_write(js, "\\\"", 2); p++; break;
+		case '\\': json_write(js, "\\\\", 2); p++; break;
+		case '\n': json_write(js, "\\n", 2); p++; break;
+		case '\t': json_write(js, "\\t", 2); p++; break;
+		case '\r': json_write(js, "\\r", 2); p++; break;
+		case '\b': json_write(js, "\\b", 2); p++; break;
+		case '\f': json_write(js, "\\f", 2); p++; break;
 		default:
 			if (c < 0x20) {
-				fprintf(f, "\\u%04x", c);
+				json_escape(js, c);
 				p++;
 			} else {
 				int n = json_utf8_seq_len(p);
 
 				if (n) {
-					fwrite(p, 1, n, f);
+					json_write(js, p, n);
 					p += n;
 				} else {
-					fprintf(f, "\\u%04x", c);
+					json_escape(js, c);
 					p++;
 				}
 			}
@@ -128,26 +190,27 @@ static inline void json_obj_start(struct json_state *js)
 	++js->lvl;
 	js->scope[js->lvl] = JSON_OBJ;
 	js->cnt[js->lvl] = 0;
-	fprintf(js->f, "{");
+	json_putc(js, '{');
 }
 
 static inline void json_obj_end(struct json_state *js)
 {
 	js->cnt[js->lvl] = 0;
 	js->lvl--;
-	if (js->lvl < 0) /* outermost level, emit newline */
-		fprintf(js->f, "}\n");
-	else
-		fprintf(js->f, "}");
+	if (js->lvl < 0) { /* outermost level, emit newline */
+		json_write(js, "}\n", 2);
+		json_flush(js);
+	} else
+		json_putc(js, '}');
 }
 
 static inline void json_key(struct json_state *js, const char *key)
 {
 	if (js->cnt[js->lvl])
-		fputc(',', js->f);
-	fputc('"', js->f);
+		json_putc(js, ',');
+	json_putc(js, '"');
 	json_puts(js, key);
-	fputs("\":", js->f);
+	json_write(js, "\":", 2);
 	js->cnt[js->lvl]++;
 }
 
@@ -160,47 +223,47 @@ static inline void json_subobj_start(struct json_state *js, const char *key)
 static inline void json_kv_str(struct json_state *js, const char *key, const char *value)
 {
 	json_key(js, key);
-	fputc('"', js->f);
+	json_putc(js, '"');
 	json_puts(js, value);
-	fputc('"', js->f);
+	json_putc(js, '"');
 }
 
 __attribute__((format(printf, 3, 4)))
 static inline void json_kv_fmt(struct json_state *js, const char *key, const char *fmt, ...)
 {
 	json_key(js, key);
-	fputc('"', js->f);
+	json_putc(js, '"');
 
 	va_list ap;
 	va_start(ap, fmt);
 	json_vprintf(js, fmt, ap);
 	va_end(ap);
 
-	fputc('"', js->f);
+	json_putc(js, '"');
 }
 
 static inline void json_kv_int(struct json_state *js, const char *key, long long value)
 {
 	json_key(js, key);
-	fprintf(js->f, "%lld", value);
+	json_int(js, value);
 }
 
 static inline void json_kv_uint(struct json_state *js, const char *key, unsigned long long value)
 {
 	json_key(js, key);
-	fprintf(js->f, "%llu", value);
+	json_uint(js, value);
 }
 
 static inline void json_kv_null(struct json_state *js, const char *key)
 {
 	json_key(js, key);
-	fputs("null", js->f);
+	json_write(js, "null", 4);
 }
 
 static inline void json_kv_float(struct json_state *js, const char *key, const char *fmt, double value)
 {
 	json_key(js, key);
-	fprintf(js->f, fmt, value);
+	json_float(js, fmt, value);
 }
 
 static inline void json_kv_ts(struct json_state *js, const char *key, u64 ns)
@@ -211,7 +274,7 @@ static inline void json_kv_ts(struct json_state *js, const char *key, u64 ns)
 static inline void json_kv_bool(struct json_state *js, const char *key, bool value)
 {
 	json_key(js, key);
-	fprintf(js->f, "%s", value ? "true" : "false");
+	json_write(js, value ? "true" : "false", value ? 4 : 5);
 }
 
 static inline void json_arr_start(struct json_state *js)
@@ -219,14 +282,14 @@ static inline void json_arr_start(struct json_state *js)
 	++js->lvl;
 	js->scope[js->lvl] = JSON_ARR;
 	js->cnt[js->lvl] = 0;
-	fprintf(js->f, "[");
+	json_putc(js, '[');
 }
 
 static inline void json_arr_end(struct json_state *js)
 {
 	js->cnt[js->lvl] = 0;
 	js->lvl--;
-	fprintf(js->f, "]");
+	json_putc(js, ']');
 }
 
 static inline void json_subarr_start(struct json_state *js, const char *key)
@@ -238,48 +301,48 @@ static inline void json_subarr_start(struct json_state *js, const char *key)
 static inline void json_arr_elem(struct json_state *js)
 {
 	if (js->cnt[js->lvl])
-		fprintf(js->f, ",");
+		json_putc(js, ',');
 	js->cnt[js->lvl]++;
 }
 
 static inline void json_arr_str(struct json_state *js, const char *value)
 {
 	json_arr_elem(js);
-	fputc('"', js->f);
+	json_putc(js, '"');
 	json_puts(js, value);
-	fputc('"', js->f);
+	json_putc(js, '"');
 }
 
 __attribute__((format(printf, 2, 3)))
 static inline void json_arr_fmt(struct json_state *js, const char *fmt, ...)
 {
 	json_arr_elem(js);
-	fputc('"', js->f);
+	json_putc(js, '"');
 
 	va_list ap;
 	va_start(ap, fmt);
 	json_vprintf(js, fmt, ap);
 	va_end(ap);
 
-	fputc('"', js->f);
+	json_putc(js, '"');
 }
 
 __unused
 static inline void json_arr_int(struct json_state *js, long long value)
 {
 	json_arr_elem(js);
-	fprintf(js->f, "%lld", value);
+	json_int(js, value);
 }
 
 static inline void json_arr_float(struct json_state *js, const char *fmt, double value)
 {
 	json_arr_elem(js);
-	fprintf(js->f, fmt, value);
+	json_float(js, fmt, value);
 }
 
 __unused
 static inline void json_arr_null(struct json_state *js)
 {
 	json_arr_elem(js);
-	fputs("null", js->f);
+	json_write(js, "null", 4);
 }

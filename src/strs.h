@@ -249,6 +249,20 @@ static inline void sbuf_ensure(struct sbuf *sb, int need)
 	sb->cap = new_cap;
 }
 
+static inline void sbuf_putc(struct sbuf *sb, char c)
+{
+	sbuf_ensure(sb, 1);
+	sb->buf[sb->len] = c;
+	sb->len++;
+}
+
+static inline void sbuf_append(struct sbuf *sb, const void *p, int n)
+{
+	sbuf_ensure(sb, n);
+	memcpy(sb->buf + sb->len, p, n);
+	sb->len += n;
+}
+
 __attribute__((format(printf, 2, 3)))
 static inline void sbuf_appendf(struct sbuf *sb, const char *fmt, ...)
 {
@@ -268,12 +282,14 @@ static inline void sbuf_appendf(struct sbuf *sb, const char *fmt, ...)
 	sb->len += need;
 }
 
+/*
+ * Buffer updates do not guarantee NUL termination. Call sbuf_str() before
+ * using the contents as a C string.
+ */
 static inline const char *sbuf_str(struct sbuf *sb)
 {
-	if (!sb->buf) {
-		sbuf_ensure(sb, 0);
-		sb->buf[0] = '\0';
-	}
+	sbuf_ensure(sb, 0);
+	sb->buf[sb->len] = '\0';
 	return sb->buf;
 }
 

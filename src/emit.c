@@ -5867,6 +5867,8 @@ int emit_trace(struct worker_state *w)
 	}
 
 	err = process_events(w, emit_fns, ARRAY_SIZE(emit_fns));
+	if (env.json_path)
+		json_finish(&js);
 	if (err)
 		return err;
 
