@@ -148,7 +148,7 @@ static const struct {
 static const struct argp_option opts[] = {
 	{ "verbose", 'v', NULL, 0, "Verbose output" },
 	{ "stats", OPT_STATS, NULL, 0, "Print various wprof stats (BPF, resource usage, etc.)" },
-	{ "debug", OPT_DEBUG, "FEAT", 0, "Debug features (pb-debug-interns, pb-disable-interns, keep-workdir, raw-stacks, no-tsidx, no-task-storage, fr-chunk-size=SIZE)"},
+	{ "debug", OPT_DEBUG, "FEAT", 0, "Debug features (pb-debug-interns, pb-disable-interns, keep-workdir, raw-stacks, no-tsidx, no-task-storage, fr-chunk-size=SIZE, usdt-specs=N)"},
 	{ "log", OPT_LOG, "LOG", 0, "Debug logging subset selector (libbpf, usdt, topology, inject, tracee, discovery)"},
 	{ "dur", 'd', "DURATION", 0, "Limit running duration; accepts time units s/ms/us/ns/m/h, bare number is ms (default: 1000ms)" },
 	{ "dur-ms", 0, 0, OPTION_ALIAS },
@@ -304,6 +304,16 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 
 			if (parse_size(val, SZ_NONE, &env.fr_chunk_size)) {
 				eprintf("Invalid fr-chunk-size '%s' (unit required)!\n", val);
+				argp_usage(state);
+			}
+		} else if (strncasecmp(arg, "usdt-specs=", 11) == 0) {
+			const char *val = arg + 11;
+			char *end;
+
+			errno = 0;
+			env.usdt_spec_cnt = strtol(val, &end, 0);
+			if (errno || *end || env.usdt_spec_cnt <= 0) {
+				eprintf("Invalid usdt-specs '%s'!\n", val);
 				argp_usage(state);
 			}
 		} else {

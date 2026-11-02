@@ -234,6 +234,7 @@ struct env {
 	bool raw_stacks;
 	bool no_tsidx;		/* replay: ignore the timestamp index, force full walk */
 	bool no_task_storage;	/* force per-task state into the hash map, not task-local storage */
+	int usdt_spec_cnt;	/* override libbpf's USDT spec map size (0 = compiled-in default) */
 
 	/* FILTERING */
 	char **allow_pnames, **deny_pnames;
