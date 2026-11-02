@@ -1192,6 +1192,9 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 	bpf_map__set_max_entries(skel->maps.rbs, env.ringbuf_cnt);
 	bpf_map__set_max_entries(skel->maps.task_states, env.task_state_sz);
 
+	if (env.usdt_spec_cnt)
+		bpf_map__set_max_entries(skel->maps.__bpf_usdt_specs, env.usdt_spec_cnt);
+
 	/* Per-task state uses BPF task-local storage by default; --debug=no-task-storage opts out to the hash. */
 	if (env.no_task_storage) {
 		skel->rodata->use_task_storage = false;
