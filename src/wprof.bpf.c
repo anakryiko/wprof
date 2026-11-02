@@ -4,6 +4,8 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
+
+#define BPF_USDT_MAX_SPEC_CNT 1024
 #include <bpf/usdt.bpf.h>
 
 #include "wprof.h"
