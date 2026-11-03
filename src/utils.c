@@ -231,12 +231,9 @@ int append_int(int **nums, int *cnt, int val)
 
 int append_num(int **nums, int *cnt, const char *arg)
 {
-	char *end;
-	long pid;
+	long long pid;
 
-	errno = 0;
-	pid = strtol(arg, &end, 10);
-	if (errno || end == arg || *end != '\0' || pid < 0 || pid > INT_MAX) {
+	if (parse_ll(arg, 10, &pid) || pid < 0 || pid > INT_MAX) {
 		eprintf("Invalid PID: %s\n", arg);
 		return -EINVAL;
 	}
@@ -596,6 +593,38 @@ int parse_freq(const char *arg, int *hz_out)
 		return -EINVAL;
 	*hz_out = 1000000000LL / period_ns;
 	return *hz_out > 0 ? 0 : -EINVAL;
+}
+
+int parse_ll(const char *s, int base, long long *out)
+{
+	char *end;
+	long long v;
+
+	errno = 0;
+	v = strtoll(s, &end, base);
+	if (errno || end == s || *end)
+		return -EINVAL;
+	*out = v;
+	return 0;
+}
+
+int parse_ull(const char *s, int base, unsigned long long *out)
+{
+	char *end;
+	unsigned long long v;
+
+	/* strtoull() skips leading whitespace, then wraps a '-' into a huge value */
+	while (isspace(*s))
+		s++;
+	if (*s == '-')
+		return -EINVAL;
+
+	errno = 0;
+	v = strtoull(s, &end, base);
+	if (errno || end == s || *end)
+		return -EINVAL;
+	*out = v;
+	return 0;
 }
 
 static enum size_unit size_unit_from_str(const char *s)
