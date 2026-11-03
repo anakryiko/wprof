@@ -87,24 +87,40 @@ static inline u32 inj_gettid(void)
 #define atomic_xchg(p, v) __atomic_exchange_n((p), v, __ATOMIC_SEQ_CST)
 
 struct chunk {
-	FILE *f;
+	int fd;
 	u64 byte_sz;
 	u64 event_cnt;
 	u64 end_ts;		/* max event ts written to this chunk */
+};
+
+struct chunk_buf {
+	void *data;
+	size_t len;
+	u64 event_cnt;
+	u64 max_ts;
 };
 
 /*
  * Per-feature data-stream writer. In flight-recorder mode (run_ctx->fr_chunk_size
  * set) it rotates the current chunk onto a pre-received spare once it fills and
  * hands the completed chunk to the worker thread; otherwise it is a plain single
- * file. Event writes run on many tracee threads, so a lock serializes the write +
- * accounting; the completed chunk is handed off as a single atomic pointer, so
- * its stats travel with it and no lock is shared with the worker.
+ * file. Event writes run on many tracee threads: they append records to the
+ * active of two buffers under append_lock, and a filled buffer is written out to
+ * the current chunk under flush_lock while appends go on into the other one. The
+ * completed chunk is handed off as a single atomic pointer, so its stats travel
+ * with it and no lock is shared with the worker.
  */
 struct chunker {
-	pthread_mutex_t lock;
+	pthread_mutex_t append_lock;
+	struct chunk_buf *active;	/* buffer records are appended to */
+	struct chunk_buf *inactive;	/* buffer being written out (flushing), else empty */
+	bool flushing;
+	pthread_cond_t flush_condvar;	/* broadcast when flushing is cleared */
+	struct chunk_buf bufs[2];
+
+	pthread_mutex_t flush_lock __aligned(64);
 	enum inj_feature feature;
-	size_t buf_sz;			/* stdio buffer size, reused when opening spares */
+	size_t buf_sz;			/* size of each record buffer */
 	struct chunk *cur;		/* current chunk being written */
 	struct chunk *spare;		/* pre-received next chunk (CHUNK_FD), or NULL */
 	struct chunk *handoff;		/* completed chunk awaiting the worker (atomic), or NULL */

@@ -94,16 +94,17 @@ static int stderr_verbosity = 3;
 static int stderr_verbosity = -1;
 #endif /* DEBUG_LOG */
 
-static void write_all(int fd, void *buf, size_t sz)
+static int write_all(int fd, void *buf, size_t sz)
 {
 	ssize_t done = 0, len;
 
 	while (done < sz) {
 		len = write(fd, buf + done, sz - done);
 		if (len < 0)
-			return;
+			return -errno;
 		done += len;
 	}
+	return 0;
 }
 
 __printf(2, 3)
@@ -289,35 +290,30 @@ static int chunker_slot(enum inj_feature feature)
 }
 
 /*
- * Allocate a chunk around fd: fdopen + buffer + track it for fork safety (the
- * atfork child redirects tracked dump fds to /dev/null). Consumes fd on success;
- * on failure returns NULL and leaves fd to the caller.
+ * Allocate a chunk around fd + track it for fork safety (the atfork child
+ * redirects tracked dump fds to /dev/null). Consumes fd on success; on failure
+ * returns NULL and leaves fd to the caller.
  */
-static struct chunk *chunk_new(int fd, size_t buf_sz)
+static struct chunk *chunk_new(int fd)
 {
 	struct chunk *c = calloc(1, sizeof(*c));
 	if (!c)
 		return NULL;
 
-	c->f = fdopen(fd, "w");
-	if (!c->f) {
-		free(c);
-		return NULL;
-	}
-	setvbuf(c->f, NULL, _IOFBF, buf_sz);
+	c->fd = fd;
 	inj_track_dump_fd(fd);
 	return c;
 }
 
-/* Untrack, close (flushing the stdio buffer to the fd), and free a chunk. */
+/* Untrack, close, and free a chunk. */
 static void chunk_free(struct chunk *c)
 {
-	inj_untrack_dump_fd(fileno(c->f));
-	fclose(c->f);
+	inj_untrack_dump_fd(c->fd);
+	close(c->fd);
 	free(c);
 }
 
-/* On success takes ownership of events_fd (via fdopen); on failure the caller keeps it. */
+/* On success takes ownership of events_fd; on failure the caller keeps it. */
 int chunker_init(struct chunker *chunker, int events_fd, enum inj_feature feature, size_t buf_sz)
 {
 	memset(chunker, 0, sizeof(*chunker));
@@ -325,21 +321,54 @@ int chunker_init(struct chunker *chunker, int events_fd, enum inj_feature featur
 	chunker->buf_sz = buf_sz;
 
 	/* data stream is headerless: records are written from offset 0 */
-	chunker->cur = chunk_new(events_fd, buf_sz);
+	chunker->cur = chunk_new(events_fd);
 	if (!chunker->cur) {
 		int err = -errno;
 		elog("Failed to create initial data chunk (FD %d): %d\n", events_fd, err);
 		return err;
 	}
-	pthread_mutex_init(&chunker->lock, NULL);
+	chunker->bufs[0].data = malloc(buf_sz);
+	chunker->bufs[1].data = malloc(buf_sz);
+	chunker->active = &chunker->bufs[0];
+	chunker->inactive = &chunker->bufs[1];
+	chunker->append_lock = (pthread_mutex_t)PTHREAD_ADAPTIVE_MUTEX_INITIALIZER_NP;
+	pthread_mutex_init(&chunker->flush_lock, NULL);
+	pthread_cond_init(&chunker->flush_condvar, NULL);
 	chunkers[chunker_slot(feature)] = chunker;
 	return 0;
 }
 
 /*
- * The event write path runs on many tracee threads, so serialize the write and
- * accounting under the lock. fwrite_unlocked is safe here since we hold the lock
- * (fwrite already serialized writes per FILE, so this just moves that point).
+ * Write buffer b out to the current chunk, account it (per chunk and in the
+ * totals), and reset it for reuse. Caller holds flush_lock, or is exclusive.
+ */
+static int chunker_write_buf(struct chunker *chunker, struct chunk_buf *b)
+{
+	struct chunk *c = chunker->cur;
+	int err = write_all(c->fd, b->data, b->len);
+	if (err)
+		goto out;
+
+	c->byte_sz += b->len;
+	c->event_cnt += b->event_cnt;
+	chunker->total_byte_sz += b->len;
+	chunker->total_event_cnt += b->event_cnt;
+	if (b->max_ts > c->end_ts)
+		c->end_ts = b->max_ts;
+
+out:
+	b->len = 0;
+	b->event_cnt = 0;
+	b->max_ts = 0;
+	return err;
+}
+
+/*
+ * The event write path runs on many tracee threads. A record is appended to the
+ * active buffer under append_lock. The appender that finds it full swaps in the
+ * other (empty) buffer and writes the full one out under flush_lock, so other
+ * appenders don't wait on the file write. If the other buffer is still being
+ * written out (flushing), wait on flush_condvar for that write to finish.
  *
  * In flight-recorder mode (run_ctx->fr_chunk_size set), once the current chunk
  * fills and a spare is in hand, rotate onto it and publish the completed chunk
@@ -348,41 +377,61 @@ int chunker_init(struct chunker *chunker, int events_fd, enum inj_feature featur
  */
 int chunker_write(struct chunker *chunker, const void *rec, size_t sz, u64 ts)
 {
+	struct chunk_buf *full = NULL, *b;
 	bool rotated = false;
-	int err = 0;
+	int err;
 
-	pthread_mutex_lock(&chunker->lock);
-	struct chunk *c = chunker->cur;
-	if (fwrite_unlocked(rec, sz, 1, c->f) == 1) {
-		c->byte_sz += sz;
-		c->event_cnt++;
-		chunker->total_event_cnt++;
-		chunker->total_byte_sz += sz;
-		if (ts > c->end_ts)
-			c->end_ts = ts;
-
-		/*
-		 * handoff != NULL means the worker hasn't taken the previous chunk yet;
-		 * the load is racy (the worker clears it lock-free), which is fine -- a
-		 * stale "still pending" just delays this rotation and we overshoot. The
-		 * completed chunk is published as a single atomic store: its stats
-		 * travel with the pointer, so the worker reads them coherently.
-		 */
-		u64 chunk_size = run_ctx->fr_chunk_size;
-		if (chunk_size && c->byte_sz >= chunk_size &&
-		    chunker->spare && !atomic_load(&chunker->handoff)) {
-			atomic_store(&chunker->handoff, c);
-			chunker->cur = chunker->spare;
-			chunker->spare = NULL;
-			rotated = true;
+	pthread_mutex_lock(&chunker->append_lock);
+	while (chunker->active->len + sz > chunker->buf_sz) {
+		if (chunker->flushing) {
+			pthread_cond_wait(&chunker->flush_condvar, &chunker->append_lock);
+			continue;
 		}
-	} else {
-		err = -errno;
+		full = chunker->active;
+		chunker->active = chunker->inactive;
+		chunker->inactive = full;
+		chunker->flushing = true;
+		break;
 	}
-	pthread_mutex_unlock(&chunker->lock);
+	b = chunker->active;
+	memcpy(b->data + b->len, rec, sz);
+	b->len += sz;
+	b->event_cnt++;
+	if (ts > b->max_ts)
+		b->max_ts = ts;
+	pthread_mutex_unlock(&chunker->append_lock);
+
+	if (!full)
+		return 0;
+
+	pthread_mutex_lock(&chunker->flush_lock);
+	err = chunker_write_buf(chunker, full);
+
+	/*
+	 * handoff != NULL means the worker hasn't taken the previous chunk yet;
+	 * the load is racy (the worker clears it lock-free), which is fine -- a
+	 * stale "still pending" just delays this rotation and we overshoot. The
+	 * completed chunk is published as a single atomic store: its stats
+	 * travel with the pointer, so the worker reads them coherently.
+	 */
+	struct chunk *c = chunker->cur;
+	u64 chunk_size = run_ctx->fr_chunk_size;
+	if (chunk_size && c->byte_sz >= chunk_size &&
+	    chunker->spare && !atomic_load(&chunker->handoff)) {
+		atomic_store(&chunker->handoff, c);
+		chunker->cur = chunker->spare;
+		chunker->spare = NULL;
+		rotated = true;
+	}
+	pthread_mutex_unlock(&chunker->flush_lock);
 
 	if (rotated)
 		poke_eventfd(chunk_handoff_efd);	/* wake the worker to hand off the chunk */
+
+	pthread_mutex_lock(&chunker->append_lock);
+	chunker->flushing = false;
+	pthread_cond_broadcast(&chunker->flush_condvar);
+	pthread_mutex_unlock(&chunker->append_lock);
 	return err;
 }
 
@@ -399,7 +448,7 @@ static int chunker_install_spare(enum inj_feature feature, int fd)
 		return -ENOENT;
 	}
 
-	struct chunk *c = chunk_new(fd, chunker->buf_sz);
+	struct chunk *c = chunk_new(fd);
 	if (!c) {
 		int err = -errno;
 		elog("Failed to create spare chunk (fd %d): %d\n", fd, err);
@@ -408,9 +457,9 @@ static int chunker_install_spare(enum inj_feature feature, int fd)
 	}
 
 	/* wprof replenishes 1:1, so the spare is guaranteed NULL here */
-	pthread_mutex_lock(&chunker->lock);
+	pthread_mutex_lock(&chunker->flush_lock);
 	chunker->spare = c;
-	pthread_mutex_unlock(&chunker->lock);
+	pthread_mutex_unlock(&chunker->flush_lock);
 	return 0;
 }
 
@@ -440,7 +489,7 @@ static void chunkers_handoff(void)
 				.event_cnt = c->event_cnt,
 			},
 		};
-		chunk_free(c);	/* no more tracee writes it: flush + close */
+		chunk_free(c);	/* no more tracee writes it: close */
 
 		/* best-effort: the chunk is on disk and wprof reads it by path regardless */
 		if (send(setup_ctx->uds_fd, &msg, sizeof(msg), MSG_NOSIGNAL) != sizeof(msg))
@@ -449,10 +498,10 @@ static void chunkers_handoff(void)
 }
 
 /*
- * Flush and close the current chunk (plus any spare / undrained completed chunk).
- * Called on the worker thread once the feature's event source is stopped and its
- * callbacks are drained, so no tracee thread writes and no handoff races -- this
- * is worker-exclusive and needs no lock.
+ * Write out the active buffer and close the current chunk (plus any spare /
+ * undrained completed chunk). Called on the worker thread once the feature's
+ * event source is stopped and its callbacks are drained, so no tracee thread
+ * writes and no handoff races -- this is worker-exclusive and needs no lock.
  */
 int chunker_finalize(struct chunker *chunker)
 {
@@ -473,12 +522,19 @@ int chunker_finalize(struct chunker *chunker)
 		chunker->spare = NULL;
 	}
 
-	fflush(chunker->cur->f);
-	fsync(fileno(chunker->cur->f));
+	int err = chunker_write_buf(chunker, chunker->active);
+	if (err)
+		elog("Failed to write out %s data buffer: %d\n", inj_feature_str(chunker->feature), err);
+
+	fsync(chunker->cur->fd);
 	chunk_free(chunker->cur);
 	chunker->cur = NULL;
-	pthread_mutex_destroy(&chunker->lock);
-	return 0;
+	free(chunker->bufs[0].data);
+	free(chunker->bufs[1].data);
+	pthread_mutex_destroy(&chunker->append_lock);
+	pthread_mutex_destroy(&chunker->flush_lock);
+	pthread_cond_destroy(&chunker->flush_condvar);
+	return err;
 }
 
 /* ==================== CUDA event dump ==================== */
