@@ -235,6 +235,9 @@ s64 parse_time_units(const char *arg);
 int parse_freq(const char *arg, int *hz_out);
 const char *fmt_time_units(u64 ns);
 
+int parse_ll(const char *s, int base, long long *out);
+int parse_ull(const char *s, int base, unsigned long long *out);
+
 enum size_unit { SZ_NONE = 0, SZ_B, SZ_KB, SZ_MB, SZ_GB, SZ_TB };
 
 int parse_size(const char *s, enum size_unit def_unit, u64 *out);

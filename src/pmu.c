@@ -142,15 +142,13 @@ static const struct hw_event hw_events[] = {
 /* Parse raw events: "r####" */
 static int parse_raw_event(const char *spec, struct pmu_event *ev)
 {
-	char *endp;
+	unsigned long long val;
 
 	if (spec[0] != 'r')
 		return -ENOENT;
 
 	/* Parse hex value after 'r' */
-	errno = 0;
-	__u64 val = strtoull(spec + 1, &endp, 16);
-	if (errno || *endp != '\0')
+	if (parse_ull(spec + 1, 16, &val))
 		return -EINVAL;
 
 	ev->perf_type = PERF_TYPE_RAW;
@@ -323,10 +321,9 @@ static int perf_event_parsing(const char *pmu, char *attrs,
 		}
 
 		/* Parse numeric value */
-		char *endptr;
-		errno = 0;
-		__u64 val = strtoull(val_s, &endptr, 0);
-		if (errno || *endptr) {
+		unsigned long long val;
+
+		if (parse_ull(val_s, 0, &val)) {
 			eprintf("invalid pmu value: %s=%s\n", key, val_s);
 			return -EINVAL;
 		}

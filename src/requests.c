@@ -276,13 +276,13 @@ int req_list_parse_filter(const char *expr)
 			eprintf("Glob operator can only be used with name, comm or pcomm fields in '%s'\n", expr);
 			return -EINVAL;
 		}
-		char *end;
-		errno = 0;
-		f.num_val = strtol(val_str, &end, 0);
-		if (errno || *end) {
+		long long val;
+
+		if (parse_ll(val_str, 0, &val)) {
 			eprintf("Invalid numeric value in filter '%s'\n", expr);
 			return -EINVAL;
 		}
+		f.num_val = val;
 		break;
 	}
 	case REQ_FIELD_START:

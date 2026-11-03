@@ -272,6 +272,7 @@ static enum stack_trace_kind parse_stack_kinds(const char *arg)
 
 static error_t parse_arg(int key, char *arg, struct argp_state *state)
 {
+	long long n;
 	int err = 0;
 
 	switch (key) {
@@ -308,14 +309,13 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			}
 		} else if (strncasecmp(arg, "usdt-specs=", 11) == 0) {
 			const char *val = arg + 11;
-			char *end;
+			long long cnt;
 
-			errno = 0;
-			env.usdt_spec_cnt = strtol(val, &end, 0);
-			if (errno || *end || env.usdt_spec_cnt <= 0) {
+			if (parse_ll(val, 0, &cnt) || cnt <= 0 || cnt > INT_MAX) {
 				eprintf("Invalid usdt-specs '%s'!\n", val);
 				argp_usage(state);
 			}
+			env.usdt_spec_cnt = cnt;
 		} else {
 			eprintf("Unrecognized debug feature '%s'!\n", arg);
 			argp_usage(state);
@@ -891,12 +891,11 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			return -EINVAL;
 		}
 		wprintf("warning: --timer-freq is deprecated; use -Stimer=<freq>hz or -Stimer=<period> (e.g. -Stimer=100hz, -Stimer=10ms)\n");
-		errno = 0;
-		env.timer_freq_hz = strtol(arg, NULL, 0);
-		if (errno || env.timer_freq_hz <= 0) {
+		if (parse_ll(arg, 0, &n) || n <= 0 || n > INT_MAX) {
 			fprintf(stderr, "Invalid frequency: %s\n", arg);
 			argp_usage(state);
 		}
+		env.timer_freq_hz = n;
 		break;
 	case OPT_RINGBUF_SZ: {
 		u64 sz;
@@ -913,23 +912,19 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	}
 	case OPT_TASK_STATE_SZ:
-		errno = 0;
-		env.task_state_sz = strtol(arg, NULL, 0);
-		if (errno || env.task_state_sz < 0) {
+		if (parse_ll(arg, 0, &n) || n < 0 || n > INT_MAX) {
 			fprintf(stderr, "Invalid task state size: %s\n", arg);
 			argp_usage(state);
 		}
+		env.task_state_sz = n;
 		break;
-	case OPT_RINGBUF_CNT: {
-		errno = 0;
-		int ringbuf_cnt = strtol(arg, NULL, 0);
-		if (errno || ringbuf_cnt <= 0) {
+	case OPT_RINGBUF_CNT:
+		if (parse_ll(arg, 0, &n) || n <= 0 || n > INT_MAX) {
 			fprintf(stderr, "Invalid ringbuf count: %s\n", arg);
 			argp_usage(state);
 		}
-		env.ringbuf_cnt = ringbuf_cnt;
+		env.ringbuf_cnt = n;
 		break;
-	}
 	case OPT_NO_PMU:
 		env.pmu_real_cnt = 0;
 		env.pmu_deriv_cnt = 0;
@@ -1079,28 +1074,22 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		if (err)
 			return err;
 		break;
-	case OPT_REQ_TOP_N: {
-		char *end;
+	case OPT_REQ_TOP_N:
 		env.req_list_cfg = env.req_list_cfg ?: calloc(1, sizeof(*env.req_list_cfg));
-		errno = 0;
-		env.req_list_cfg->top_n = strtol(arg, &end, 0);
-		if (errno || *end || env.req_list_cfg->top_n <= 0) {
+		if (parse_ll(arg, 0, &n) || n <= 0 || n > INT_MAX) {
 			eprintf("Invalid --req-top-n value: '%s'\n", arg);
 			return -EINVAL;
 		}
+		env.req_list_cfg->top_n = n;
 		break;
-	}
-	case OPT_REQ_BOTTOM_N: {
-		char *end;
+	case OPT_REQ_BOTTOM_N:
 		env.req_list_cfg = env.req_list_cfg ?: calloc(1, sizeof(*env.req_list_cfg));
-		errno = 0;
-		env.req_list_cfg->bottom_n = strtol(arg, &end, 0);
-		if (errno || *end || env.req_list_cfg->bottom_n <= 0) {
+		if (parse_ll(arg, 0, &n) || n <= 0 || n > INT_MAX) {
 			eprintf("Invalid --req-bottom-n value: '%s'\n", arg);
 			return -EINVAL;
 		}
+		env.req_list_cfg->bottom_n = n;
 		break;
-	}
 	case OPT_RECORD:
 		if (env.replay) {
 			fprintf(stderr, "Only one of --record or --replay modes should be enabled\n");
