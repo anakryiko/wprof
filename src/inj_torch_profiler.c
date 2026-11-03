@@ -533,12 +533,12 @@ int pytorch_session_finalize(void)
 	rf_unregister();
 	strcache_reset(&torch_name_cache); /* safe: rf_unregister drained all in-flight callbacks */
 	torch_active = false;
-	run_ctx->pytorch_event_cnt = torch_chunker.total_event_cnt;
-	run_ctx->pytorch_byte_sz = torch_chunker.total_byte_sz;
 	pthread_mutex_destroy(&torch_lock);
 
 	/* finalize the headerless event stream: just flush and close */
 	chunker_finalize(&torch_chunker);
+	run_ctx->pytorch_event_cnt = torch_chunker.total_event_cnt;
+	run_ctx->pytorch_byte_sz = torch_chunker.total_byte_sz;
 
 	/* write the resource pool: header followed by the string pool */
 	const char *strs = strset__data(torch_respool_strs);
