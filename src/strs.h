@@ -256,7 +256,7 @@ static inline void sbuf_putc(struct sbuf *sb, char c)
 	sb->len++;
 }
 
-static inline void sbuf_append(struct sbuf *sb, const void *p, int n)
+static inline void sbuf_append(struct sbuf *sb, const char *p, int n)
 {
 	sbuf_ensure(sb, n);
 	memcpy(sb->buf + sb->len, p, n);
