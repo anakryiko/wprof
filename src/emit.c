@@ -239,8 +239,6 @@ static bool utrace_track_equal_fn(long a, long b, void *ctx)
 static struct hashmap *utrace_flow_ids;		/* rendered flow key -> flow id */
 static u64 utrace_flow_next_id = 1;
 
-#define UTRACE_FLOW_UUID(n) (((u64)0xF7 << 56) | (n))
-
 /*
  * Per (pmu_idx, cpu) snapshot of the previous PMU sample's absolute counter
  * values, so each sample reports the delta since the previous sample of the same
@@ -633,10 +631,40 @@ static void __emit_kv_float(struct pb_str key, const char *fmt, double value)
 
 #define emit_kv_float(key, fmt, value) __emit_kv_float(__pb_str((key)), (fmt), (value))
 
+/*
+ * Flow ids are global within a trace, so each flow kind is scoped by a tag in
+ * the top FLOW_KIND_BITS bits, the rest being a hash of one or two kind-specific
+ * values that both ends of the flow must agree on. Timestamps alone are not
+ * unique: wakeups on different CPUs often share the same nanosecond (e.g.,
+ * tick-aligned hrtimer expirations), cross-linking unrelated flows.
+ */
+enum flow_kind {
+	FLOW_WAKE,		/* waking ts, wakee tid */
+	FLOW_PREEMPT,		/* preemption ts, preemptee tid */
+	FLOW_FORK,		/* fork ts, child tid */
+	FLOW_IPI,		/* IPI id */
+	FLOW_REQ,		/* request id */
+	FLOW_REQ_THREAD,	/* request id, tid */
+	FLOW_REQ_TASK,		/* request id, request task id */
+	FLOW_REQ_RPC,		/* request id, RPC id */
+	FLOW_CUDA,		/* pid, CUDA correlation id */
+	FLOW_UTRACE,		/* sequential id assigned to rendered utrace flow key */
+	NR_FLOW_KINDS,
+};
+
+#define FLOW_KIND_BITS 4
+_Static_assert(NR_FLOW_KINDS <= (1 << FLOW_KIND_BITS), "flow kinds outgrew FLOW_KIND_BITS");
+
 __unused
-static void emit_flow_id(u64 flow_id)
+static void emit_flow_id(enum flow_kind kind, u64 id)
 {
-	ids_append_id(&em.flow_ids, flow_id);
+	ids_append_id(&em.flow_ids, ((u64)kind << (64 - FLOW_KIND_BITS)) | (hash_mix64(id) >> FLOW_KIND_BITS));
+}
+
+__unused
+static void emit_flow_id2(enum flow_kind kind, u64 a, u64 b)
+{
+	emit_flow_id(kind, hash_mix64(a) ^ b);
 }
 
 __unused
@@ -1987,6 +2015,7 @@ static void emit_switch(struct worker_state *w, const struct wevent *e, struct s
 	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
 	struct wprof_task next = wevent_resolve_task(hdr, e->swtch.next_task_id);
 	struct wprof_task waker = wevent_resolve_task(hdr, s->waker_task_id);
+	enum flow_kind waking_flow = s->waking_flags == WF_PREEMPTED ? FLOW_PREEMPT : FLOW_WAKE;
 
 	/*
 	 * Preemptor side: prev (task) was preempted -- went off-CPU still runnable
@@ -2010,7 +2039,7 @@ static void emit_switch(struct worker_state *w, const struct wevent *e, struct s
 				emit_kv_int(IID_ANNK_WAKEE_PID, task.pid);
 			}
 
-			emit_flow_id(e->ts);
+			emit_flow_id2(FLOW_PREEMPT, e->ts, task_tid(&task));
 		}
 	}
 
@@ -2095,7 +2124,7 @@ skip_prev_task:
 			if (env.emit_numa)
 				emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
 
-			emit_flow_id(s->waking_ts);
+			emit_flow_id2(waking_flow, s->waking_ts, task_tid(&next));
 		}
 	}
 
@@ -2142,7 +2171,7 @@ skip_waking:
 		}
 
 		if (s->has_waking && is_ts_in_range(s->waking_ts))
-			emit_flow_id(s->waking_ts);
+			emit_flow_id2(waking_flow, s->waking_ts, task_tid(&next));
 	}
 
 skip_next_task:
@@ -2342,7 +2371,7 @@ static void emit_fork(struct worker_state *w, const struct wevent *e)
 
 			emit_kv_str(IID_ANNK_FORKED_INTO,
 				    iid_str(emit_intern_str(w, child.comm), child.comm));
-			emit_flow_id(e->ts);
+			emit_flow_id2(FLOW_FORK, e->ts, task_tid(&child));
 			if (env.emit_tidpid) {
 				emit_kv_int(IID_ANNK_FORKED_INTO_TID, task_tid(&child));
 				emit_kv_int(IID_ANNK_FORKED_INTO_PID, child.pid);
@@ -2360,7 +2389,7 @@ static void emit_fork(struct worker_state *w, const struct wevent *e)
 
 			emit_kv_str(IID_ANNK_FORKED_FROM,
 				    iid_str(emit_intern_str(w, task.comm), task.comm));
-			emit_flow_id(e->ts);
+			emit_flow_id2(FLOW_FORK, e->ts, task_tid(&child));
 			if (env.emit_tidpid) {
 				emit_kv_int(IID_ANNK_FORKED_FROM_TID, task_tid(&task));
 				emit_kv_int(IID_ANNK_FORKED_FROM_PID, task.pid);
@@ -2680,7 +2709,7 @@ static void emit_waking(struct worker_state *w, const struct wevent *e, enum wak
 		}
 		if (e->waking.flags & WTF_IRQ_CTX_MASK)
 			emit_kv_str(IID_ANNK_IRQ_CTX, IID_ANNV_IRQ_CTX + wirqctx_enum(e->waking.flags));
-		emit_flow_id(e->ts);
+		emit_flow_id2(FLOW_WAKE, e->ts, task_tid(&wakee));
 		emit_callstack(w, tr_id);
 	}
 }
@@ -3070,7 +3099,7 @@ static void emit_ipi_send(struct worker_state *w, const struct wevent *e)
 		if (env.emit_numa)
 			emit_kv_int(IID_ANNK_NUMA_NODE, e->numa_node);
 		if (e->ipi_send.ipi_id > 0)
-			emit_flow_id(e->ipi_send.ipi_id);
+			emit_flow_id(FLOW_IPI, e->ipi_send.ipi_id);
 		if (e->ipi_send.target_cpu >= 0)
 			emit_kv_int(IID_ANNK_TARGET_CPU, e->ipi_send.target_cpu);
 	}
@@ -3136,7 +3165,7 @@ static void emit_ipi_exit(struct worker_state *w, const struct wevent *e)
 	emit_slice_end(trackid_thread(&task),
 		       e->ts, iid_str(name_iid, name), IID_CAT_IPI) {
 		if (e->ipi.ipi_id > 0)
-			emit_flow_id(e->ipi.ipi_id);
+			emit_flow_id(FLOW_IPI, e->ipi.ipi_id);
 		if (e->ipi.send_ts > 0) {
 			emit_kv_int(IID_ANNK_SENDER_CPU, e->ipi.send_cpu);
 			/*
@@ -3280,7 +3309,7 @@ static void req_thread_slice_end(struct worker_state *w, struct track_state *rts
 		}
 		/* pairs this slice with the TASK_ENQUEUE that handed it the work item */
 		if (rts->req_thread.task_id)
-			emit_flow_id(hash_combine(req_id, rts->req_thread.task_id));
+			emit_flow_id2(FLOW_REQ_TASK, req_id, rts->req_thread.task_id);
 	}
 
 	rts->req_thread.open = false;
@@ -3347,7 +3376,7 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e,
 		emit_slice_begin(req_track_uuid, begin_ts, iid_str(req_name_iid, req_name), IID_CAT_REQUEST) {
 			emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
 			emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
-			emit_flow_id(req_id);
+			emit_flow_id(FLOW_REQ, req_id);
 		}
 		rs->req.last_event = REQ_BEGIN;
 	}
@@ -3366,7 +3395,7 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e,
 		emit_slice_begin(req_track_uuid, rs->req.start_ts, iid_str(req_name_iid, req_name), IID_CAT_REQUEST) {
 			emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
 			emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
-			emit_flow_id(req_id);
+			emit_flow_id(FLOW_REQ, req_id);
 		}
 		rs->req.last_event = REQ_BEGIN;
 
@@ -3375,8 +3404,8 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e,
 				emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
 				emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
 				if (first_embed_event)
-					emit_flow_id(req_id);
-				emit_flow_id(hash_combine(req_id, task.tid));
+					emit_flow_id(FLOW_REQ, req_id);
+				emit_flow_id2(FLOW_REQ_THREAD, req_id, task.tid);
 				emit_callstack(w, req_stack_id);
 			}
 		}
@@ -3400,8 +3429,8 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e,
 				emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
 				emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
 				if (first_embed_event)
-					emit_flow_id(req_id);
-				emit_flow_id(hash_combine(req_id, task.tid));
+					emit_flow_id(FLOW_REQ, req_id);
+				emit_flow_id2(FLOW_REQ_THREAD, req_id, task.tid);
 				emit_callstack(w, req_stack_id);
 			}
 			ets->req_embed.open = true;
@@ -3434,9 +3463,9 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e,
 					emit_kv_float(IID_ANNK_OFFCPU_DUR_US, "%.3lf", req_offcpu_ns / 1000.0);
 					emit_perf_counters(NULL, req_ctrs, true /* diffs */, req_oncpu_ns);
 				}
-				emit_flow_id(hash_combine(req_id, task.tid));
+				emit_flow_id2(FLOW_REQ_THREAD, req_id, task.tid);
 				if (st->req_task_id)
-					emit_flow_id(hash_combine(req_id, st->req_task_id));
+					emit_flow_id2(FLOW_REQ_TASK, req_id, st->req_task_id);
 				emit_callstack(w, req_stack_id);
 			}
 			ets->req_embed.open = false;
@@ -3444,7 +3473,7 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e,
 			emit_instant(thread_req_track_uuid, e->ts, iid_str(thread_req_name_iid, thread_req_name), IID_CAT_REQUEST_UNSET) {
 				emit_kv_str(IID_ANNK_REQ_NAME, iid_str(req_name_iid, req_name));
 				emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
-				emit_flow_id(hash_combine(req_id, task.tid));
+				emit_flow_id2(FLOW_REQ_THREAD, req_id, task.tid);
 				emit_callstack(w, req_stack_id);
 			}
 		}
@@ -3487,8 +3516,8 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e,
 				if (closes && latency_known)
 					emit_kv_float(IID_ANNK_REQ_LATENCY_US, "%.6lf", latency_us);
 				if (first_embed_event)
-					emit_flow_id(req_id);
-				emit_flow_id(hash_combine(req_id, task.tid));
+					emit_flow_id(FLOW_REQ, req_id);
+				emit_flow_id2(FLOW_REQ_THREAD, req_id, task.tid);
 				emit_callstack(w, req_stack_id);
 			}
 		}
@@ -3499,7 +3528,7 @@ static void emit_req_event(struct worker_state *w, const struct wevent *e,
 				emit_kv_int(IID_ANNK_REQ_ID, e->req.req_id);
 				if (latency_known)
 					emit_kv_float(IID_ANNK_REQ_LATENCY_US, "%.6lf", latency_us);
-				emit_flow_id(req_id);
+				emit_flow_id(FLOW_REQ, req_id);
 			}
 		}
 
@@ -3665,7 +3694,7 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e,
 				emit_kv_int(IID_ANNK_REQ_TASK_TID, task_tid(&task));
 				emit_kv_int(IID_ANNK_REQ_ID, e->req_task.req_id);
 				emit_kv_int(IID_ANNK_REQ_TASK_ID, e->req_task.req_task_id);
-				emit_flow_id(hash_combine(req_id, e->req_task.req_task_id));
+				emit_flow_id2(FLOW_REQ_TASK, req_id, e->req_task.req_task_id);
 			}
 		}
 
@@ -3675,9 +3704,9 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e,
 				emit_kv_int(IID_ANNK_REQ_ID, e->req_task.req_id);
 				emit_kv_int(IID_ANNK_REQ_TASK_ID, e->req_task.req_task_id);
 				if (first_embed_event)
-					emit_flow_id(req_id);
-				emit_flow_id(hash_combine(req_id, task.tid));
-				emit_flow_id(hash_combine(req_id, e->req_task.req_task_id));
+					emit_flow_id(FLOW_REQ, req_id);
+				emit_flow_id2(FLOW_REQ_THREAD, req_id, task.tid);
+				emit_flow_id2(FLOW_REQ_TASK, req_id, e->req_task.req_task_id);
 			}
 		}
 		break;
@@ -3714,7 +3743,7 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e,
 					emit_kv_int(IID_ANNK_REQ_ID, e->req_task.req_id);
 					emit_kv_int(IID_ANNK_REQ_TASK_ID, e->req_task.req_task_id);
 					emit_kv_float(IID_ANNK_REQ_TASK_WAIT_US, "%.3lf", e->req_task.wait_time_ns / 1000.0);
-					emit_flow_id(hash_combine(req_id, e->req_task.req_task_id));
+					emit_flow_id2(FLOW_REQ_TASK, req_id, e->req_task.req_task_id);
 				}
 			} else {
 				rts->req_thread.task_id = e->req_task.req_task_id;
@@ -3735,9 +3764,9 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e,
 				emit_kv_int(IID_ANNK_REQ_TASK_ID, e->req_task.req_task_id);
 				emit_kv_float(IID_ANNK_REQ_TASK_WAIT_US, "%.3lf", e->req_task.wait_time_ns / 1000.0);
 				if (first_embed_event)
-					emit_flow_id(req_id);
-				emit_flow_id(hash_combine(req_id, task.tid));
-				emit_flow_id(hash_combine(req_id, e->req_task.req_task_id));
+					emit_flow_id(FLOW_REQ, req_id);
+				emit_flow_id2(FLOW_REQ_THREAD, req_id, task.tid);
+				emit_flow_id2(FLOW_REQ_TASK, req_id, e->req_task.req_task_id);
 			}
 		}
 		break;
@@ -3767,7 +3796,7 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e,
 						emit_kv_float(IID_ANNK_OFFCPU_DUR_US, "%.3lf", req_offcpu_ns / 1000.0);
 						emit_perf_counters(NULL, req_ctrs, true /* diffs */, req_oncpu_ns);
 					}
-					emit_flow_id(hash_combine(req_id, e->req_task.req_task_id));
+					emit_flow_id2(FLOW_REQ_TASK, req_id, e->req_task.req_task_id);
 				}
 			}
 		}
@@ -3782,8 +3811,8 @@ static void emit_req_task_event(struct worker_state *w, const struct wevent *e,
 					emit_kv_float(IID_ANNK_OFFCPU_DUR_US, "%.3lf", req_offcpu_ns / 1000.0);
 					emit_perf_counters(NULL, req_ctrs, true /* diffs */, req_oncpu_ns);
 				}
-				emit_flow_id(hash_combine(req_id, task.tid));
-				emit_flow_id(hash_combine(req_id, e->req_task.req_task_id));
+				emit_flow_id2(FLOW_REQ_THREAD, req_id, task.tid);
+				emit_flow_id2(FLOW_REQ_TASK, req_id, e->req_task.req_task_id);
 			}
 		}
 		break;
@@ -3835,7 +3864,7 @@ static void emit_req_rpc_event(struct worker_state *w, const struct wevent *e)
 			} else {
 				emit_kv_bool(IID_ANNK_RPC_SUCCESS, e->req_rpc.success);
 			}
-			emit_flow_id(hash_combine(req_id, rpc_id));
+			emit_flow_id2(FLOW_REQ_RPC, req_id, rpc_id);
 		}
 	}
 
@@ -3853,9 +3882,9 @@ static void emit_req_rpc_event(struct worker_state *w, const struct wevent *e)
 				emit_kv_bool(IID_ANNK_RPC_SUCCESS, e->req_rpc.success);
 			}
 			if (first_embed_event)
-				emit_flow_id(req_id);
-			emit_flow_id(hash_combine(req_id, task.tid));
-			emit_flow_id(hash_combine(req_id, rpc_id));
+				emit_flow_id(FLOW_REQ, req_id);
+			emit_flow_id2(FLOW_REQ_THREAD, req_id, task.tid);
+			emit_flow_id2(FLOW_REQ_RPC, req_id, rpc_id);
 		}
 	}
 }
@@ -4205,7 +4234,7 @@ static void emit_cuda_kernel(struct worker_state *w, const struct wevent *e)
 		emit_kv_int(IID_ANNK_CUDA_GRID_Y, cu->grid_y);
 		emit_kv_int(IID_ANNK_CUDA_GRID_Z, cu->grid_z);
 
-		emit_flow_id(((u64)task.pid << 32) | cu->corr_id);
+		emit_flow_id2(FLOW_CUDA, task.pid, cu->corr_id);
 	}
 
 	emit_slice_end(track_uuid, clamp_ts(cu->end_ts), iid_str(name_iid, name), IID_CAT_CUDA_KERNEL);
@@ -4304,7 +4333,7 @@ static void emit_cuda_memcpy(struct worker_state *w, const struct wevent *e)
 		emit_kv_int(IID_ANNK_CUDA_STREAM_ID, cu->stream_id);
 		emit_kv_int(IID_ANNK_CUDA_CONTEXT_ID, cu->ctx_id);
 
-		emit_flow_id(((u64)task.pid << 32) | cu->corr_id);
+		emit_flow_id2(FLOW_CUDA, task.pid, cu->corr_id);
 	}
 
 	emit_slice_end(track_uuid, clamp_ts(cu->end_ts), name, IID_CAT_CUDA_MEMCPY);
@@ -4385,7 +4414,7 @@ static void emit_cuda_memset(struct worker_state *w, const struct wevent *e)
 		emit_kv_int(IID_ANNK_CUDA_STREAM_ID, cu->stream_id);
 		emit_kv_int(IID_ANNK_CUDA_CONTEXT_ID, cu->ctx_id);
 
-		emit_flow_id(((u64)task.pid << 32) | cu->corr_id);
+		emit_flow_id2(FLOW_CUDA, task.pid, cu->corr_id);
 	}
 
 	emit_slice_end(track_uuid, clamp_ts(cu->end_ts), name, IID_CAT_CUDA_MEMSET);
@@ -4482,7 +4511,7 @@ static void emit_cuda_sync(struct worker_state *w, const struct wevent *e)
 		emit_kv_int(IID_ANNK_CUDA_CONTEXT_ID, cu->ctx_id);
 		emit_kv_int(IID_ANNK_CUDA_EVENT_ID, cu->event_id);
 
-		emit_flow_id(((u64)task.pid << 32) | cu->corr_id);
+		emit_flow_id2(FLOW_CUDA, task.pid, cu->corr_id);
 	}
 
 	emit_slice_end(track_uuid, clamp_ts(cu->end_ts), name, IID_CAT_CUDA_SYNC);
@@ -4577,7 +4606,7 @@ static void emit_cuda_api(struct worker_state *w, const struct wevent *e)
 	emit_slice_begin(track_uuid, clamp_ts(e->ts), iid_str(name_iid, name), IID_CAT_CUDA_API) {
 		emit_callstack(w, stack_id);
 
-		emit_flow_id(((u64)task.pid << 32) | e->cuda_api.corr_id);
+		emit_flow_id2(FLOW_CUDA, task.pid, e->cuda_api.corr_id);
 	}
 
 	emit_slice_end(track_uuid, clamp_ts(e->cuda_api.end_ts), iid_str(name_iid, name), IID_CAT_CUDA_API);
@@ -4588,7 +4617,7 @@ static void emit_cuda_api(struct worker_state *w, const struct wevent *e)
 	if (py && py->exists) {
 		emit_slice_begin(py->track_id, clamp_ts(e->ts), iid_str(name_iid, name), IID_CAT_CUDA_API) {
 			emit_callstack(w, stack_id);
-			emit_flow_id(((u64)task.pid << 32) | e->cuda_api.corr_id);
+			emit_flow_id2(FLOW_CUDA, task.pid, e->cuda_api.corr_id);
 		}
 		emit_slice_end(py->track_id, clamp_ts(e->cuda_api.end_ts), iid_str(name_iid, name), IID_CAT_CUDA_API);
 	}
@@ -5100,7 +5129,7 @@ static u64 utrace_flow_id(const char *key)
 	if (hashmap__find(utrace_flow_ids, key, &id))
 		return id;
 
-	id = UTRACE_FLOW_UUID(utrace_flow_next_id++);
+	id = utrace_flow_next_id++;
 	hashmap__add(utrace_flow_ids, strdup(key), id);
 	return id;
 }
@@ -5486,7 +5515,7 @@ static void emit_utrace_event(struct worker_state *w, const struct wevent *e)
 			if (stack_id > 0)
 				emit_callstack(w, stack_id);
 			if (flow_id)
-				emit_flow_id(flow_id);
+				emit_flow_id(FLOW_UTRACE, flow_id);
 		}
 		break;
 	case EV_UTRACE_EXIT:
@@ -5504,7 +5533,7 @@ static void emit_utrace_event(struct worker_state *w, const struct wevent *e)
 			if (stack_id > 0)
 				emit_callstack(w, stack_id);
 			if (flow_id)
-				emit_flow_id(flow_id);
+				emit_flow_id(FLOW_UTRACE, flow_id);
 		}
 		break;
 	}
