@@ -225,6 +225,17 @@ static inline unsigned long hash_combine(unsigned long h, unsigned long value)
 	return h * 31 + value;
 }
 
+/* murmur3 fmix64 finalizer: bijective, so distinct inputs never collide */
+static inline uint64_t hash_mix64(uint64_t x)
+{
+	x ^= x >> 33;
+	x *= 0xff51afd7ed558ccdULL;
+	x ^= x >> 33;
+	x *= 0xc4ceb9fe1a85ec53ULL;
+	x ^= x >> 33;
+	return x;
+}
+
 /* TIME ROUTINES */
 static inline uint64_t timespec_to_ns(struct timespec *ts)
 {
