@@ -57,4 +57,36 @@ size_t wppq_len(const struct wppq *pq);
 uint64_t wppq_peek_key(const struct wppq *pq);  /* min key; requires non-empty */
 void *wppq_pop(struct wppq *pq);                 /* min value, or NULL if empty */
 
+/* ======================== DWARF parsing ========================= */
+
+struct dwarf_info;
+
+/*
+ * Parses DWARF from a vmlinux ELF and creates a dwarf_info instance with information
+ * about functions listed in @func_names. Looks for vmlinux in the following locations:
+ * - /boot/vmlinux-$(uname -r)
+ * - /usr/lib/modules/$(uname -r)/vmlinux-$(uname -r)
+ *
+ * Returns NULL if no vmlinux was found or if there was an error while reading DWARF.
+ * DWARF parsing errors are logged.
+ */
+struct dwarf_info *dwarf_info_init_vmlinux(const char *const *func_names, size_t func_name_cnt);
+/* Returns the path to the ELF file from which @info was derived. */
+const char *dwarf_info_elf_path(const struct dwarf_info *info);
+void dwarf_info_free(struct dwarf_info *info);
+
+struct dwarf_func_addr {
+	uint64_t addr; /* ELF virtual address. */
+	const char *file_name; /* Cleaned declaration file path, or NULL if unavailable. */
+	bool is_inline; /* True for DW_TAG_inlined_subroutine. */
+};
+
+/*
+ * Look up DW_TAG_inlined_subroutine and DW_TAG_subprogram entries by function name.
+ * Returns NULL and sets *cnt to zero if absent.
+ */
+const struct dwarf_func_addr *dwarf_info_find_func(const struct dwarf_info *info,
+                                                   const char *name,
+                                                   size_t *cnt);
+
 #endif /* __WRUST_H_ */
