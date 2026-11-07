@@ -33,13 +33,16 @@ static enum utrace_arg_type usdt_arg_to_utrace_type(const struct usdt_arg_info *
 	}
 }
 
+/* Takes ownership of link on both success and failure. */
 static int add_link(struct bpf_state *st, struct bpf_link *link)
 {
 	struct bpf_link **tmp;
 
 	tmp = realloc(st->links, (st->link_cnt + 1) * sizeof(struct bpf_link *));
-	if (!tmp)
+	if (!tmp) {
+		bpf_link__destroy(link);
 		return -ENOMEM;
+	}
 	st->links = tmp;
 	st->links[st->link_cnt] = link;
 	st->link_cnt++;
