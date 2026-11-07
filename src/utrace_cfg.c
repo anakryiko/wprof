@@ -1044,12 +1044,11 @@ static int parse_probe_def(struct sview orig, struct sview def, struct utrace_cf
 	case UTRACE_KPROBE:
 	case UTRACE_KRETPROBE:
 	case UTRACE_KPROBE_SPAN: {
-		struct sview name, offset;
+		struct sview name, offset, file, func;
 
+		/* Syntax: [module:]func[@file][+offset] */
 		name = sv_split(def, "+", &offset);
 		name = sv_trim(name);
-		cfg->uprobe.name = sv_strdup(name);
-
 		if (!sv_is_empty(offset)) {
 			if (cfg->type != UTRACE_KPROBE)
 				return utrace_err(orig, offset, "only kprobe supports offset\n");
@@ -1059,6 +1058,26 @@ static int parse_probe_def(struct sview orig, struct sview def, struct utrace_cf
 				return utrace_err(orig, offset, "invalid offset value\n");
 		}
 
+		name = sv_split(name, "@", &file);
+		name = sv_trim(name);
+		if (!sv_is_empty(file)) {
+			file = sv_trim(sv_consume_left(file, 1));
+			if (sv_is_empty(file))
+				return utrace_err(orig, def, "empty file name\n");
+			cfg->kprobe.file = sv_strdup(file);
+		}
+
+		name = sv_split(name, ":", &func);
+		name = sv_trim(name);
+		if (!sv_is_empty(func)) {
+			if (sv_is_empty(name))
+				return utrace_err(orig, def, "empty module name\n");
+			cfg->kprobe.module = sv_strdup(name);
+			name = sv_trim(sv_consume_left(func, 1));
+		}
+		if (sv_is_empty(name))
+			return utrace_err(orig, def, "empty function name\n");
+		cfg->kprobe.name = sv_strdup(name);
 		break;
 	}
 	case UTRACE_USDT: {
@@ -1328,7 +1347,11 @@ static void format_probe(const struct utrace_cfg *cfg, struct sbuf *sb)
 	case UTRACE_KPROBE:
 	case UTRACE_KRETPROBE:
 	case UTRACE_KPROBE_SPAN:
+		if (cfg->kprobe.module)
+			sbuf_appendf(sb, "%s:", cfg->kprobe.module);
 		sbuf_appendf(sb, "%s", cfg->kprobe.name);
+		if (cfg->kprobe.file)
+			sbuf_appendf(sb, "@%s", cfg->kprobe.file);
 		if (cfg->kprobe.off)
 			sbuf_appendf(sb, "+0x%lx", cfg->kprobe.off);
 		break;
