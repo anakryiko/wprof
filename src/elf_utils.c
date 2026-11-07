@@ -398,17 +398,19 @@ bool elf_has_dynsym(const char *binary_path, const char *sym_name, int st_type)
 }
 
 /*
- * Find ELF symbols and return their file offsets (for uprobe attach).
+ * Find ELF symbols and return file offsets (for uprobe attach) and/or
+ * virtual addresses (st_value). Either output array may be NULL.
  * File offset is computed per-symbol via its containing section's
  * (sh_addr, sh_offset): file_off = st_value - sh_addr + sh_offset.
  */
 int elf_find_syms(const char *binary_path, int st_type,
-		  const char **syms, size_t cnt, unsigned long *file_offs)
+		  const char **syms, size_t cnt, unsigned long *file_offs, unsigned long *addrs)
 {
 	int sh_types[2] = { SHT_DYNSYM, SHT_SYMTAB };
 	struct elf_dynsym_hash dh;
 	bool has_dynsym_hash;
 	bool hashed[cnt];
+	bool found[cnt];
 	int cnt_done = 0;
 	struct elf_fd elf_fd;
 	int err;
@@ -417,8 +419,12 @@ int elf_find_syms(const char *binary_path, int st_type,
 	if (err)
 		return err;
 
-	memset(file_offs, 0, sizeof(*file_offs) * cnt);
+	if (file_offs)
+		memset(file_offs, 0, sizeof(*file_offs) * cnt);
+	if (addrs)
+		memset(addrs, 0, sizeof(*addrs) * cnt);
 	memset(hashed, 0, sizeof(hashed));
+	memset(found, 0, sizeof(found));
 
 	/* with a hash table, .dynsym needs no scanning, only .symtab might */
 	has_dynsym_hash = elf_dynsym_hash_init(elf_fd.elf, &dh) == 0;
@@ -432,11 +438,16 @@ int elf_find_syms(const char *binary_path, int st_type,
 
 		if (!elf_dynsym_hash_lookup(&dh, elf_fd.elf, syms[i], st_type, &sym))
 			continue;
-		scn = elf_getscn(elf_fd.elf, sym.st_shndx);
-		if (!scn || !gelf_getshdr(scn, &sh))
-			continue;
-		file_offs[i] = sym.st_value - sh.sh_addr + sh.sh_offset;
+		if (file_offs) {
+			scn = elf_getscn(elf_fd.elf, sym.st_shndx);
+			if (!scn || !gelf_getshdr(scn, &sh))
+				continue;
+			file_offs[i] = sym.st_value - sh.sh_addr + sh.sh_offset;
+		}
+		if (addrs)
+			addrs[i] = sym.st_value;
 		hashed[i] = true;
+		found[i] = true;
 		cnt_done++;
 	}
 
@@ -455,17 +466,22 @@ scan:
 					continue;
 				if (hashed[i])
 					break;
-				if (file_offs[i] && bind == STB_WEAK)
+				if (found[i] && bind == STB_WEAK)
 					continue;
 				unsigned long off = sym->sym.st_value - sym->sh.sh_addr + sym->sh.sh_offset;
-				if (file_offs[i] && file_offs[i] != off) {
+				if (found[i] && ((file_offs && file_offs[i] != off) ||
+						 (addrs && addrs[i] != sym->sym.st_value))) {
 					eprintf("elf: ambiguous symbol '%s' in '%s'\n", syms[i], binary_path);
 					elf_close(&elf_fd);
 					return -EEXIST;
 				}
-				if (file_offs[i] == 0)
+				if (!found[i])
 					cnt_done++;
-				file_offs[i] = off;
+				found[i] = true;
+				if (file_offs)
+					file_offs[i] = off;
+				if (addrs)
+					addrs[i] = sym->sym.st_value;
 				break;
 			}
 

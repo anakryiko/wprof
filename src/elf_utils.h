@@ -53,7 +53,7 @@ bool elf_has_dynsym(const char *binary_path, const char *sym_name, int st_type);
 bool elf_has_sec(const char *binary_path, const char *sec_name);
 
 int elf_find_syms(const char *binary_path, int st_type,
-		  const char **syms, size_t cnt, unsigned long *file_offs);
+		  const char **syms, size_t cnt, unsigned long *file_offs, unsigned long *addrs);
 
 int elf_resolve_syms(int pid, unsigned long vma_start, unsigned long vma_end,
 		     unsigned long vma_offset, int st_type,
