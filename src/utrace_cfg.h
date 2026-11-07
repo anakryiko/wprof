@@ -287,7 +287,9 @@ struct utrace_cfg {
 		} usdt;
 		/* KPROBE, KRETPROBE, KPROBE_SPAN */
 		struct {
+			char *module;
 			char *name;
+			char *file;
 			long off;
 		} kprobe;
 		/* TRACEPOINT */

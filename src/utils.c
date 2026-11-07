@@ -189,6 +189,21 @@ int append_str(char ***strs, int *cnt, const char *str)
 	return 0;
 }
 
+/* Like append_str but w/o strdup(). */
+int append_str_ref(const char ***strs, size_t *cnt, const char *str)
+{
+	void *tmp;
+
+	tmp = realloc(*strs, (*cnt + 1) * sizeof(**strs));
+	if (!tmp)
+		return -ENOMEM;
+	*strs = tmp;
+
+	(*strs)[*cnt] = str;
+	*cnt = *cnt + 1;
+	return 0;
+}
+
 int append_str_file(char ***strs, int *cnt, const char *file)
 {
 	char buf[4096];
@@ -215,6 +230,21 @@ cleanup:
 }
 
 int append_int(int **nums, int *cnt, int val)
+{
+	void *tmp;
+
+	tmp = realloc(*nums, (*cnt + 1) * sizeof(**nums));
+	if (!tmp)
+		return -ENOMEM;
+	*nums = tmp;
+
+	(*nums)[*cnt] = val;
+	*cnt = *cnt + 1;
+
+	return 0;
+}
+
+int append_long(unsigned long **nums, size_t *cnt, unsigned long val)
 {
 	void *tmp;
 
