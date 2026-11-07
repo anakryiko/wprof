@@ -295,8 +295,12 @@ void gen_uuid(char out[UUID_STR_LEN]);
 
 /* ARGS PARSING HELPERS */
 int append_str(char ***strs, int *cnt, const char *str);
+/* Like append_str but w/o strdup(). */
+int append_str_ptrs(const char ***strs, size_t *cnt, const char *str);
 int append_str_file(char ***strs, int *cnt, const char *file);
 int append_num(int **nums, int *cnt, const char *arg);
 int append_int(int **nums, int *cnt, int val);
+int append_long(unsigned long **nums, size_t *cnt, unsigned long val);
+ssize_t find_long(const unsigned long *nums, size_t cnt, unsigned long val);
 
 #endif /* __UTILS_H_ */

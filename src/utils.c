@@ -189,6 +189,20 @@ int append_str(char ***strs, int *cnt, const char *str)
 	return 0;
 }
 
+int append_str_ptrs(const char ***strs, size_t *cnt, const char *str)
+{
+	void *tmp;
+
+	tmp = realloc(*strs, (*cnt + 1) * sizeof(**strs));
+	if (!tmp)
+		return -ENOMEM;
+	*strs = tmp;
+
+	(*strs)[*cnt] = str;
+	*cnt = *cnt + 1;
+	return 0;
+}
+
 int append_str_file(char ***strs, int *cnt, const char *file)
 {
 	char buf[4096];
@@ -227,6 +241,30 @@ int append_int(int **nums, int *cnt, int val)
 	*cnt = *cnt + 1;
 
 	return 0;
+}
+
+int append_long(unsigned long **nums, size_t *cnt, unsigned long val)
+{
+	void *tmp;
+
+	tmp = realloc(*nums, (*cnt + 1) * sizeof(**nums));
+	if (!tmp)
+		return -ENOMEM;
+	*nums = tmp;
+
+	(*nums)[*cnt] = val;
+	*cnt = *cnt + 1;
+
+	return 0;
+}
+
+ssize_t find_long(const unsigned long *nums, size_t cnt, unsigned long val)
+{
+	for (size_t i = 0; i < cnt; i++) {
+		if (nums[i] == val)
+			return i;
+	}
+	return -ESRCH;
 }
 
 int append_num(int **nums, int *cnt, const char *arg)
