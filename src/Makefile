@@ -226,13 +226,13 @@ WPROF_SRCS := wprof.c utils.c env.c protobuf.c data.c emit.c stacktrace.c pmu.c	
 WPROF_HDRS := wprof.h utils.h env.h protobuf.h data.h emit.h json.h stacktrace.h topology.h pmu.h	\
 	      proc.h requests.h inj_common.h inject.h sys.h elf_utils.h cuda_data.h 	\
 	      wprof_types.h demangle.h merge.h wevent.h persist.h				\
-	      pystacks.h pyoffsets.h pydisc.h pysym.h pyline.h pytrace.h pytrace_data.h		\
+	      pystacks.h pyoffsets.h pydisc.h pysym.h pyline.h pytrace.h pytrace_data.h pytorch_data.h \
 	      utrace_cfg.h utrace.h strs.h blobset.h ksyms.h bpf_utils.h hashmap.h		\
 	      wpb.h wrust.h injmgr.h wprof_query.h
 WPROF_OBJS := $(patsubst %.c,$(OUTPUT)/%.o,$(WPROF_SRCS))
 
 WPROFINJ_SRCS := inj_lib.c inj_strset.c inj_hashmap.c inj_cupti.c inj_pytrace.c inj_torch_profiler.c
-WPROFINJ_HDRS := inj_common.h inj.h wprof_cupti.h pytrace_data.h strcache.h
+WPROFINJ_HDRS := inj_common.h inj.h wprof_cupti.h pytrace_data.h pytorch_data.h strcache.h
 WPROFINJ_OBJS := $(patsubst %.c,$(OUTPUT)/%.o,$(WPROFINJ_SRCS))
 
 $(WPROFINJ_OBJS): ALL_CFLAGS += -fPIC
