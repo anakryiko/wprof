@@ -214,7 +214,7 @@ int persist_add_pmu_def(struct persist_state *ps, const struct pmu_event *ev)
 static void fill_wevent_hdr(struct wevent *dst, const struct wprof_event *e, u32 task_id, u16 sz)
 {
 	dst->sz = sz;
-	dst->flags = e->flags;
+	dst->flags = 0;
 	dst->kind = e->kind;
 	dst->task_id = task_id;
 	dst->cpu = e->cpu;
@@ -649,7 +649,7 @@ static void fill_cuda_wevent_hdr(struct wevent *dst, const struct wcuda_event *e
 				 enum event_kind kind, u32 task_id, u16 sz)
 {
 	dst->sz = sz;
-	dst->flags = e->flags;
+	dst->flags = 0;
 	dst->kind = kind;
 	dst->task_id = task_id;
 	dst->cpu = 0;
