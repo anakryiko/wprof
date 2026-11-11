@@ -67,6 +67,28 @@ static u64 rf_callback_handle;
 static bool rf_active;
 
 /*
+ * at::RecordFunction field offsets, the same on x86_64 and aarch64 with
+ * libstdc++ since PyTorch 2.4 (kwinputs_ addition). The accessors are inline,
+ * so there is nothing to resolve. Relevant layout:
+ *
+ *   0x000  vtable (virtual ~RecordFunction())
+ *   0x008  StepCallbacks step_callbacks_
+ *   0x058    uint64_t thread_id_
+ *   0x060    RecordScope scope_
+ *   0x068  bool called_start_callbacks_
+ *   0x070  ObserverContextList ctx_
+ *   0x0a0  std::variant<std::string, schema_ref_t> fn_
+ *   0x0c8  int64_t sequence_nr_
+ *   0x0d0  c10::ArrayRef<const c10::IValue> inputs_
+ *   0x0e0  std::unordered_map<std::string, c10::IValue> kwinputs_
+ *   0x118  std::vector<c10::IValue> outputs_
+ *   0x130  uint64_t fwd_thread_id_
+ */
+#define RF_OFF_THREAD_ID	0x058
+#define RF_OFF_SEQ_NR		0x0c8
+#define RF_OFF_FWD_THREAD_ID	0x130
+
+/*
  * Lock-free op-name interner (see strcache.h). RecordFunction fires on many
  * threads, so this keeps the common path -- an op name already interned -- off
  * torch_lock; only a name's first sighting takes the lock. Backed by
@@ -108,7 +130,16 @@ static void *rf_start_cb(void *ret_slot, const void *record_fn)
 		.name_off = name_off,
 	};
 
-	int err = chunker_write(&torch_chunker, &ev, sizeof(ev), ts);
+	s64 seq = *(const s64 *)(record_fn + RF_OFF_SEQ_NR);
+	if (seq > 0) {
+		u64 fwd_tid = *(const u64 *)(record_fn + RF_OFF_FWD_THREAD_ID);
+
+		ev.what = WPYTORCH_ENTRY_SEQ;
+		ev.seq_nr = seq;
+		ev.rf_tid = fwd_tid ? -(s16)fwd_tid : (s16)*(const u64 *)(record_fn + RF_OFF_THREAD_ID);
+	}
+
+	int err = chunker_write(&torch_chunker, &ev, wpytorch_event_sz(&ev), ts);
 	if (err)
 		elog("Failed to write PyTorch event: %d\n", err);
 
@@ -140,7 +171,7 @@ static void rf_end_cb(const void *record_fn, void *ctx)
 		.name_off = name_off,
 	};
 
-	int err = chunker_write(&torch_chunker, &ev, sizeof(ev), ts);
+	int err = chunker_write(&torch_chunker, &ev, wpytorch_event_sz(&ev), ts);
 	if (err)
 		elog("Failed to write PyTorch event: %d\n", err);
 }

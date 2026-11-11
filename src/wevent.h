@@ -42,10 +42,15 @@ struct wevent_pmu_def {
 	u64 config2;
 };
 
+/* Flags stored in wevent.flags */
+enum wevent_flag {
+	WEF_PYTORCH_LINKED = 0x1,	/* PYTORCH_ENTRY: one end of a forward/backward op link */
+};
+
 /* Full persisted event - header followed by type-specific data */
 struct wevent {
 	u16 sz;				/* includes header size */
-	u16 flags;
+	u16 flags;			/* enum wevent_flag bitmask */
 	enum event_kind kind;
 	u32 task_id;
 	u16 cpu;
@@ -260,6 +265,14 @@ struct wevent {
 		/* PyTorch RecordFunction events (from at::addGlobalCallback) */
 		struct wevent_rf {
 			u32 name_stroff;	/* op name, e.g. "aten::linear" — only set for PYTORCH_ENTRY */
+			/*
+			 * Optional tail, only on PYTORCH_ENTRY of ops with an autograd
+			 * sequence number (see wevent_pytorch_has_seq()). A backward op
+			 * links to the forward op that has the same seq_nr in task
+			 * fwd_task_id; both ends of a link have WEF_PYTORCH_LINKED set.
+			 */
+			u32 fwd_task_id;	/* backward op: task of its forward op; 0 for forward ops */
+			s64 seq_nr;
 		} rf;
 
 		/* User-defined tracing (utrace) */
@@ -277,6 +290,14 @@ struct wevent {
 };
 
 #define WEVENT_SZ(kind) offsetofend(struct wevent, kind)
+
+#define WEVENT_RF_SZ offsetofend(struct wevent, rf.name_stroff)
+#define WEVENT_RF_SEQ_SZ offsetofend(struct wevent, rf.seq_nr)
+
+static inline bool wevent_pytorch_has_seq(const struct wevent *e)
+{
+	return e->sz >= WEVENT_RF_SEQ_SZ;
+}
 
 /* task->prio narrowed to u8 on the wire, where 0xff stands in for SCHED_DEADLINE's -1 */
 static inline int wevent_prio(u8 prio)
@@ -319,8 +340,8 @@ static inline size_t wevent_fixed_sz(const struct wevent *e)
 	case EV_PYTRACE_ENTRY:	return WEVENT_SZ(pytrace);
 	case EV_PYTRACE_EXIT:	return WEVENT_SZ(pytrace);
 
-	case EV_PYTORCH_ENTRY:	return WEVENT_SZ(rf);
-	case EV_PYTORCH_EXIT:	return WEVENT_SZ(rf);
+	case EV_PYTORCH_ENTRY:	return wevent_pytorch_has_seq(e) ? WEVENT_RF_SEQ_SZ : WEVENT_RF_SZ;
+	case EV_PYTORCH_EXIT:	return WEVENT_RF_SZ;
 
 	case EV_UTRACE_INSTANT:
 	case EV_UTRACE_ENTRY:
