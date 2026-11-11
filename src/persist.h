@@ -37,6 +37,10 @@ struct persist_state {
 	int pmu_def_total_cnt;
 	struct hashmap *tid_cache;	/* (host_pid, ns_tid) -> tid_cache_value for CUDA TID resolution */
 	struct hashmap *thread_states;	/* host TID -> per-thread persist state (task_id + cuda corr/stack) */
+	struct hashmap *rf_tasks;	/* (host_pid, RecordFunction thread id) -> task_id */
+	struct hashmap *rf_fwds;	/* (task_id, seq_nr) -> offset of the latest forward op */
+	u64 *rf_link_offs;		/* linked forward ops, to be flagged once written out */
+	int rf_link_cnt, rf_link_cap;
 };
 
 int persist_state_init(struct persist_state *ps, int pmu_cnt);
@@ -56,6 +60,6 @@ int persist_pytrace_event(struct persist_state *ps, const struct wpytrace_event 
 			 const struct wpytrace_code_entry *code_map, u64 code_map_cnt,
 			 const char *pytrace_strs);
 int persist_pytorch_event(struct persist_state *ps, const struct wpytorch_event *e, struct wevent *dst,
-			  int host_pid, int ns_pid, const char *proc_name, const char *strs);
+			  u64 off, int host_pid, int ns_pid, const char *proc_name, const char *strs);
 
 #endif /* __PERSIST_H_ */

@@ -604,6 +604,36 @@ static void finalize_stats(struct wprof_stats *s)
 }
 
 /*
+ * Set WEF_PYTORCH_LINKED on PyTorch forward ops that a backward op linked to.
+ * Persist only finds that out at the backward op, long after the forward op
+ * was written out, so patch them in place once all events are written.
+ */
+static int flag_linked_fwd_ops(FILE *dump, const struct persist_state *ps, u64 events_sz)
+{
+	size_t sz = sizeof(struct wprof_data_hdr) + events_sz;
+	void *mem;
+
+	if (ps->rf_link_cnt == 0)
+		return 0;
+
+	if (fflush(dump))
+		return -errno;
+
+	mem = mmap(NULL, sz, PROT_READ | PROT_WRITE, MAP_SHARED, fileno(dump), 0);
+	if (mem == MAP_FAILED)
+		return -errno;
+
+	for (int i = 0; i < ps->rf_link_cnt; i++) {
+		struct wevent *e = mem + sizeof(struct wprof_data_hdr) + ps->rf_link_offs[i];
+
+		e->flags |= WEF_PYTORCH_LINKED;
+	}
+
+	munmap(mem, sz);
+	return 0;
+}
+
+/*
  * Size and mmap one event chunk for the merge loop, keeping the mapping on
  * c->mmap (released in cleanup). A chunk is either still open (c->f -- the
  * non-flight-recorder single events file) or a completed chunk reopened by path.
@@ -1288,7 +1318,7 @@ skip_pytorch:
 				continue;
 			}
 
-			wevent_sz = persist_pytorch_event(&ps, r, &wevent_buf,
+			wevent_sz = persist_pytorch_event(&ps, r, &wevent_buf, events_sz,
 							  inj->pid, inj->ns_pid, inj->proc_name, wtorch->strs);
 			if (wevent_sz < 0) {
 				eprintf("Failed to convert pytorch event for %s: %d\n", injectee_str(inj), wevent_sz);
@@ -1355,6 +1385,12 @@ skip_pytorch:
 	}
 
 	wpq_free(pq);
+
+	err = flag_linked_fwd_ops(data_dump, &ps, events_sz);
+	if (err) {
+		eprintf("Failed to flag linked PyTorch forward ops: %d\n", err);
+		return err;
+	}
 
 	/* Cleanup BPF ringbuf dumps */
 	for (int i = 0; i < env.ringbuf_cnt; i++) {

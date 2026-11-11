@@ -649,6 +649,7 @@ enum flow_kind {
 	FLOW_REQ_RPC,		/* request id, RPC id */
 	FLOW_CUDA,		/* pid, CUDA correlation id */
 	FLOW_UTRACE,		/* sequential id assigned to rendered utrace flow key */
+	FLOW_FWDBWD,		/* PyTorch forward op task id, autograd sequence number */
 	NR_FLOW_KINDS,
 };
 
@@ -4795,6 +4796,15 @@ static u64 ensure_pytorch_thread_track(int tid)
 	return track_uuid;
 }
 
+/* both ends of a forward/backward op link get the same (forward task, seq) flow id */
+static void emit_pytorch_link(const struct wevent *e)
+{
+	if (!(e->flags & WEF_PYTORCH_LINKED))
+		return;
+
+	emit_flow_id2(FLOW_FWDBWD, e->rf.fwd_task_id ?: e->task_id, e->rf.seq_nr);
+}
+
 static struct uscope_entry *uscope_push(struct task_state *st)
 {
 	if (st->uscope_cnt == st->uscope_cap) {
@@ -4813,7 +4823,9 @@ static void uscope_emit_begin(struct worker_state *w, struct uscope_entry *u)
 	const char *name = e->rf.name_stroff ? wevent_str(hdr, e->rf.name_stroff) : "?";
 	pb_iid name_iid = emit_intern_str(w, name);
 
-	emit_slice_begin(track_uuid, u->ts, iid_str(name_iid, name), IID_CAT_PYTORCH);
+	emit_slice_begin(track_uuid, u->ts, iid_str(name_iid, name), IID_CAT_PYTORCH) {
+		emit_pytorch_link(e);
+	}
 }
 
 static void uscope_emit_end(struct worker_state *w, const struct uscope_entry *u, u64 ts)
@@ -5016,7 +5028,9 @@ static void emit_pytorch_event_split(struct worker_state *w, const struct wevent
 	pb_iid name_iid = emit_intern_str(w, name);
 
 	if (e->kind == EV_PYTORCH_ENTRY) {
-		emit_slice_begin(track_uuid, e->ts, iid_str(name_iid, name), IID_CAT_PYTORCH);
+		emit_slice_begin(track_uuid, e->ts, iid_str(name_iid, name), IID_CAT_PYTORCH) {
+			emit_pytorch_link(e);
+		}
 		st->pytorch_depth++;
 	} else {
 		if (st->pytorch_depth == 0)
@@ -5040,6 +5054,14 @@ static void emit_pytorch_event_json(struct worker_state *w, const struct wevent 
 	json_kv_str(j, "t", e->kind == EV_PYTORCH_ENTRY ? "pytorch_entry" : "pytorch_exit");
 	json_task(j, "task", &task);
 	json_kv_str(j, "name", name);
+	if (e->kind == EV_PYTORCH_ENTRY && wevent_pytorch_has_seq(e)) {
+		json_kv_int(j, "seq", e->rf.seq_nr);
+		if (e->rf.fwd_task_id) {
+			struct wprof_task fwd_task = wevent_resolve_task(hdr, e->rf.fwd_task_id);
+
+			json_task(j, "fwd_task", &fwd_task);
+		}
+	}
 	json_obj_end(j);
 }
 

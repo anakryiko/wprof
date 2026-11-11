@@ -934,10 +934,17 @@ covering autograd threads and other C++ threads.
 
 #### `pytorch_entry` — PyTorch operator entry
 
-| Field  | Type   | Description                          |
-|--------|--------|--------------------------------------|
-| `task` | task   | Thread entering the operator         |
-| `name` | string | Operator name (e.g., `"aten::mm"`)   |
+| Field      | Type   | Description                                                      |
+|------------|--------|------------------------------------------------------------------|
+| `task`     | task   | Thread entering the operator                                     |
+| `name`     | string | Operator name (e.g., `"aten::mm"`)                               |
+| `seq`      | int    | Optional. Non-zero autograd sequence number, if the op has one   |
+| `fwd_task` | task   | Optional, backward ops only. Thread that ran the forward op      |
+
+A backward op (`fwd_task` set) corresponds to a forward op on `fwd_task`'s
+thread with the same `seq`. Several forward ops can share a `seq` (e.g.
+`aten::linear` and the `aten::t` it calls); the backward op belongs to the one
+that started last, which is the op that created the autograd node.
 
 ```json
 {
