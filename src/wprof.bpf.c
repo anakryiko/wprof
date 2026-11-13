@@ -530,22 +530,24 @@ static size_t capture_perf_counters(struct perf_counters *c,
 static void __capture_stack_trace(void *ctx, struct task_struct *task, struct stack_trace *st,
 				  enum stack_trace_kind kind, bool user_only)
 {
+	struct task_struct *cur = bpf_get_current_task_btf();
 	u64 off = zero;
 
 	if (!task)
-		task = bpf_get_current_task_btf();
+		task = cur;
 
 	st->stack_id = 0;
 	st->kind = kind;
 	st->pid = task->tgid;
 
-	if (user_only) {
+	if (user_only)
 		st->kstack_sz = -ENOENT;
-	} else {
+	else if (task == cur)
+		st->kstack_sz = bpf_get_stack(ctx, st->addrs, sizeof(st->addrs) / 2, 0);
+	else
 		st->kstack_sz = bpf_get_task_stack(task, st->addrs, sizeof(st->addrs) / 2, 0);
-		if (st->kstack_sz > 0)
-			off += st->kstack_sz;
-	}
+	if (st->kstack_sz > 0)
+		off += st->kstack_sz;
 
 	if (off > sizeof(st->addrs) / 2) /* impossible */
 		off = sizeof(st->addrs) / 2;
