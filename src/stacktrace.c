@@ -541,7 +541,9 @@ static struct addr_set entry_set_timer = {
 	.names = (const char * const []){
 		"asm_sysvec_apic_timer_interrupt",	/* x86-64, v5.8+ */
 		"el1h_64_irq_handler",			/* arm64, v5.14+ */
+		"el1h_64_irq",				/* arm64, vector entry calling el1h_64_irq_handler */
 		"el0t_64_irq_handler",			/* arm64, v5.14+ */
+		"el0t_64_irq",				/* arm64, vector entry calling el0t_64_irq_handler */
 		NULL,
 	},
 };
@@ -551,7 +553,8 @@ static struct addr_set entry_set_timer = {
  * (perf_swevent_*, __perf_event_overflow, the bpf_overflow_handler/bpf_prog_run
  * chain) is stripped implicitly, so only the outermost frame goes in the set:
  *  - timer-based software events (cpu-clock, task-clock): the APIC timer IRQ on
- *    x86, the GIC IRQ vector (el{1h,0t}_64_irq_handler) on arm64;
+ *    x86, the GIC IRQ vector entry (el{1h,0t}_64_irq, plus the adjacent
+ *    el{1h,0t}_64_irq_handler) on arm64;
  *  - hardware events (and hardware-cache events): the PMI, an NMI on x86. The
  *    unwinder typically lands on the NMI iret trampoline (end_repeat_nmi), not
  *    asm_exc_nmi, so both are listed. On arm64 the PMU overflow IRQ arrives
@@ -570,7 +573,9 @@ static struct addr_set entry_set_pmu_event = {
 		"end_repeat_nmi",			/* x86-64 hardware PMI: the NMI iret trampoline the unwinder lands on */
 		"asm_exc_nmi",				/* x86-64 hardware PMI: NMI entry on unwinds that reach it instead */
 		"el1h_64_irq_handler",			/* arm64 IRQ from kernel: timer + PMU overflow (GIC IRQ) */
+		"el1h_64_irq",				/* arm64, vector entry calling el1h_64_irq_handler */
 		"el0t_64_irq_handler",			/* arm64 IRQ from user: timer + PMU overflow (GIC IRQ) */
+		"el0t_64_irq",				/* arm64, vector entry calling el0t_64_irq_handler */
 		"__perf_sw_event",			/* inline software events (e.g. page-faults, context-switches) */
 		"___perf_sw_event",			/* same, when this is the out-of-line frame */
 		NULL,
@@ -596,9 +601,12 @@ static struct addr_set entry_set_waker = {
 static struct addr_set entry_set_kprobe = {
 	.names = (const char * const []){
 		"fprobe_handler",	/* -> kprobe_multi_link_handler */
+		"arch_ftrace_ops_list_func", /* x86-64, multiple ftrace_ops on the function */
+		"ftrace_regs_call",	/* x86-64, -> arch_ftrace_ops_list_func */
 		"ftrace_trampoline",
 		"kprobe_ftrace_handler",
 		"el1h_64_sync_handler", /* arm64, -> kprobe_breakpoint_handler */
+		"el1h_64_sync",		/* arm64, vector entry calling el1h_64_sync_handler */
 		NULL,
 	},
 };
@@ -606,6 +614,7 @@ static struct addr_set entry_set_kretprobe = {
 	.names = (const char * const []){
 		"arch_rethook_trampoline",
 		"el1h_64_sync_handler", /* arm64, -> kretprobe_breakpoint_handler */
+		"el1h_64_sync",		/* arm64, vector entry calling el1h_64_sync_handler */
 		NULL,
 	},
 };
