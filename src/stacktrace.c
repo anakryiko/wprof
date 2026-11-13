@@ -634,8 +634,14 @@ static int kstack_strip_count(const struct wprof_event *e, enum stack_trace_kind
 			      const u64 *kaddrs, int kcnt)
 {
 	const struct addr_set *set = strip_set_for(e, kind);
+	/*
+	 * x86 before v6.19 (fixed by commit 6d08340d1e35 ("Revert "perf/x86: Always
+	 * store regs->ip in perf_callchain_kernel()"")) and arm64 report the leaf
+	 * twice for perf_fetch_caller_regs() regs
+	 */
+	int dup = kcnt > 1 && kaddrs[0] == kaddrs[1];
 	if (!set || set->range_cnt == 0)
-		return 0;
+		return dup;
 
 	int strip = 0;
 	for (int i = 0; i < kcnt; i++) {
@@ -646,7 +652,7 @@ static int kstack_strip_count(const struct wprof_event *e, enum stack_trace_kind
 		}
 	}
 
-	return strip;
+	return strip ?: dup;
 }
 
 static int process_stack_trace(struct symb_state *state, const struct wprof_event *e)
