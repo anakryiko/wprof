@@ -87,24 +87,50 @@ enum pytrace_discover_strategy {
 
 /* session lifecycle, driven by the single epoll control loop in main() */
 enum sess_state {
-	SESS_STANDBY,	/* waiting until prepare time */
+	SESS_STANDBY,	/* waiting for the prepare trigger */
 	SESS_PREP,	/* discovery / injection / BPF setup */
-	SESS_ARMED,	/* waiting until activation (BPF drops events in-kernel) */
+	SESS_ARMED,	/* waiting for the activate trigger (BPF drops events in-kernel) */
 	SESS_RECORDING,	/* collecting until session end */
 	SESS_DONE,	/* leave loop -> post-processing */
 };
 
 /*
  * Session-control epoll tags, stored in epoll_event.data.u32 to identify the
- * ready fd. The fixed timers/signal come first; each watched injectee UDS is
- * tagged CTLS_INJECTEE_UDS_BASE + its injectee index.
+ * ready fd. The fixed triggers/timers/signal come first; each watched injectee
+ * UDS is tagged CTLS_INJECTEE_UDS_BASE + its injectee index.
  */
-enum epoll_tag { CTL_PREP_TIMER, CTL_ACTIVATE_TIMER, CTL_END_TIMER, CTL_SIGNAL, CTLS_INJECTEE_UDS_BASE };
+enum epoll_tag {
+	CTL_PREP_TRIGGER,
+	CTL_ACTIVATE_TRIGGER,
+	CTL_END_TIMER,
+	CTL_SIGNAL,
+	CTLS_INJECTEE_UDS_BASE
+};
+
+/* what starts a session phase (--prepare / --activate) */
+enum trigger_kind {
+	TRIG_UNSET = 0,	/* option not given: prepare at startup, activate right after prepare */
+	TRIG_TIME,	/* time spec */
+};
+
+struct trigger_spec {
+	enum trigger_kind kind;
+	struct timespec_spec time;	/* TRIG_TIME */
+	char *str;			/* raw CLI spec, persisted via WEXTRA */
+};
+
+/* trigger of one session phase, preparation or activation */
+struct phase_trigger {
+	const char *phase;		/* "preparation" / "activation", for messages */
+	struct trigger_spec *spec;
+	enum epoll_tag tag;		/* CTL_PREP_TRIGGER / CTL_ACTIVATE_TRIGGER */
+	int fd;				/* timerfd */
+};
 
 struct sess_ctl {
 	int epoll_fd;
-	int prep_tfd;
-	int activate_tfd;
+	struct phase_trigger prep_trig;
+	struct phase_trigger activate_trig;
 	int sess_end_tfd;
 	int sig_efd;
 	enum sess_state state;
@@ -147,11 +173,9 @@ struct env {
 	s64 fr_keep_size;	/* -1 until set; resolved in main() */
 	u64 fr_chunk_size;
 
-	/* time-delayed activation (--prepare / --activate) */
-	struct timespec_spec prepare_spec;
-	struct timespec_spec activate_spec;
-	char *prepare_spec_str;		/* raw CLI spec, persisted via WEXTRA */
-	char *activate_spec_str;	/* raw CLI spec, persisted via WEXTRA */
+	/* delayed preparation and activation (--prepare / --activate) */
+	struct trigger_spec prepare_spec;
+	struct trigger_spec activate_spec;
 
 	/* for replay only, mutually exclusive with duration_ns */
 	s64 replay_start_offset_ns;

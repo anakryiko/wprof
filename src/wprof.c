@@ -1899,6 +1899,129 @@ static int do_activate(struct bpf_state *bpf)
 	return 0;
 }
 
+/*
+ * Start a session phase's trigger when the phase before it begins: at startup
+ * for preparation, as preparation begins for activation.
+ */
+static int start_trigger(struct phase_trigger *t)
+{
+	int err;
+
+	switch (t->spec->kind) {
+	case TRIG_UNSET:
+	case TRIG_TIME:
+		t->fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+		break;
+	default:
+		BUG("unhandled %s trigger kind %d\n", t->phase, t->spec->kind);
+	}
+	if (t->fd < 0) {
+		err = -errno;
+		eprintf("Failed to create %s trigger fd: %d\n", t->phase, err);
+		return err;
+	}
+	return 0;
+}
+
+/* Arm a session phase's trigger, once that phase is the next one to start. */
+static int arm_trigger(struct phase_trigger *t, u64 target_ts)
+{
+	int err;
+
+	/* stop requested (e.g., Ctrl-C during preparation), the control loop is about to wrap up */
+	if (exiting)
+		return 0;
+
+	if (ctl_epoll_add(env.sess_ctl.epoll_fd, t->fd, t->tag)) {
+		err = -errno;
+		eprintf("Failed to register %s trigger fd: %d\n", t->phase, err);
+		return err;
+	}
+
+	switch (t->spec->kind) {
+	case TRIG_UNSET:
+	case TRIG_TIME:
+		if (arm_timer_abs(t->fd, target_ts ?: ktime_now_ns())) {
+			err = -errno;
+			eprintf("Failed to arm %s timer: %d\n", t->phase, err);
+			return err;
+		}
+		if (t->spec->kind == TRIG_TIME)
+			wprintf("Pending %s trigger...\n", t->phase);
+		break;
+	default:
+		BUG("unhandled %s trigger kind %d\n", t->phase, t->spec->kind);
+	}
+	return 0;
+}
+
+/* Consume a session phase's ready trigger fd: 1 if the trigger fired, 0 if not (yet), <0 on error. */
+static int consume_trigger(struct phase_trigger *t)
+{
+	switch (t->spec->kind) {
+	case TRIG_UNSET:
+	case TRIG_TIME:
+		drain_fd(t->fd);
+		return 1;
+	default:
+		BUG("unhandled %s trigger kind %d\n", t->phase, t->spec->kind);
+	}
+}
+
+/* SESS_STANDBY -> SESS_ARMED */
+static int on_prepare_trigger(struct bpf_state *bpf, struct worker_state *workers, int num_cpus, int workdir_fd)
+{
+	int err;
+
+	env.sess_ctl.state = SESS_PREP;
+
+	err = start_trigger(&env.sess_ctl.activate_trig);
+	if (err)
+		return err;
+
+	err = do_prepare(bpf, workers, num_cpus, workdir_fd);
+	if (err)
+		return err;
+
+	env.sess_ctl.state = SESS_ARMED;
+	if (env.sess_ctl.activate_target_ts && ts_before(env.sess_ctl.activate_target_ts, ktime_now_ns())) {
+		eprintf("Activation time (--activate) already passed during preparation!\n");
+		return -EINVAL;
+	}
+	return arm_trigger(&env.sess_ctl.activate_trig, env.sess_ctl.activate_target_ts);
+}
+
+/* SESS_ARMED -> SESS_RECORDING */
+static int on_activate_trigger(struct bpf_state *bpf)
+{
+	int err;
+
+	err = do_activate(bpf);
+	if (err)
+		return err;
+
+	env.sess_ctl.session_activated = true;
+	env.sess_ctl.state = SESS_RECORDING;
+	/* flightrec has no planned end: run until stopped (Ctrl-C via CTL_SIGNAL) */
+	if (!env.flightrec) {
+		env.sess_ctl.sess_end_target_ts = env.sess_end_ts;
+		arm_timer_abs(env.sess_ctl.sess_end_tfd, env.sess_ctl.sess_end_target_ts);
+	}
+	/*
+	 * Watch each active injectee's UDS: an EOF means it died
+	 * mid-session (handled by the control loop), and later this carries
+	 * the chunk-handoff protocol. Only synchronous UDS traffic happens
+	 * before this point and after the loop exits, so the single
+	 * epoll reader never races those.
+	 */
+	for (int j = 0; j < env.injectee_cnt; j++) {
+		struct injectee *inj = &env.injectees[j];
+		if (inj->state == INJECTEE_ACTIVE && inj->uds_fd >= 0)
+			ctl_epoll_add(env.sess_ctl.epoll_fd, inj->uds_fd, CTLS_INJECTEE_UDS_BASE + j);
+	}
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
 	struct bpf_state bpf_state = {};
@@ -2755,12 +2878,10 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	env.sess_ctl.prep_tfd     = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
-	env.sess_ctl.activate_tfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
 	env.sess_ctl.sess_end_tfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
-	if (env.sess_ctl.prep_tfd < 0 || env.sess_ctl.activate_tfd < 0 || env.sess_ctl.sess_end_tfd < 0) {
+	if (env.sess_ctl.sess_end_tfd < 0) {
 		err = -errno;
-		eprintf("Failed to create session timerfds: %d\n", err);
+		eprintf("Failed to create session end timerfd: %d\n", err);
 		goto cleanup;
 	}
 
@@ -2771,35 +2892,52 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	if (ctl_epoll_add(env.sess_ctl.epoll_fd, env.sess_ctl.prep_tfd, CTL_PREP_TIMER) ||
-	    ctl_epoll_add(env.sess_ctl.epoll_fd, env.sess_ctl.activate_tfd, CTL_ACTIVATE_TIMER) ||
-	    ctl_epoll_add(env.sess_ctl.epoll_fd, env.sess_ctl.sess_end_tfd, CTL_END_TIMER) ||
+	if (ctl_epoll_add(env.sess_ctl.epoll_fd, env.sess_ctl.sess_end_tfd, CTL_END_TIMER) ||
 	    ctl_epoll_add(env.sess_ctl.epoll_fd, env.sess_ctl.sig_efd, CTL_SIGNAL)) {
 		err = -errno;
 		eprintf("Failed to register session control fds: %d\n", err);
 		goto cleanup;
 	}
 
+	env.sess_ctl.prep_trig = (struct phase_trigger){
+		.phase = "preparation", .spec = &env.prepare_spec, .tag = CTL_PREP_TRIGGER, .fd = -1,
+	};
+	env.sess_ctl.activate_trig = (struct phase_trigger){
+		.phase = "activation", .spec = &env.activate_spec, .tag = CTL_ACTIVATE_TRIGGER, .fd = -1,
+	};
+
 	/*
 	 * Resolve --prepare/--activate wall-clock specs into absolute ktime
 	 * targets; a zero target means "immediately" (prepare at startup, activate
 	 * as soon as prepare finishes).
 	 */
-	if (env.prepare_spec.kind) {
-		env.sess_ctl.prepare_target_ts = resolve_timespec(&env.prepare_spec, env.actual_start_ts);
+	switch (env.prepare_spec.kind) {
+	case TRIG_UNSET:
+		break;
+	case TRIG_TIME:
+		env.sess_ctl.prepare_target_ts = resolve_timespec(&env.prepare_spec.time, env.actual_start_ts);
 		if (env.sess_ctl.prepare_target_ts && ts_before(env.sess_ctl.prepare_target_ts, ktime_now_ns())) {
 			eprintf("Preparation time (--prepare) is in the past!\n");
 			err = -EINVAL;
 			goto cleanup;
 		}
+		break;
+	default:
+		BUG("unhandled --prepare trigger kind %d\n", env.prepare_spec.kind);
 	}
-	if (env.activate_spec.kind) {
-		env.sess_ctl.activate_target_ts = resolve_timespec(&env.activate_spec, env.actual_start_ts);
+	switch (env.activate_spec.kind) {
+	case TRIG_UNSET:
+		break;
+	case TRIG_TIME:
+		env.sess_ctl.activate_target_ts = resolve_timespec(&env.activate_spec.time, env.actual_start_ts);
 		if (env.sess_ctl.activate_target_ts && ts_before(env.sess_ctl.activate_target_ts, ktime_now_ns())) {
 			eprintf("Activation time (--activate) is in the past!\n");
 			err = -EINVAL;
 			goto cleanup;
 		}
+		break;
+	default:
+		BUG("unhandled --activate trigger kind %d\n", env.activate_spec.kind);
 	}
 	if (env.sess_ctl.prepare_target_ts && env.sess_ctl.activate_target_ts &&
 	    ts_before(env.sess_ctl.activate_target_ts, env.sess_ctl.prepare_target_ts)) {
@@ -2808,9 +2946,13 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	arm_timer_abs(env.sess_ctl.prep_tfd, env.sess_ctl.prepare_target_ts ?: ktime_now_ns());
-	if (env.prepare_spec.kind)
-		wprintf("Pending preparation trigger...\n");
+	/* nothing comes before preparation, so its trigger starts right away */
+	err = start_trigger(&env.sess_ctl.prep_trig);
+	if (err)
+		goto cleanup;
+	err = arm_trigger(&env.sess_ctl.prep_trig, env.sess_ctl.prepare_target_ts);
+	if (err)
+		goto cleanup;
 
 	while (env.sess_ctl.state != SESS_DONE) {
 		struct epoll_event evs[8];
@@ -2830,47 +2972,25 @@ int main(int argc, char **argv)
 				drain_fd(env.sess_ctl.sig_efd);
 				env.sess_ctl.state = SESS_DONE;
 				break;
-			case CTL_PREP_TIMER:
-				drain_fd(env.sess_ctl.prep_tfd);
-				env.sess_ctl.state = SESS_PREP;
-				err = do_prepare(&bpf_state, workers, num_cpus, workdir_fd);
+			case CTL_PREP_TRIGGER:
+				err = consume_trigger(&env.sess_ctl.prep_trig);
+				if (err < 0)
+					goto cleanup;
+				if (err == 0) /* not fired (yet) */
+					break;
+				err = on_prepare_trigger(&bpf_state, workers, num_cpus, workdir_fd);
 				if (err)
 					goto cleanup;
-				env.sess_ctl.state = SESS_ARMED;
-				if (env.sess_ctl.activate_target_ts &&
-				    ts_before(env.sess_ctl.activate_target_ts, ktime_now_ns())) {
-					eprintf("Activation time (--activate) already passed during preparation!\n");
-					err = -EINVAL;
-					goto cleanup;
-				}
-				arm_timer_abs(env.sess_ctl.activate_tfd, env.sess_ctl.activate_target_ts ?: ktime_now_ns());
-				if (env.activate_spec.kind)
-					wprintf("Pending activation trigger...\n");
 				break;
-			case CTL_ACTIVATE_TIMER:
-				drain_fd(env.sess_ctl.activate_tfd);
-				err = do_activate(&bpf_state);
+			case CTL_ACTIVATE_TRIGGER:
+				err = consume_trigger(&env.sess_ctl.activate_trig);
+				if (err < 0)
+					goto cleanup;
+				if (err == 0) /* not fired (yet) */
+					break;
+				err = on_activate_trigger(&bpf_state);
 				if (err)
 					goto cleanup;
-				env.sess_ctl.session_activated = true;
-				env.sess_ctl.state = SESS_RECORDING;
-				/* flightrec has no planned end: run until stopped (Ctrl-C via CTL_SIGNAL) */
-				if (!env.flightrec) {
-					env.sess_ctl.sess_end_target_ts = env.sess_end_ts;
-					arm_timer_abs(env.sess_ctl.sess_end_tfd, env.sess_ctl.sess_end_target_ts);
-				}
-				/*
-				 * Watch each active injectee's UDS: an EOF means it died
-				 * mid-session (handled below), and later this carries the
-				 * chunk-handoff protocol. Only synchronous UDS traffic happens
-				 * before this point and after the loop exits, so the single
-				 * epoll reader never races those.
-				 */
-				for (int j = 0; j < env.injectee_cnt; j++) {
-					struct injectee *inj = &env.injectees[j];
-					if (inj->state == INJECTEE_ACTIVE && inj->uds_fd >= 0)
-						ctl_epoll_add(env.sess_ctl.epoll_fd, inj->uds_fd, CTLS_INJECTEE_UDS_BASE + j);
-				}
 				break;
 			case CTL_END_TIMER:
 				drain_fd(env.sess_ctl.sess_end_tfd);
