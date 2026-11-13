@@ -5061,6 +5061,8 @@ static void emit_pytorch_event_json(struct worker_state *w, const struct wevent 
 
 			json_task(j, "fwd_task", &fwd_task);
 		}
+		if (e->flags & WEF_PYTORCH_LINKED)
+			json_kv_bool(j, "linked", true);
 	}
 	json_obj_end(j);
 }

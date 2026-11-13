@@ -940,11 +940,15 @@ covering autograd threads and other C++ threads.
 | `name`     | string | Operator name (e.g., `"aten::mm"`)                               |
 | `seq`      | int    | Optional. Non-zero autograd sequence number, if the op has one   |
 | `fwd_task` | task   | Optional, backward ops only. Thread that ran the forward op      |
+| `linked`   | bool   | Optional. `true` on both ends of a forward/backward op link      |
 
 A backward op (`fwd_task` set) corresponds to a forward op on `fwd_task`'s
 thread with the same `seq`. Several forward ops can share a `seq` (e.g.
 `aten::linear` and the `aten::t` it calls); the backward op belongs to the one
-that started last, which is the op that created the autograd node.
+that started last, which is the op that created the autograd node. wprof
+pairs them up at capture time and sets `linked` on both: the forward op of a
+linked backward op is the linked op on `fwd_task`'s thread with the same `seq`.
+Either end may be filtered out of the output, e.g. by time range.
 
 ```json
 {
