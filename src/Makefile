@@ -228,7 +228,7 @@ WPROF_HDRS := wprof.h utils.h env.h protobuf.h data.h emit.h json.h stacktrace.h
 	      wprof_types.h demangle.h merge.h wevent.h persist.h				\
 	      pystacks.h pyoffsets.h pydisc.h pysym.h pyline.h pytrace.h pytrace_data.h pytorch_data.h \
 	      utrace_cfg.h utrace.h strs.h blobset.h ksyms.h bpf_utils.h hashmap.h		\
-	      wpb.h wrust.h injmgr.h wprof_query.h
+	      wpb.h wrust.h injmgr.h wprof_query.h flightrec.h
 WPROF_OBJS := $(patsubst %.c,$(OUTPUT)/%.o,$(WPROF_SRCS))
 
 WPROFINJ_SRCS := inj_lib.c inj_strset.c inj_hashmap.c inj_cupti.c inj_pytrace.c inj_torch_profiler.c
