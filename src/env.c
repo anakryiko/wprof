@@ -157,7 +157,7 @@ static const struct argp_option opts[] = {
 	  "comma list of a time and/or size limit, e.g. 10s,1000mb. Bare -F uses "
 	  "1s,1gb; naming one dimension leaves the other unlimited; a 0 token "
 	  "disables a dimension. Mutually exclusive with -d." },
-	{ "prepare", OPT_PREPARE, "WHEN", 0, "Delayed tracing setup, syntax: @now, @<ISO time>, +<dur>, /<dur> (align to next period). Default: at startup" },
+	{ "prepare", OPT_PREPARE, "WHEN", 0, "Delayed tracing setup, syntax: @now, @<ISO time>, +<dur>, /<dur> (align to next period), sig:int (Ctrl-C). Default: at startup" },
 	{ "activate", OPT_ACTIVATE, "WHEN", 0, "Delayed data capture activation; same syntax as --prepare. Default: immediately after prepare" },
 	{ "timer-freq", OPT_TIMER_FREQ, "HZ", 0, "Deprecated: use -Stimer=<freq>hz or -Stimer=<period>. On-CPU timer interrupt frequency (default: 100Hz)" },
 
@@ -272,12 +272,22 @@ static enum stack_trace_kind parse_stack_kinds(const char *arg)
 
 static int parse_trigger(const char *arg, struct trigger_spec *spec)
 {
+	size_t pfx_len;
 	int err;
 
-	err = parse_timespec(arg, &spec->time);
-	if (err)
-		return err;
-	spec->kind = TRIG_TIME;
+	if ((pfx_len = str_has_prefix(arg, "sig:"))) {
+		/* only SIGINT so far */
+		if (strcasecmp(arg + pfx_len, "int") != 0) {
+			eprintf("Unsupported trigger signal '%s', only sig:int is supported!\n", arg + pfx_len);
+			return -EINVAL;
+		}
+		spec->kind = TRIG_SIGINT;
+	} else {
+		err = parse_timespec(arg, &spec->time);
+		if (err)
+			return err;
+		spec->kind = TRIG_TIME;
+	}
 
 	spec->str = strdup(arg);
 	return 0;

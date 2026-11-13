@@ -111,6 +111,7 @@ enum epoll_tag {
 enum trigger_kind {
 	TRIG_UNSET = 0,	/* option not given: prepare at startup, activate right after prepare */
 	TRIG_TIME,	/* time spec */
+	TRIG_SIGINT,	/* "sig:int": wait for SIGINT */
 };
 
 struct trigger_spec {
@@ -119,12 +120,17 @@ struct trigger_spec {
 	char *str;			/* raw CLI spec, persisted via WEXTRA */
 };
 
+static inline bool trigger_is_event(const struct trigger_spec *spec)
+{
+	return spec->kind == TRIG_SIGINT;
+}
+
 /* trigger of one session phase, preparation or activation */
 struct phase_trigger {
 	const char *phase;		/* "preparation" / "activation", for messages */
 	struct trigger_spec *spec;
 	enum epoll_tag tag;		/* CTL_PREP_TRIGGER / CTL_ACTIVATE_TRIGGER */
-	int fd;				/* timerfd */
+	int fd;				/* timerfd for a time, eventfd for sigint */
 };
 
 struct sess_ctl {
@@ -133,7 +139,9 @@ struct sess_ctl {
 	struct phase_trigger activate_trig;
 	int sess_end_tfd;
 	int sig_efd;
+	int sigint_fd;		/* trigger eventfd of the phase waiting for SIGINT, or -1; taken by the signal handler */
 	enum sess_state state;
+	bool activate_deferred;	/* --activate time resolves only once the event-triggered prepare fires */
 	bool session_activated;
 	bool session_complete;
 	u64 prepare_target_ts;
