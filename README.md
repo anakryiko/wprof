@@ -92,7 +92,7 @@ wprof -U 'k:wake_up_process (arg:p.real_parent.comm/name(parent_comm))'
 
 See [UTRACE.md](UTRACE.md) for full documentation.
 
-### Time-delayed capture: `--prepare` and `--activate`
+### Delayed and triggered capture: `--prepare` and `--activate`
 
 Starting a capture has two phases, and these flags let you control *when* each
 happens independently:
@@ -114,7 +114,8 @@ happens independently:
 > it immediately; for **precise activation timing**, prepare ahead of time and
 > accept the extra overhead until activation.
 
-`<when>` is a time spec, resolved against the local clock:
+`<when>` is either a time spec, resolved against the local clock, or an event
+to wait for:
 
 | Spec          | Meaning |
 |---------------|---------|
@@ -122,11 +123,14 @@ happens independently:
 | `@<ISO time>` | absolute local wall-clock time (e.g. `@14:30`, `@14:30:05`, `@2026-06-10T14:30:00`); date-only means midnight, time-only means today |
 | `+<dur>`      | offset from wprof start (`+30s`, `+5m`, `+1h`) |
 | `/<dur>`      | align to the next epoch-aligned period boundary (`/10s`, `/1m`) |
+| `sig:int`     | wait for SIGINT (Ctrl-C) |
 
 ```
 $ sudo ./wprof --activate +30s -d 5s -T trace.pb     # set up now, record 5s starting 30s from now
 $ sudo ./wprof --activate @14:30:00 -d 10s -T t.pb   # start recording at 14:30 local time
 $ sudo ./wprof --prepare +1s --activate /10s -d 5s   # prep at +1s, start on the next round 10s boundary
+$ sudo ./wprof --activate sig:int -d 5s -T t.pb      # set up now, record 5s once Ctrl-C is pressed
+$ sudo ./wprof --prepare sig:int --activate sig:int  # Ctrl-C to set up, Ctrl-C to start
 ```
 
 **Gotchas and implications**
@@ -140,6 +144,15 @@ $ sudo ./wprof --prepare +1s --activate /10s -d 5s   # prep at +1s, start on the
 - **No ring buffer pressure during the lead time.** Pre-activation events are
   dropped in-kernel, so even a long lead time consumes no ring buffer space (some
   tracing overhead is still paid, though — see the overhead note above).
+- **Ctrl-C starts a phase only while wprof waits for it.** With `sig:int`, wprof
+  prints `Pending ... trigger, press Ctrl-C (SIGINT) to proceed...`, and the
+  next SIGINT starts that phase. At any other time, including during
+  preparation, SIGINT stops wprof as usual; stopping before activation records
+  nothing. SIGTERM always stops.
+- **Time specs after an event-triggered `--prepare`.** `--activate +<dur>`
+  counts from the moment the `--prepare` event happened rather than from wprof
+  start, and `--activate /<dur>` picks the first period boundary after
+  preparation is done.
 - **`@<ISO time>` is local time**, including DST. A bare time-of-day is *today*;
   if it has already passed, that is an error (wprof does not roll to tomorrow).
 - **Errors fail fast.** Where it can tell up front, wprof rejects a `--prepare`
@@ -149,7 +162,10 @@ $ sudo ./wprof --prepare +1s --activate /10s -d 5s   # prep at +1s, start on the
 - **Injected tracees stay alive.** When tracing CUDA/Python targets, the injected
   agent's safety auto-retract timeout is sized to span the whole
   prepare→session-end window, so a long `--activate` delay won't make tracees
-  detach mid-session.
+  detach mid-session. When the activation time isn't known at preparation
+  (`--activate sig:int`, or an aligned `--activate` after `--prepare sig:int`),
+  the timeout is disabled, as in flight-recorder mode, and tracees rely on
+  noticing that wprof exited to clean up.
 - **`-d` is measured from activation.** `t=0` is the activation instant and the
   session runs for the requested duration from there. A `Ctrl-C` before the
   duration elapses clamps the recorded window to the interrupt point.

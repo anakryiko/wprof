@@ -202,6 +202,16 @@ static volatile bool exiting;
 
 static void sig_term(int sig)
 {
+	/* SIGINT goes to the trigger of the phase waiting for one, if any */
+	if (sig == SIGINT) {
+		int fd = __atomic_exchange_n(&env.sess_ctl.sigint_fd, -1, __ATOMIC_SEQ_CST);
+		if (fd >= 0) {
+			u64 v = 1;
+			(void)write(fd, &v, sizeof(v));
+			return;
+		}
+	}
+
 	exiting = true;
 	if (env.sess_ctl.sig_efd >= 0) {
 		u64 v = 1;
@@ -1824,10 +1834,12 @@ static int do_prepare(struct bpf_state *bpf, struct worker_state *workers, int n
 	 * session end (the wait for activation plus the run duration), with margin.
 	 *
 	 * Flight recorder has no planned end (runs until Ctrl-C), so pass 0 to
-	 * disable the injectee watchdog.
+	 * disable the injectee watchdog. Same when it's not known yet when
+	 * activation happens. Injectees still clean up if wprof dies, once they
+	 * see their UDS closed.
 	 */
 	long sess_timeout_ms;
-	if (env.flightrec) {
+	if (env.flightrec || trigger_is_event(&env.activate_spec) || env.sess_ctl.activate_deferred) {
 		sess_timeout_ms = 0;
 	} else {
 		u64 activate_at = env.sess_ctl.activate_target_ts ?: ktime_now_ns();
@@ -1912,6 +1924,9 @@ static int start_trigger(struct phase_trigger *t)
 	case TRIG_TIME:
 		t->fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
 		break;
+	case TRIG_SIGINT:
+		t->fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+		break;
 	default:
 		BUG("unhandled %s trigger kind %d\n", t->phase, t->spec->kind);
 	}
@@ -1949,6 +1964,10 @@ static int arm_trigger(struct phase_trigger *t, u64 target_ts)
 		if (t->spec->kind == TRIG_TIME)
 			wprintf("Pending %s trigger...\n", t->phase);
 		break;
+	case TRIG_SIGINT:
+		__atomic_store_n(&env.sess_ctl.sigint_fd, t->fd, __ATOMIC_SEQ_CST);
+		wprintf("Pending %s trigger, press Ctrl-C (SIGINT) to proceed...\n", t->phase);
+		break;
 	default:
 		BUG("unhandled %s trigger kind %d\n", t->phase, t->spec->kind);
 	}
@@ -1963,6 +1982,10 @@ static int consume_trigger(struct phase_trigger *t)
 	case TRIG_TIME:
 		drain_fd(t->fd);
 		return 1;
+	case TRIG_SIGINT:
+		drain_fd(t->fd);
+		wprintf("SIGINT triggered %s.\n", t->phase);
+		return 1;
 	default:
 		BUG("unhandled %s trigger kind %d\n", t->phase, t->spec->kind);
 	}
@@ -1971,7 +1994,14 @@ static int consume_trigger(struct phase_trigger *t)
 /* SESS_STANDBY -> SESS_ARMED */
 static int on_prepare_trigger(struct bpf_state *bpf, struct worker_state *workers, int num_cpus, int workdir_fd)
 {
+	struct timespec_spec *act_time = &env.activate_spec.time;
 	int err;
+
+	/* after an event-triggered prepare, +<dur> activation counts from the trigger... */
+	if (env.sess_ctl.activate_deferred && act_time->kind == TS_REL) {
+		env.sess_ctl.activate_target_ts = resolve_timespec(act_time, ktime_now_ns());
+		env.sess_ctl.activate_deferred = false;
+	}
 
 	env.sess_ctl.state = SESS_PREP;
 
@@ -1982,6 +2012,12 @@ static int on_prepare_trigger(struct bpf_state *bpf, struct worker_state *worker
 	err = do_prepare(bpf, workers, num_cpus, workdir_fd);
 	if (err)
 		return err;
+
+	/* ...and /<dur> activation picks the first period boundary after preparation */
+	if (env.sess_ctl.activate_deferred && act_time->kind == TS_ALIGN) {
+		env.sess_ctl.activate_target_ts = resolve_timespec(act_time, ktime_now_ns());
+		env.sess_ctl.activate_deferred = false;
+	}
 
 	env.sess_ctl.state = SESS_ARMED;
 	if (env.sess_ctl.activate_target_ts && ts_before(env.sess_ctl.activate_target_ts, ktime_now_ns())) {
@@ -2035,6 +2071,7 @@ int main(int argc, char **argv)
 	calibrate_ktime(); /* establish the ktime<->realtime mapping up front, so it is always available */
 	elf_init(); /* set libelf's version up front so concurrent ELF parsing can't race on it */
 	env.sess_ctl.sig_efd = -1; /* so an early SIGINT (before the eventfd exists) is a no-op */
+	env.sess_ctl.sigint_fd = -1; /* no phase waits for SIGINT yet */
 
 	/* Parse command line arguments */
 	setenv("ARGP_HELP_FMT", "opt-doc-col=35,rmargin=150", 0); /* widen default --help output */
@@ -2913,6 +2950,7 @@ int main(int argc, char **argv)
 	 */
 	switch (env.prepare_spec.kind) {
 	case TRIG_UNSET:
+	case TRIG_SIGINT:
 		break;
 	case TRIG_TIME:
 		env.sess_ctl.prepare_target_ts = resolve_timespec(&env.prepare_spec.time, env.actual_start_ts);
@@ -2927,8 +2965,15 @@ int main(int argc, char **argv)
 	}
 	switch (env.activate_spec.kind) {
 	case TRIG_UNSET:
+	case TRIG_SIGINT:
 		break;
 	case TRIG_TIME:
+		/* with an event-triggered prepare, +<dur> and /<dur> get resolved once that event fires */
+		if (trigger_is_event(&env.prepare_spec) &&
+		    (env.activate_spec.time.kind == TS_REL || env.activate_spec.time.kind == TS_ALIGN)) {
+			env.sess_ctl.activate_deferred = true;
+			break;
+		}
 		env.sess_ctl.activate_target_ts = resolve_timespec(&env.activate_spec.time, env.actual_start_ts);
 		if (env.sess_ctl.activate_target_ts && ts_before(env.sess_ctl.activate_target_ts, ktime_now_ns())) {
 			eprintf("Activation time (--activate) is in the past!\n");

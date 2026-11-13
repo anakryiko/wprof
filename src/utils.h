@@ -133,6 +133,14 @@ static inline void wprof_strlcpy(char *dst, const char *src, size_t sz)
 	dst[i] = '\0';
 }
 
+/* Length of prefix if str starts with it, 0 otherwise */
+static inline size_t str_has_prefix(const char *str, const char *prefix)
+{
+	size_t len = strlen(prefix);
+
+	return strncmp(str, prefix, len) == 0 ? len : 0;
+}
+
 const char *sfmt(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
 const char *libbpf_errstr(int err); /* from libbpf */
