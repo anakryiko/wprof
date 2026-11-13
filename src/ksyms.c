@@ -63,8 +63,7 @@ static int ksyms__add_symbol(struct ksyms *ksyms, const char *name, const char *
 	else
 		ksym->module = NULL;
 	ksym->addr = addr;
-	/* mark which symbols are functions for post-processing */
-	ksym->size = is_ksym_func(sym_type) ? (unsigned long)-1 : 0;
+	ksym->size = 0;
 	ksym->kind = is_ksym_func(sym_type) ? KSYM_FUNC : KSYM_DATA;
 
 	memcpy(ksyms->strs + ksyms->strs_sz, name, name_len);
@@ -181,17 +180,18 @@ struct ksyms *ksyms__load(void)
 	ksyms->syms_by_name[ksyms->syms_sz] = NULL;
 
 	/* do another pass to calculate (guess?) function sizes */
-	for (i = 0; i < ksyms->syms_sz; i++) {
+	for (i = ksyms->syms_sz - 2; i >= 0; i--) {
 		struct ksym *ksym = &ksyms->syms_by_addr[i];
 		struct ksym *next_ksym = ksym + 1;
 
-		if (!ksym->size)
+		/* data sorts after functions, so this skips data and leaves the last function at size 0 */
+		if (next_ksym->kind != KSYM_FUNC)
 			continue;
 
-		if (i + 1 < ksyms->syms_sz && next_ksym->size)
-			ksym->size = next_ksym->addr - ksym->addr;
+		if (next_ksym->addr == ksym->addr)
+			ksym->size = next_ksym->size;
 		else
-			ksym->size = 0;
+			ksym->size = next_ksym->addr - ksym->addr;
 	}
 
 	return ksyms;
