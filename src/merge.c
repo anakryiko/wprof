@@ -200,10 +200,10 @@ static void collect_extras(struct persist_state *ps, struct wprof_extra_param **
 		}
 	}
 
-	if (env.prepare_spec_str)
-		add_extra(extras, cnt, WEXTRA_PREPARE_SPEC, persist_stroff(ps, env.prepare_spec_str));
-	if (env.activate_spec_str)
-		add_extra(extras, cnt, WEXTRA_ACTIVATE_SPEC, persist_stroff(ps, env.activate_spec_str));
+	if (env.prepare_spec.str)
+		add_extra(extras, cnt, WEXTRA_PREPARE_SPEC, persist_stroff(ps, env.prepare_spec.str));
+	if (env.activate_spec.str)
+		add_extra(extras, cnt, WEXTRA_ACTIVATE_SPEC, persist_stroff(ps, env.activate_spec.str));
 	if (env.flightrec) {
 		char spec[64];
 		int n = 0;

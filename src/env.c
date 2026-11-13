@@ -270,6 +270,19 @@ static enum stack_trace_kind parse_stack_kinds(const char *arg)
 	return ST_ERR;
 }
 
+static int parse_trigger(const char *arg, struct trigger_spec *spec)
+{
+	int err;
+
+	err = parse_timespec(arg, &spec->time);
+	if (err)
+		return err;
+	spec->kind = TRIG_TIME;
+
+	spec->str = strdup(arg);
+	return 0;
+}
+
 static error_t parse_arg(int key, char *arg, struct argp_state *state)
 {
 	long long n;
@@ -406,18 +419,24 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	}
 	case OPT_PREPARE:
-		if (parse_timespec(arg, &env.prepare_spec)) {
-			fprintf(stderr, "Invalid --prepare time spec: %s\n", arg);
+		if (env.prepare_spec.kind != TRIG_UNSET) {
+			eprintf("--prepare specified more than once!\n");
 			argp_usage(state);
 		}
-		env.prepare_spec_str = strdup(arg);
+		if (parse_trigger(arg, &env.prepare_spec)) {
+			fprintf(stderr, "Invalid --prepare spec: %s\n", arg);
+			argp_usage(state);
+		}
 		break;
 	case OPT_ACTIVATE:
-		if (parse_timespec(arg, &env.activate_spec)) {
-			fprintf(stderr, "Invalid --activate time spec: %s\n", arg);
+		if (env.activate_spec.kind != TRIG_UNSET) {
+			eprintf("--activate specified more than once!\n");
 			argp_usage(state);
 		}
-		env.activate_spec_str = strdup(arg);
+		if (parse_trigger(arg, &env.activate_spec)) {
+			fprintf(stderr, "Invalid --activate spec: %s\n", arg);
+			argp_usage(state);
+		}
 		break;
 	case 'D':
 		if (env.seals & SEAL_FILE_OUTPUT) {
