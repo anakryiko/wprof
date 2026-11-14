@@ -60,8 +60,8 @@ wprof -U 'usdt:myapp:request_start (arg:0, pid:nvidia-smi)'
 | `u:`      | `func_name[+offset]` | Userspace function entry (uprobe)    |
 | `uret:`   | `func_name`          | Userspace function return (uretprobe)|
 | `usdt:`   | `provider:name`      | User Statically-Defined Tracepoint   |
-| `k:`      | `func_name[+offset]` | Kernel function entry (kprobe)       |
-| `kret:`   | `func_name`          | Kernel function return (kretprobe)   |
+| `k:`      | `[module:]func_name[@file][+offset]` | Kernel function entry (kprobe)       |
+| `kret:`   | `[module:]func_name[@file]` | Kernel function return (kretprobe)   |
 | `tp:`     | `category:name`      | Classic kernel tracepoint            |
 | `raw_tp:` | `name`               | Raw kernel tracepoint (BTF-based)    |
 | `bpf:`    | `prog\|id[:subprog]` | Loaded BPF program entry (fentry)    |
@@ -74,6 +74,21 @@ wprof -U 'usdt:myapp:request_start (arg:0, pid:nvidia-smi)'
 | `uspan:`    | Uprobe + uretprobe on same function  |
 | `kspan:`    | Kprobe + kretprobe on same function  |
 | `bpfspan:`  | BPF fentry + fexit on same function  |
+
+Kernel probes (`k:`, `kret:`, and `kspan:`) accept `[module:]func_name[@file]`.
+Only `k:` accepts a trailing `+offset`.
+The optional module name restricts lookup to that loaded module, for example
+`k:my_module:foo`. Without it, lookup includes vmlinux and all loaded modules.
+
+The file selector matches a declaration-file suffix, for example
+`k:vfs_write@fs/read_write.c` or `kret:vfs_write@read_write.c`.
+The suffix must start at a '/' boundary. File selectors require
+matching DWARF; probes without a file selector also collect addresses
+from kallsyms. Only vmlinux DWARF is currently indexed.
+
+Zero-offset `k:` probes attach to both inlined (if DWARF is avaialble)
+and non-inlined function instances. Nonzero offsets, `kret:`, and
+`kspan:` attach only to non-inlined functions.
 
 A `bpf:`/`bpfret:`/`bpfspan:` target names a loaded BPF program's function.
 A bare `prog` name resolves to that function wherever it is loaded. A

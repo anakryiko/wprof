@@ -17,8 +17,10 @@
 #include "utrace.h"
 #include "utrace_cfg.h"
 #include "elf_utils.h"
+#include "ksyms.h"
 #include "bpf_utils.h"
 #include "proc.h"
+#include "wrust.h"
 #include "wprof_query.h"
 #include "wprof.skel.h"
 
@@ -33,13 +35,16 @@ static enum utrace_arg_type usdt_arg_to_utrace_type(const struct usdt_arg_info *
 	}
 }
 
+/* Takes ownership of link on both success and failure. */
 static int add_link(struct bpf_state *st, struct bpf_link *link)
 {
 	struct bpf_link **tmp;
 
 	tmp = realloc(st->links, (st->link_cnt + 1) * sizeof(struct bpf_link *));
-	if (!tmp)
+	if (!tmp) {
+		bpf_link__destroy(link);
 		return -ENOMEM;
+	}
 	st->links = tmp;
 	st->links[st->link_cnt] = link;
 	st->link_cnt++;
@@ -1792,7 +1797,7 @@ static int resolve_uprobe_binary(int pid, const char *sym_name,
 			 pid, (unsigned long long)vma->vma_start, (unsigned long long)vma->vma_end);
 
 		unsigned long offset = 0;
-		if (elf_find_syms(map_file, STT_FUNC, &sym_name, 1, &offset))
+		if (elf_find_syms(map_file, STT_FUNC, &sym_name, 1, &offset, NULL))
 			continue;
 
 		*attach_path_out = strdup(map_file);
@@ -1823,7 +1828,7 @@ static int resolve_uprobe_cfg(struct utrace_cfg *cfg, bool mandatory)
 
 	if (binary_path) {
 		const char *sym_name = cfg->uprobe.name;
-		int err = elf_find_syms(binary_path, STT_FUNC, &sym_name, 1, &sym_offset);
+		int err = elf_find_syms(binary_path, STT_FUNC, &sym_name, 1, &sym_offset, NULL);
 		if (err < 0) {
 			log_printf(lvl, "utrace: failed to resolve symbol '%s' in '%s': %d\n",
 				   cfg->uprobe.name, binary_path, err);
@@ -2601,6 +2606,205 @@ int utrace_setup(struct wprof_bpf *skel)
 	return 0;
 }
 
+struct dwarf_infos {
+	/* Used to limit amount of information collected from DWARF */
+	const char **kprobe_func_names;
+	size_t kprobe_func_name_cnt;
+	struct dwarf_info *vmlinux;
+	unsigned long vmlinux_kaslr_offset; /* -1 if unavailable. */
+	bool vmlinux_attempted;
+};
+
+/*
+ * Derive the KASLR offset from _stext, shamelessly copied from blazesym's
+ * find_stext_kaslr_offset() in src/kernel/kaslr.rs.
+ *
+ * _stext is a linker-defined symbol marking the start of kernel text.
+ * kallsyms lists it as a global text symbol, giving its runtime address:
+ *
+ *     ffffffff81000000 T _stext
+ *
+ * The corresponding line from readelf -Ws vmlinux gives its linked address:
+ *
+ *     209802: ffffffff81000000     0 NOTYPE  GLOBAL DEFAULT    1 _stext
+ *
+ * The difference gives the KASLR offset.
+ * Returns -1 if either address is unavailable.
+ */
+static unsigned long find_vmlinux_kaslr_offset(const char *path)
+{
+	const char *sym = "_stext";
+	unsigned long elf_stext;
+	int err;
+
+	err = elf_find_syms(path, STT_NOTYPE, &sym, 1, NULL, &elf_stext);
+	if (err) {
+		eprintf("utrace: failed to find _stext in '%s': %s\n", path, errstr(err));
+		return -1;
+	}
+
+	struct ksyms *ksyms = load_ksyms();
+	if (!ksyms) {
+		eprintf("utrace: failed to load kallsyms\n");
+		return -1;
+	}
+	const struct ksym *ksym = ksyms__get_symbol(ksyms, "_stext", NULL, KSYM_FUNC);
+	if (!ksym || !ksym->addr) {
+		eprintf("utrace: failed to find a nonzero _stext address in kallsyms\n");
+		return -1;
+	}
+	return ksym->addr - elf_stext;
+}
+
+static bool load_vmlinux_dwarf(struct dwarf_infos *dwarfs)
+{
+	if (!dwarfs->vmlinux_attempted) {
+		struct dwarf_info *vmlinux;
+
+		dwarfs->vmlinux_attempted = true;
+		dwarfs->vmlinux_kaslr_offset = -1;
+		vmlinux = dwarf_info_init_vmlinux(dwarfs->kprobe_func_names, dwarfs->kprobe_func_name_cnt);
+		if (!vmlinux)
+			return false;
+
+		dwarfs->vmlinux_kaslr_offset = find_vmlinux_kaslr_offset(dwarf_info_elf_path(vmlinux));
+		if (dwarfs->vmlinux_kaslr_offset == (unsigned long)-1) {
+			dwarf_info_free(vmlinux);
+			return false;
+		}
+		dwarfs->vmlinux = vmlinux;
+	}
+	return dwarfs->vmlinux != NULL;
+}
+
+static bool path_has_suffix(const char *path, const char *suffix)
+{
+	if (!str_has_suffix(path, suffix))
+		return false;
+
+	size_t off = strlen(path) - strlen(suffix);
+	return off == 0 || path[off - 1] == '/';
+}
+
+static int find_funcs_in_dwarf(struct dwarf_infos *dwarfs, const struct utrace_cfg *cfg,
+			       unsigned long **addrs, size_t *cnt)
+{
+	const struct dwarf_func_addr *func_addrs;
+	const char *file = cfg->kprobe.file;
+	const char *file_name;
+	unsigned long addr;
+	size_t func_cnt;
+	int err;
+
+	*addrs = NULL;
+	*cnt = 0;
+	/* Only vmlinux DWARF is indexed so far. */
+	if (cfg->kprobe.module)
+		return 0;
+	if (!load_vmlinux_dwarf(dwarfs))
+		return 0;
+
+	func_addrs = dwarf_info_find_func(dwarfs->vmlinux, cfg->kprobe.name, &func_cnt);
+	if (!func_addrs)
+		return 0;
+
+	for (size_t i = 0; i < func_cnt; i++) {
+		/*
+		 * Inline instances need not be contiguous, so offsets aren't meaningful.
+		 * They also have no standalone return site for kretprobes or native spans.
+		 */
+		if (func_addrs[i].is_inline && (cfg->kprobe.off != 0 || cfg->type != UTRACE_KPROBE))
+			continue;
+		file_name = func_addrs[i].file_name;
+		if (file && (!file_name || !path_has_suffix(file_name, file)))
+			continue;
+
+		addr = func_addrs[i].addr + dwarfs->vmlinux_kaslr_offset;
+		err = append_long(addrs, cnt, addr);
+		if (err)
+			return err;
+	}
+	return 0;
+}
+
+static int append_missing_kallsyms_funcs(const char *name, const char *module,
+					 unsigned long **addrs, size_t *cnt)
+{
+	struct ksyms *ksyms = load_ksyms();
+	const struct ksym * const *it;
+	int err;
+
+	if (!ksyms) {
+		vprintf("utrace: failed to load kallsyms\n");
+		return 0;
+	}
+	it = ksyms__get_symbol_iter(ksyms, name, module ?: KSYM_ANY_MODULE, KSYM_FUNC);
+	for (; it && *it; it++) {
+		const struct ksym *sym = *it;
+
+		if (sym->kind != KSYM_FUNC || strcmp(sym->name, name))
+			break;
+		if (module && (sym->module == NULL || strcmp(sym->module, module)))
+			break;
+		if (!sym->addr)
+			continue;
+		if (find_long(*addrs, *cnt, sym->addr) >= 0)
+			continue;
+		err = append_long(addrs, cnt, sym->addr);
+		if (err)
+			return err;
+	}
+	return 0;
+}
+
+static int attach_kprobe_addr(struct bpf_state *st, struct wprof_bpf *skel,
+			      const struct utrace_cfg *cfg, unsigned long addr,
+			      bool has_multi, bool is_retprobe, __u64 cookie)
+{
+	const char *kind = is_retprobe ? "kretprobe" : "kprobe";
+	unsigned long target = addr + cfg->kprobe.off;
+	struct bpf_link *link = NULL;
+	int err;
+
+	/*
+	 * Multi-kprobe is generally faster than legacy breakpoint-based kprobes, but can
+	 * only attach at function entry. Use it when the offset is zero (always true for
+	 * kretprobe and span legs), and fall back to the legacy program for non-zero
+	 * offsets or functions that aren't ftrace-attachable.
+	 */
+	if (has_multi && cfg->kprobe.off == 0) {
+		struct bpf_program *prog = is_retprobe ? skel->progs.wprof_ut_kretmulti : skel->progs.wprof_ut_kmulti;
+		LIBBPF_OPTS(bpf_kprobe_multi_opts, mopts,
+			.addrs = &target,
+			.cookies = &cookie,
+			.cnt = 1,
+			.retprobe = is_retprobe,
+		);
+		link = bpf_program__attach_kprobe_multi_opts(prog, NULL, &mopts);
+		if (!link) {
+			err = -errno;
+			vprintf("utrace: multi-%s attach to '%s' at 0x%lx failed: %s. Falling back to legacy %s.\n",
+				kind, cfg->kprobe.name, target, errstr(err), kind);
+		}
+	}
+	if (!link) {
+		struct bpf_program *prog = is_retprobe ? skel->progs.wprof_ut_kret : skel->progs.wprof_ut_kprobe;
+		LIBBPF_OPTS(bpf_kprobe_opts, opts,
+			.bpf_cookie = cookie,
+			.retprobe = is_retprobe,
+			.offset = target,
+		);
+		link = bpf_program__attach_kprobe_opts(prog, NULL, &opts);
+	}
+	if (!link) {
+		err = -errno;
+		eprintf("utrace: failed to attach %s to '%s' at 0x%lx: %s\n",
+			kind, cfg->kprobe.name, target, errstr(err));
+		return err;
+	}
+	return add_link(st, link);
+}
+
 /*
  * Attach one probe instance for the given cfg (which may be a simple type or a
  * native span). Callers of native spans (UPROBE_SPAN/KPROBE_SPAN/BPF_SPAN) invoke
@@ -2610,7 +2814,8 @@ int utrace_setup(struct wprof_bpf *skel)
 static int attach_utrace_probe(struct bpf_state *st, struct wprof_bpf *skel,
 			       struct utrace_cfg *cfg, int utrace_id,
 			       enum utrace_event_type event_type, bool is_exit,
-			       bool is_retprobe, int map_fd, u32 *map_idx)
+			       bool is_retprobe, int map_fd, u32 *map_idx,
+			       struct dwarf_infos *dwarfs)
 {
 	struct utrace_probe_cfg pcfg;
 	int err;
@@ -2645,53 +2850,33 @@ static int attach_utrace_probe(struct bpf_state *st, struct wprof_bpf *skel,
 	case UTRACE_KPROBE:
 	case UTRACE_KRETPROBE:
 	case UTRACE_KPROBE_SPAN: {
-		const char *kind = is_retprobe ? "kretprobe" : "kprobe";
-		struct bpf_link *link = NULL;
 		struct btf *vmlinux_btf = load_vmlinux_btf();
 		bool has_multi = btf__find_by_name_kind(vmlinux_btf, "bpf_kprobe_multi_link", BTF_KIND_STRUCT) > 0;
+		unsigned long *addrs;
+		size_t cnt;
 
-		/*
-		 * Multi-kprobe is generally faster than legacy breakpoint-based kprobes, but can
-		 * only attach at function entry. Use it when the offset is zero (always true for
-		 * kretprobe and span legs), and fall back to the legacy program for non-zero
-		 * offsets or functions that aren't ftrace-attachable.
-		 */
-		if (has_multi && cfg->kprobe.off == 0) {
-			struct bpf_program *prog = is_retprobe ? skel->progs.wprof_ut_kretmulti : skel->progs.wprof_ut_kmulti;
-			const char *sym = cfg->kprobe.name;
-			__u64 cookie = *map_idx;
-			LIBBPF_OPTS(bpf_kprobe_multi_opts, mopts,
-				.syms = &sym,
-				.cookies = &cookie,
-				.cnt = 1,
-				.retprobe = is_retprobe,
-			);
-			link = bpf_program__attach_kprobe_multi_opts(prog, NULL, &mopts);
-			if (!link) {
-				err = -errno;
-				vprintf("utrace: multi-%s attach to '%s' failed: %s. Falling back to legacy %s.\n",
-					kind, cfg->kprobe.name, errstr(err), kind);
+		err = find_funcs_in_dwarf(dwarfs, cfg, &addrs, &cnt);
+		/* Kallsyms has no source paths, so it cannot satisfy a file selector. */
+		if (!err && !cfg->kprobe.file)
+			err = append_missing_kallsyms_funcs(cfg->kprobe.name, cfg->kprobe.module, &addrs, &cnt);
+		if (!err && !cnt)
+			err = -ESRCH;
+		if (!err) {
+			for (size_t i = 0; i < cnt; i++) {
+				err = attach_kprobe_addr(st, skel, cfg, addrs[i], has_multi, is_retprobe, *map_idx);
+				if (err)
+					break;
 			}
 		}
+		free(addrs);
+		if (err) {
+			struct sbuf sb = sbuf_new();
 
-		if (!link) {
-			struct bpf_program *prog = is_retprobe ? skel->progs.wprof_ut_kret : skel->progs.wprof_ut_kprobe;
-			LIBBPF_OPTS(bpf_kprobe_opts, opts,
-				.bpf_cookie = *map_idx,
-				.retprobe = is_retprobe,
-				.offset = cfg->kprobe.off,
-			);
-			link = bpf_program__attach_kprobe_opts(prog, cfg->kprobe.name, &opts);
-		}
-
-		if (!link) {
-			err = -errno;
-			eprintf("utrace: failed to attach %s to '%s': %s\n", kind, cfg->kprobe.name, errstr(err));
+			ucfg_format(cfg, &sb);
+			eprintf("utrace: failed to resolve kernel probe '%s': %s\n", sbuf_str(&sb), errstr(err));
+			sbuf_free(&sb);
 			return err;
 		}
-		err = add_link(st, link);
-		if (err)
-			return err;
 		break;
 	}
 	case UTRACE_BPF_PROBE:
@@ -2781,11 +2966,42 @@ static int attach_utrace_probe(struct bpf_state *st, struct wprof_bpf *skel,
 	return 0;
 }
 
-int utrace_attach(struct bpf_state *st, struct wprof_bpf *skel)
+static int collect_funcs_to_find_in_dwarf(struct dwarf_infos *dwarfs)
 {
 	int err;
+
+	for (int i = 0; i < env.utrace_cfg_cnt; i++) {
+		struct utrace_cfg *cfg = &env.utrace_cfgs[i];
+
+		/*
+		 * For now it only makes sense to collect DWARF for KPROBE events,
+		 * as these can be used to detect inlined functions "calls".
+		 * SPANs and RETPROBEs are not supported for inlined functions,
+		 * as there is no clear "return" concept.
+		 */
+		switch (cfg->type) {
+		case UTRACE_KPROBE:
+			break;
+		default:
+			continue;
+		}
+		err = append_str_ptrs(&dwarfs->kprobe_func_names, &dwarfs->kprobe_func_name_cnt, cfg->kprobe.name);
+		if (err)
+			return err;
+	}
+	return 0;
+}
+
+int utrace_attach(struct bpf_state *st, struct wprof_bpf *skel)
+{
+	struct dwarf_infos dwarfs = {};
+	int err = 0;
 	int map_fd = bpf_map__fd(skel->maps.utrace_probe_cfgs);
 	u32 map_idx = 0;
+
+	err = collect_funcs_to_find_in_dwarf(&dwarfs);
+	if (err)
+		goto out;
 
 	for (int i = 0; i < env.utrace_cfg_cnt; i++) {
 		struct utrace_cfg *cfg = &env.utrace_cfgs[i];
@@ -2801,41 +3017,45 @@ int utrace_attach(struct bpf_state *st, struct wprof_bpf *skel)
 		case UTRACE_RAW_TRACEPOINT:
 		case UTRACE_TRACEPOINT:
 			err = attach_utrace_probe(st, skel, cfg, i, UTRACE_INSTANT, false,
-						  cfg_is_ret_probe(cfg->type), map_fd, &map_idx);
+						  cfg_is_ret_probe(cfg->type), map_fd, &map_idx, &dwarfs);
 			if (err)
-				return err;
+				goto out;
 			break;
 		case UTRACE_UPROBE_SPAN:
 		case UTRACE_KPROBE_SPAN:
 		case UTRACE_BPF_SPAN:
 			err = attach_utrace_probe(st, skel, cfg, i, UTRACE_ENTRY, false,
-						  false, map_fd, &map_idx);
+						  false, map_fd, &map_idx, &dwarfs);
 			if (err)
-				return err;
+				goto out;
 			err = attach_utrace_probe(st, skel, cfg, i, UTRACE_EXIT, true,
-						  true, map_fd, &map_idx);
+						  true, map_fd, &map_idx, &dwarfs);
 			if (err)
-				return err;
+				goto out;
 			break;
 		case UTRACE_SPAN: {
 			struct utrace_cfg *entry = cfg->span.entry;
 			struct utrace_cfg *exit = cfg->span.exit;
 
 			err = attach_utrace_probe(st, skel, entry, i, UTRACE_ENTRY, false,
-						  cfg_is_ret_probe(entry->type), map_fd, &map_idx);
+						  cfg_is_ret_probe(entry->type), map_fd, &map_idx, &dwarfs);
 			if (err)
-				return err;
+				goto out;
 			err = attach_utrace_probe(st, skel, exit, i, UTRACE_EXIT, true,
-						  cfg_is_ret_probe(exit->type), map_fd, &map_idx);
+						  cfg_is_ret_probe(exit->type), map_fd, &map_idx, &dwarfs);
 			if (err)
-				return err;
+				goto out;
 			break;
 		}
 		default:
 			eprintf("utrace: probe type %d not yet supported\n", cfg->type);
-			return -EOPNOTSUPP;
+			err = -EOPNOTSUPP;
+			goto out;
 		}
 	}
 
-	return 0;
+out:
+	dwarf_info_free(dwarfs.vmlinux);
+	free(dwarfs.kprobe_func_names);
+	return err;
 }

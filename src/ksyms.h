@@ -18,6 +18,9 @@ struct ksym {
 
 struct ksyms;
 
+/* A kernel symbol, or a symbol from any of the modules */
+#define KSYM_ANY_MODULE ((const char *)-1)
+
 struct ksyms *ksyms__load(void);
 void ksyms__free(struct ksyms *ksyms);
 const struct ksym *ksyms__map_addr(const struct ksyms *ksyms,
