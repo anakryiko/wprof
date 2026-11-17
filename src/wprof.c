@@ -1484,7 +1484,7 @@ int attach_usdt_probe(struct bpf_state *st, struct bpf_program *prog,
 		      const char *binary_path, const char *binary_attach_path,
 		      const char *usdt_provider, const char *usdt_name, bool quiet)
 {
-	struct bpf_link *link, **tmp;
+	struct bpf_link *link;
 	struct usdt_info info;
 
 	int err = elf_find_usdt(binary_attach_path, usdt_provider, usdt_name, &info);
@@ -1521,14 +1521,7 @@ int attach_usdt_probe(struct bpf_state *st, struct bpf_program *prog,
 	dlogf(USDT, 1, "Attached USDT %s:%s to %s (%s).\n",
 	      usdt_provider, usdt_name, binary_path, binary_attach_path);
 
-	tmp = realloc(st->links, (st->link_cnt + 1) * sizeof(struct bpf_link *));
-	if (!tmp)
-		return -ENOMEM;
-	st->links = tmp;
-	st->links[st->link_cnt] = link;
-	st->link_cnt++;
-
-	return 0;
+	return bpf_add_link(st, link);
 }
 
 static int attach_bpf(struct bpf_state *st, struct worker_state *workers, int num_cpus)
