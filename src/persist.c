@@ -591,6 +591,19 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 		break;
 	}
 
+	case EV_CUDA_API:
+		fill_wevent_hdr(dst, e, task_id, WEVENT_SZ(cuda_api));
+
+		dst->flags |= WEF_CUDA_BPF;
+		dst->cuda_api.end_ts = e->cuda_api.end_ts;
+		dst->cuda_api.task_id = task_id;
+		dst->cuda_api.corr_id = e->cuda_api.corr_id;
+		dst->cuda_api.cbid = e->cuda_api.cbid;
+		dst->cuda_api.ret_val = e->cuda_api.ret_val;
+		dst->cuda_api.cuda_stack_id = bpf_event_stack_id(e, ST_CUDA);
+		dst->cuda_api.kind = e->cuda_api.kind;
+		break;
+
 	/* ephemeral */
 	case EV_CUDA_CALL: {
 		struct persist_thread_state *st = persist_thread_state(ps, e->task_id);

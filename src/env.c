@@ -202,12 +202,14 @@ static const struct argp_option opts[] = {
 
 	/* event subset targeting */
 	{ "feature", 'f', "FEAT", 0,
-	  "Data capture feature selector. Supported: ipi, req[=PATH|PID|comm:GLOB], scx, cuda[=nv-smi|all|PID], "
+	  "Data capture feature selector. Supported: ipi, req[=PATH|PID|comm:GLOB], scx, cuda[=nv-smi|all|PID], cuda-api=PID, "
 	  "py-stacks[=nv-smi|PID], py-trace[=nv-smi|PID], py-torch[=nv-smi|PID], "
 	  "softirq, hardirq, irq, wq, sched (on by default), wakeup (on by default), task-life (on by default). "
 	  "Request sub-features under -f req: req-ctxs, req-tasks, req-rpc (all on by default), "
 	  "req-pmu=ctxs|tasks|none (none by default). "
-	  "All features can be prefixed with 'no-' to disable them explicitly." },
+	  "CUDA API tracing accepts repeatable -f cuda-api=PID and optional -Scuda stacks. "
+	  "All feature names except cuda-api accept a 'no-' prefix to disable them explicitly. "
+	  "Use -f no-cuda to hide CUDA events in replay." },
 
 	/* trace emitting options */
 	{ "emit-feature", 'e', "FEAT", 0,
@@ -595,6 +597,10 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			val = FALSE;
 			arg += 3;
 		}
+		if (val == FALSE && (strcasecmp(arg, "cuda-api") == 0 || strncasecmp(arg, "cuda-api=", 9) == 0)) {
+			eprintf("-f no-cuda-api isn't supported, use -f no-cuda to hide CUDA events in replay!\n");
+			return -EINVAL;
+		}
 
 		if (strcasecmp(arg, "ipi") == 0) {
 			env.capture_ipis = val;
@@ -693,6 +699,21 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			} else {
 				eprintf("Use -fcuda, -fcuda=all, or -fcuda=<PID> to enable CUDA tracking!\n");
 				return -EINVAL;
+			}
+			env.capture_cuda = val;
+		} else if (strncasecmp(arg, "cuda-api=", 9) == 0) {
+			const char *cuda_arg = arg + 9;
+			long long pid_value;
+
+			if (parse_ll(cuda_arg, 10, &pid_value) || pid_value <= 0 || pid_value > INT_MAX) {
+				eprintf("Use -f cuda-api=PID with a positive PID to trace CUDA host API calls!\n");
+				return -EINVAL;
+			}
+			int pid = (int)pid_value;
+			err = append_unique_int(&env.cuda_api_pids, &env.cuda_api_pid_cnt, pid);
+			if (err) {
+				eprintf("Failed to record PID '%s' for CUDA API tracing!\n", cuda_arg);
+				return err;
 			}
 			env.capture_cuda = val;
 		} else if (strcasecmp(arg, "py-stacks") == 0) {
@@ -1165,6 +1186,12 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		env.seals |= seal_kinds[i].kind;
 		break;
 	}
+	case ARGP_KEY_END:
+		if ((env.cuda_pid_cnt || env.cuda_discovery) && env.cuda_api_pid_cnt) {
+			eprintf("Pick one CUDA tracing method: -f cuda or -f cuda-api!\n");
+			return -EINVAL;
+		}
+		break;
 	case ARGP_KEY_ARG:
 		argp_usage(state);
 		break;

@@ -311,6 +311,8 @@ struct env {
 	int *cuda_pids;
 	int cuda_pid_cnt;
 	enum cuda_discover_strategy cuda_discovery;
+	int *cuda_api_pids;
+	int cuda_api_pid_cnt;
 
 	/* EXPERIMENTAL (Python stacks) */
 	int *pystacks_pids;

@@ -40,6 +40,7 @@
 #include "wprof.skel.h"
 
 #include "env.h"
+#include "cuda_api.h"
 #include "flightrec.h"
 #include "wprof_build_info.h"
 #include "protobuf.h"
@@ -394,7 +395,12 @@ static int handle_rb_event(void *ctx, void *data, size_t size)
 	if (exiting)
 		return -EINTR;
 
-	if (env.sess_end_ts && ts_after_or_at(e->ts, env.sess_end_ts)) {
+	/*
+	 * EV_CUDA_API uses entry time in ts to match -f cuda's CUPTI records.
+	 * BPF emits it on return, so use end_ts for the stop cutoff and chunk bounds.
+	 */
+	u64 end_ts = e->kind == EV_CUDA_API ? e->cuda_api.end_ts : e->ts;
+	if (env.sess_end_ts && ts_after_or_at(end_ts, env.sess_end_ts)) {
 		w->rb_ignored_cnt++;
 		w->rb_ignored_sz += size;
 		return 0;
@@ -412,7 +418,7 @@ static int handle_rb_event(void *ctx, void *data, size_t size)
 
 	w->cur_chunk->byte_sz += size;
 	w->cur_chunk->event_cnt++;
-	w->cur_chunk->end_ts = ts_max(w->cur_chunk->end_ts, e->ts);
+	w->cur_chunk->end_ts = ts_max(w->cur_chunk->end_ts, end_ts);
 
 	if (!env.flightrec || w->cur_chunk->byte_sz < env.fr_chunk_size)
 		return 0;
@@ -1071,8 +1077,8 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 	}
 
 	/*
-	 * ST_CUDA (e.g. pulled in by -Sall) needs an actual CUDA-using injectee to
-	 * capture from; if none was detected, drop it so nothing downstream attaches
+	 * ST_CUDA (e.g. pulled in by -Sall) needs a CUDA injectee or dedicated API
+	 * probes to capture from; otherwise drop it so nothing downstream attaches
 	 * CUDA USDTs or reports CUDA.
 	 */
 	bool have_cuda_injectee = false;
@@ -1080,11 +1086,11 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 		if (env.injectees[i].detect_feats & INJ_FEAT_CUDA)
 			have_cuda_injectee = true;
 	}
-	if (!have_cuda_injectee) {
+	if (!have_cuda_injectee && !env.cuda_api_pid_cnt) {
 		env.requested_stack_traces &= ~ST_CUDA;
 		env.capture_cuda = false;
 	}
-	if (env.requested_stack_traces & ST_CUDA)
+	if (have_cuda_injectee && (env.requested_stack_traces & ST_CUDA))
 		bpf_program__set_autoload(skel->progs.wprof_cuda_call, true);
 
 	/*
@@ -1360,6 +1366,11 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 		return err;
 	}
 
+	if (env.cuda_api_pid_cnt > 0) {
+		bpf_program__set_autoload(skel->progs.wprof_cuda_api_entry, true);
+		bpf_program__set_autoload(skel->progs.wprof_cuda_api_exit, true);
+	}
+
 	 /* force RB notification when at least 2.0MB or 25% of ringbuf (whichever is less) is full */
 	skel->rodata->rb_submit_threshold_bytes = min(2 * 1024 * 1024, env.ringbuf_sz / 4);
 
@@ -1594,6 +1605,8 @@ static int attach_bpf(struct bpf_state *st, struct worker_state *workers, int nu
 			return err;
 		}
 	}
+
+	cuda_api_attach(st);
 
 	/* spin up and ready ringbuf consumer threads */
 	st->rb_threads = calloc(env.ringbuf_cnt, sizeof(*st->rb_threads));
@@ -1907,7 +1920,7 @@ static int do_activate(struct bpf_state *bpf)
 			return err;
 		}
 
-		if (env.requested_stack_traces & ST_CUDA) {
+		if (bpf_program__fd(bpf->skel->progs.wprof_cuda_call) >= 0) {
 			wprintf("Attaching CUDA USDTs...\n");
 			err = injmgr_attach_usdts(bpf, bpf->skel->progs.wprof_cuda_call);
 			if (err) {
@@ -3300,7 +3313,7 @@ int main(int argc, char **argv)
 			cuda_rec_cnt += inj->ctx->cupti_rec_cnt;
 	}
 
-	if (cuda_rec_cnt == 0) {
+	if (cuda_rec_cnt == 0 && !env.cuda_api_pid_cnt) {
 		/* don't claim CUDA capture if no CUDA records were collected (e.g. CUPTI busy) */
 		env.requested_stack_traces &= ~ST_CUDA;
 		env.capture_cuda = false;

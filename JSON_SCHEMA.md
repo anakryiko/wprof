@@ -652,7 +652,7 @@ thread-level event.
 | `task`     | task   | Thread making the CUDA API call      |
 | `dur`      | float  | Duration of the API call             |
 | `name`     | string | API function name                    |
-| `corr_id`  | int    | Correlation ID (links to GPU events) |
+| `corr_id`  | int    | CUPTI GPU correlation ID; BPF API calls emit `0` (no GPU correlation) |
 | `stack_id` | int    | *(optional)* Stack trace ID          |
 
 ```json

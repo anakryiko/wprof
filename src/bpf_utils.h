@@ -49,6 +49,14 @@ static inline int bpf_add_link(struct bpf_state *st, struct bpf_link *link)
 	return 0;
 }
 
+static inline void bpf_remove_links_since(struct bpf_state *st, int checkpoint)
+{
+	while (st->link_cnt > checkpoint) {
+		st->link_cnt--;
+		bpf_link__destroy(st->links[st->link_cnt]);
+	}
+}
+
 struct uprobe_binary;
 
 int attach_usdt_probe(struct bpf_state *st, struct bpf_program *prog,
