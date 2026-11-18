@@ -629,13 +629,15 @@ and names.
 
 ## utrace triggers
 
-`--prepare` and `--activate` can wait for the first hit of a probe, given after
-a `utrace:` (or `ut:`) prefix, instead of a point in time (see the README):
+`--prepare`, `--activate`, and `--stop` can wait for the first hit of a probe,
+given after a `utrace:` (or `ut:`) prefix, instead of a point in time (see the
+README):
 
 ```
 wprof --activate 'utrace:usdt:app:iter_start(path:/usr/bin/app)' -d 5s
 wprof --activate 'ut:usdt:libc:setjmp(comm:bash)' -d 5s
 wprof --prepare 'ut:u:main(path:/usr/bin/app)' --activate 'utrace:k:oom_kill_process'
+wprof -F10s --stop 'ut:k:oom_kill_process'
 ```
 
 A trigger only needs to know where to attach, so it takes a subset of the probe

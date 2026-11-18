@@ -114,6 +114,7 @@ enum {
 	OPT_JSON_SCHEMA = 1018,
 	OPT_PREPARE = 1019,
 	OPT_ACTIVATE = 1020,
+	OPT_STOP = 1021,
 
 	OPT_ALLOW_TID = 2000,
 	OPT_DENY_TID = 2001,
@@ -160,6 +161,7 @@ static const struct argp_option opts[] = {
 	  "disables a dimension. Mutually exclusive with -d." },
 	{ "prepare", OPT_PREPARE, "WHEN", 0, "Delayed tracing setup, syntax: @now, @<ISO time>, +<dur>, /<dur> (align to next period), sig:int (Ctrl-C), utrace:<probe> (or ut:<probe>). Default: at startup" },
 	{ "activate", OPT_ACTIVATE, "WHEN", 0, "Delayed data capture activation; same syntax as --prepare. Default: immediately after prepare" },
+	{ "stop", OPT_STOP, "WHEN", 0, "Stop data capture before -d runs out (required, unless -F); same syntax as --prepare, +<dur> counts from activation" },
 	{ "timer-freq", OPT_TIMER_FREQ, "HZ", 0, "Deprecated: use -Stimer=<freq>hz or -Stimer=<period>. On-CPU timer interrupt frequency (default: 100Hz)" },
 
 	{ "data", 'D', "FILE", 0, "Data dump path (defaults to 'wprof.data' in current directory)" },
@@ -456,6 +458,16 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		}
 		if (parse_trigger(arg, &env.activate_spec)) {
 			fprintf(stderr, "Invalid --activate spec: %s\n", arg);
+			argp_usage(state);
+		}
+		break;
+	case OPT_STOP:
+		if (env.stop_spec.kind != TRIG_UNSET) {
+			eprintf("--stop specified more than once!\n");
+			argp_usage(state);
+		}
+		if (parse_trigger(arg, &env.stop_spec)) {
+			fprintf(stderr, "Invalid --stop spec: %s\n", arg);
 			argp_usage(state);
 		}
 		break;

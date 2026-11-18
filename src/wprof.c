@@ -161,6 +161,7 @@ const char *extra_param_str(struct wprof_data_hdr *hdr, const struct wprof_extra
 	case WEXTRA_EMIT_PY_COMBINE:		return e->value ? "-e py-combine" : "-e no-py-combine";
 	case WEXTRA_PREPARE_SPEC:		return sfmt("--prepare %s", wevent_str(hdr, e->stroff));
 	case WEXTRA_ACTIVATE_SPEC:		return sfmt("--activate %s", wevent_str(hdr, e->stroff));
+	case WEXTRA_STOP_SPEC:			return sfmt("--stop %s", wevent_str(hdr, e->stroff));
 	case WEXTRA_STACK_CAPTURE:
 		switch (e->arg) {
 		case ST_TIMER:		return sfmt("--stacks=timer=%uhz", e->value);
@@ -1887,6 +1888,20 @@ static int do_activate(struct bpf_state *bpf)
 	env.sess_start_ts = env.ktime_start_ns;
 	/* flightrec runs until stopped: leave the end at 0 (gate treats 0 as no-end) */
 	env.sess_end_ts = env.flightrec ? 0 : env.ktime_start_ns + env.duration_ns;
+	/* a --stop time is just an earlier planned end, sharing the session end timer */
+	if (env.stop_spec.kind == TRIG_TIME) {
+		u64 stop_ts = resolve_timespec(&env.stop_spec.time, env.ktime_start_ns);
+
+		if (!ts_after(stop_ts, env.ktime_start_ns)) {
+			eprintf("Stop time (--stop) already passed before activation!\n");
+			return -EINVAL;
+		}
+		if (!env.sess_end_ts || ts_before(stop_ts, env.sess_end_ts)) {
+			env.sess_end_ts = stop_ts;
+			if (!env.flightrec) /* flightrec sets it from the kept window */
+				env.duration_ns = env.sess_end_ts - env.sess_start_ts;
+		}
+	}
 
 	bpf->skel->bss->session_start_ts = env.sess_start_ts;
 	bpf->skel->bss->session_end_ts = env.sess_end_ts;
@@ -2084,6 +2099,29 @@ static int on_prepare_trigger(struct bpf_state *bpf, struct worker_state *worker
 	return arm_trigger(&env.sess_ctl.activate_trig, env.sess_ctl.activate_target_ts);
 }
 
+/* --stop event trigger starts and gets armed along with recording */
+static int start_stop_trigger(void)
+{
+	struct phase_trigger *t = &env.sess_ctl.stop_trig;
+	int err;
+
+	switch (t->spec->kind) {
+	case TRIG_UNSET:
+	case TRIG_TIME: /* folded into the session end by do_activate() */
+		return 0;
+	case TRIG_SIGINT:
+	case TRIG_UTRACE:
+		break;
+	default:
+		BUG("unhandled --stop trigger kind %d\n", t->spec->kind);
+	}
+
+	err = start_trigger(t);
+	if (err)
+		return err;
+	return arm_trigger(t, 0);
+}
+
 /* SESS_ARMED -> SESS_RECORDING */
 static int on_activate_trigger(struct bpf_state *bpf)
 {
@@ -2098,11 +2136,15 @@ static int on_activate_trigger(struct bpf_state *bpf)
 
 	env.sess_ctl.session_activated = true;
 	env.sess_ctl.state = SESS_RECORDING;
-	/* flightrec has no planned end: run until stopped (Ctrl-C via CTL_SIGNAL) */
-	if (!env.flightrec) {
+	/* no planned end (flightrec without a --stop time): run until stopped */
+	if (env.sess_end_ts) {
 		env.sess_ctl.sess_end_target_ts = env.sess_end_ts;
 		arm_timer_abs(env.sess_ctl.sess_end_tfd, env.sess_ctl.sess_end_target_ts);
 	}
+
+	err = start_stop_trigger();
+	if (err)
+		return err;
 	/*
 	 * Watch each active injectee's UDS: an EOF means it died
 	 * mid-session (handled by the control loop), and later this carries
@@ -2171,6 +2213,13 @@ int main(int argc, char **argv)
 
 	if (env.flightrec && env.duration_ns) {
 		eprintf("--flight-record (-F) is mutually exclusive with --dur (-d)!\n");
+		err = -EINVAL;
+		goto cleanup;
+	}
+
+	/* -d is the time limit in case --stop never fires, so it has to be explicit */
+	if (env.stop_spec.kind != TRIG_UNSET && !env.flightrec && env.duration_ns == 0) {
+		eprintf("--stop requires -d as a time limit, unless in flight recorder mode (-F)!\n");
 		err = -EINVAL;
 		goto cleanup;
 	}
@@ -2636,6 +2685,7 @@ int main(int argc, char **argv)
 			case WEXTRA_PMU:
 			case WEXTRA_PREPARE_SPEC:
 			case WEXTRA_ACTIVATE_SPEC:
+			case WEXTRA_STOP_SPEC:
 			case WEXTRA_FR_SPEC:
 			case WEXTRA_STACK_CAPTURE:
 				/* capture-time only; informational at replay (see cmdline reconstruction) */
@@ -3004,6 +3054,9 @@ int main(int argc, char **argv)
 	env.sess_ctl.activate_trig = (struct phase_trigger){
 		.phase = "activation", .spec = &env.activate_spec, .tag = CTL_ACTIVATE_TRIGGER, .fd = -1,
 	};
+	env.sess_ctl.stop_trig = (struct phase_trigger){
+		.phase = "stop", .spec = &env.stop_spec, .tag = CTL_STOP_TRIGGER, .fd = -1,
+	};
 
 	/*
 	 * Resolve --prepare/--activate wall-clock specs into absolute ktime
@@ -3047,6 +3100,32 @@ int main(int argc, char **argv)
 		break;
 	default:
 		BUG("unhandled --activate trigger kind %d\n", env.activate_spec.kind);
+	}
+	switch (env.stop_spec.kind) {
+	case TRIG_UNSET:
+	case TRIG_SIGINT:
+	case TRIG_UTRACE:
+		break;
+	case TRIG_TIME: {
+		/* relative and aligned times resolve at activation, an absolute one can be checked already */
+		u64 stop_ts = resolve_timespec(&env.stop_spec.time, env.actual_start_ts);
+
+		if (env.stop_spec.time.kind != TS_ABS)
+			break;
+		if (ts_before(stop_ts, ktime_now_ns())) {
+			eprintf("Stop time (--stop) is in the past!\n");
+			err = -EINVAL;
+			goto cleanup;
+		}
+		if (env.sess_ctl.activate_target_ts && ts_before(stop_ts, env.sess_ctl.activate_target_ts)) {
+			eprintf("Stop time (--stop) is before activation time (--activate)!\n");
+			err = -EINVAL;
+			goto cleanup;
+		}
+		break;
+	}
+	default:
+		BUG("unhandled --stop trigger kind %d\n", env.stop_spec.kind);
 	}
 	if (env.sess_ctl.prepare_target_ts && env.sess_ctl.activate_target_ts &&
 	    ts_before(env.sess_ctl.activate_target_ts, env.sess_ctl.prepare_target_ts)) {
@@ -3101,6 +3180,16 @@ int main(int argc, char **argv)
 				if (err)
 					goto cleanup;
 				break;
+			case CTL_STOP_TRIGGER:
+				err = consume_trigger(&env.sess_ctl.stop_trig);
+				if (err < 0)
+					goto cleanup;
+				if (err == 0) /* not fired (yet) */
+					break;
+				/* cut short like Ctrl-C, the recorded window gets clamped below */
+				env.sess_ctl.stopped_ts = ktime_now_ns();
+				env.sess_ctl.state = SESS_DONE;
+				break;
 			case CTL_END_TIMER:
 				drain_fd(env.sess_ctl.sess_end_tfd);
 				env.sess_ctl.session_complete = true;
@@ -3134,15 +3223,17 @@ int main(int argc, char **argv)
 	}
 
 	/*
-	 * If the session was cut short (signal) rather than reaching its planned
-	 * end, clamp the recorded window to now. This is the point past which the
-	 * various data sources (BPF ringbufs, CUDA/pytrace tracee dumps) are torn
-	 * down at staggered times and can no longer be considered mutually
-	 * consistent. When the session-end timerfd fires it signals the planned
-	 * end, which already carries the correct session end.
+	 * If the session was cut short (signal, --stop trigger) rather than
+	 * reaching its planned end, clamp the recorded window to now. This is the
+	 * point past which the various data sources (BPF ringbufs, CUDA/pytrace
+	 * tracee dumps) are torn down at staggered times and can no longer be
+	 * considered mutually consistent. A --stop trigger clamps it to when the
+	 * trigger fired instead, which comes before that. When the session-end
+	 * timerfd fires it signals the planned end, which already carries the
+	 * correct session end.
 	 */
 	if (!env.sess_ctl.session_complete) {
-		env.sess_end_ts = ktime_now_ns();
+		env.sess_end_ts = env.sess_ctl.stopped_ts ?: ktime_now_ns();
 		env.duration_ns = env.sess_end_ts - env.sess_start_ts;
 		/*
 		 * flightrec ran with no in-kernel end (0); push the stop time into
@@ -3345,6 +3436,7 @@ cleanup:
 	 */
 	stop_utrace_trigger(&env.sess_ctl.prep_trig);
 	stop_utrace_trigger(&env.sess_ctl.activate_trig);
+	stop_utrace_trigger(&env.sess_ctl.stop_trig);
 	stop_rb_workers(&bpf_state);
 	detach_bpf(&bpf_state, num_cpus);
 	drain_bpf(&bpf_state, num_cpus);
