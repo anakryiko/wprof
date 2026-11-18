@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause)
 /* Copyright (c) 2026 Meta Platforms, Inc. */
+#define _GNU_SOURCE
 #include <errno.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -31,6 +33,22 @@ static int handle_hit(void *ctx, void *data, size_t size)
 	memcpy(&t->hit, data, sizeof(t->hit));
 	t->fired = true;
 	return 0;
+}
+
+static void destroy_trigger(struct utrace_trigger *t)
+{
+	for (int i = 0; i < t->links.link_cnt; i++)
+		bpf_link__destroy(t->links.links[i]);
+	for (int i = 0; i < t->links.link_fd_cnt; i++)
+		close(t->links.link_fds[i]);
+	free(t->links.links);
+	free(t->links.link_fds);
+
+	ring_buffer__free(t->rb);
+	utrace_trigger_bpf__destroy(t->skel);
+	utrace_release_btfs(&t->sess);
+	free(t->sess.cfgs);
+	free(t);
 }
 
 int utrace_trigger_start(struct utrace_cfg *cfg, const char *desc, struct utrace_trigger **out)
@@ -102,7 +120,7 @@ int utrace_trigger_start(struct utrace_cfg *cfg, const char *desc, struct utrace
 	return 0;
 
 err_out:
-	utrace_trigger_stop(t);
+	destroy_trigger(t);
 	return err;
 }
 
@@ -130,24 +148,34 @@ int utrace_trigger_poll(struct utrace_trigger *t, struct utrace_trigger_hit *hit
 	return 1;
 }
 
-void utrace_trigger_stop(struct utrace_trigger *t)
+static void *destroy_thread_fn(void *ctx)
 {
+	pthread_setname_np(pthread_self(), "wprof_cleanup");
+	destroy_trigger(ctx);
+	return NULL;
+}
+
+int utrace_trigger_stop(struct utrace_trigger *t)
+{
+	pthread_t thread;
+	int err;
+
 	if (!t)
-		return;
+		return 0;
 
-	for (int i = 0; i < t->links.link_cnt; i++)
-		bpf_link__destroy(t->links.links[i]);
-	for (int i = 0; i < t->links.link_fd_cnt; i++)
-		close(t->links.link_fds[i]);
-	free(t->links.links);
-	free(t->links.link_fds);
-
-	if (t->fired && t->skel)
+	if (t->fired)
 		vprintf("Trigger '%s' got hit %llu time(s) before detaching.\n", t->desc, utrace_trigger_hit_cnt(t));
 
 	ring_buffer__free(t->rb);
-	utrace_trigger_bpf__destroy(t->skel);
-	utrace_release_btfs(&t->sess);
-	free(t->sess.cfgs);
-	free(t);
+	t->rb = NULL;
+
+	err = pthread_create(&thread, NULL, destroy_thread_fn, t);
+	if (err) {
+		/* pthread_create returns the error positively, doesn't set errno */
+		err = -err;
+		eprintf("Failed to spawn detach thread for trigger '%s': %d\n", t->desc, err);
+		return err;
+	}
+	pthread_detach(thread);
+	return 0;
 }

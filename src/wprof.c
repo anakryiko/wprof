@@ -1938,14 +1938,14 @@ static int start_utrace_trigger(struct phase_trigger *t)
 	return err;
 }
 
-/* Detach a phase's utrace trigger, if it has one; closing its ringbuf fd drops it from epoll */
-static void stop_utrace_trigger(struct phase_trigger *t)
+/* Detach a phase's utrace trigger in the background, if it has one; closing its ringbuf fd drops it from epoll */
+static int stop_utrace_trigger(struct phase_trigger *t)
 {
-	if (!t->utrace_probe)
-		return;
-	utrace_trigger_stop(t->utrace_probe);
+	struct utrace_trigger *probe = t->utrace_probe;
+
 	t->utrace_probe = NULL;
 	t->fd = -1;
+	return utrace_trigger_stop(probe);
 }
 
 /*
@@ -2072,8 +2072,9 @@ static int on_prepare_trigger(struct bpf_state *bpf, struct worker_state *worker
 		env.sess_ctl.activate_deferred = false;
 	}
 
-	/* detach a preparation utrace trigger before the long preparation */
-	stop_utrace_trigger(&env.sess_ctl.prep_trig);
+	err = stop_utrace_trigger(&env.sess_ctl.prep_trig);
+	if (err)
+		return err;
 
 	env.sess_ctl.state = SESS_PREP;
 
@@ -2132,7 +2133,9 @@ static int on_activate_trigger(struct bpf_state *bpf)
 		return err;
 
 	/* detach an activation utrace trigger only after the latency-sensitive activation */
-	stop_utrace_trigger(&env.sess_ctl.activate_trig);
+	err = stop_utrace_trigger(&env.sess_ctl.activate_trig);
+	if (err)
+		return err;
 
 	env.sess_ctl.session_activated = true;
 	env.sess_ctl.state = SESS_RECORDING;
@@ -3189,6 +3192,9 @@ int main(int argc, char **argv)
 				/* cut short like Ctrl-C, the recorded window gets clamped below */
 				env.sess_ctl.stopped_ts = ktime_now_ns();
 				env.sess_ctl.state = SESS_DONE;
+				err = stop_utrace_trigger(&env.sess_ctl.stop_trig);
+				if (err)
+					goto cleanup;
 				break;
 			case CTL_END_TIMER:
 				drain_fd(env.sess_ctl.sess_end_tfd);

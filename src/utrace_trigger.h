@@ -28,7 +28,12 @@ int utrace_trigger_fd(const struct utrace_trigger *t);
 __u64 utrace_trigger_hit_cnt(const struct utrace_trigger *t);
 /* 1 and the first hit in *hit, if the utrace trigger got hit, 0 if not yet, <0 on error */
 int utrace_trigger_poll(struct utrace_trigger *t, struct utrace_trigger_hit *hit);
-/* Detach the utrace trigger and free everything, t may be NULL */
-void utrace_trigger_stop(struct utrace_trigger *t);
+/*
+ * Close the utrace trigger's fd, then detach and free it in a background
+ * thread, as each uprobe takes a grace period to detach, adding up to seconds
+ * for many targets. Nothing waits for it: if wprof exits first, the kernel
+ * finishes the detach as the process exits. t may be NULL.
+ */
+int utrace_trigger_stop(struct utrace_trigger *t);
 
 #endif /* __UTRACE_TRIGGER_H_ */
