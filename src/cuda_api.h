@@ -5,6 +5,7 @@
 
 struct bpf_state;
 
+int cuda_api_discover(void);
 void cuda_api_attach(struct bpf_state *st);
 
 #endif /* __CUDA_API_H__ */

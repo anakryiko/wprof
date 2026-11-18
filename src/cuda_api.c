@@ -29,6 +29,48 @@ static bool library_name_matches(const char *path, const char *library)
 	return suffix == '\0' || suffix == '.' || suffix == ' ';
 }
 
+static bool process_has_libcuda(int pid)
+{
+	struct vma_info *vma;
+	wprof_for_each(vma, vma, pid, VMA_QUERY_FILE_BACKED_VMA | VMA_QUERY_VMA_EXECUTABLE) {
+		if (library_name_matches(vma->vma_name, "libcuda.so"))
+			return true;
+	}
+	return false;
+}
+
+static int add_discovered_pid(int pid)
+{
+	if (pid <= 0)
+		return 0;
+	return append_unique_int(&env.cuda_api_pids, &env.cuda_api_pid_cnt, pid);
+}
+
+int cuda_api_discover(void)
+{
+	int err = 0;
+	if (env.cuda_api_discovery == CUDA_DISCOVER_SMI) {
+		ensure_nv_smi_pids();
+		for (int i = 0; i < env.nv_smi_pid_cnt; i++) {
+			err = add_discovered_pid(env.nv_smi_pids[i]);
+			if (err)
+				return err;
+		}
+	} else if (env.cuda_api_discovery == CUDA_DISCOVER_PROC) {
+		int *pid;
+		wprof_for_each(proc, pid) {
+			if (!process_has_libcuda(*pid))
+				continue;
+			err = add_discovered_pid(*pid);
+			if (err)
+				return err;
+		}
+	}
+	if (!env.cuda_api_pid_cnt && env.cuda_api_discovery != CUDA_DISCOVER_NONE)
+		eprintf("WARNING: cuda-api: discovery found no target PIDs; CUDA API calls will not be traced.\n");
+	return 0;
+}
+
 static int attach_probes(struct bpf_state *st, int pid, struct bpf_program *prog, const char *path,
 			 const struct bpf_uprobe_multi_opts *opts)
 {

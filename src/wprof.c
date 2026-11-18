@@ -958,6 +958,12 @@ static int setup_bpf(struct bpf_state *st, struct worker_state *workers, int num
 	struct wprof_bpf *skel;
 	int i, err = 0;
 
+	err = cuda_api_discover();
+	if (err) {
+		eprintf("Failed to discover CUDA API targets: %d\n", err);
+		return err;
+	}
+
 #if !defined(__x86_64__) && !defined(__aarch64__)
 	if (env.capture_ipis) {
 		eprintf("IPI capture is supported only on x86-64 and arm64 architectures!\n");

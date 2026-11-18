@@ -332,6 +332,8 @@ $ sudo ./wprof -f cuda-api=PID -Scuda -d1000 -T cuda.pb
 | Option | Processes to trace |
 |---|---|
 | `-f cuda-api=PID` | One PID. Repeat for multiple PIDs. |
+| `-f cuda-api` or `-f cuda-api=nv-smi` | PIDs listed by `nvidia-smi`. |
+| `-f cuda-api=all` | Processes with `libcuda` mapped. |
 
 - CUDA API symbols must be in `.dynsym` or `.symtab`.
   Statically linked CUDA runtime APIs are supported. Inlined calls are not traced.
