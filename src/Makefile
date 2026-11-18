@@ -218,17 +218,24 @@ $(OUTPUT)/wprof_query.skel.h: $(OUTPUT)/wprof_query.bpf.o | $(OUTPUT) $(BPFTOOL)
 
 $(OUTPUT)/wprof_query.o: $(OUTPUT)/wprof_query.skel.h
 
+# same for the --prepare/--activate utrace trigger skeleton, only utrace_trigger.o needs it
+$(OUTPUT)/utrace_trigger.skel.h: $(OUTPUT)/utrace_trigger.bpf.o | $(OUTPUT) $(BPFTOOL)
+	$(call msg,GEN-SKEL,$@)
+	$(Q)$(BPFTOOL) gen skeleton $< name utrace_trigger_bpf > $@
+
+$(OUTPUT)/utrace_trigger.o: $(OUTPUT)/utrace_trigger.skel.h
+
 WPROF_SRCS := wprof.c utils.c env.c protobuf.c data.c emit.c stacktrace.c pmu.c			\
 	      topology.c proc.c requests.c cuda.c inject.c sys.c elf_utils.c merge.c persist.c	\
 	      cupti_driver_cbid_map.gen.c cupti_runtime_cbid_map.gen.c				\
 	      pystacks.c pydisc.c pysym.c pyline.c pytrace.c utrace_cfg.c utrace.c blobset.c	\
-	      ksyms.c injmgr.c wprof_query.c
+	      ksyms.c injmgr.c wprof_query.c utrace_trigger.c
 WPROF_HDRS := wprof.h utils.h env.h protobuf.h data.h emit.h json.h stacktrace.h topology.h pmu.h	\
 	      proc.h requests.h inj_common.h inject.h sys.h elf_utils.h cuda_data.h 	\
 	      wprof_types.h demangle.h merge.h wevent.h persist.h				\
 	      pystacks.h pyoffsets.h pydisc.h pysym.h pyline.h pytrace.h pytrace_data.h pytorch_data.h \
 	      utrace_cfg.h utrace.h strs.h blobset.h ksyms.h bpf_utils.h hashmap.h		\
-	      wpb.h wrust.h injmgr.h wprof_query.h flightrec.h
+	      wpb.h wrust.h injmgr.h wprof_query.h flightrec.h utrace_trigger.h
 WPROF_OBJS := $(patsubst %.c,$(OUTPUT)/%.o,$(WPROF_SRCS))
 
 WPROFINJ_SRCS := inj_lib.c inj_strset.c inj_hashmap.c inj_cupti.c inj_pytrace.c inj_torch_profiler.c

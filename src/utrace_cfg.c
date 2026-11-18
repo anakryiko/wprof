@@ -1268,6 +1268,53 @@ int ucfg_parse(const char *def)
 	return 0;
 }
 
+/*
+ * Parse the probe of a --prepare/--activate utrace trigger into cfg. A trigger
+ * only needs to know where to attach, so of the utrace definition it takes
+ * just the probe target and the parameters selecting what it attaches to.
+ */
+int ucfg_parse_trigger(const char *def, struct utrace_cfg *cfg)
+{
+	struct sview orig = sv_new(def);
+	int err;
+
+	err = parse_cfg(orig, cfg);
+	if (err)
+		return err;
+
+	/* covers ~~ spans (UTRACE_SPAN) and uspan:/kspan:/bpfspan: alike */
+	if (is_span_probe(cfg->type))
+		return utrace_err(orig, orig, "triggers can't be spans\n");
+	/* parse_cfg() zeroes cfg, and only given |...| settings fill it in */
+	if (memcmp(&cfg->settings, &(struct utrace_settings){}, sizeof(cfg->settings)) != 0)
+		return utrace_err(orig, orig, "triggers don't take settings\n");
+	if (cfg->wildcard_args)
+		return utrace_err(orig, orig, "triggers don't capture arguments\n");
+
+	for (int i = 0; i < cfg->param_cnt; i++) {
+		switch (cfg->params[i].type) {
+		case UTRACE_PARAM_BINARY_PATH:
+		case UTRACE_PARAM_NV_SMI:
+		case UTRACE_PARAM_COMM:
+			/* parse_cfg() already limited these to uprobe-based probes */
+			break;
+		case UTRACE_PARAM_PID:
+			/* utrace ignores pid: of kernel probes, for a trigger it would fire on any process */
+			if (!is_uprobe(cfg->type))
+				return utrace_err(orig, orig, "'pid' parameter of triggers is only valid for uprobe-based probes\n");
+			break;
+		case UTRACE_PARAM_ARG:
+			return utrace_err(orig, orig, "triggers don't capture arguments\n");
+		case UTRACE_PARAM_CAPTURE_STACK:
+			return utrace_err(orig, orig, "triggers don't capture stack traces\n");
+		default:
+			return utrace_err(orig, orig, "unsupported trigger parameter\n");
+		}
+	}
+
+	return 0;
+}
+
 int ucfg_parse_file(const char *path)
 {
 	FILE *f;

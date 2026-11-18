@@ -158,7 +158,7 @@ static const struct argp_option opts[] = {
 	  "comma list of a time and/or size limit, e.g. 10s,1000mb. Bare -F uses "
 	  "1s,1gb; naming one dimension leaves the other unlimited; a 0 token "
 	  "disables a dimension. Mutually exclusive with -d." },
-	{ "prepare", OPT_PREPARE, "WHEN", 0, "Delayed tracing setup, syntax: @now, @<ISO time>, +<dur>, /<dur> (align to next period), sig:int (Ctrl-C). Default: at startup" },
+	{ "prepare", OPT_PREPARE, "WHEN", 0, "Delayed tracing setup, syntax: @now, @<ISO time>, +<dur>, /<dur> (align to next period), sig:int (Ctrl-C), utrace:<probe> (or ut:<probe>). Default: at startup" },
 	{ "activate", OPT_ACTIVATE, "WHEN", 0, "Delayed data capture activation; same syntax as --prepare. Default: immediately after prepare" },
 	{ "timer-freq", OPT_TIMER_FREQ, "HZ", 0, "Deprecated: use -Stimer=<freq>hz or -Stimer=<period>. On-CPU timer interrupt frequency (default: 100Hz)" },
 
@@ -283,6 +283,16 @@ static int parse_trigger(const char *arg, struct trigger_spec *spec)
 			return -EINVAL;
 		}
 		spec->kind = TRIG_SIGINT;
+	} else if ((pfx_len = str_has_prefix(arg, "utrace:")) || (pfx_len = str_has_prefix(arg, "ut:"))) {
+		struct utrace_cfg *cfg = calloc(1, sizeof(*cfg));
+
+		err = ucfg_parse_trigger(arg + pfx_len, cfg);
+		if (err) {
+			free(cfg);
+			return err;
+		}
+		spec->kind = TRIG_UTRACE;
+		spec->utrace_cfg = cfg;
 	} else {
 		err = parse_timespec(arg, &spec->time);
 		if (err)

@@ -626,3 +626,21 @@ available:
 
 Use `arg:*` to capture all detected arguments with their inferred types
 and names.
+
+## utrace triggers
+
+`--prepare` and `--activate` can wait for the first hit of a probe, given after
+a `utrace:` (or `ut:`) prefix, instead of a point in time (see the README):
+
+```
+wprof --activate 'utrace:usdt:app:iter_start(path:/usr/bin/app)' -d 5s
+wprof --activate 'ut:usdt:libc:setjmp(comm:bash)' -d 5s
+wprof --prepare 'ut:u:main(path:/usr/bin/app)' --activate 'utrace:k:oom_kill_process'
+```
+
+A trigger only needs to know where to attach, so it takes a subset of the probe
+definition: an instant probe target (`u:`, `uret:`, `usdt:`, `k:`, `kret:`,
+`tp:`, `raw_tp:`, `bpf:`, `bpfret:`, with offsets where those allow them) and,
+for uprobe and USDT probes, the `path:`, `pid:`, and `comm:` filters, including
+auto-discovery. Argument and stack capture, settings, and spans are rejected,
+and so is `pid:` on kernel probes, which a regular utrace probe ignores.
