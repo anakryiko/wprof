@@ -1938,14 +1938,29 @@ static int start_utrace_trigger(struct phase_trigger *t)
 	return err;
 }
 
-/* Detach a phase's utrace trigger in the background, if it has one; closing its ringbuf fd drops it from epoll */
-static int stop_utrace_trigger(struct phase_trigger *t)
+/* Release a phase's trigger once its phase started, or at exit; closing its fd drops it from epoll */
+static int stop_trigger(struct phase_trigger *t)
 {
 	struct utrace_trigger *probe = t->utrace_probe;
+	int fd = t->fd;
 
 	t->utrace_probe = NULL;
 	t->fd = -1;
-	return utrace_trigger_stop(probe);
+
+	/* a utrace trigger's fd is its ringbuf's, closed as it detaches in the background */
+	if (probe)
+		return utrace_trigger_stop(probe);
+	if (fd < 0)
+		return 0;
+	/* still waiting for SIGINT: unpublish the eventfd, so the signal handler can't pick it up once closed */
+	if (t->spec->kind == TRIG_SIGINT) {
+		int published = fd;
+
+		__atomic_compare_exchange_n(&env.sess_ctl.sigint_fd, &published, -1, false,
+					    __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+	}
+	close(fd);
+	return 0;
 }
 
 /*
@@ -2072,7 +2087,7 @@ static int on_prepare_trigger(struct bpf_state *bpf, struct worker_state *worker
 		env.sess_ctl.activate_deferred = false;
 	}
 
-	err = stop_utrace_trigger(&env.sess_ctl.prep_trig);
+	err = stop_trigger(&env.sess_ctl.prep_trig);
 	if (err)
 		return err;
 
@@ -2132,8 +2147,8 @@ static int on_activate_trigger(struct bpf_state *bpf)
 	if (err)
 		return err;
 
-	/* detach an activation utrace trigger only after the latency-sensitive activation */
-	err = stop_utrace_trigger(&env.sess_ctl.activate_trig);
+	/* release the activation trigger only after the latency-sensitive activation */
+	err = stop_trigger(&env.sess_ctl.activate_trig);
 	if (err)
 		return err;
 
@@ -2177,6 +2192,16 @@ int main(int argc, char **argv)
 	elf_init(); /* set libelf's version up front so concurrent ELF parsing can't race on it */
 	env.sess_ctl.sig_efd = -1; /* so an early SIGINT (before the eventfd exists) is a no-op */
 	env.sess_ctl.sigint_fd = -1; /* no phase waits for SIGINT yet */
+	/* trigger fds get created later, but cleanup may come first */
+	env.sess_ctl.prep_trig = (struct phase_trigger){
+		.phase = "preparation", .spec = &env.prepare_spec, .tag = CTL_PREP_TRIGGER, .fd = -1,
+	};
+	env.sess_ctl.activate_trig = (struct phase_trigger){
+		.phase = "activation", .spec = &env.activate_spec, .tag = CTL_ACTIVATE_TRIGGER, .fd = -1,
+	};
+	env.sess_ctl.stop_trig = (struct phase_trigger){
+		.phase = "stop", .spec = &env.stop_spec, .tag = CTL_STOP_TRIGGER, .fd = -1,
+	};
 
 	/* Parse command line arguments */
 	setenv("ARGP_HELP_FMT", "opt-doc-col=35,rmargin=150", 0); /* widen default --help output */
@@ -3051,16 +3076,6 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	env.sess_ctl.prep_trig = (struct phase_trigger){
-		.phase = "preparation", .spec = &env.prepare_spec, .tag = CTL_PREP_TRIGGER, .fd = -1,
-	};
-	env.sess_ctl.activate_trig = (struct phase_trigger){
-		.phase = "activation", .spec = &env.activate_spec, .tag = CTL_ACTIVATE_TRIGGER, .fd = -1,
-	};
-	env.sess_ctl.stop_trig = (struct phase_trigger){
-		.phase = "stop", .spec = &env.stop_spec, .tag = CTL_STOP_TRIGGER, .fd = -1,
-	};
-
 	/*
 	 * Resolve --prepare/--activate wall-clock specs into absolute ktime
 	 * targets; a zero target means "immediately" (prepare at startup, activate
@@ -3192,7 +3207,7 @@ int main(int argc, char **argv)
 				/* cut short like Ctrl-C, the recorded window gets clamped below */
 				env.sess_ctl.stopped_ts = ktime_now_ns();
 				env.sess_ctl.state = SESS_DONE;
-				err = stop_utrace_trigger(&env.sess_ctl.stop_trig);
+				err = stop_trigger(&env.sess_ctl.stop_trig);
 				if (err)
 					goto cleanup;
 				break;
@@ -3440,9 +3455,9 @@ cleanup:
 	 * On the normal success fall-through these all re-run harmlessly as
 	 * no-ops (workers already joined, ringbufs drained, `fr` already NULL).
 	 */
-	stop_utrace_trigger(&env.sess_ctl.prep_trig);
-	stop_utrace_trigger(&env.sess_ctl.activate_trig);
-	stop_utrace_trigger(&env.sess_ctl.stop_trig);
+	stop_trigger(&env.sess_ctl.prep_trig);
+	stop_trigger(&env.sess_ctl.activate_trig);
+	stop_trigger(&env.sess_ctl.stop_trig);
 	stop_rb_workers(&bpf_state);
 	detach_bpf(&bpf_state, num_cpus);
 	drain_bpf(&bpf_state, num_cpus);
