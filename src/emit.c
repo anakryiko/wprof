@@ -22,6 +22,7 @@
 #include "demangle.h"
 #include "requests.h"
 #include "utrace_cfg.h"
+#include "utrace.h"
 
 #include "json.h"
 
@@ -5201,7 +5202,7 @@ static u64 ensure_utrace_track(const struct wprof_task *t, u32 utrace_id)
 		char span_name[256];
 		const char *name = tr->name;
 		if (!name) {
-			const struct utrace_cfg *cfg = &env.utrace_cfgs[tr->cfg_id];
+			const struct utrace_cfg *cfg = &env.utrace->cfgs[tr->cfg_id];
 
 			if (cfg->type == UTRACE_SPAN) {
 				snprintf(span_name, sizeof(span_name), "%s — %s",
@@ -5270,7 +5271,7 @@ static int utrace_format_arg(char *buf, size_t buf_sz, struct wprof_data_hdr *hd
  */
 static const struct utrace_cfg *utrace_arg_cfg(const struct wevent *e, bool *ret_filter)
 {
-	const struct utrace_cfg *cfg = &env.utrace_cfgs[e->utrace.utrace_id];
+	const struct utrace_cfg *cfg = &env.utrace->cfgs[e->utrace.utrace_id];
 
 	*ret_filter = cfg_is_span(cfg) && cfg->type != UTRACE_SPAN;
 	if (cfg->type == UTRACE_SPAN)
@@ -5484,7 +5485,7 @@ static void emit_utrace_event(struct worker_state *w, const struct wevent *e)
 	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
 
 	u32 cfg_id = e->utrace.utrace_id;
-	const struct utrace_cfg *cfg = &env.utrace_cfgs[cfg_id];
+	const struct utrace_cfg *cfg = &env.utrace->cfgs[cfg_id];
 	bool ret_filter;
 	const struct utrace_cfg *arg_cfg = utrace_arg_cfg(e, &ret_filter);
 
@@ -5570,7 +5571,7 @@ static void emit_utrace_json(struct worker_state *w, const struct wevent *e)
 	struct wprof_task task = wevent_resolve_task(hdr, e->task_id);
 
 	u32 cfg_id = e->utrace.utrace_id;
-	const struct utrace_cfg *cfg = &env.utrace_cfgs[cfg_id];
+	const struct utrace_cfg *cfg = &env.utrace->cfgs[cfg_id];
 	bool ret_filter;
 	const struct utrace_cfg *arg_cfg = utrace_arg_cfg(e, &ret_filter);
 

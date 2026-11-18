@@ -1592,7 +1592,7 @@ static int attach_bpf(struct bpf_state *st, struct worker_state *workers, int nu
 		}
 	}
 
-	if (env.utrace_cfg_cnt > 0) {
+	if (env.utrace->cfg_cnt > 0) {
 		err = utrace_attach(st, st->skel);
 		if (err) {
 			eprintf("Failed to attach utrace probes: %d\n", err);
@@ -2075,6 +2075,8 @@ int main(int argc, char **argv)
 
 	/* Parse command line arguments */
 	setenv("ARGP_HELP_FMT", "opt-doc-col=35,rmargin=150", 0); /* widen default --help output */
+	env.utrace = calloc(1, sizeof(*env.utrace));
+
 	err = argp_parse(&argp, argc, argv, 0, NULL, NULL);
 	if (err) {
 		err = -1;
@@ -2113,7 +2115,7 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	if (env.replay && env.utrace_cfg_cnt > 0) {
+	if (env.replay && env.utrace->cfg_cnt > 0) {
 		eprintf("--utrace (-U) is capture-time only and can't be used in replay mode (-R)!\n");
 		err = -EINVAL;
 		goto cleanup;
@@ -2521,7 +2523,7 @@ int main(int argc, char **argv)
 			case WEXTRA_UTRACE_DEF:
 				err = ucfg_parse(val);
 				if (!err)
-					err = ucfg_compile_tmpls(&env.utrace_cfgs[env.utrace_cfg_cnt - 1]);
+					err = ucfg_compile_tmpls(&env.utrace->cfgs[env.utrace->cfg_cnt - 1]);
 				break;
 			/*
 			 * Emit (-e) options keep their CLI value if set, otherwise

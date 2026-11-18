@@ -14,6 +14,7 @@
 #include "pytrace_data.h"
 #include "pytorch_data.h"
 #include "utrace_cfg.h"
+#include "utrace.h"
 #include "proc.h"
 #include "../libbpf/src/strset.h"
 #include "../libbpf/src/hashmap.h"
@@ -515,7 +516,7 @@ int persist_bpf_event(struct persist_state *ps, const struct wprof_event *e, str
 	case EV_UTRACE_ENTRY:
 	case EV_UTRACE_EXIT: {
 		u32 utrace_id = e->utrace.utrace_id;
-		const struct utrace_cfg *cfg = &env.utrace_cfgs[utrace_id];
+		const struct utrace_cfg *cfg = &env.utrace->cfgs[utrace_id];
 		/*
 		 * Native spans split one cfg's args across entry/exit by ret-ness; a
 		 * generic ~~ span uses the firing leg and keeps all of that leg's args.

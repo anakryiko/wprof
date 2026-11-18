@@ -11,6 +11,7 @@
 #include "utils.h"
 #include "env.h"
 #include "utrace_cfg.h"
+#include "utrace.h"
 #include "strs.h"
 
 /* --- error reporting with position highlighting -------------------------- */
@@ -1254,16 +1255,16 @@ static int parse_cfg(struct sview def, struct utrace_cfg *cfg)
 
 int ucfg_parse(const char *def)
 {
-	env.utrace_cfgs = realloc(env.utrace_cfgs, (env.utrace_cfg_cnt + 1) * sizeof(*env.utrace_cfgs));
+	env.utrace->cfgs = realloc(env.utrace->cfgs, (env.utrace->cfg_cnt + 1) * sizeof(*env.utrace->cfgs));
 
-	struct utrace_cfg *cfg = &env.utrace_cfgs[env.utrace_cfg_cnt];
+	struct utrace_cfg *cfg = &env.utrace->cfgs[env.utrace->cfg_cnt];
 	int err = parse_cfg(sv_new(def), cfg);
 
 	if (err)
 		return err;
 	if (cfg->settings.scope == UTRACE_SCOPE_UNSET)
 		cfg->settings.scope = UTRACE_SCOPE_THREAD;
-	env.utrace_cfg_cnt++;
+	env.utrace->cfg_cnt++;
 	return 0;
 }
 
