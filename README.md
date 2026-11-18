@@ -92,7 +92,7 @@ wprof -U 'k:wake_up_process (arg:p.real_parent.comm/name(parent_comm))'
 
 See [UTRACE.md](UTRACE.md) for full documentation.
 
-### Delayed and triggered capture: `--prepare` and `--activate`
+### Delayed and triggered capture: `--prepare`, `--activate`, and `--stop`
 
 Starting a capture has two phases, and these flags let you control *when* each
 happens independently:
@@ -101,6 +101,13 @@ happens independently:
   inject into target processes). Defaults to immediately at startup.
 - `--activate <when>` — when to open the session window and stamp `t=0` (the
   point recording actually begins). Defaults to right after preparation finishes.
+
+A third flag can end the recording early:
+
+- `--stop <when>` — when to stop recording, if that comes before `-d` runs out.
+  `-d` is required then, as a time limit, except with `-F`, where the flight
+  recorder keeps its window up to the stop. Takes the same specs, and `+<dur>`
+  counts from activation.
 
 > **Overhead note:** preparing early is not free, and how cheap it is depends on
 > what is traced. Once prepared, the tracing machinery is live. For BPF and the
@@ -135,6 +142,8 @@ $ sudo ./wprof --prepare sig:int --activate sig:int  # Ctrl-C to set up, Ctrl-C 
 $ sudo ./wprof --activate 'utrace:k:oom_kill_process' -d 2s                         # set up now, record 2s from the first OOM kill
 $ sudo ./wprof --prepare 'ut:u:main(path:/usr/bin/app)' --activate +5s -d 10s       # set up once app starts, record 10s from 5s after that
 $ sudo ./wprof --activate 'ut:usdt:libc:setjmp(comm:bash)' -d 5s                    # record 5s once any running bash hits libc's setjmp USDT
+$ sudo ./wprof --stop 'utrace:k:oom_kill_process' -d 1m                             # record until the first OOM kill, for at most 1 minute
+$ sudo ./wprof -F10s --stop 'ut:k:oom_kill_process'                                 # keep the last 10s before the first OOM kill
 ```
 
 **Gotchas and implications**
@@ -163,16 +172,17 @@ $ sudo ./wprof --activate 'ut:usdt:libc:setjmp(comm:bash)' -d 5s                
   `comm:` match processes running at that point, and a probe that can't be
   resolved fails the capture then. To wait for a process that isn't running yet,
   probe its binary system-wide with `path:`. An `--activate` trigger hit during
-  preparation activates the capture as soon as preparation is done.
+  preparation activates the capture as soon as preparation is done. A `--stop`
+  trigger attaches as recording starts, so it can't stop it before that.
 - **Time specs after an event-triggered `--prepare`.** `--activate +<dur>`
   counts from the moment the `--prepare` event happened rather than from wprof
   start, and `--activate /<dur>` picks the first period boundary after
   preparation is done.
 - **`@<ISO time>` is local time**, including DST. A bare time-of-day is *today*;
   if it has already passed, that is an error (wprof does not roll to tomorrow).
-- **Errors fail fast.** Where it can tell up front, wprof rejects a `--prepare`
-  or `--activate` time in the past, or an `--activate` earlier than `--prepare`,
-  before doing any setup. If `--activate` slips into the past *during* preparation
+- **Errors fail fast.** Where it can tell up front, wprof rejects a `--prepare`,
+  `--activate`, or `--stop` time in the past, or one earlier than the phase
+  before it, before doing any setup. If `--activate` slips into the past *during* preparation
   (prep took longer than the lead time), the capture bails out cleanly.
 - **Injected tracees stay alive.** When tracing CUDA/Python targets, the injected
   agent's safety auto-retract timeout is sized to span the whole
@@ -183,12 +193,12 @@ $ sudo ./wprof --activate 'ut:usdt:libc:setjmp(comm:bash)' -d 5s                
   mode, and tracees rely on noticing that wprof exited to clean up.
 - **`-d` is measured from activation.** `t=0` is the activation instant and the
   session runs for the requested duration from there. A `Ctrl-C` before the
-  duration elapses clamps the recorded window to the interrupt point.
+  duration elapses clamps the recorded window to the interrupt point, and a
+  `sig:int` or `utrace:` `--stop` to the moment it fired. A `--stop` time just
+  ends the session earlier.
 - **While waiting**, wprof prints `Pending preparation trigger...` /
-  `Pending activation trigger...` so you can see which phase it is blocked on.
-- **The specs are recorded.** The raw `--prepare`/`--activate` strings are saved
-  into `wprof.data` and shown by `wprof -R -I` and in JSON output, so a capture
-  is self-describing.
+  `Pending activation trigger...` / `Pending stop trigger...` so you can see
+  which phase it is waiting for.
 
 ### PMU counters: `--pmu`
 

@@ -102,12 +102,13 @@ enum sess_state {
 enum epoll_tag {
 	CTL_PREP_TRIGGER,
 	CTL_ACTIVATE_TRIGGER,
+	CTL_STOP_TRIGGER,
 	CTL_END_TIMER,
 	CTL_SIGNAL,
 	CTLS_INJECTEE_UDS_BASE
 };
 
-/* what starts a session phase (--prepare / --activate) */
+/* what starts a session phase (--prepare / --activate) or ends the session (--stop) */
 enum trigger_kind {
 	TRIG_UNSET = 0,	/* option not given: prepare at startup, activate right after prepare */
 	TRIG_TIME,	/* time spec */
@@ -129,11 +130,11 @@ static inline bool trigger_is_event(const struct trigger_spec *spec)
 
 struct utrace_trigger;
 
-/* trigger of one session phase, preparation or activation */
+/* trigger of one session phase transition: preparation, activation, or stop */
 struct phase_trigger {
-	const char *phase;		/* "preparation" / "activation", for messages */
+	const char *phase;		/* "preparation" / "activation" / "stop", for messages */
 	struct trigger_spec *spec;
-	enum epoll_tag tag;		/* CTL_PREP_TRIGGER / CTL_ACTIVATE_TRIGGER */
+	enum epoll_tag tag;		/* CTL_PREP_TRIGGER / CTL_ACTIVATE_TRIGGER / CTL_STOP_TRIGGER */
 	int fd;				/* timerfd for a time, eventfd for sigint, utrace ringbuf fd (or -1) */
 	struct utrace_trigger *utrace_probe;	/* TRIG_UTRACE, while attached */
 };
@@ -142,6 +143,7 @@ struct sess_ctl {
 	int epoll_fd;
 	struct phase_trigger prep_trig;
 	struct phase_trigger activate_trig;
+	struct phase_trigger stop_trig;
 	int sess_end_tfd;
 	int sig_efd;
 	int sigint_fd;		/* trigger eventfd of the phase waiting for SIGINT, or -1; taken by the signal handler */
@@ -152,6 +154,7 @@ struct sess_ctl {
 	u64 prepare_target_ts;
 	u64 activate_target_ts;
 	u64 sess_end_target_ts;
+	u64 stopped_ts;		/* when the --stop trigger fired, the recorded window ends there */
 };
 
 struct wprof_bpf;
@@ -190,6 +193,7 @@ struct env {
 	/* delayed preparation and activation (--prepare / --activate) */
 	struct trigger_spec prepare_spec;
 	struct trigger_spec activate_spec;
+	struct trigger_spec stop_spec;
 
 	/* for replay only, mutually exclusive with duration_ns */
 	s64 replay_start_offset_ns;
