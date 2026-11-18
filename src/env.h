@@ -112,25 +112,30 @@ enum trigger_kind {
 	TRIG_UNSET = 0,	/* option not given: prepare at startup, activate right after prepare */
 	TRIG_TIME,	/* time spec */
 	TRIG_SIGINT,	/* "sig:int": wait for SIGINT */
+	TRIG_UTRACE,	/* utrace:<probe>: wait for its first hit */
 };
 
 struct trigger_spec {
 	enum trigger_kind kind;
 	struct timespec_spec time;	/* TRIG_TIME */
+	struct utrace_cfg *utrace_cfg;	/* TRIG_UTRACE: parsed probe, owned by the trigger once started (then NULL) */
 	char *str;			/* raw CLI spec, persisted via WEXTRA */
 };
 
 static inline bool trigger_is_event(const struct trigger_spec *spec)
 {
-	return spec->kind == TRIG_SIGINT;
+	return spec->kind == TRIG_SIGINT || spec->kind == TRIG_UTRACE;
 }
+
+struct utrace_trigger;
 
 /* trigger of one session phase, preparation or activation */
 struct phase_trigger {
 	const char *phase;		/* "preparation" / "activation", for messages */
 	struct trigger_spec *spec;
 	enum epoll_tag tag;		/* CTL_PREP_TRIGGER / CTL_ACTIVATE_TRIGGER */
-	int fd;				/* timerfd for a time, eventfd for sigint */
+	int fd;				/* timerfd for a time, eventfd for sigint, utrace ringbuf fd (or -1) */
+	struct utrace_trigger *utrace_probe;	/* TRIG_UTRACE, while attached */
 };
 
 struct sess_ctl {

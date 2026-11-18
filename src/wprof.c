@@ -63,6 +63,7 @@
 #include "pystacks.h"
 #include "pysym.h"
 #include "utrace.h"
+#include "utrace_trigger.h"
 
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
 {
@@ -1911,6 +1912,27 @@ static int do_activate(struct bpf_state *bpf)
 	return 0;
 }
 
+static int start_utrace_trigger(struct phase_trigger *t)
+{
+	int err;
+
+	err = utrace_trigger_start(t->spec->utrace_cfg, t->spec->str, &t->utrace_probe);
+	t->spec->utrace_cfg = NULL;
+	if (err)
+		eprintf("Failed to set up %s trigger '%s': %d\n", t->phase, t->spec->str, err);
+	return err;
+}
+
+/* Detach a phase's utrace trigger, if it has one; closing its ringbuf fd drops it from epoll */
+static void stop_utrace_trigger(struct phase_trigger *t)
+{
+	if (!t->utrace_probe)
+		return;
+	utrace_trigger_stop(t->utrace_probe);
+	t->utrace_probe = NULL;
+	t->fd = -1;
+}
+
 /*
  * Start a session phase's trigger when the phase before it begins: at startup
  * for preparation, as preparation begins for activation.
@@ -1926,6 +1948,13 @@ static int start_trigger(struct phase_trigger *t)
 		break;
 	case TRIG_SIGINT:
 		t->fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+		break;
+	case TRIG_UTRACE:
+		/* attached right away, its hits get latched in the ringbuf until the trigger is armed */
+		err = start_utrace_trigger(t);
+		if (err)
+			return err;
+		t->fd = utrace_trigger_fd(t->utrace_probe);
 		break;
 	default:
 		BUG("unhandled %s trigger kind %d\n", t->phase, t->spec->kind);
@@ -1947,6 +1976,7 @@ static int arm_trigger(struct phase_trigger *t, u64 target_ts)
 	if (exiting)
 		return 0;
 
+	/* a utrace hit latched since the trigger started makes its fd fire right away */
 	if (ctl_epoll_add(env.sess_ctl.epoll_fd, t->fd, t->tag)) {
 		err = -errno;
 		eprintf("Failed to register %s trigger fd: %d\n", t->phase, err);
@@ -1968,6 +1998,14 @@ static int arm_trigger(struct phase_trigger *t, u64 target_ts)
 		__atomic_store_n(&env.sess_ctl.sigint_fd, t->fd, __ATOMIC_SEQ_CST);
 		wprintf("Pending %s trigger, press Ctrl-C (SIGINT) to proceed...\n", t->phase);
 		break;
+	case TRIG_UTRACE:
+		if (utrace_trigger_hit_cnt(t->utrace_probe)) {
+			wprintf("Pending %s trigger '%s' already got hit, proceeding right away...\n",
+				t->phase, t->spec->str);
+		} else {
+			wprintf("Pending %s trigger '%s'...\n", t->phase, t->spec->str);
+		}
+		break;
 	default:
 		BUG("unhandled %s trigger kind %d\n", t->phase, t->spec->kind);
 	}
@@ -1986,6 +2024,22 @@ static int consume_trigger(struct phase_trigger *t)
 		drain_fd(t->fd);
 		wprintf("SIGINT triggered %s.\n", t->phase);
 		return 1;
+	case TRIG_UTRACE: {
+		struct utrace_trigger_hit hit;
+		int err;
+
+		err = utrace_trigger_poll(t->utrace_probe, &hit);
+		if (err < 0) {
+			eprintf("Failed to poll %s trigger '%s': %d\n", t->phase, t->spec->str, err);
+			return err;
+		}
+		if (err == 0)
+			return 0;
+
+		wprintf("'%s' triggered %s: PID %u, TID %u (%s), CPU %u.\n",
+			t->spec->str, t->phase, hit.pid, hit.tid, hit.comm, hit.cpu);
+		return 1;
+	}
 	default:
 		BUG("unhandled %s trigger kind %d\n", t->phase, t->spec->kind);
 	}
@@ -2002,6 +2056,9 @@ static int on_prepare_trigger(struct bpf_state *bpf, struct worker_state *worker
 		env.sess_ctl.activate_target_ts = resolve_timespec(act_time, ktime_now_ns());
 		env.sess_ctl.activate_deferred = false;
 	}
+
+	/* detach a preparation utrace trigger before the long preparation */
+	stop_utrace_trigger(&env.sess_ctl.prep_trig);
 
 	env.sess_ctl.state = SESS_PREP;
 
@@ -2035,6 +2092,9 @@ static int on_activate_trigger(struct bpf_state *bpf)
 	err = do_activate(bpf);
 	if (err)
 		return err;
+
+	/* detach an activation utrace trigger only after the latency-sensitive activation */
+	stop_utrace_trigger(&env.sess_ctl.activate_trig);
 
 	env.sess_ctl.session_activated = true;
 	env.sess_ctl.state = SESS_RECORDING;
@@ -2953,6 +3013,7 @@ int main(int argc, char **argv)
 	switch (env.prepare_spec.kind) {
 	case TRIG_UNSET:
 	case TRIG_SIGINT:
+	case TRIG_UTRACE:
 		break;
 	case TRIG_TIME:
 		env.sess_ctl.prepare_target_ts = resolve_timespec(&env.prepare_spec.time, env.actual_start_ts);
@@ -2968,6 +3029,7 @@ int main(int argc, char **argv)
 	switch (env.activate_spec.kind) {
 	case TRIG_UNSET:
 	case TRIG_SIGINT:
+	case TRIG_UTRACE:
 		break;
 	case TRIG_TIME:
 		/* with an event-triggered prepare, +<dur> and /<dur> get resolved once that event fires */
@@ -3281,6 +3343,8 @@ cleanup:
 	 * On the normal success fall-through these all re-run harmlessly as
 	 * no-ops (workers already joined, ringbufs drained, `fr` already NULL).
 	 */
+	stop_utrace_trigger(&env.sess_ctl.prep_trig);
+	stop_utrace_trigger(&env.sess_ctl.activate_trig);
 	stop_rb_workers(&bpf_state);
 	detach_bpf(&bpf_state, num_cpus);
 	drain_bpf(&bpf_state, num_cpus);
