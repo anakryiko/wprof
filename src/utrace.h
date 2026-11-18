@@ -5,6 +5,13 @@
 
 struct wprof_bpf;
 struct bpf_state;
+struct utrace_cfg;
+
+/* set of utrace probes resolved, attached, and detached together */
+struct utrace_session {
+	struct utrace_cfg *cfgs;	/* dynamically sized */
+	int cfg_cnt;
+};
 
 int utrace_setup(struct wprof_bpf *skel);
 int utrace_attach(struct bpf_state *st, struct wprof_bpf *skel);

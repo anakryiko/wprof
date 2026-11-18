@@ -20,6 +20,7 @@
 #include "pysym.h"
 #include "ksyms.h"
 #include "utrace_cfg.h"
+#include "utrace.h"
 
 #include "blazesym.h"
 #include "../libbpf/src/strset.h"
@@ -605,7 +606,7 @@ static const struct addr_set *strip_set_for(const struct wprof_event *e,
 	case ST_OFFCPU: return &entry_set_offcpu;
 	case ST_WAKER:  return &entry_set_waker;
 	case ST_UTRACE: {
-		const struct utrace_cfg *cfg = &env.utrace_cfgs[e->utrace.utrace_id];
+		const struct utrace_cfg *cfg = &env.utrace->cfgs[e->utrace.utrace_id];
 		/* For generic UTRACE_SPAN, the actual probe lives in the entry/exit leg;
 		 * pick the leg matching the event side. For all other types, the cfg
 		 * itself carries the probe type.

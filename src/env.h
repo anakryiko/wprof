@@ -153,6 +153,7 @@ struct wprof_bpf;
 struct req_list_cfg;
 struct ksyms;
 struct injectee;
+struct utrace_session;
 
 enum seal_kind {
 	SEAL_FILE_OUTPUT = 1 << 0,	/* --seal file-output (alias --seal-output) */
@@ -329,8 +330,7 @@ struct env {
 	bool nv_smi_discovered;
 
 	/* user-defined tracing (utrace) */
-	struct utrace_cfg *utrace_cfgs;
-	int utrace_cfg_cnt;
+	struct utrace_session *utrace;
 
 	/* user-defined metadata (key=value pairs) */
 	char **metadata;

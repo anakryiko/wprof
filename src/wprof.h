@@ -340,7 +340,7 @@ enum utrace_probe_flags {
 
 /* Per-probe config, stored in BPF array map, populated from utrace_cfg */
 struct utrace_probe_cfg {
-	u32 utrace_id;		/* index into utrace_cfgs (same for both halves of a span) */
+	u32 utrace_id;		/* index into env.utrace->cfgs (same for both halves of a span) */
 	int arg_cnt;
 	u32 flags;				/* enum utrace_probe_flags */
 	enum utrace_event_type event_type;

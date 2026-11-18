@@ -1743,8 +1743,8 @@ static int utrace_augment_args(void)
 {
 	bool need_btf = false;
 
-	for (int i = 0; i < env.utrace_cfg_cnt; i++) {
-		if (cfg_needs_btf(&env.utrace_cfgs[i])) {
+	for (int i = 0; i < env.utrace->cfg_cnt; i++) {
+		if (cfg_needs_btf(&env.utrace->cfgs[i])) {
 			need_btf = true;
 			break;
 		}
@@ -1752,15 +1752,15 @@ static int utrace_augment_args(void)
 
 	struct btf *vmlinux_btf = need_btf ? load_vmlinux_btf() : NULL;
 
-	for (int i = 0; i < env.utrace_cfg_cnt; i++) {
-		int err = augment_cfg_args(&env.utrace_cfgs[i], vmlinux_btf);
+	for (int i = 0; i < env.utrace->cfg_cnt; i++) {
+		int err = augment_cfg_args(&env.utrace->cfgs[i], vmlinux_btf);
 		if (err)
 			return err;
 	}
 
 	/* compile name/id templates after all arg types/names are resolved */
-	for (int i = 0; i < env.utrace_cfg_cnt; i++) {
-		int err = ucfg_compile_tmpls(&env.utrace_cfgs[i]);
+	for (int i = 0; i < env.utrace->cfg_cnt; i++) {
+		int err = ucfg_compile_tmpls(&env.utrace->cfgs[i]);
 		if (err)
 			return err;
 	}
@@ -2288,8 +2288,8 @@ static void utrace_pid_iter_destroy(struct utrace_pid_iter *it)
 static int utrace_discover_pids(void)
 {
 	bool has_discovery = false;
-	for (int i = 0; i < env.utrace_cfg_cnt; i++) {
-		if (cfg_pid_specs(&env.utrace_cfgs[i]) & UTRACE_PID_SPEC_DISCOVERED) {
+	for (int i = 0; i < env.utrace->cfg_cnt; i++) {
+		if (cfg_pid_specs(&env.utrace->cfgs[i]) & UTRACE_PID_SPEC_DISCOVERED) {
 			has_discovery = true;
 			break;
 		}
@@ -2300,8 +2300,8 @@ static int utrace_discover_pids(void)
 	struct utrace_cfg *new_cfgs = NULL;
 	int new_cnt = 0;
 
-	for (int i = 0; i < env.utrace_cfg_cnt; i++) {
-		struct utrace_cfg *src = &env.utrace_cfgs[i];
+	for (int i = 0; i < env.utrace->cfg_cnt; i++) {
+		struct utrace_cfg *src = &env.utrace->cfgs[i];
 		enum utrace_pid_spec specs = cfg_pid_specs(src);
 
 		new_cfgs = realloc(new_cfgs, (new_cnt + 1) * sizeof(*new_cfgs));
@@ -2348,9 +2348,9 @@ static int utrace_discover_pids(void)
 		}
 	}
 
-	free(env.utrace_cfgs);
-	env.utrace_cfgs = new_cfgs;
-	env.utrace_cfg_cnt = new_cnt;
+	free(env.utrace->cfgs);
+	env.utrace->cfgs = new_cfgs;
+	env.utrace->cfg_cnt = new_cnt;
 
 	return 0;
 }
@@ -2363,7 +2363,7 @@ int utrace_setup(struct wprof_bpf *skel)
 		return err;
 	}
 
-	if (env.utrace_cfg_cnt == 0) {
+	if (env.utrace->cfg_cnt == 0) {
 		env.capture_utrace = FALSE;
 		env.requested_stack_traces &= ~ST_UTRACE;
 		bpf_map__set_autocreate(skel->maps.utrace_probe_cfgs, false);
@@ -2374,8 +2374,8 @@ int utrace_setup(struct wprof_bpf *skel)
 	env.capture_utrace = TRUE;
 
 	if (!(env.requested_stack_traces & ST_UTRACE)) {
-		for (int i = 0; i < env.utrace_cfg_cnt; i++) {
-			const struct utrace_cfg *cfg = &env.utrace_cfgs[i];
+		for (int i = 0; i < env.utrace->cfg_cnt; i++) {
+			const struct utrace_cfg *cfg = &env.utrace->cfgs[i];
 			for (int j = 0; j < cfg->param_cnt; j++) {
 				if (cfg->params[j].type == UTRACE_PARAM_CAPTURE_STACK) {
 					eprintf("utrace config #%d requests 'stack' capture, but -Sutrace is not enabled\n", i + 1);
@@ -2391,8 +2391,8 @@ int utrace_setup(struct wprof_bpf *skel)
 	int map_cnt = 0;
 	bool had_discovery = false;
 
-	for (int i = 0; i < env.utrace_cfg_cnt; i++) {
-		struct utrace_cfg *cfg = &env.utrace_cfgs[i];
+	for (int i = 0; i < env.utrace->cfg_cnt; i++) {
+		struct utrace_cfg *cfg = &env.utrace->cfgs[i];
 		int err = 0;
 
 		/* a probe expanded by PID discovery isn't attached itself, only its clones are */
@@ -2519,7 +2519,7 @@ int utrace_setup(struct wprof_bpf *skel)
 
 		cfg->stats.resolve_cnt = 1;
 		if (cfg->parent_idx >= 0)
-			env.utrace_cfgs[cfg->parent_idx].stats.resolve_cnt += 1;
+			env.utrace->cfgs[cfg->parent_idx].stats.resolve_cnt += 1;
 		map_cnt += cfg_is_span(cfg) ? 2 : 1;
 	}
 
@@ -2531,8 +2531,8 @@ int utrace_setup(struct wprof_bpf *skel)
 	if (had_discovery) {
 		int j = 0;
 
-		for (int i = 0; i < env.utrace_cfg_cnt; i++) {
-			struct utrace_cfg *cfg = &env.utrace_cfgs[i];
+		for (int i = 0; i < env.utrace->cfg_cnt; i++) {
+			struct utrace_cfg *cfg = &env.utrace->cfgs[i];
 
 			if (cfg->stats.clone_cnt == 0)
 				continue;
@@ -2549,13 +2549,13 @@ int utrace_setup(struct wprof_bpf *skel)
 			}
 		}
 
-		for (int i = 0; i < env.utrace_cfg_cnt; i++) {
-			if (env.utrace_cfgs[i].stats.clone_cnt > 0 || env.utrace_cfgs[i].stats.resolve_cnt == 0)
+		for (int i = 0; i < env.utrace->cfg_cnt; i++) {
+			if (env.utrace->cfgs[i].stats.clone_cnt > 0 || env.utrace->cfgs[i].stats.resolve_cnt == 0)
 				continue;
-			env.utrace_cfgs[j] = env.utrace_cfgs[i];
+			env.utrace->cfgs[j] = env.utrace->cfgs[i];
 			j += 1;
 		}
-		env.utrace_cfg_cnt = j;
+		env.utrace->cfg_cnt = j;
 	}
 
 	bpf_map__set_autocreate(skel->maps.utrace_probe_cfgs, true);
@@ -2594,8 +2594,8 @@ int utrace_setup(struct wprof_bpf *skel)
 		return err;
 
 	/* Free BPF program BTFs — only needed for arg resolution above */
-	for (int i = 0; i < env.utrace_cfg_cnt; i++) {
-		utrace_for_each_leg(leg, &env.utrace_cfgs[i]) {
+	for (int i = 0; i < env.utrace->cfg_cnt; i++) {
+		utrace_for_each_leg(leg, &env.utrace->cfgs[i]) {
 			if (cfg_is_bpf_type(leg)) {
 				btf__free(leg->bpf_prog.btf);
 				leg->bpf_prog.btf = NULL;
@@ -3038,8 +3038,8 @@ static int collect_funcs_to_find_in_dwarf(struct dwarf_infos *dwarfs)
 {
 	int err;
 
-	for (int i = 0; i < env.utrace_cfg_cnt; i++) {
-		struct utrace_cfg *cfg = &env.utrace_cfgs[i];
+	for (int i = 0; i < env.utrace->cfg_cnt; i++) {
+		struct utrace_cfg *cfg = &env.utrace->cfgs[i];
 
 		/*
 		 * For now it only makes sense to collect DWARF for KPROBE events,
@@ -3072,8 +3072,8 @@ int utrace_attach(struct bpf_state *st, struct wprof_bpf *skel)
 	if (err)
 		return err;
 
-	for (int i = 0; i < env.utrace_cfg_cnt; i++) {
-		struct utrace_cfg *cfg = &env.utrace_cfgs[i];
+	for (int i = 0; i < env.utrace->cfg_cnt; i++) {
+		struct utrace_cfg *cfg = &env.utrace->cfgs[i];
 
 		switch (cfg->type) {
 		case UTRACE_UPROBE:

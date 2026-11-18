@@ -30,6 +30,7 @@
 #include "stacktrace.h"
 #include "ksyms.h"
 #include "utrace_cfg.h"
+#include "utrace.h"
 #include "strs.h"
 #include "../libbpf/src/strset.h"
 #include "../libbpf/src/hashmap.h"
@@ -160,12 +161,12 @@ static void collect_extras(struct persist_state *ps, struct wprof_extra_param **
 	if (env.deny_kthread)
 		add_extra(extras, cnt, WEXTRA_FILTER_KTHREAD_DENY, 0);
 
-	if (env.utrace_cfg_cnt > 0) {
+	if (env.utrace->cfg_cnt > 0) {
 		struct sbuf sb = sbuf_new();
 
-		for (int i = 0; i < env.utrace_cfg_cnt; i++) {
+		for (int i = 0; i < env.utrace->cfg_cnt; i++) {
 			sbuf_reset(&sb);
-			ucfg_format(&env.utrace_cfgs[i], &sb);
+			ucfg_format(&env.utrace->cfgs[i], &sb);
 			add_extra(extras, cnt, WEXTRA_UTRACE_DEF, persist_stroff(ps, sbuf_str(&sb)));
 		}
 

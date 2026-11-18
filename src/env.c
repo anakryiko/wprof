@@ -18,6 +18,7 @@
 #include "data.h"
 #include "requests.h"
 #include "utrace_cfg.h"
+#include "utrace.h"
 #include "strs.h"
 #include "elf_utils.h"
 #include "inject.h"
@@ -1029,7 +1030,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	}
 	/* USER-DEFINED TRACING */
 	case 'U': {
-		int first_cfg = env.utrace_cfg_cnt;
+		int first_cfg = env.utrace->cfg_cnt;
 
 		if (arg[0] == '@') {
 			if (env.seals & SEAL_FILE_INPUT) {
@@ -1044,12 +1045,12 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			return err;
 		if (!(env.seals & SEAL_UPROBE_ARGS))
 			break;
-		for (int i = first_cfg; i < env.utrace_cfg_cnt; i++) {
-			if (!ucfg_has_uprobe_args(&env.utrace_cfgs[i]))
+		for (int i = first_cfg; i < env.utrace->cfg_cnt; i++) {
+			if (!ucfg_has_uprobe_args(&env.utrace->cfgs[i]))
 				continue;
 
 			struct sbuf sb = sbuf_new();
-			ucfg_format(&env.utrace_cfgs[i], &sb);
+			ucfg_format(&env.utrace->cfgs[i], &sb);
 			fprintf(stderr, "Uprobe argument capture is disabled by --seal uprobe-args: '%s'\n",
 				sbuf_str(&sb));
 			sbuf_free(&sb);
