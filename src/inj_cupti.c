@@ -10,6 +10,7 @@
 #include <fcntl.h>
 #include <time.h>
 #include <sched.h>
+#include <poll.h>
 #include <link.h>
 
 #include <usdt.h>
@@ -682,7 +683,7 @@ cleanup:
 	return err;
 }
 
-static void cupti_finalize_cb(void)
+static void cupti_finalize_cb(bool do_finalize)
 {
 	/* deactivate any activity we might have activated */
 	for (int i = 0; i < ARRAY_SIZE(cupti_act_kinds); i++) {
@@ -707,8 +708,23 @@ static void cupti_finalize_cb(void)
 
 	vlog("Unsubscribing from CUPTI...\n");
 	cupti_unsubscribe(cupti_subscr);
-	vlog("Finalizing CUPTI...\n");
-	cupti_finalize();
+
+	/*
+	 * cuptiFinalize() has to run from inside a CUPTI callback (serialized by
+	 * CUPTI, with no CUDA API in flight on this thread), so only the callback
+	 * path asks for it. The fallback path -- finalize_cupti_activities() giving
+	 * up because the tracee went CUDA-idle -- runs on the worker thread with no
+	 * such guarantee, so it skips cuptiFinalize() and only tears down our
+	 * subscription. Unsubscribing already stops every one of our callbacks,
+	 * which is what keeps a later CUDA call from firing them against torn-down
+	 * state; the skipped finalize just leaks CUPTI-internal state, which is
+	 * harmless since libcupti is dlclosed right after and the tracee keeps its
+	 * own reference to it.
+	 */
+	if (do_finalize) {
+		vlog("Finalizing CUPTI...\n");
+		cupti_finalize();
+	}
 
 	vlog("CUPTI finalization DONE.\n");
 }
@@ -716,6 +732,16 @@ static void cupti_finalize_cb(void)
 static volatile bool cupti_finalizing __aligned(64) = false;
 static long cupti_fini_cnt = 0;
 static int cupti_fini_pipe_fds[2] = {-1, -1};
+
+/*
+ * How long finalize_cupti_activities() waits for the tracee's next CUDA API call
+ * to drive callback-based cuptiFinalize() before forcing teardown itself. Kept
+ * well under wprof's LIBWPROFINJ_TEARDOWN_TIMEOUT_MS (60s) so the worker finishes
+ * and signals worker_thread_done in time for clean ptrace retraction. In an
+ * actively-training tracee a CUDA call arrives within microseconds; this only
+ * ever elapses when the tracee has gone CUDA-idle at teardown.
+ */
+#define CUPTI_FINALIZE_WAIT_MS 5000
 
 static __thread CUpti_CallbackId cur_cbid = 0;
 static __thread CUpti_CallbackDomain cur_domain = 0;
@@ -771,7 +797,7 @@ skip_usdt:
 	/* make sure only one thread performs finalization */
 	if (atomic_add(&cupti_fini_cnt, 1) == 1) {
 		vlog("CUDA callback thread (TID %d) is finalizing CUPTI....\n", gettid());
-		cupti_finalize_cb();
+		cupti_finalize_cb(true /* do_finalize: safe from inside the callback */);
 		cupti_finalizing = false;
 		/* unblock other CUDA threads and wprofinj thread by closing write end of pipe */
 		vlog("CUDA callback thread (TID %d) is DONE, waking everyone up.\n", gettid());
@@ -819,22 +845,55 @@ void finalize_cupti_activities(void)
 
 		cupti_enable_subscription();
 
-		vlog("Waiting for CUPTI finalization to be done...\n");
-		char tmp;
-		/* XXX: add timeout? what if no CUDA API call happens ever again? */
+		/*
+		 * cuptiFinalize() must run from inside a CUPTI callback, so we re-enable
+		 * the callback subscription and wait for the tracee's next CUDA API call
+		 * to drive it (see cupti_callback). But a CUDA-idle tracee -- e.g. parked
+		 * on a CPU-side collective at teardown -- may not issue another CUDA call
+		 * for a long time. Blocking here forever would make wprof's teardown time
+		 * out and SKIP ptrace retraction, leaving libwprofinj resident with the
+		 * CUPTI subscription still live; a later CUDA call then fires our callback
+		 * on a driver thread against torn-down state and crashes the tracee. So
+		 * bound the wait and, if nothing drives finalization in time, tear the
+		 * subscription down ourselves below.
+		 */
+		vlog("Waiting up to %dms for a CUDA API call to drive CUPTI finalization...\n",
+		     CUPTI_FINALIZE_WAIT_MS);
 		int pipe_fd = cupti_fini_pipe_fds[0];
-		ssize_t r;
-		/* retry on EINTR so a signal doesn't make us skip waiting for finalization */
-		do { r = read(pipe_fd, &tmp, 1); } while (r < 0 && errno == EINTR);
+		struct pollfd pfd = { .fd = pipe_fd, .events = POLLIN };
+		int pret;
+		/* retry on EINTR so a signal doesn't cut the wait short */
+		do { pret = poll(&pfd, 1, CUPTI_FINALIZE_WAIT_MS); } while (pret < 0 && errno == EINTR);
+
+		if (pret > 0) {
+			char tmp;
+			ssize_t r;
+			/* retry on EINTR so a signal doesn't make us skip reading the done signal */
+			do { r = read(pipe_fd, &tmp, 1); } while (r < 0 && errno == EINTR);
+
+			vlog("Letting CUPTI Callback API finish running our callbacks...\n");
+			/* wait 50ms to give CUPTI Callback APIs time to exit our callbacks */
+			usleep(50 * 1000);
+
+			vlog("CUPTI activity API finalized!\n");
+		} else {
+			if (pret < 0)
+				elog("poll() waiting for CUPTI finalization failed: %d\n", -errno);
+			elog("No CUDA API call drove CUPTI finalization within %dms (tracee CUDA-idle); "
+			     "forcing subscription teardown to keep retraction safe.\n", CUPTI_FINALIZE_WAIT_MS);
+
+			/* a last-moment callback must not also try to finalize */
+			cupti_finalizing = false;
+
+			/* exactly one of {this path, a racing callback} performs the teardown */
+			if (atomic_add(&cupti_fini_cnt, 1) == 1) {
+				cupti_finalize_cb(false /* do_finalize: unsafe off the callback */);
+				close(cupti_fini_pipe_fds[1]);
+			}
+		}
 
 		atomic_store(&cupti_fini_pipe_fds[0], -1);
 		close(pipe_fd);
-
-		vlog("Letting CUPTI Callback API finish running our callbacks...\n");
-		/* wait 50ms to give CUPTI Callback APIs time to exit our callbacks */
-		usleep(50 * 1000);
-
-		vlog("CUPTI activity API finalized!\n");
 	}
 
 unload_cupti:
