@@ -35,6 +35,29 @@
 #include "proc.h"
 #include "elf_utils.h"
 
+/*
+ * ptrace NT_* regset ids for the FP/vector register file. Some may be absent
+ * from older <elf.h>; the values are a stable part of the kernel ABI.
+ */
+#ifndef NT_FPREGSET
+#define NT_FPREGSET 2
+#endif
+#ifndef NT_PRFPREG
+#define NT_PRFPREG 2
+#endif
+#ifndef NT_ARM_SVE
+#define NT_ARM_SVE 0x405
+#endif
+#ifndef NT_X86_XSTATE
+#define NT_X86_XSTATE 0x202
+#endif
+
+/*
+ * Upper bound for a thread's FP/vector regset: AArch64 SVE at max vector length
+ * (~8.8KB) and x86-64 XSAVE including AVX-512/AMX both fit comfortably.
+ */
+#define INJ_FPREGS_BUF_SZ 16384
+
 struct tracee_state {
 	int pid;
 	int ns_pid;
@@ -42,6 +65,19 @@ struct tracee_state {
 	char *proc_name;
 
 	struct user_regs_struct orig_regs;
+	/*
+	 * FP/NEON/SVE (aarch64) or x87/SSE/AVX (x86-64) register file, saved
+	 * around the ptrace hijack and restored before detach. The hijacked
+	 * thread is made to run dlopen()/mmap()/etc., which clobber the vector
+	 * registers; restoring only orig_regs would leave the thread's live
+	 * vector state corrupted (notably SVE on Grace, surfacing as heap
+	 * corruption inside vector-optimized memcpy/memset implementations). The
+	 * regset is variable-length (SVE vector length / XSAVE components), so keep
+	 * the raw bytes plus the length and NT_* id that PTRACE_GETREGSET reported.
+	 */
+	unsigned char orig_fpregs[INJ_FPREGS_BUF_SZ];
+	size_t orig_fpregs_sz;
+	int orig_fpregs_nt;
 
 	long data_mmap_addr;
 	size_t data_mmap_sz;
@@ -356,6 +392,79 @@ static int ptrace_set_regs(const struct tracee_state *tracee, const struct user_
 	return 0;
 }
 
+/*
+ * Save the tracee thread's FP/NEON/SVE (aarch64) or x87/SSE/AVX (x86-64)
+ * register file. We treat the regset as an opaque, variable-length blob: read it
+ * into orig_fpregs, remember how many bytes and which NT_* regset it came from,
+ * and write the exact same bytes back in ptrace_restore_fpregs(). Best-effort:
+ * on failure we record a zero length so restore becomes a no-op (degrading to
+ * the old GP-only behavior) rather than aborting the injection.
+ */
+static int ptrace_save_fpregs(struct tracee_state *tracee)
+{
+	struct iovec iov = {
+		.iov_base = tracee->orig_fpregs,
+		.iov_len = sizeof(tracee->orig_fpregs),
+	};
+	int nt;
+
+#if defined(__aarch64__)
+	/*
+	 * NT_ARM_SVE round-trips both SVE and FPSIMD-only threads on SVE-capable
+	 * cores (the returned header flags which); fall back to NT_FPREGSET (plain
+	 * NEON) on cores without SVE.
+	 */
+	nt = NT_ARM_SVE;
+	if (ptrace(PTRACE_GETREGSET, tracee->pid, nt, &iov) < 0) {
+		nt = NT_FPREGSET;
+		iov.iov_len = sizeof(tracee->orig_fpregs);
+		if (ptrace(PTRACE_GETREGSET, tracee->pid, nt, &iov) < 0)
+			goto fail;
+	}
+#elif defined(__x86_64__)
+	/* NT_X86_XSTATE covers x87/SSE/AVX/AVX-512; fall back to NT_PRFPREG. */
+	nt = NT_X86_XSTATE;
+	if (ptrace(PTRACE_GETREGSET, tracee->pid, nt, &iov) < 0) {
+		nt = NT_PRFPREG;
+		iov.iov_len = sizeof(tracee->orig_fpregs);
+		if (ptrace(PTRACE_GETREGSET, tracee->pid, nt, &iov) < 0)
+			goto fail;
+	}
+#else
+#error "Unsupported architecture"
+#endif
+
+	tracee->orig_fpregs_nt = nt;
+	tracee->orig_fpregs_sz = iov.iov_len;
+	ddlog("Saved FP/vector regset (nt=0x%x, %zu bytes)\n", nt, tracee->orig_fpregs_sz);
+	return 0;
+
+fail:
+	tracee->orig_fpregs_sz = 0;
+	dlog("Failed to save FP/vector regset: %d; thread vector state will not be restored\n", -errno);
+	return -errno;
+}
+
+/* Restore the FP/vector register file saved by ptrace_save_fpregs(). */
+static int ptrace_restore_fpregs(const struct tracee_state *tracee)
+{
+	struct iovec iov;
+
+	if (tracee->orig_fpregs_sz == 0)
+		return 0; /* nothing captured (save failed or never ran) */
+
+	iov.iov_base = (void *)tracee->orig_fpregs;
+	iov.iov_len = tracee->orig_fpregs_sz;
+	if (ptrace(PTRACE_SETREGSET, tracee->pid, tracee->orig_fpregs_nt, &iov) < 0) {
+		dlog("Failed to restore FP/vector regset (nt=0x%x): %d\n",
+		     tracee->orig_fpregs_nt, -errno);
+		return -errno;
+	}
+	ddlog("Restored FP/vector regset (nt=0x%x, %zu bytes)\n",
+	      tracee->orig_fpregs_nt, tracee->orig_fpregs_sz);
+	return 0;
+}
+
 static int ptrace_op(const struct tracee_state *tracee, enum __ptrace_request op, long data)
 {
 	const char *op_name;
@@ -494,7 +603,7 @@ static int ptrace_exec_syscall(const struct tracee_state *tracee,
 	return err;
 }
 
-static int ptrace_intercept(const struct tracee_state *tracee, struct user_regs_struct *regs)
+static int ptrace_intercept(struct tracee_state *tracee, struct user_regs_struct *regs)
 {
 	int err = 0;
 
@@ -529,6 +638,14 @@ static int ptrace_intercept(const struct tracee_state *tracee, struct user_regs_
 	/* backup original registers */
 	if ((err = ptrace_get_regs(tracee, regs)) < 0)
 		goto err_detach;
+
+	/*
+	 * Also save the FP/NEON/SVE register file. The injected calls below
+	 * (dlopen/mmap/...) clobber the vector registers, and restoring only GP
+	 * regs on replay would leave the thread's live vector state corrupted.
+	 * Best-effort: a failure here is non-fatal (restore just becomes a no-op).
+	 */
+	(void)ptrace_save_fpregs(tracee);
 
 	if (env_debug_level && (env_log_set & LOG_INJECTION)) {
 		log_regs(tracee, regs, "SYSCALL-ENTER");
@@ -601,6 +718,12 @@ static int ptrace_replay(const struct tracee_state *tracee)
 	err = err ?: ptrace_set_regs(tracee, &tracee->orig_regs);
 	err = err ?: ptrace_op(tracee, PTRACE_SYSCALL, 0);
 	err = err ?: ptrace_wait_syscall(tracee); /* syscall-enter-stop */
+
+	/*
+	 * Restore the FP/NEON/SVE register file clobbered by the injected calls,
+	 * before the tracee resumes its own code.
+	 */
+	err = err ?: ptrace_restore_fpregs(tracee);
 
 	/*
 	 * Don't wait for the original syscall to return. This might never
