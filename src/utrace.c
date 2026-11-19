@@ -35,22 +35,6 @@ static enum utrace_arg_type usdt_arg_to_utrace_type(const struct usdt_arg_info *
 	}
 }
 
-/* Takes ownership of link on both success and failure. */
-static int add_link(struct bpf_state *st, struct bpf_link *link)
-{
-	struct bpf_link **tmp;
-
-	tmp = realloc(st->links, (st->link_cnt + 1) * sizeof(struct bpf_link *));
-	if (!tmp) {
-		bpf_link__destroy(link);
-		return -ENOMEM;
-	}
-	st->links = tmp;
-	st->links[st->link_cnt] = link;
-	st->link_cnt++;
-	return 0;
-}
-
 static int add_link_fd(struct bpf_state *st, int fd)
 {
 	int *tmp;
@@ -2911,7 +2895,7 @@ static int attach_kprobe_addr(struct bpf_state *st, const struct utrace_progs *p
 			kind, cfg->kprobe.name, target, errstr(err));
 		return err;
 	}
-	return add_link(st, link);
+	return bpf_add_link(st, link);
 }
 
 /*
@@ -2952,7 +2936,7 @@ static int attach_utrace_probe(struct bpf_state *st, const struct utrace_progs *
 				cfg->uprobe.name, cfg->uprobe.display_path, err);
 			return err;
 		}
-		err = add_link(st, link);
+		err = bpf_add_link(st, link);
 		if (err)
 			return err;
 		break;
@@ -3026,7 +3010,7 @@ err_out:
 			eprintf("utrace: failed to attach tracepoint '%s:%s': %d\n", cfg->tp.cat, cfg->tp.name, err);
 			return err;
 		}
-		err = add_link(st, link);
+		err = bpf_add_link(st, link);
 		if (err)
 			return err;
 		break;
@@ -3041,7 +3025,7 @@ err_out:
 			eprintf("utrace: failed to attach raw tracepoint '%s': %d\n", cfg->raw_tp.name, err);
 			return err;
 		}
-		err = add_link(st, link);
+		err = bpf_add_link(st, link);
 		if (err)
 			return err;
 		break;
@@ -3059,7 +3043,7 @@ err_out:
 				cfg->usdt.provider, cfg->usdt.name, cfg->usdt.display_path, err);
 			return err;
 		}
-		err = add_link(st, link);
+		err = bpf_add_link(st, link);
 		if (err)
 			return err;
 		break;

@@ -4608,7 +4608,8 @@ static void emit_cuda_api(struct worker_state *w, const struct wevent *e)
 	emit_slice_begin(track_uuid, clamp_ts(e->ts), iid_str(name_iid, name), IID_CAT_CUDA_API) {
 		emit_callstack(w, stack_id);
 
-		emit_flow_id2(FLOW_CUDA, task.pid, e->cuda_api.corr_id);
+		if (!(e->flags & WEF_CUDA_BPF))
+			emit_flow_id2(FLOW_CUDA, task.pid, e->cuda_api.corr_id);
 	}
 
 	emit_slice_end(track_uuid, clamp_ts(e->cuda_api.end_ts), iid_str(name_iid, name), IID_CAT_CUDA_API);
@@ -4619,7 +4620,8 @@ static void emit_cuda_api(struct worker_state *w, const struct wevent *e)
 	if (py && py->exists) {
 		emit_slice_begin(py->track_id, clamp_ts(e->ts), iid_str(name_iid, name), IID_CAT_CUDA_API) {
 			emit_callstack(w, stack_id);
-			emit_flow_id2(FLOW_CUDA, task.pid, e->cuda_api.corr_id);
+			if (!(e->flags & WEF_CUDA_BPF))
+				emit_flow_id2(FLOW_CUDA, task.pid, e->cuda_api.corr_id);
 		}
 		emit_slice_end(py->track_id, clamp_ts(e->cuda_api.end_ts), iid_str(name_iid, name), IID_CAT_CUDA_API);
 	}
@@ -4668,9 +4670,11 @@ static int process_cuda_api(struct worker_state *w, const struct wevent *e)
 	if (task.tid == 0)
 		return 0;
 
-	/* remember host-side API call timestamp */
-	struct cuda_corr_info *ci = cuda_corr_get(task.pid, e->cuda_api.corr_id);
-	ci->api_ts = e->ts;
+	if (!(e->flags & WEF_CUDA_BPF)) {
+		/* remember host-side API call timestamp */
+		struct cuda_corr_info *ci = cuda_corr_get(task.pid, e->cuda_api.corr_id);
+		ci->api_ts = e->ts;
+	}
 
 	if (env.json_path)
 		emit_cuda_api_json(w, e);

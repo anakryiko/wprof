@@ -147,7 +147,7 @@ enum event_kind {
 
 	EV_CUDA_CALL = 49,
 
-	/* CUDA GPU activity events (from CUPTI) */
+	/* CUDA activity events (GPU from CUPTI; host APIs also from BPF) */
 	EV_CUDA_KERNEL = 50,
 	EV_CUDA_MEMCPY = 51,
 	EV_CUDA_MEMSET = 52,
@@ -548,6 +548,7 @@ static inline u16 bpf_event_fix_sz(const struct wprof_event *e)
 	case EV_REQ_RPC_EVENT:	return EV_SZ(req_rpc);
 	case EV_SCX_DSQ_END:	return EV_SZ(scx_dsq);
 	case EV_CUDA_CALL:	return EV_SZ(cuda_call);
+	case EV_CUDA_API:	return EV_SZ(cuda_api);
 	case EV_UTRACE_INSTANT:
 	case EV_UTRACE_ENTRY:
 	case EV_UTRACE_EXIT:	return EV_SZ(utrace);

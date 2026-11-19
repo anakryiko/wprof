@@ -318,3 +318,25 @@ ride along as annotations. In JSON (`-J`) the rows are `"t":"pmu_event"` with
 - **The spec is recorded.** The `-Spmu=…` string and the resolved event/rate are
   saved into `wprof.data` and shown by `wprof -R -I` (as `--stacks pmu=…` under
   `Stack traces:`), so a capture is self-describing.
+
+### CUDA host API tracing
+
+`-f cuda-api=PID` uses BPF uprobes to trace selected CUDA runtime and
+driver API calls: launch, memory and synchronization. Nested API calls
+are skipped. `-Scuda` adds user stacks.
+
+```shell
+$ sudo ./wprof -f cuda-api=PID -Scuda -d1000 -T cuda.pb
+```
+
+| Option | Processes to trace |
+|---|---|
+| `-f cuda-api=PID` | One PID. Repeat for multiple PIDs. |
+| `-f cuda-api` or `-f cuda-api=nv-smi` | PIDs listed by `nvidia-smi`. |
+| `-f cuda-api=all` | Processes with `libcuda` mapped. |
+
+- CUDA API symbols must be in `.dynsym` or `.symtab`.
+  Statically linked CUDA runtime APIs are supported. Inlined calls are not traced.
+- Initialize CUDA before attaching. Libraries loaded later are not traced.
+- PIDs that fail to attach are reported and skipped.
+- Requires `uprobe.multi` with PID filtering for all threads. Tested on Linux 6.16.

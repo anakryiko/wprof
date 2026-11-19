@@ -2200,6 +2200,76 @@ int BPF_USDT(wprof_cuda_call, int domain, int cbid, __u32 corr_id)
 	return 0;
 }
 
+SEC("?uprobe.multi")
+int wprof_cuda_api_entry(struct pt_regs *ctx)
+{
+	struct task_struct *task = bpf_get_current_task_btf();
+	struct task_state *s = task_state(task);
+	if (!s)
+		return 0;
+
+	/* Track runtime and driver nesting before filtering so only outermost calls are emitted. */
+	if (!s->cuda_depth) {
+		u64 cookie = bpf_get_attach_cookie(ctx);
+		s->cuda_ts = bpf_ktime_get_ns();
+		s->cuda_kind = cookie >> 32;
+		s->cuda_cbid = cookie;
+	}
+	s->cuda_depth++;
+
+	return 0;
+}
+
+SEC("?uretprobe.multi")
+int wprof_cuda_api_exit(struct pt_regs *ctx)
+{
+	u64 now_ts = bpf_ktime_get_ns();
+	struct task_struct *task = bpf_get_current_task_btf();
+	struct task_state *s = task_state(task);
+	/* Return probes can be armed before the entry link is attached, leaving some exits without an entry. */
+	if (!s || !s->cuda_depth)
+		return 0;
+
+	s->cuda_depth--;
+	if (s->cuda_depth)
+		return 0;
+	if (!should_trace_task(task, now_ts))
+		return 0;
+
+	struct wprof_event *e;
+	struct bpf_dynptr *dptr;
+	struct stack_trace *tr = NULL;
+	size_t tr_sz = 0;
+	size_t fix_sz = EV_SZ(cuda_api);
+
+	if (requested_stack_traces & ST_CUDA)
+		tr = grab_stack_trace_user(ctx, NULL, ST_CUDA, &tr_sz);
+
+	DEF_TASK_INFOS(tis, 1);
+	task_infos_init(&tis.infos);
+	task_infos_add(&tis.infos, task, s);
+	size_t tasks_sz = tis.infos.data_sz;
+
+	/* Use entry time so merge orders completed API calls by their start. */
+	emit_task_event_dyn(e, dptr, fix_sz, tr_sz + tasks_sz, EV_CUDA_API, s->cuda_ts, task) {
+		e->cuda_api.end_ts = now_ts;
+		e->cuda_api.kind = s->cuda_kind;
+		e->cuda_api.cbid = s->cuda_cbid;
+		e->cuda_api.corr_id = 0;
+		e->cuda_api.ret_val = (u32)PT_REGS_RC(ctx);
+		if (tr) {
+			emit_stack_trace(tr, tr_sz, dptr, fix_sz);
+			e->flags |= ST_CUDA;
+		}
+		if (tasks_sz)
+			e->flags |= task_infos_emit(&tis.infos, dptr, fix_sz + tr_sz);
+	}
+
+	put_stack_trace(tr);
+
+	return 0;
+}
+
 /* ==================== UTRACE (user-defined tracing) ==================== */
 
 struct {

@@ -244,6 +244,18 @@ int append_int(int **nums, int *cnt, int val)
 	return 0;
 }
 
+int append_unique_int(int **nums, int *cnt, int val)
+{
+	int *values = *nums;
+	int count = *cnt;
+
+	for (int i = 0; i < count; i++) {
+		if (values[i] == val)
+			return 0;
+	}
+	return append_int(nums, cnt, val);
+}
+
 int append_long(unsigned long **nums, size_t *cnt, unsigned long val)
 {
 	void *tmp;
