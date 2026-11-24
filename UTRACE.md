@@ -88,7 +88,7 @@ The suffix must start at a '/' boundary. File selectors require
 matching DWARF; probes without a file selector also collect addresses
 from kallsyms. Only vmlinux DWARF is currently indexed.
 
-Zero-offset `k:` probes attach to both inlined (if DWARF is avaialble)
+Zero-offset `k:` probes attach to both inlined (if DWARF is available)
 and non-inlined function instances. Nonzero offsets, `kret:`, and
 `kspan:` attach only to non-inlined functions.
 
