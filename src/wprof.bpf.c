@@ -75,6 +75,22 @@ struct {
 	__uint(max_entries, 1);
 } stack_trace_cur SEC(".maps");
 
+#define MAX_PERF_CTRS_PER_CPU 4
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__type(key, u32);
+	__type(value, struct perf_counters);
+	__uint(max_entries, MAX_PERF_CTRS_PER_CPU); /* maximum number of nested PMU counter captures */
+} perf_ctrs_scratch SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__type(key, u32);
+	__type(value, u64);
+	__uint(max_entries, 1);
+} perf_ctrs_cur SEC(".maps");
+
 #define inc_stat(stat) ({							\
 	u64 __s = 0;								\
 	struct wprof_bpf_stats *s = bpf_map_lookup_elem(&stats, (void *)&zero);	\
@@ -495,13 +511,9 @@ static void __rb_event_submit(void *arg)
 	bpf_ringbuf_submit_dynptr(&ctx->dptr, flags);
 }
 
-static size_t capture_perf_counters(struct perf_counters *c,
-				    struct perf_counters *prev_c, int cpu)
+static void __capture_perf_counters(struct perf_counters *c, struct perf_counters *prev_c, int cpu)
 {
 	struct bpf_perf_event_value perf_val;
-
-	if (perf_ctr_cnt == 0)
-		return 0;
 
 	for (u64 i = 0; i < perf_ctr_cnt; i++) {
 		int idx = cpu * perf_ctr_cnt + i, err;
@@ -523,8 +535,49 @@ static size_t capture_perf_counters(struct perf_counters *c,
 			c->ctr[i].run_ns -= prev_c->ctr[i].run_ns;
 		}
 	}
+}
 
-	return perf_ctr_cnt * sizeof(struct pmu_val);
+static struct perf_counters *capture_perf_counters(struct perf_counters *prev_c, int cpu)
+{
+	struct perf_counters *c;
+	int *ctrs_cnt;
+
+	if (perf_ctr_cnt == 0)
+		return NULL;
+
+	ctrs_cnt = bpf_map_lookup_elem(&perf_ctrs_cur, &zero);
+	if (!ctrs_cnt)
+		return NULL; /* shouldn't happen */
+
+	/* check if we ran out of per-CPU scratch buffer for counters due to interrupts nesting */
+	int idx = __sync_fetch_and_add(ctrs_cnt, 1);
+	if (idx + 1 > MAX_PERF_CTRS_PER_CPU) {
+		__sync_fetch_and_add(ctrs_cnt, -1);
+		return NULL;
+	}
+
+	c = bpf_map_lookup_elem(&perf_ctrs_scratch, &idx);
+	if (!c) {
+		__sync_fetch_and_add(ctrs_cnt, -1);
+		return NULL; /* shouldn't happen */
+	}
+
+	__capture_perf_counters(c, prev_c, cpu);
+	return c;
+}
+
+static __always_inline void put_perf_counters(struct perf_counters *c)
+{
+	int *ctrs_cnt;
+
+	if (!c)
+		return;
+
+	ctrs_cnt = bpf_map_lookup_elem(&perf_ctrs_cur, &zero);
+	if (!ctrs_cnt)
+		return; /* shouldn't happen */
+
+	__sync_fetch_and_add(ctrs_cnt, -1);
 }
 
 static void __capture_stack_trace(void *ctx, struct task_struct *task, struct stack_trace *st,
@@ -841,8 +894,8 @@ int wprof_pmu_event(struct bpf_perf_event_data *ctx)
 	if (!should_trace_task(cur, now_ts))
 		return 0;
 
-	struct perf_counters pmu_vals;
-	size_t pmu_sz = capture_perf_counters(&pmu_vals, NULL, cpu);
+	struct perf_counters *pmu_vals = capture_perf_counters(NULL, cpu);
+	size_t pmu_sz = pmu_vals ? perf_ctr_cnt * sizeof(struct pmu_val) : 0;
 
 	struct stack_trace *tr = NULL;
 	size_t tr_sz = 0;
@@ -869,8 +922,8 @@ int wprof_pmu_event(struct bpf_perf_event_data *ctx)
 		e->pmu_event.pmu_idx = bpf_get_attach_cookie(ctx);
 		e->pmu_event.sample_period = ctx->sample_period;
 
-		if (perf_ctr_cnt) {
-			emit_pmu_values(&pmu_vals, dptr, fix_sz);
+		if (pmu_vals) {
+			emit_pmu_values(pmu_vals, dptr, fix_sz);
 			e->flags |= EF_PMU_VALS;
 		}
 		if (tr) {
@@ -886,6 +939,7 @@ int wprof_pmu_event(struct bpf_perf_event_data *ctx)
 	}
 
 	put_stack_trace(tr);
+	put_perf_counters(pmu_vals);
 
 	return 0;
 }
@@ -910,8 +964,8 @@ int BPF_PROG(wprof_task_switch,
 	if (!sprev || !snext)
 		return 0;
 
-	struct perf_counters pmu_vals;
-	size_t pmu_sz = capture_perf_counters(&pmu_vals, NULL, cpu);
+	struct perf_counters *pmu_vals = capture_perf_counters(NULL, cpu);
+	size_t pmu_sz = pmu_vals ? perf_ctr_cnt * sizeof(struct pmu_val) : 0;
 
 	u32 packed_state = pack_task_state(prev_state, prev, preempt);
 	sprev->last_task_state = packed_state;
@@ -956,8 +1010,8 @@ int BPF_PROG(wprof_task_switch,
 		e->swtch.next_task_scx_dsq_id = scx_dsq_id;
 
 		e->flags = 0;
-		if (perf_ctr_cnt) {
-			emit_pmu_values(&pmu_vals, dptr, fix_sz);
+		if (pmu_vals) {
+			emit_pmu_values(pmu_vals, dptr, fix_sz);
 			e->flags |= EF_PMU_VALS;
 		}
 		if (tr_out) {
@@ -973,6 +1027,7 @@ int BPF_PROG(wprof_task_switch,
 	}
 
 	put_stack_trace(tr_out);
+	put_perf_counters(pmu_vals);
 
 	return 0;
 }
@@ -1330,15 +1385,15 @@ static int handle_hardirq(u64 now_ts, struct task_struct *task,
 	if (start) {
 		s->hardirq_ts = now_ts;
 		if (perf_ctr_cnt)
-			capture_perf_counters(&s->ctrs, NULL, cpu);
+			__capture_perf_counters(&s->ctrs, NULL, cpu);
 		return 0;
 	}
 
 	if (s->hardirq_ts == 0) /* we never recorded matching start, ignore */
 		return 0;
 
-	struct perf_counters pmu_delta;
-	size_t pmu_sz = capture_perf_counters(&pmu_delta, &s->ctrs, cpu);
+	struct perf_counters *pmu_delta = capture_perf_counters(&s->ctrs, cpu);
+	size_t pmu_sz = pmu_delta ? perf_ctr_cnt * sizeof(struct pmu_val) : 0;
 
 	struct bpf_dynptr *dptr;
 	size_t fix_sz = EV_SZ(hardirq);
@@ -1353,13 +1408,15 @@ static int handle_hardirq(u64 now_ts, struct task_struct *task,
 		e->hardirq.irq = irq;
 		bpf_probe_read_kernel_str(&e->hardirq.name, sizeof(e->hardirq.name), action->name);
 
-		if (perf_ctr_cnt) {
-			emit_pmu_values(&pmu_delta, dptr, fix_sz);
+		if (pmu_delta) {
+			emit_pmu_values(pmu_delta, dptr, fix_sz);
 			e->flags |= EF_PMU_VALS;
 		}
 		if (tasks_sz)
 			e->flags |= task_infos_emit(&tis.infos, dptr, fix_sz + pmu_sz);
 	}
+
+	put_perf_counters(pmu_delta);
 
 	s->hardirq_ts = 0;
 
@@ -1403,15 +1460,15 @@ static int handle_softirq(u64 now_ts, struct task_struct *task, int vec_nr, bool
 	cpu = bpf_get_smp_processor_id();
 	if (start) {
 		s->softirq_ts = now_ts;
-		capture_perf_counters(&s->ctrs, NULL, cpu);
+		__capture_perf_counters(&s->ctrs, NULL, cpu);
 		return 0;
 	}
 
 	if (s->softirq_ts == 0) /* we never recorded matching start, ignore */
 		return 0;
 
-	struct perf_counters pmu_delta;
-	size_t pmu_sz = capture_perf_counters(&pmu_delta, &s->ctrs, cpu);
+	struct perf_counters *pmu_delta = capture_perf_counters(&s->ctrs, cpu);
+	size_t pmu_sz = pmu_delta ? perf_ctr_cnt * sizeof(struct pmu_val) : 0;
 
 	struct bpf_dynptr *dptr;
 	size_t fix_sz = EV_SZ(softirq);
@@ -1425,13 +1482,15 @@ static int handle_softirq(u64 now_ts, struct task_struct *task, int vec_nr, bool
 		e->softirq.softirq_ts = s->softirq_ts;
 		e->softirq.vec_nr = vec_nr;
 
-		if (perf_ctr_cnt) {
-			emit_pmu_values(&pmu_delta, dptr, fix_sz);
+		if (pmu_delta) {
+			emit_pmu_values(pmu_delta, dptr, fix_sz);
 			e->flags |= EF_PMU_VALS;
 		}
 		if (tasks_sz)
 			e->flags |= task_infos_emit(&tis.infos, dptr, fix_sz + pmu_sz);
 	}
+
+	put_perf_counters(pmu_delta);
 
 	s->softirq_ts = 0;
 
@@ -1501,15 +1560,15 @@ static int handle_workqueue(u64 now_ts, struct task_struct *task, struct work_st
 			s->wq_name[3] = '\0';
 		}
 
-		capture_perf_counters(&s->ctrs, NULL, cpu);
+		__capture_perf_counters(&s->ctrs, NULL, cpu);
 		return 0;
 	}
 
 	if (s->wq_ts == 0) /* we never recorded matching start, ignore */
 		return 0;
 
-	struct perf_counters pmu_delta;
-	size_t pmu_sz = capture_perf_counters(&pmu_delta, &s->ctrs, cpu);
+	struct perf_counters *pmu_delta = capture_perf_counters(&s->ctrs, cpu);
+	size_t pmu_sz = pmu_delta ? perf_ctr_cnt * sizeof(struct pmu_val) : 0;
 
 	struct bpf_dynptr *dptr;
 	size_t fix_sz = EV_SZ(wq);
@@ -1523,13 +1582,15 @@ static int handle_workqueue(u64 now_ts, struct task_struct *task, struct work_st
 		e->wq.wq_ts = s->wq_ts;
 		__builtin_memcpy(e->wq.desc, s->wq_name, sizeof(e->wq.desc));
 
-		if (perf_ctr_cnt) {
-			emit_pmu_values(&pmu_delta, dptr, fix_sz);
+		if (pmu_delta) {
+			emit_pmu_values(pmu_delta, dptr, fix_sz);
 			e->flags |= EF_PMU_VALS;
 		}
 		if (tasks_sz)
 			e->flags |= task_infos_emit(&tis.infos, dptr, fix_sz + pmu_sz);
 	}
+
+	put_perf_counters(pmu_delta);
 
 	s->wq_ts = 0;
 
@@ -1640,15 +1701,15 @@ static int handle_ipi(u64 now_ts, struct task_struct *task, enum wprof_ipi_kind 
 	cpu = bpf_get_smp_processor_id();
 	if (start) {
 		s->ipi_ts = now_ts;
-		capture_perf_counters(&s->ctrs, NULL, cpu);
+		__capture_perf_counters(&s->ctrs, NULL, cpu);
 		return 0;
 	}
 
 	if (s->ipi_ts == 0) /* we never recorded matching start, ignore */
 		return 0;
 
-	struct perf_counters pmu_delta;
-	size_t pmu_sz = capture_perf_counters(&pmu_delta, &s->ctrs, cpu);
+	struct perf_counters *pmu_delta = capture_perf_counters(&s->ctrs, cpu);
+	size_t pmu_sz = pmu_delta ? perf_ctr_cnt * sizeof(struct pmu_val) : 0;
 
 	struct bpf_dynptr *dptr;
 	size_t fix_sz = EV_SZ(ipi);
@@ -1676,13 +1737,15 @@ static int handle_ipi(u64 now_ts, struct task_struct *task, enum wprof_ipi_kind 
 			e->ipi.ipi_id = 0;
 		}
 
-		if (perf_ctr_cnt) {
-			emit_pmu_values(&pmu_delta, dptr, fix_sz);
+		if (pmu_delta) {
+			emit_pmu_values(pmu_delta, dptr, fix_sz);
 			e->flags |= EF_PMU_VALS;
 		}
 		if (tasks_sz)
 			e->flags |= task_infos_emit(&tis.infos, dptr, fix_sz + pmu_sz);
 	}
+
+	put_perf_counters(pmu_delta);
 
 	s->ipi_ts = 0;
 
@@ -1928,10 +1991,10 @@ int BPF_USDT(wprof_req_ctx, u64 req_id, const char *endpoint, enum wprof_req_eve
 	struct stack_trace *tr = NULL;
 	size_t fix_sz = EV_SZ(req);
 
-	struct perf_counters pmu_vals;
-	size_t pmu_sz = 0;
+	struct perf_counters *pmu_vals = NULL;
 	if (capture_req_ctxs_pmu)
-		pmu_sz = capture_perf_counters(&pmu_vals, NULL, bpf_get_smp_processor_id());
+		pmu_vals = capture_perf_counters(NULL, bpf_get_smp_processor_id());
+	size_t pmu_sz = pmu_vals ? perf_ctr_cnt * sizeof(struct pmu_val) : 0;
 
 	size_t tr_sz = 0;
 	if (requested_stack_traces & ST_REQ)
@@ -1948,8 +2011,8 @@ int BPF_USDT(wprof_req_ctx, u64 req_id, const char *endpoint, enum wprof_req_eve
 		e->req.req_event = event_kind;
 		if (bpf_probe_read_user_str(e->req.req_name, sizeof(e->req.req_name), endpoint) < 0)
 			e->req.req_name[0] = '\0';
-		if (pmu_sz) {
-			emit_pmu_values(&pmu_vals, dptr, fix_sz);
+		if (pmu_vals) {
+			emit_pmu_values(pmu_vals, dptr, fix_sz);
 			e->flags |= EF_PMU_VALS;
 		}
 		if (tr) {
@@ -1964,6 +2027,7 @@ int BPF_USDT(wprof_req_ctx, u64 req_id, const char *endpoint, enum wprof_req_eve
 		bpf_map_delete_elem(&req_states, &key);
 
 	put_stack_trace(tr);
+	put_perf_counters(pmu_vals);
 
 	return 0;
 }
@@ -2088,10 +2152,10 @@ int BPF_USDT(wprof_req_task_dequeue,
 	struct bpf_dynptr *dptr;
 	size_t fix_sz = EV_SZ(req_task);
 
-	struct perf_counters pmu_vals;
-	size_t pmu_sz = 0;
+	struct perf_counters *pmu_vals = NULL;
 	if (capture_req_tasks_pmu)
-		pmu_sz = capture_perf_counters(&pmu_vals, NULL, bpf_get_smp_processor_id());
+		pmu_vals = capture_perf_counters(NULL, bpf_get_smp_processor_id());
+	size_t pmu_sz = pmu_vals ? perf_ctr_cnt * sizeof(struct pmu_val) : 0;
 
 	DEF_TASK_INFOS(tis, 1);
 	task_infos_init(&tis.infos);
@@ -2105,13 +2169,15 @@ int BPF_USDT(wprof_req_task_dequeue,
 		e->req_task.enqueue_ts = enqueue_ts;
 		e->req_task.wait_time_ns = wait_time_ns;
 		e->req_task.run_time_ns = 0;
-		if (pmu_sz) {
-			emit_pmu_values(&pmu_vals, dptr, fix_sz);
+		if (pmu_vals) {
+			emit_pmu_values(pmu_vals, dptr, fix_sz);
 			e->flags |= EF_PMU_VALS;
 		}
 		if (tasks_sz)
 			e->flags |= task_infos_emit(&tis.infos, dptr, fix_sz + pmu_sz);
 	}
+
+	put_perf_counters(pmu_vals);
 
 	return 0;
 }
@@ -2132,10 +2198,10 @@ int BPF_USDT(wprof_req_task_stats,
 	struct bpf_dynptr *dptr;
 	size_t fix_sz = EV_SZ(req_task);
 
-	struct perf_counters pmu_vals;
-	size_t pmu_sz = 0;
+	struct perf_counters *pmu_vals = NULL;
 	if (capture_req_tasks_pmu)
-		pmu_sz = capture_perf_counters(&pmu_vals, NULL, bpf_get_smp_processor_id());
+		pmu_vals = capture_perf_counters(NULL, bpf_get_smp_processor_id());
+	size_t pmu_sz = pmu_vals ? perf_ctr_cnt * sizeof(struct pmu_val) : 0;
 
 	DEF_TASK_INFOS(tis, 1);
 	task_infos_init(&tis.infos);
@@ -2149,13 +2215,15 @@ int BPF_USDT(wprof_req_task_stats,
 		e->req_task.enqueue_ts = enqueue_ts;
 		e->req_task.wait_time_ns = wait_time_ns;
 		e->req_task.run_time_ns = run_time_ns;
-		if (pmu_sz) {
-			emit_pmu_values(&pmu_vals, dptr, fix_sz);
+		if (pmu_vals) {
+			emit_pmu_values(pmu_vals, dptr, fix_sz);
 			e->flags |= EF_PMU_VALS;
 		}
 		if (tasks_sz)
 			e->flags |= task_infos_emit(&tis.infos, dptr, fix_sz + pmu_sz);
 	}
+
+	put_perf_counters(pmu_vals);
 
 	return 0;
 }
