@@ -24,6 +24,10 @@ enum wprof_task_flags {
 struct task_state {
 	u32 flags;
 	u32 last_task_state;
+	u64 cuda_ts;
+	u32 cuda_cbid;
+	u32 cuda_kind;
+	u32 cuda_depth;
 	u64 softirq_ts;
 	u64 hardirq_ts;
 	u64 wq_ts;

@@ -33,6 +33,30 @@ struct bpf_state {
 	int num_online_cpus;
 };
 
+/* Takes ownership of link, including on failure. */
+static inline int bpf_add_link(struct bpf_state *st, struct bpf_link *link)
+{
+	struct bpf_link **tmp;
+
+	tmp = realloc(st->links, (st->link_cnt + 1) * sizeof(struct bpf_link *));
+	if (!tmp) {
+		bpf_link__destroy(link);
+		return -ENOMEM;
+	}
+	st->links = tmp;
+	st->links[st->link_cnt] = link;
+	st->link_cnt++;
+	return 0;
+}
+
+static inline void bpf_remove_links_since(struct bpf_state *st, int checkpoint)
+{
+	while (st->link_cnt > checkpoint) {
+		st->link_cnt--;
+		bpf_link__destroy(st->links[st->link_cnt]);
+	}
+}
+
 struct uprobe_binary;
 
 int attach_usdt_probe(struct bpf_state *st, struct bpf_program *prog,

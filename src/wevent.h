@@ -45,6 +45,7 @@ struct wevent_pmu_def {
 /* Flags stored in wevent.flags */
 enum wevent_flag {
 	WEF_PYTORCH_LINKED = 0x1,	/* PYTORCH_ENTRY: one end of a forward/backward op link */
+	WEF_CUDA_BPF = 0x2,		/* BPF host API source: no CUPTI correlation flows */
 };
 
 /* Full persisted event - header followed by type-specific data */
@@ -190,17 +191,17 @@ struct wevent {
 			enum scx_dsq_insert_type scx_dsq_insert_type;
 		} scx_dsq;
 
-		/* CUDA activity events (from CUPTI) */
-		struct wevent_cuda_api { /* host-side CUDA API call */
+		struct wevent_cuda_api { /* host-side CUDA API call from CUPTI or BPF uprobes */
 			u64 end_ts;
 			u32 task_id;
-			u32 corr_id;
+			u32 corr_id; /* CUPTI correlation ID; zero and unused for WEF_CUDA_BPF */
 			u32 cbid;
 			u32 ret_val;
-			u32 cuda_stack_id; /* comes from EV_CUDA_CALL (BPF-side) */
+			u32 cuda_stack_id; /* comes from EV_CUDA_CALL or BPF EV_CUDA_API */
 			u8 kind;
 		} cuda_api;
 
+		/* CUDA GPU activity events (from CUPTI) */
 		struct wevent_cuda_kernel {
 			u64 end_ts;
 			u32 name_stroff;

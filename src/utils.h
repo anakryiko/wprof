@@ -308,6 +308,7 @@ int append_str_ref(const char ***strs, size_t *cnt, const char *str);
 int append_str_file(char ***strs, int *cnt, const char *file);
 int append_num(int **nums, int *cnt, const char *arg);
 int append_int(int **nums, int *cnt, int val);
+int append_unique_int(int **nums, int *cnt, int val);
 int append_long(unsigned long **nums, size_t *cnt, unsigned long val);
 
 #endif /* __UTILS_H_ */

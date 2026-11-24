@@ -70,7 +70,7 @@ enum req_pmu_layer {
 enum cuda_discover_strategy {
 	CUDA_DISCOVER_NONE, /* no automatic discovery */
 	CUDA_DISCOVER_SMI,  /* use nvidia-smi (default) */
-	CUDA_DISCOVER_PROC, /* find processes with libcupti.so */
+	CUDA_DISCOVER_PROC, /* scan /proc for eligible CUDA processes */
 };
 
 enum pystacks_discover_strategy {
@@ -311,6 +311,9 @@ struct env {
 	int *cuda_pids;
 	int cuda_pid_cnt;
 	enum cuda_discover_strategy cuda_discovery;
+	int *cuda_api_pids;
+	int cuda_api_pid_cnt;
+	enum cuda_discover_strategy cuda_api_discovery;
 
 	/* EXPERIMENTAL (Python stacks) */
 	int *pystacks_pids;
