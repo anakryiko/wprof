@@ -89,8 +89,10 @@ matching DWARF; probes without a file selector also collect addresses
 from kallsyms. Only vmlinux DWARF is currently indexed.
 
 Zero-offset `k:` probes attach to both inlined (if DWARF is available)
-and non-inlined function instances. Nonzero offsets, `kret:`, and
-`kspan:` attach only to non-inlined functions.
+and non-inlined function instances. Nonzero offsets, `kret:`, `kspan:`,
+and probes capturing arguments attach only to non-inlined functions, as
+inlined instances have no return site and their arguments can't be read.
+wprof warns about the inlined instances it skips.
 
 A `bpf:`/`bpfret:`/`bpfspan:` target names a loaded BPF program's function.
 A bare `prog` name resolves to that function wherever it is loaded. A

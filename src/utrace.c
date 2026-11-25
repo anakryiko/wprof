@@ -2779,9 +2779,11 @@ static int find_funcs_in_dwarf(struct dwarf_infos *dwarfs, const struct utrace_c
 
 		/*
 		 * Inline instances need not be contiguous, so offsets aren't meaningful.
-		 * They also have no standalone return site for kretprobes or native spans.
+		 * They also have no standalone return site for kretprobes or native spans,
+		 * and no calling convention to read arguments from.
 		 */
-		if (func_infos[i].is_inline && (cfg->kprobe.off != 0 || cfg->type != UTRACE_KPROBE)) {
+		if (func_infos[i].is_inline &&
+		    (cfg->kprobe.off != 0 || cfg->type != UTRACE_KPROBE || ucfg_has_args(cfg))) {
 			skipped_inline++;
 			continue;
 		}
