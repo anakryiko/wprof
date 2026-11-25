@@ -185,15 +185,28 @@ static int write_py_frame_ids(u32 start_iid, u32 cnt, FILE *stacks_dump,
 	return 0;
 }
 
-static bool is_py_eval_frame(const struct stack_frame_index *f)
+static bool is_py_eval_default_frame(const struct stack_frame_index *f)
 {
 	const char *name = f->sym ? f->sym->name : NULL;
 
-	if (!name)
-		return false;
-	if (strncmp(name, "_PyEval_EvalFrameDefault", 24) == 0)
-		return true;
-	return strncmp(name, "_TAIL_CALL_", 11) == 0;
+	return name && strncmp(name, "_PyEval_EvalFrameDefault", 24) == 0;
+}
+
+static bool is_py_tail_call_frame(const struct stack_frame_index *f)
+{
+	const char *name = f->sym ? f->sym->name : NULL;
+
+	return name && strncmp(name, "_TAIL_CALL_", 11) == 0;
+}
+
+static bool is_py_eval_frame(const struct stack_frame_index *f)
+{
+	return is_py_eval_default_frame(f) || is_py_tail_call_frame(f);
+}
+
+static bool is_py_eval_cont_frame(const struct stack_frame_index *frames, int j)
+{
+	return j > 0 && is_py_tail_call_frame(&frames[j]) && is_py_eval_default_frame(&frames[j - 1]);
 }
 
 /*
@@ -214,7 +227,9 @@ static u32 py_next_segment(const struct pystack_msg *pymsg, int *fi)
 /*
  * Each native interpreter frame (_PyEval_EvalFrameDefault() or, with the 3.14+
  * tail-calling interpreter, a _TAIL_CALL_<opcode>() handler) is replaced by
- * Python frames of its interpreter activation: frames up to the next
+ * Python frames of its interpreter activation. A handler called right from a
+ * non-inlined _PyEval_EvalFrameDefault() belongs to the same activation and is
+ * dropped. An activation's Python frames are the frames up to the next
  * <interpreter trampoline> marker (3.12, 3.14+), or a single frame (3.10). If
  * Python has one activation more, frame pointer-based unwinding skipped the
  * interpreter frame calling a frameless leaf function, so the innermost
@@ -231,7 +246,7 @@ static int pystacks_write_stitched(struct symb_state *state, const struct native
 	int first_eval = -1, err;
 
 	for (int j = 0; j < uframe_cnt; j++) {
-		if (!is_py_eval_frame(&frames[j]))
+		if (!is_py_eval_frame(&frames[j]) || is_py_eval_cont_frame(frames, j))
 			continue;
 		if (first_eval < 0)
 			first_eval = j;
@@ -272,7 +287,9 @@ static int pystacks_write_stitched(struct symb_state *state, const struct native
 		bool eval = j < uframe_cnt && is_py_eval_frame(&frames[j]);
 		int from_k = 0;
 
-		if (eval || (leaf_eval_lost && j == uframe_cnt - 1)) {
+		if (eval && is_py_eval_cont_frame(frames, j)) {
+			from_k = 1;
+		} else if (eval || (leaf_eval_lost && j == uframe_cnt - 1)) {
 			u32 cnt = by_segment ? py_next_segment(ps->pymsg, &fi) : 1;
 
 			err = write_py_frame_ids(py_iid, cnt, stacks_dump, hdr, &ps->mapped_frame_cnt);
