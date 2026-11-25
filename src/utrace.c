@@ -2851,19 +2851,29 @@ static int resolve_kprobe_addrs(struct dwarf_infos *dwarfs, const struct utrace_
 
 	err = find_funcs_in_dwarf(dwarfs, cfg, addrs, cnt);
 	if (err)
-		return err;
+		goto err_out;
 
 	/* kallsyms have no source paths, only look there if there is no file selector. */
 	if (!cfg->kprobe.file) {
 		err = append_missing_kallsyms_funcs(cfg, addrs, cnt);
 		if (err)
-			return err;
+			goto err_out;
 	}
 
-	if (*cnt == 0)
-		return -ESRCH;
+	if (*cnt == 0) {
+		err = -ESRCH;
+		goto err_out;
+	}
 
 	return 0;
+
+err_out:
+	struct sbuf sb = sbuf_new();
+
+	ucfg_format(cfg, &sb);
+	eprintf("utrace: failed to resolve kernel probe '%s': %s\n", sbuf_str(&sb), errstr(err));
+	sbuf_free(&sb);
+	return err;
 }
 
 static int attach_kprobe_addr(struct bpf_state *st, const struct utrace_progs *progs,
@@ -2919,12 +2929,13 @@ static int attach_kprobe_addr(struct bpf_state *st, const struct utrace_progs *p
  * native span). Callers of native spans (UPROBE_SPAN/KPROBE_SPAN/BPF_SPAN) invoke
  * this twice with is_retprobe false/true for entry/exit sides. For simple ret
  * types (URETPROBE/KRETPROBE/BPF_RETPROBE) callers pass is_retprobe=true.
+ * Kernel probes attach to target addresses resolved by resolve_kprobe_addrs().
  */
 static int attach_utrace_probe(struct bpf_state *st, const struct utrace_progs *progs,
 			       struct utrace_cfg *cfg, int utrace_id,
 			       enum utrace_event_type event_type, bool is_exit,
 			       bool is_retprobe, int map_fd, u32 *map_idx,
-			       struct dwarf_infos *dwarfs)
+			       const unsigned long *addrs, size_t addr_cnt)
 {
 	struct utrace_probe_cfg pcfg;
 	int err;
@@ -2962,30 +2973,13 @@ static int attach_utrace_probe(struct bpf_state *st, const struct utrace_progs *
 	case UTRACE_KPROBE_SPAN: {
 		struct btf *vmlinux_btf = load_vmlinux_btf();
 		bool has_multi = btf__find_by_name_kind(vmlinux_btf, "bpf_kprobe_multi_link", BTF_KIND_STRUCT) > 0;
-		unsigned long *addrs = NULL;
-		size_t cnt;
 
-		err = resolve_kprobe_addrs(dwarfs, cfg, &addrs, &cnt);
-		if (err)
-			goto err_out;
-
-		for (size_t i = 0; i < cnt; i++) {
+		for (size_t i = 0; i < addr_cnt; i++) {
 			err = attach_kprobe_addr(st, progs, cfg, addrs[i], has_multi, is_retprobe, *map_idx);
 			if (err)
-				goto err_out;
+				return err;
 		}
-
-		free(addrs);
 		break;
-
-err_out:
-		struct sbuf sb = sbuf_new();
-
-		ucfg_format(cfg, &sb);
-		eprintf("utrace: failed to resolve kernel probe '%s': %s\n", sbuf_str(&sb), errstr(err));
-		sbuf_free(&sb);
-		free(addrs);
-		return err;
 	}
 	case UTRACE_BPF_PROBE:
 	case UTRACE_BPF_RETPROBE:
@@ -3118,31 +3112,53 @@ int utrace_attach_cfgs(struct bpf_state *st, struct utrace_session *sess, int ma
 
 	for (int i = 0; i < sess->cfg_cnt; i++) {
 		struct utrace_cfg *cfg = &sess->cfgs[i];
+		unsigned long *addrs = NULL, *exit_addrs = NULL;
+		size_t cnt = 0, exit_cnt = 0;
 
 		switch (cfg->type) {
 		case UTRACE_UPROBE:
 		case UTRACE_URETPROBE:
-		case UTRACE_KPROBE:
-		case UTRACE_KRETPROBE:
 		case UTRACE_BPF_PROBE:
 		case UTRACE_BPF_RETPROBE:
 		case UTRACE_USDT:
 		case UTRACE_RAW_TRACEPOINT:
 		case UTRACE_TRACEPOINT:
 			err = attach_utrace_probe(st, progs, cfg, i, UTRACE_INSTANT, false,
-						  cfg_is_ret_probe(cfg->type), map_fd, &map_idx, &dwarfs);
+						  cfg_is_ret_probe(cfg->type), map_fd, &map_idx, NULL, 0);
+			if (err)
+				return err;
+			break;
+		case UTRACE_KPROBE:
+		case UTRACE_KRETPROBE:
+			err = resolve_kprobe_addrs(&dwarfs, cfg, &addrs, &cnt);
+			if (err)
+				return err;
+			err = attach_utrace_probe(st, progs, cfg, i, UTRACE_INSTANT, false,
+						  cfg_is_ret_probe(cfg->type), map_fd, &map_idx, addrs, cnt);
 			if (err)
 				return err;
 			break;
 		case UTRACE_UPROBE_SPAN:
-		case UTRACE_KPROBE_SPAN:
 		case UTRACE_BPF_SPAN:
 			err = attach_utrace_probe(st, progs, cfg, i, UTRACE_ENTRY, false,
-						  false, map_fd, &map_idx, &dwarfs);
+						  false, map_fd, &map_idx, NULL, 0);
 			if (err)
 				return err;
 			err = attach_utrace_probe(st, progs, cfg, i, UTRACE_EXIT, true,
-						  true, map_fd, &map_idx, &dwarfs);
+						  true, map_fd, &map_idx, NULL, 0);
+			if (err)
+				return err;
+			break;
+		case UTRACE_KPROBE_SPAN:
+			err = resolve_kprobe_addrs(&dwarfs, cfg, &addrs, &cnt);
+			if (err)
+				return err;
+			err = attach_utrace_probe(st, progs, cfg, i, UTRACE_ENTRY, false,
+						  false, map_fd, &map_idx, addrs, cnt);
+			if (err)
+				return err;
+			err = attach_utrace_probe(st, progs, cfg, i, UTRACE_EXIT, true,
+						  true, map_fd, &map_idx, addrs, cnt);
 			if (err)
 				return err;
 			break;
@@ -3150,12 +3166,22 @@ int utrace_attach_cfgs(struct bpf_state *st, struct utrace_session *sess, int ma
 			struct utrace_cfg *entry = cfg->span.entry;
 			struct utrace_cfg *exit = cfg->span.exit;
 
+			if (cfg_is_kprobe_type(entry)) {
+				err = resolve_kprobe_addrs(&dwarfs, entry, &addrs, &cnt);
+				if (err)
+					return err;
+			}
 			err = attach_utrace_probe(st, progs, entry, i, UTRACE_ENTRY, false,
-						  cfg_is_ret_probe(entry->type), map_fd, &map_idx, &dwarfs);
+						  cfg_is_ret_probe(entry->type), map_fd, &map_idx, addrs, cnt);
 			if (err)
 				return err;
+			if (cfg_is_kprobe_type(exit)) {
+				err = resolve_kprobe_addrs(&dwarfs, exit, &exit_addrs, &exit_cnt);
+				if (err)
+					return err;
+			}
 			err = attach_utrace_probe(st, progs, exit, i, UTRACE_EXIT, true,
-						  cfg_is_ret_probe(exit->type), map_fd, &map_idx, &dwarfs);
+						  cfg_is_ret_probe(exit->type), map_fd, &map_idx, exit_addrs, exit_cnt);
 			if (err)
 				return err;
 			break;
@@ -3164,6 +3190,8 @@ int utrace_attach_cfgs(struct bpf_state *st, struct utrace_session *sess, int ma
 			eprintf("utrace: probe type %d not yet supported\n", cfg->type);
 			return -EOPNOTSUPP;
 		}
+		free(addrs);
+		free(exit_addrs);
 	}
 
 	dwarf_infos_free(&dwarfs);
