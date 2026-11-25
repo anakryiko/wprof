@@ -2878,6 +2878,13 @@ err_out:
 	return err;
 }
 
+static bool is_kfunc_entry(unsigned long addr)
+{
+	const struct ksym *sym = ksyms__map_addr(load_ksyms(), addr, KSYM_FUNC);
+
+	return sym && sym->addr == addr;
+}
+
 static int attach_kprobe_addr(struct bpf_state *st, const struct utrace_progs *progs,
 			      const struct utrace_cfg *cfg, unsigned long addr, bool has_multi,
 			      bool is_retprobe, __u64 cookie)
@@ -2890,10 +2897,11 @@ static int attach_kprobe_addr(struct bpf_state *st, const struct utrace_progs *p
 	/*
 	 * Multi-kprobe is generally faster than legacy breakpoint-based kprobes, but can
 	 * only attach at function entry. Use it when the offset is zero (always true for
-	 * kretprobe and span legs), and fall back to the legacy program for non-zero
-	 * offsets or functions that aren't ftrace-attachable.
+	 * kretprobe and span legs) and the address isn't an inlined copy inside another
+	 * function, and fall back to the legacy program for non-zero offsets, inlined
+	 * copies, or functions that aren't ftrace-attachable.
 	 */
-	if (has_multi && cfg->kprobe.off == 0) {
+	if (has_multi && cfg->kprobe.off == 0 && is_kfunc_entry(addr)) {
 		struct bpf_program *prog = is_retprobe ? progs->ut_kretmulti : progs->ut_kmulti;
 		LIBBPF_OPTS(bpf_kprobe_multi_opts, mopts,
 			.addrs = &target,
