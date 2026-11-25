@@ -1312,6 +1312,7 @@ int ucfg_parse_trigger(const char *def, struct utrace_cfg *cfg)
 		}
 	}
 
+	cfg->settings.scope = UTRACE_SCOPE_THREAD;
 	return 0;
 }
 
