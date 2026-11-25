@@ -3072,23 +3072,18 @@ static int collect_funcs_to_find_in_dwarf(const struct utrace_session *sess, str
 	int err;
 
 	for (int i = 0; i < sess->cfg_cnt; i++) {
-		struct utrace_cfg *cfg = &sess->cfgs[i];
-
-		/*
-		 * For now it only makes sense to collect DWARF for KPROBE events,
-		 * as these can be used to detect inlined functions "calls".
-		 * SPANs and RETPROBEs are not supported for inlined functions,
-		 * as there is no clear "return" concept.
-		 */
-		switch (cfg->type) {
-		case UTRACE_KPROBE:
+		utrace_for_each_leg(leg, &sess->cfgs[i]) {
+			/*
+			 * KPROBE events can attach to inlined functions "calls" found in DWARF.
+			 * RETPROBEs and SPANs can't, as there is no clear "return" concept, but
+			 * still need DWARF for @file selectors and to report inlined copies.
+			 */
+			if (!cfg_is_kprobe_type(leg))
+				continue;
 			err = append_str_ref(&dwarfs->kprobe_func_names, &dwarfs->kprobe_func_name_cnt,
-					     cfg->kprobe.name);
+					     leg->kprobe.name);
 			if (err)
 				return err;
-			break;
-		default:
-			continue;
 		}
 	}
 	return 0;
